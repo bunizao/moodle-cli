@@ -32,7 +32,7 @@ def cli(ctx: click.Context, verbose: bool) -> None:
     ctx.ensure_object(dict)
     ctx.obj["config"] = config
 
-    # Lazy client creation — only authenticate when a command needs it
+    # Lazy client creation; only authenticate when a command needs it.
     ctx.obj["_client"] = None
 
     def get_client() -> MoodleClient:

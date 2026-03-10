@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import sys
 from pathlib import Path
 
@@ -17,6 +18,7 @@ from moodle_cli.models import Activity, Course, Section, UserInfo
 
 BASE_URL = "https://school.example.edu"
 OVERRIDE_BASE_URL = "https://override.example.edu"
+ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;]*m")
 
 USER = UserInfo(
     userid=7,
@@ -109,6 +111,10 @@ def run_main(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
         cli_module.main()
     captured = capsys.readouterr()
     return excinfo.value.code, captured.out, captured.err
+
+
+def normalize_terminal_text(text: str) -> str:
+    return " ".join(ANSI_ESCAPE_RE.sub("", text).split())
 
 
 @pytest.mark.parametrize("args", [["--help"], ["--version"]])
@@ -253,32 +259,7 @@ def test_env_base_url_overrides_config_file(monkeypatch: pytest.MonkeyPatch, run
     assert state["client_inits"] == [(OVERRIDE_BASE_URL, "session-cookie")]
 
 
-def test_first_run_prompt_retries_until_valid_url_is_confirmed(
-    monkeypatch: pytest.MonkeyPatch,
-    runner: CliRunner,
-    tmp_path: Path,
-) -> None:
-    monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(config_module, "CONFIG_DIR", str(tmp_path / ".config" / "moodle-cli"))
-    monkeypatch.setattr(config_module.click, "get_text_stream", lambda _name: FakeTTY())
-    monkeypatch.setattr(config_module, "_probe_base_url", lambda _base_url: (True, ""))
-    _, _ = patch_runtime(monkeypatch, patch_config=False)
-
-    result = runner.invoke(
-        cli_module.cli,
-        ["user", "--json"],
-        input="example.com\nhttps://school.example.edu/path\nhttps://school.example.edu\ny\n",
-    )
-
-    saved = tmp_path / ".config" / "moodle-cli" / "config.yaml"
-    assert result.exit_code == 0
-    assert "Invalid URL: Base URL must include the scheme" in result.stdout
-    assert "Invalid URL: Base URL must be the site root" in result.stdout
-    assert f"Saved base_url to {saved}" in result.stdout
-    assert yaml.safe_load(saved.read_text(encoding="utf-8")) == {"base_url": BASE_URL}
-
-
-def test_first_run_prompt_allows_explicit_override_after_probe_warning(
+def test_first_run_prompt_retries_until_valid_root_url_then_saves_config(
     monkeypatch: pytest.MonkeyPatch,
     runner: CliRunner,
     tmp_path: Path,
@@ -289,24 +270,83 @@ def test_first_run_prompt_allows_explicit_override_after_probe_warning(
     monkeypatch.setattr(
         config_module,
         "_probe_base_url",
-        lambda base_url: (False, f"{base_url} does not look like a Moodle site"),
+        lambda base_url: (
+            (False, f"{base_url} does not look like a Moodle site")
+            if base_url == BASE_URL
+            else (True, "")
+        ),
     )
-    _, state = patch_runtime(monkeypatch, patch_config=False)
+    _, _ = patch_runtime(monkeypatch, patch_config=False)
 
     result = runner.invoke(
         cli_module.cli,
         ["user", "--json"],
-        input="https://odd.example.edu\ny\ny\n",
+        input="example.com\nhttps://school.example.edu/path\nhttps://school.example.edu\nhttps://override.example.edu\n",
     )
 
     saved = tmp_path / ".config" / "moodle-cli" / "config.yaml"
     assert result.exit_code == 0
-    assert "Warning: https://odd.example.edu does not look like a Moodle site" in result.stdout
-    assert state["session_base_urls"] == ["https://odd.example.edu"]
-    assert yaml.safe_load(saved.read_text(encoding="utf-8")) == {"base_url": "https://odd.example.edu"}
+    assert "Configuration required" in result.stdout
+    assert "Moodle base URL is not configured yet." in result.stdout
+    assert "Required format: https://school.example.edu" in result.stdout
+    assert "Moodle base URL >" in result.stdout
+    assert "Invalid URL: Base URL must include the scheme" in result.stdout
+    assert "Invalid URL: Base URL must be the site root" in result.stdout
+    assert "Validation failed: https://school.example.edu does not look like a Moodle site" in result.stdout
+    assert f"Saved base_url to {saved}" in result.stdout
+    assert yaml.safe_load(saved.read_text(encoding="utf-8")) == {"base_url": OVERRIDE_BASE_URL}
 
 
-def test_main_reports_noninteractive_missing_base_url(
+def test_first_run_prompt_saves_to_existing_empty_config_file(
+    monkeypatch: pytest.MonkeyPatch,
+    runner: CliRunner,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "config.yaml").write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(config_module.click, "get_text_stream", lambda _name: FakeTTY())
+    monkeypatch.setattr(config_module, "_probe_base_url", lambda _base_url: (True, ""))
+    _, _ = patch_runtime(monkeypatch, patch_config=False)
+
+    result = runner.invoke(
+        cli_module.cli,
+        ["user", "--json"],
+        input="https://school.example.edu\n",
+    )
+
+    saved = tmp_path / "config.yaml"
+    assert result.exit_code == 0
+    assert "Moodle base URL >" in result.stdout
+    assert f"Saved base_url to {saved}" in result.stdout
+    assert yaml.safe_load(saved.read_text(encoding="utf-8")) == {"base_url": BASE_URL}
+
+
+def test_probe_base_url_accepts_moodle_token_endpoint() -> None:
+    class FakeResponse:
+        def __init__(self, url: str, status_code: int, headers: dict[str, str], text: str, history: list[object]) -> None:
+            self.url = url
+            self.status_code = status_code
+            self.headers = headers
+            self.text = text
+            self.history = history
+
+    response = FakeResponse(
+        "https://learning.monash.edu/login/token.php",
+        200,
+        {"content-type": "application/json; charset=utf-8"},
+        '{"error":"A required parameter (username) was missing","errorcode":"missingparam"}',
+        [],
+    )
+
+    original_get = config_module.requests.get
+    config_module.requests.get = lambda *_args, **_kwargs: response
+    try:
+        assert config_module._probe_base_url("https://learning.monash.edu") == (True, "")
+    finally:
+        config_module.requests.get = original_get
+
+
+def test_main_reports_missing_base_url_with_example_config_noninteractively(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
     tmp_path: Path,
@@ -317,10 +357,35 @@ def test_main_reports_noninteractive_missing_base_url(
 
     exit_code, stdout, stderr = run_main(monkeypatch, capsys, ["user"])
 
+    normalized_stderr = normalize_terminal_text(stderr)
     assert exit_code == 1
     assert stdout == ""
     assert "No base_url configured" in stderr
-    assert "non-interactively" in stderr
+    assert "Add base_url to" in stderr
+    assert ".config/moodle-cli" in stderr
+    assert "config.yaml or set MOODLE_BASE_URL." in normalized_stderr
+    assert "base_url: https://school.example.edu" in stderr
+    assert "Do not include paths like /login/index.php or /my/." in stderr
+
+
+def test_main_reports_missing_base_url_for_existing_empty_config_file_noninteractively(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "config.yaml").write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(config_module.click, "get_text_stream", lambda _name: FakePipe())
+
+    exit_code, stdout, stderr = run_main(monkeypatch, capsys, ["user"])
+
+    normalized_stderr = normalize_terminal_text(stderr)
+    assert exit_code == 1
+    assert stdout == ""
+    assert "Add base_url to" in stderr
+    assert ".config/moodle-cli" not in stderr
+    assert f"{tmp_path.name}/" in stderr
+    assert "config.yaml or set MOODLE_BASE_URL." in normalized_stderr
 
 
 def test_main_renders_auth_error_from_real_command(

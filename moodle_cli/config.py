@@ -1,4 +1,4 @@
-"""Config loading and first-run base URL setup."""
+"""Config loading and validation."""
 
 from pathlib import Path
 import os
@@ -10,8 +10,6 @@ import yaml
 
 from moodle_cli.constants import CONFIG_DIR, CONFIG_FILENAME, ENV_MOODLE_BASE_URL
 from moodle_cli.exceptions import MoodleCLIError
-
-CONFIG_PROMPT = "Enter your Moodle base URL"
 
 
 def _config_candidates() -> list[Path]:
@@ -47,6 +45,12 @@ def _save_config(path: Path, config: dict) -> None:
         yaml.safe_dump(config, f, sort_keys=True)
 
 
+def _load_existing_config() -> tuple[dict, Path | None]:
+    config_file = _find_config_file()
+    config = _read_config_file(config_file) if config_file else {}
+    return config, config_file
+
+
 def _validate_base_url(value: str) -> str:
     raw = value.strip()
     if not raw:
@@ -67,56 +71,77 @@ def _validate_base_url(value: str) -> str:
     return f"{parsed.scheme}://{parsed.netloc}".rstrip("/")
 
 
+def _missing_base_url_message(config_file: Path | None) -> str:
+    target_path = config_file or _default_config_path()
+    return "\n".join(
+        [
+            "No base_url configured.",
+            f"Add base_url to {target_path} or set MOODLE_BASE_URL.",
+            "Required format:",
+            "  base_url: https://school.example.edu",
+            "Use the site root only. Do not include paths like /login/index.php or /my/.",
+        ]
+    )
+
+
 def _probe_base_url(base_url: str) -> tuple[bool, str]:
-    """Check whether the configured URL looks reachable and likely Moodle."""
+    """Check whether the configured URL exposes a Moodle-specific endpoint."""
     try:
-        response = requests.get(f"{base_url}/login/index.php", timeout=10, allow_redirects=True)
+        response = requests.get(f"{base_url}/login/token.php", timeout=10, allow_redirects=True)
     except requests.RequestException as exc:
         return False, f"Could not reach {base_url}: {exc}"
 
     content_type = response.headers.get("content-type", "").lower()
     body = response.text[:5000].lower()
-    looks_html = "text/html" in content_type or "<html" in body
-    looks_moodle = "moodle" in body or "log in" in body or "/login/index.php" in body
+    looks_json = "application/json" in content_type or body.startswith("{")
+    looks_moodle_token_error = any(
+        marker in body
+        for marker in [
+            '"errorcode":"missingparam"',
+            '"errorcode":"invalidparameter"',
+            '"errorcode":"invalidlogin"',
+            "a required parameter (username) was missing",
+        ]
+    )
 
     if response.status_code >= 400:
         return False, f"{base_url} returned HTTP {response.status_code}"
-    if not looks_html:
-        return False, f"{base_url} did not return an HTML page"
-    if not looks_moodle:
-        return False, f"{base_url} does not look like a Moodle site"
+    if looks_json and looks_moodle_token_error:
+        return True, ""
 
-    return True, ""
+    return False, f"{base_url} does not expose the expected Moodle token endpoint"
 
 
 def _prompt_for_base_url() -> str:
-    click.echo("No Moodle base URL configured.")
-    click.echo("Example: https://school.example.edu")
+    click.secho("\nConfiguration required", fg="yellow", bold=True)
+    click.secho("Moodle base URL is not configured yet.", fg="yellow")
+    click.secho("Required format: https://school.example.edu", fg="cyan", bold=True)
+    click.echo("Use the site root only. Do not include paths like /login/index.php or /my/.")
+    click.echo()
 
     while True:
-        value = click.prompt(CONFIG_PROMPT, type=str)
         try:
-            base_url = _validate_base_url(value)
+            base_url = _validate_base_url(
+                click.prompt(
+                    click.style("Moodle base URL", fg="green", bold=True),
+                    prompt_suffix=click.style(" > ", fg="green", bold=True),
+                    type=str,
+                )
+            )
         except MoodleCLIError as exc:
-            click.echo(f"Invalid URL: {exc}")
+            click.secho(f"Invalid URL: {exc}", fg="red")
             continue
 
         looks_valid, message = _probe_base_url(base_url)
-        if not looks_valid:
-            click.echo(f"Warning: {message}")
-            if not click.confirm("Save this URL anyway?", default=False):
-                continue
-
-        if click.confirm(f"Use {base_url}?", default=True):
+        if looks_valid:
             return base_url
+
+        click.secho(f"Validation failed: {message}", fg="red")
 
 
 def load_config() -> dict:
-    """Load configuration, prompting once for base_url when needed."""
-    config: dict = {}
-    config_file = _find_config_file()
-    if config_file:
-        config = _read_config_file(config_file)
+    """Load configuration and require an explicit base_url."""
+    config, config_file = _load_existing_config()
 
     if env_url := os.environ.get(ENV_MOODLE_BASE_URL):
         config["base_url"] = _validate_base_url(env_url)
@@ -126,15 +151,11 @@ def load_config() -> dict:
         config["base_url"] = _validate_base_url(str(base_url))
         return config
 
-    if not click.get_text_stream("stdin").isatty():
-        raise MoodleCLIError(
-            "No base_url configured. Set MOODLE_BASE_URL or add base_url to config.yaml before running non-interactively."
-        )
+    if click.get_text_stream("stdin").isatty():
+        config["base_url"] = _prompt_for_base_url()
+        target_path = config_file or _default_config_path()
+        _save_config(target_path, config)
+        click.echo(f"Saved base_url to {target_path}")
+        return config
 
-    base_url = _prompt_for_base_url()
-    config["base_url"] = base_url
-
-    target_path = config_file or _default_config_path()
-    _save_config(target_path, config)
-    click.echo(f"Saved base_url to {target_path}")
-    return config
+    raise MoodleCLIError(_missing_base_url_message(config_file))

@@ -2,8 +2,6 @@
 
 Terminal-first CLI for Moodle LMS that reuses an authenticated browser session.
 
-Repository: <https://github.com/bunizao/moodle-cli>
-
 ## Features
 
 - No API token setup required
@@ -20,6 +18,18 @@ Repository: <https://github.com/bunizao/moodle-cli>
 ## Install
 
 ```bash
+# Recommended: uv tool
+uv tool install moodle-cli
+
+# Alternative: pipx
+pipx install moodle-cli
+```
+
+Install from source:
+
+```bash
+git clone https://github.com/bunizao/moodle-cli.git
+cd moodle-cli
 uv sync
 ```
 
@@ -34,21 +44,20 @@ uv run moodle activities 34637
 
 ## Configuration
 
-On first run, the CLI will ask for your Moodle base URL and save it to `config.yaml`.
-
-Safety checks during setup:
-
-- Requires a full root URL such as `https://school.example.edu`
-- Rejects paths, query strings, and fragments
-- Probes the site before saving
-- Requires explicit confirmation if the target does not look like Moodle
-
-If you prefer to configure it manually, create `config.yaml` in the project directory or in `~/.config/moodle-cli/`:
+On first run, if no `base_url` is configured, the CLI will prompt you and write it to `config.yaml` in the project directory or in `~/.config/moodle-cli/`:
 
 ```yaml
 base_url: https://school.example.edu
 ```
 
+Required format:
+
+- Use a full root URL such as `https://school.example.edu`
+- Do not include paths, query strings, or fragments
+- Do not use URLs like `/login/index.php` or `/my/`
+- The CLI validates the URL against Moodle's token endpoint and asks again if it does not look valid
+
+You can also set `MOODLE_BASE_URL` instead of using the interactive prompt.
 You can copy from `config.example.yaml`.
 
 Environment overrides:
@@ -62,12 +71,3 @@ Environment overrides:
 uv run python -m compileall moodle_cli
 uv build
 ```
-
-## CI
-
-GitHub Actions runs the following checks on pushes and pull requests:
-
-- Dependency lock sync with `uv`
-- Bytecode compilation
-- CLI smoke check
-- Package build
