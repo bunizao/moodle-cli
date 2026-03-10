@@ -2,6 +2,22 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Agent Flags
+
+```yaml
+agent_flags:
+  token_economy: prioritize
+  response_style: terse
+  planning_style: minimal
+```
+
+Interpret these as defaults:
+
+- Prefer the shortest sufficient response.
+- Avoid long preambles and repeated summaries.
+- Ask questions only when a wrong assumption is likely to be costly.
+- Make the smallest maintainable change that solves the task.
+
 ## Build & Run
 
 ```bash
