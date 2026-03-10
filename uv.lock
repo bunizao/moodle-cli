@@ -267,7 +267,7 @@ wheels = [
 
 [[package]]
 name = "moodle-cli"
-version = "0.1.0b0"
+version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "beautifulsoup4" },

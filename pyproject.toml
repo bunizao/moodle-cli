@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "moodle-cli"
-version = "0.1.0b0"
+version = "0.1.0"
 description = "Terminal-first CLI for Moodle LMS"
 requires-python = ">=3.10"
 readme = "README.md"
