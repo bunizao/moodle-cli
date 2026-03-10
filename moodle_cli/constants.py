@@ -1,5 +1,8 @@
 """Default values and API paths."""
 
+PACKAGE_NAME = "moodle-cli"
+PYPI_JSON_URL = f"https://pypi.org/pypi/{PACKAGE_NAME}/json"
+
 AJAX_SERVICE_PATH = "/lib/ajax/service.php"
 DASHBOARD_PATH = "/my/"
 COURSE_PATH = "/course/view.php"

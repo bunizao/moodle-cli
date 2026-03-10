@@ -15,6 +15,7 @@ import moodle_cli.cli as cli_module
 import moodle_cli.config as config_module
 from moodle_cli.exceptions import AuthError, MoodleAPIError, MoodleCLIError
 from moodle_cli.models import Activity, Course, Section, UserInfo
+from moodle_cli.update_check import UpdateInfo
 
 BASE_URL = "https://school.example.edu"
 OVERRIDE_BASE_URL = "https://override.example.edu"
@@ -130,6 +131,7 @@ def test_global_help_and_version_do_not_load_runtime(monkeypatch: pytest.MonkeyP
         assert "Terminal-first CLI for Moodle LMS." in result.stdout
         assert "activities" in result.stdout
         assert "courses" in result.stdout
+        assert "update" in result.stdout
     else:
         assert "version 0.1.0" in result.stdout
 
@@ -212,6 +214,107 @@ def test_json_takes_precedence_over_yaml(monkeypatch: pytest.MonkeyPatch, runner
 
     assert result.exit_code == 0
     assert json.loads(result.stdout) == USER.to_dict()
+
+
+@pytest.mark.parametrize(
+    ("args", "info", "loader", "expected", "texts"),
+    [
+        (
+            ["update"],
+            UpdateInfo(
+                package_name="moodle-cli",
+                current_version="0.1.0b0",
+                latest_version="0.1.0",
+                update_available=True,
+                upgrade_commands=["uv tool upgrade moodle-cli", "pipx upgrade moodle-cli"],
+                pypi_url="https://pypi.org/project/moodle-cli/",
+            ),
+            None,
+            None,
+            ["Update available:", "0.1.0", "installed: 0.1.0b0", "uv tool upgrade moodle-cli"],
+        ),
+        (
+            ["update", "--json"],
+            UpdateInfo(
+                package_name="moodle-cli",
+                current_version="0.1.0b0",
+                latest_version="0.1.0",
+                update_available=True,
+                upgrade_commands=["uv tool upgrade moodle-cli", "pipx upgrade moodle-cli"],
+                pypi_url="https://pypi.org/project/moodle-cli/",
+            ),
+            json.loads,
+            {
+                "package_name": "moodle-cli",
+                "current_version": "0.1.0b0",
+                "latest_version": "0.1.0",
+                "update_available": True,
+                "upgrade_commands": ["uv tool upgrade moodle-cli", "pipx upgrade moodle-cli"],
+                "pypi_url": "https://pypi.org/project/moodle-cli/",
+            },
+            None,
+        ),
+        (
+            ["update", "--yaml"],
+            UpdateInfo(
+                package_name="moodle-cli",
+                current_version="0.1.0b0",
+                latest_version="0.1.0",
+                update_available=True,
+                upgrade_commands=["uv tool upgrade moodle-cli", "pipx upgrade moodle-cli"],
+                pypi_url="https://pypi.org/project/moodle-cli/",
+            ),
+            yaml.safe_load,
+            {
+                "package_name": "moodle-cli",
+                "current_version": "0.1.0b0",
+                "latest_version": "0.1.0",
+                "update_available": True,
+                "upgrade_commands": ["uv tool upgrade moodle-cli", "pipx upgrade moodle-cli"],
+                "pypi_url": "https://pypi.org/project/moodle-cli/",
+            },
+            None,
+        ),
+        (
+            ["update"],
+            UpdateInfo(
+                package_name="moodle-cli",
+                current_version="0.1.0b0",
+                latest_version="0.1.0b0",
+                update_available=False,
+                upgrade_commands=["uv tool upgrade moodle-cli", "pipx upgrade moodle-cli"],
+                pypi_url="https://pypi.org/project/moodle-cli/",
+            ),
+            None,
+            None,
+            ["moodle-cli is up to date", "(0.1.0b0)"],
+        ),
+    ],
+)
+def test_update_outputs_without_loading_moodle_runtime(
+    monkeypatch: pytest.MonkeyPatch,
+    runner: CliRunner,
+    args: list[str],
+    info: UpdateInfo,
+    loader,
+    expected,
+    texts: list[str] | None,
+) -> None:
+    monkeypatch.setattr(cli_module, "load_config", lambda: pytest.fail("load_config should not run"))
+    monkeypatch.setattr(cli_module, "get_session", lambda _base_url: pytest.fail("get_session should not run"))
+    monkeypatch.setattr(cli_module, "MoodleClient", lambda *_args: pytest.fail("MoodleClient should not run"))
+    monkeypatch.setattr(cli_module, "check_for_updates", lambda: info)
+
+    result = runner.invoke(cli_module.cli, args)
+
+    assert result.exit_code == 0
+    assert "Checking for updates..." in normalize_terminal_text(result.stderr)
+    if loader is None:
+        assert texts is not None
+        for text in texts:
+            assert text in normalize_terminal_text(result.output)
+    else:
+        assert loader(result.stdout) == expected
 
 
 @pytest.mark.parametrize("command", ["activities", "course"])

@@ -16,6 +16,7 @@ dependencies = [
     "beautifulsoup4>=4.12",
     "browser-cookie3>=0.19",
     "click>=8.0",
+    "packaging>=24.0",
     "rich>=13.0",
     "PyYAML>=6.0",
     "requests>=2.28",

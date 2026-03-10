@@ -36,10 +36,19 @@ uv sync
 ## Usage
 
 ```bash
-uv run moodle --help
-uv run moodle user
-uv run moodle courses
-uv run moodle activities 34637
+moodle --help
+moodle user
+moodle courses
+moodle activities 34637
+moodle update
+```
+
+To upgrade after an update is available:
+
+```bash
+uv tool upgrade moodle-cli
+# or
+pipx upgrade moodle-cli
 ```
 
 ## Configuration

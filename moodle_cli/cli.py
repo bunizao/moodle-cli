@@ -13,8 +13,10 @@ from moodle_cli.config import load_config
 from moodle_cli.exceptions import AuthError, MoodleAPIError, MoodleCLIError
 from moodle_cli.formatter import print_courses, print_course_contents, print_user_info
 from moodle_cli.output import output_json, output_yaml
+from moodle_cli.update_check import check_for_updates
 
-console = Console(stderr=True)
+stdout_console = Console()
+stderr_console = Console(stderr=True)
 
 
 def _require_course_id(ctx: click.Context, course_id: int | None) -> int:
@@ -32,7 +34,7 @@ def _require_course_id(ctx: click.Context, course_id: int | None) -> int:
 
 def _print_loading(message: str) -> None:
     """Print a short loading hint to stderr for slow network calls."""
-    console.print(f"[dim]{message}[/]")
+    stderr_console.print(f"[dim]{message}[/]")
 
 
 @click.group()
@@ -46,15 +48,22 @@ def cli(ctx: click.Context, verbose: bool) -> None:
         format="%(name)s: %(message)s",
     )
 
-    config = load_config()
     ctx.ensure_object(dict)
-    ctx.obj["config"] = config
+    ctx.obj["_config"] = None
+
+    def get_config() -> dict:
+        if ctx.obj["_config"] is None:
+            ctx.obj["_config"] = load_config()
+        return ctx.obj["_config"]
+
+    ctx.obj["get_config"] = get_config
 
     # Lazy client creation; only authenticate when a command needs it.
     ctx.obj["_client"] = None
 
     def get_client() -> MoodleClient:
         if ctx.obj["_client"] is None:
+            config = get_config()
             session_cookie = get_session(config["base_url"])
             ctx.obj["_client"] = MoodleClient(config["base_url"], session_cookie)
         return ctx.obj["_client"]
@@ -95,6 +104,30 @@ def courses(ctx: click.Context, as_json: bool, as_yaml: bool) -> None:
         output_yaml([c.to_dict() for c in course_list])
     else:
         print_courses(course_list)
+
+
+@cli.command(name="update")
+@click.option("--json", "as_json", is_flag=True, help="Output as JSON.")
+@click.option("--yaml", "as_yaml", is_flag=True, help="Output as YAML.")
+def update(as_json: bool, as_yaml: bool) -> None:
+    """Check whether a newer moodle-cli version is available."""
+    _print_loading("Checking for updates...")
+    info = check_for_updates()
+
+    if as_json:
+        output_json(info.to_dict())
+    elif as_yaml:
+        output_yaml(info.to_dict())
+    elif info.update_available:
+        stdout_console.print(
+            f"[yellow]Update available:[/] {info.latest_version} "
+            f"(installed: {info.current_version})"
+        )
+        stdout_console.print("Upgrade with:")
+        for command in info.upgrade_commands:
+            stdout_console.print(f"  {command}")
+    else:
+        stdout_console.print(f"[green]{info.package_name} is up to date[/] ({info.current_version})")
 
 
 @cli.command()
@@ -149,15 +182,15 @@ def main() -> None:
         e.show()
         sys.exit(e.exit_code)
     except AuthError as e:
-        console.print(f"[bold red]Auth error:[/] {e}")
+        stderr_console.print(f"[bold red]Auth error:[/] {e}")
         sys.exit(1)
     except MoodleAPIError as e:
-        console.print(f"[bold red]API error:[/] {e}")
+        stderr_console.print(f"[bold red]API error:[/] {e}")
         if e.error_code:
-            console.print(f"  Error code: {e.error_code}")
+            stderr_console.print(f"  Error code: {e.error_code}")
         sys.exit(1)
     except MoodleCLIError as e:
-        console.print(f"[bold red]Error:[/] {e}")
+        stderr_console.print(f"[bold red]Error:[/] {e}")
         sys.exit(1)
 
 
