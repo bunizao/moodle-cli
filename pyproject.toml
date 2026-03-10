@@ -29,5 +29,10 @@ Homepage = "https://github.com/bunizao/moodle-cli"
 Repository = "https://github.com/bunizao/moodle-cli"
 Issues = "https://github.com/bunizao/moodle-cli/issues"
 
+[dependency-groups]
+dev = [
+    "pytest>=8.3.4",
+]
+
 [tool.hatch.build.targets.wheel]
 packages = ["moodle_cli"]
