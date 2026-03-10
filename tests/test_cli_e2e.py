@@ -222,6 +222,8 @@ def test_course_commands_require_course_id(monkeypatch: pytest.MonkeyPatch, runn
 
     assert result.exit_code == 2
     assert "Missing argument 'COURSE_ID'" in result.output
+    assert "Run 'moodle courses' to list available course IDs" in result.output
+    assert f"then retry with 'moodle {command} COURSE_ID'" in result.output
 
 
 @pytest.mark.parametrize("command", ["activities", "course"])
@@ -241,6 +243,28 @@ def test_unknown_command_shows_click_error(monkeypatch: pytest.MonkeyPatch, runn
 
     assert result.exit_code == 2
     assert "No such command 'unknown'" in result.output
+
+
+@pytest.mark.parametrize(
+    ("args", "expected_stderr"),
+    [
+        (["courses"], "Loading courses..."),
+        (["activities", "42"], "Loading activities for course 42..."),
+        (["course", "42"], "Loading course 42..."),
+    ],
+)
+def test_slow_commands_print_loading_hint(
+    monkeypatch: pytest.MonkeyPatch,
+    runner: CliRunner,
+    args: list[str],
+    expected_stderr: str,
+) -> None:
+    _, _ = patch_runtime(monkeypatch)
+
+    result = runner.invoke(cli_module.cli, args)
+
+    assert result.exit_code == 0
+    assert expected_stderr in normalize_terminal_text(result.stderr)
 
 
 def test_env_base_url_overrides_config_file(monkeypatch: pytest.MonkeyPatch, runner: CliRunner, tmp_path: Path) -> None:

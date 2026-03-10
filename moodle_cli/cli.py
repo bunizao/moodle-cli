@@ -17,6 +17,24 @@ from moodle_cli.output import output_json, output_yaml
 console = Console(stderr=True)
 
 
+def _require_course_id(ctx: click.Context, course_id: int | None) -> int:
+    """Validate a required course ID and show a helpful next step."""
+    if course_id is not None:
+        return course_id
+
+    command_name = ctx.info_name or "course"
+    raise click.UsageError(
+        "Missing argument 'COURSE_ID'. Run 'moodle courses' to list available course IDs, "
+        f"then retry with 'moodle {command_name} COURSE_ID'.",
+        ctx=ctx,
+    )
+
+
+def _print_loading(message: str) -> None:
+    """Print a short loading hint to stderr for slow network calls."""
+    console.print(f"[dim]{message}[/]")
+
+
 @click.group()
 @click.option("-v", "--verbose", is_flag=True, help="Enable debug logging.")
 @click.version_option(version=__version__)
@@ -67,6 +85,7 @@ def user(ctx: click.Context, as_json: bool, as_yaml: bool) -> None:
 @click.pass_context
 def courses(ctx: click.Context, as_json: bool, as_yaml: bool) -> None:
     """List enrolled courses."""
+    _print_loading("Loading courses...")
     client = ctx.obj["get_client"]()
     course_list = client.get_courses()
 
@@ -79,12 +98,14 @@ def courses(ctx: click.Context, as_json: bool, as_yaml: bool) -> None:
 
 
 @cli.command()
-@click.argument("course_id", type=int)
+@click.argument("course_id", type=int, required=False)
 @click.option("--json", "as_json", is_flag=True, help="Output as JSON.")
 @click.option("--yaml", "as_yaml", is_flag=True, help="Output as YAML.")
 @click.pass_context
-def activities(ctx: click.Context, course_id: int, as_json: bool, as_yaml: bool) -> None:
+def activities(ctx: click.Context, course_id: int | None, as_json: bool, as_yaml: bool) -> None:
     """List activities in a course (sections and modules)."""
+    course_id = _require_course_id(ctx, course_id)
+    _print_loading(f"Loading activities for course {course_id}...")
     client = ctx.obj["get_client"]()
     sections = client.get_course_contents(course_id)
 
@@ -97,12 +118,14 @@ def activities(ctx: click.Context, course_id: int, as_json: bool, as_yaml: bool)
 
 
 @cli.command()
-@click.argument("course_id", type=int)
+@click.argument("course_id", type=int, required=False)
 @click.option("--json", "as_json", is_flag=True, help="Output as JSON.")
 @click.option("--yaml", "as_yaml", is_flag=True, help="Output as YAML.")
 @click.pass_context
-def course(ctx: click.Context, course_id: int, as_json: bool, as_yaml: bool) -> None:
+def course(ctx: click.Context, course_id: int | None, as_json: bool, as_yaml: bool) -> None:
     """Show course detail with sections."""
+    course_id = _require_course_id(ctx, course_id)
+    _print_loading(f"Loading course {course_id}...")
     client = ctx.obj["get_client"]()
     sections = client.get_course_contents(course_id)
 
