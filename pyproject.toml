@@ -1,0 +1,33 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "moodle-cli"
+version = "0.1.0"
+description = "Terminal-first CLI for Moodle LMS"
+requires-python = ">=3.10"
+readme = "README.md"
+license = { file = "LICENSE" }
+authors = [
+    { name = "bunizao" },
+]
+dependencies = [
+    "beautifulsoup4>=4.12",
+    "browser-cookie3>=0.19",
+    "click>=8.0",
+    "rich>=13.0",
+    "PyYAML>=6.0",
+    "requests>=2.28",
+]
+
+[project.scripts]
+moodle = "moodle_cli.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/bunizao/moodle-cli"
+Repository = "https://github.com/bunizao/moodle-cli"
+Issues = "https://github.com/bunizao/moodle-cli/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["moodle_cli"]
