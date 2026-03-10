@@ -1,7 +1,5 @@
 """Default values and API paths."""
 
-DEFAULT_BASE_URL = "https://learning.monash.edu"
-
 AJAX_SERVICE_PATH = "/lib/ajax/service.php"
 DASHBOARD_PATH = "/my/"
 COURSE_PATH = "/course/view.php"

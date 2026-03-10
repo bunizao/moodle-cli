@@ -34,11 +34,22 @@ uv run moodle activities 34637
 
 ## Configuration
 
-Create `config.yaml` in the project directory or in `~/.config/moodle-cli/`:
+On first run, the CLI will ask for your Moodle base URL and save it to `config.yaml`.
+
+Safety checks during setup:
+
+- Requires a full root URL such as `https://school.example.edu`
+- Rejects paths, query strings, and fragments
+- Probes the site before saving
+- Requires explicit confirmation if the target does not look like Moodle
+
+If you prefer to configure it manually, create `config.yaml` in the project directory or in `~/.config/moodle-cli/`:
 
 ```yaml
-base_url: https://learning.monash.edu
+base_url: https://school.example.edu
 ```
+
+You can copy from `config.example.yaml`.
 
 Environment overrides:
 

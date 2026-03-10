@@ -20,7 +20,7 @@ Terminal CLI for Moodle LMS that piggybacks on the user's browser session — no
 
 ### API Strategy
 
-Uses Moodle's **internal AJAX endpoint** (`/lib/ajax/service.php`), not the official Web Services token API. This endpoint accepts the `MoodleSession` browser cookie, same as the Moodle web UI. The `sesskey` (CSRF token) is obtained from `core_webservice_get_site_info` on first call, then reused.
+Uses Moodle's **internal AJAX endpoint** (`/lib/ajax/service.php`), not the official Web Services token API. This endpoint accepts the `MoodleSession` browser cookie, same as the Moodle web UI. The client first loads an authenticated page to resolve `sesskey`, then tries AJAX APIs and falls back to page scraping when site-specific Moodle restrictions disable some services.
 
 Request format: `POST /lib/ajax/service.php?sesskey={sesskey}&info={function_name}` with JSON body `[{"index": 0, "methodname": "...", "args": {...}}]`. Response: `[{"error": false, "data": ...}]`.
 
@@ -40,8 +40,8 @@ auth.py (get cookie) → client.py (API calls) → parser.py (JSON→models) →
 - **parser.py**: Pure functions transforming Moodle JSON dicts → model instances.
 - **formatter.py**: Rich tables (courses) and trees (course sections→activities).
 - **output.py**: `--json`/`--yaml` structured output to stdout.
-- **config.py**: Loads `config.yaml` from CWD or `~/.config/moodle-cli/`. `MOODLE_BASE_URL` env var overrides.
-- **constants.py**: API paths, function names, env var names, default base URL (`learning.monash.edu`).
+- **config.py**: Loads `config.yaml` from CWD or `~/.config/moodle-cli/`. If no `base_url` is configured, it prompts the user, validates the root URL, probes the site, and saves the result. `MOODLE_BASE_URL` env var overrides.
+- **constants.py**: API paths, function names, env var names.
 
 ### Adding a New Command
 
