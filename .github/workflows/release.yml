@@ -53,7 +53,8 @@ jobs:
       - name: Resolve release notes file
         id: notes
         run: |
-          notes_file="RELEASE_NOTES_${GITHUB_REF_NAME}.md"
+          version_tag="${GITHUB_REF_NAME#v}"
+          notes_file=".github/release-notes/${version_tag}.md"
           if [ -f "${notes_file}" ]; then
             echo "has_manual_notes=true" >> "$GITHUB_OUTPUT"
             echo "notes_file=${notes_file}" >> "$GITHUB_OUTPUT"
