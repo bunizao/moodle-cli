@@ -287,7 +287,7 @@ def test_global_help_and_version_do_not_load_runtime(monkeypatch: pytest.MonkeyP
         assert "todo" in result.stdout
         assert "update" in result.stdout
     else:
-        assert "version 0.2.0" in result.stdout
+        assert "version 0.2.1" in result.stdout
 
 
 @pytest.mark.parametrize(
@@ -407,22 +407,22 @@ def test_json_takes_precedence_over_yaml(monkeypatch: pytest.MonkeyPatch, runner
             ["update"],
             UpdateInfo(
                 package_name="moodle-cli",
-                current_version="0.2.0",
-                latest_version="0.2.1",
+                current_version="0.2.1",
+                latest_version="0.2.2",
                 update_available=True,
                 upgrade_commands=["uv tool upgrade moodle-cli", "pipx upgrade moodle-cli"],
                 pypi_url="https://pypi.org/project/moodle-cli/",
             ),
             None,
             None,
-            ["Update available:", "0.2.1", "installed: 0.2.0", "uv tool upgrade moodle-cli"],
+            ["Update available:", "0.2.2", "installed: 0.2.1", "uv tool upgrade moodle-cli"],
         ),
         (
             ["update", "--json"],
             UpdateInfo(
                 package_name="moodle-cli",
-                current_version="0.2.0",
-                latest_version="0.2.1",
+                current_version="0.2.1",
+                latest_version="0.2.2",
                 update_available=True,
                 upgrade_commands=["uv tool upgrade moodle-cli", "pipx upgrade moodle-cli"],
                 pypi_url="https://pypi.org/project/moodle-cli/",
@@ -430,8 +430,8 @@ def test_json_takes_precedence_over_yaml(monkeypatch: pytest.MonkeyPatch, runner
             json.loads,
             {
                 "package_name": "moodle-cli",
-                "current_version": "0.2.0",
-                "latest_version": "0.2.1",
+                "current_version": "0.2.1",
+                "latest_version": "0.2.2",
                 "update_available": True,
                 "upgrade_commands": ["uv tool upgrade moodle-cli", "pipx upgrade moodle-cli"],
                 "pypi_url": "https://pypi.org/project/moodle-cli/",
@@ -442,8 +442,8 @@ def test_json_takes_precedence_over_yaml(monkeypatch: pytest.MonkeyPatch, runner
             ["update", "--yaml"],
             UpdateInfo(
                 package_name="moodle-cli",
-                current_version="0.2.0",
-                latest_version="0.2.1",
+                current_version="0.2.1",
+                latest_version="0.2.2",
                 update_available=True,
                 upgrade_commands=["uv tool upgrade moodle-cli", "pipx upgrade moodle-cli"],
                 pypi_url="https://pypi.org/project/moodle-cli/",
@@ -451,8 +451,8 @@ def test_json_takes_precedence_over_yaml(monkeypatch: pytest.MonkeyPatch, runner
             yaml.safe_load,
             {
                 "package_name": "moodle-cli",
-                "current_version": "0.2.0",
-                "latest_version": "0.2.1",
+                "current_version": "0.2.1",
+                "latest_version": "0.2.2",
                 "update_available": True,
                 "upgrade_commands": ["uv tool upgrade moodle-cli", "pipx upgrade moodle-cli"],
                 "pypi_url": "https://pypi.org/project/moodle-cli/",
@@ -463,15 +463,15 @@ def test_json_takes_precedence_over_yaml(monkeypatch: pytest.MonkeyPatch, runner
             ["update"],
             UpdateInfo(
                 package_name="moodle-cli",
-                current_version="0.2.0",
-                latest_version="0.2.0",
+                current_version="0.2.1",
+                latest_version="0.2.1",
                 update_available=False,
                 upgrade_commands=["uv tool upgrade moodle-cli", "pipx upgrade moodle-cli"],
                 pypi_url="https://pypi.org/project/moodle-cli/",
             ),
             None,
             None,
-            ["moodle-cli is up to date", "(0.2.0)"],
+            ["moodle-cli is up to date", "(0.2.1)"],
         ),
     ],
 )
@@ -511,7 +511,7 @@ def test_json_output_is_compact_and_prunes_empty_values(monkeypatch: pytest.Monk
     payload = json.loads(result.stdout)
     assert payload == expected_json(OVERVIEW.to_dict())
     assert '"errors"' not in result.stdout
-    assert '"lang"' not in result.stdout
+    assert '"description"' not in result.stdout
 
 
 @pytest.mark.parametrize("command", ["activities", "course", "grades"])
