@@ -2,6 +2,8 @@
 
 import logging
 import sys
+import webbrowser
+from urllib.parse import urljoin
 
 import click
 from rich.console import Console
@@ -10,6 +12,7 @@ from moodle_cli import __version__
 from moodle_cli.auth import get_session
 from moodle_cli.client import MoodleClient
 from moodle_cli.config import load_config
+from moodle_cli.constants import LOGIN_PATH
 from moodle_cli.exceptions import AuthError, MoodleAPIError, MoodleCLIError
 from moodle_cli.formatter import print_courses, print_course_contents, print_user_info
 from moodle_cli.output import output_json, output_yaml
@@ -35,6 +38,16 @@ def _require_course_id(ctx: click.Context, course_id: int | None) -> int:
 def _print_loading(message: str) -> None:
     """Print a short loading hint to stderr for slow network calls."""
     stderr_console.print(f"[dim]{message}[/]")
+
+
+def _login_url(base_url: str) -> str:
+    """Build the Moodle login URL from the configured site root."""
+    return urljoin(f"{base_url.rstrip('/')}/", LOGIN_PATH.lstrip("/"))
+
+
+def _open_login_page(base_url: str) -> bool:
+    """Try to open the Moodle login page in the user's browser."""
+    return bool(webbrowser.open(_login_url(base_url)))
 
 
 @click.group()
@@ -183,6 +196,18 @@ def main() -> None:
         sys.exit(e.exit_code)
     except AuthError as e:
         stderr_console.print(f"[bold red]Auth error:[/] {e}")
+        try:
+            base_url = load_config()["base_url"]
+        except (MoodleCLIError, click.ClickException):
+            base_url = None
+
+        if base_url:
+            login_url = _login_url(base_url)
+            if _open_login_page(base_url):
+                stderr_console.print(f"Opened browser login page: {login_url}")
+            else:
+                stderr_console.print(f"Open this login page in your browser: {login_url}")
+            stderr_console.print("Log in there, then rerun the command.")
         sys.exit(1)
     except MoodleAPIError as e:
         stderr_console.print(f"[bold red]API error:[/] {e}")

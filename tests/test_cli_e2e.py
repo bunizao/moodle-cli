@@ -4,6 +4,7 @@ import json
 import logging
 import re
 import sys
+import webbrowser
 from pathlib import Path
 
 import click
@@ -133,7 +134,7 @@ def test_global_help_and_version_do_not_load_runtime(monkeypatch: pytest.MonkeyP
         assert "courses" in result.stdout
         assert "update" in result.stdout
     else:
-        assert "version 0.1.0" in result.stdout
+        assert "version 0.1.1" in result.stdout
 
 
 @pytest.mark.parametrize(
@@ -223,22 +224,22 @@ def test_json_takes_precedence_over_yaml(monkeypatch: pytest.MonkeyPatch, runner
             ["update"],
             UpdateInfo(
                 package_name="moodle-cli",
-                current_version="0.1.0",
-                latest_version="0.1.1",
+                current_version="0.1.1",
+                latest_version="0.1.2",
                 update_available=True,
                 upgrade_commands=["uv tool upgrade moodle-cli", "pipx upgrade moodle-cli"],
                 pypi_url="https://pypi.org/project/moodle-cli/",
             ),
             None,
             None,
-            ["Update available:", "0.1.1", "installed: 0.1.0", "uv tool upgrade moodle-cli"],
+            ["Update available:", "0.1.2", "installed: 0.1.1", "uv tool upgrade moodle-cli"],
         ),
         (
             ["update", "--json"],
             UpdateInfo(
                 package_name="moodle-cli",
-                current_version="0.1.0",
-                latest_version="0.1.1",
+                current_version="0.1.1",
+                latest_version="0.1.2",
                 update_available=True,
                 upgrade_commands=["uv tool upgrade moodle-cli", "pipx upgrade moodle-cli"],
                 pypi_url="https://pypi.org/project/moodle-cli/",
@@ -246,8 +247,8 @@ def test_json_takes_precedence_over_yaml(monkeypatch: pytest.MonkeyPatch, runner
             json.loads,
             {
                 "package_name": "moodle-cli",
-                "current_version": "0.1.0",
-                "latest_version": "0.1.1",
+                "current_version": "0.1.1",
+                "latest_version": "0.1.2",
                 "update_available": True,
                 "upgrade_commands": ["uv tool upgrade moodle-cli", "pipx upgrade moodle-cli"],
                 "pypi_url": "https://pypi.org/project/moodle-cli/",
@@ -258,8 +259,8 @@ def test_json_takes_precedence_over_yaml(monkeypatch: pytest.MonkeyPatch, runner
             ["update", "--yaml"],
             UpdateInfo(
                 package_name="moodle-cli",
-                current_version="0.1.0",
-                latest_version="0.1.1",
+                current_version="0.1.1",
+                latest_version="0.1.2",
                 update_available=True,
                 upgrade_commands=["uv tool upgrade moodle-cli", "pipx upgrade moodle-cli"],
                 pypi_url="https://pypi.org/project/moodle-cli/",
@@ -267,8 +268,8 @@ def test_json_takes_precedence_over_yaml(monkeypatch: pytest.MonkeyPatch, runner
             yaml.safe_load,
             {
                 "package_name": "moodle-cli",
-                "current_version": "0.1.0",
-                "latest_version": "0.1.1",
+                "current_version": "0.1.1",
+                "latest_version": "0.1.2",
                 "update_available": True,
                 "upgrade_commands": ["uv tool upgrade moodle-cli", "pipx upgrade moodle-cli"],
                 "pypi_url": "https://pypi.org/project/moodle-cli/",
@@ -279,15 +280,15 @@ def test_json_takes_precedence_over_yaml(monkeypatch: pytest.MonkeyPatch, runner
             ["update"],
             UpdateInfo(
                 package_name="moodle-cli",
-                current_version="0.1.0",
-                latest_version="0.1.0",
+                current_version="0.1.1",
+                latest_version="0.1.1",
                 update_available=False,
                 upgrade_commands=["uv tool upgrade moodle-cli", "pipx upgrade moodle-cli"],
                 pypi_url="https://pypi.org/project/moodle-cli/",
             ),
             None,
             None,
-            ["moodle-cli is up to date", "(0.1.0)"],
+            ["moodle-cli is up to date", "(0.1.1)"],
         ),
     ],
 )
@@ -521,12 +522,45 @@ def test_main_renders_auth_error_from_real_command(
 ) -> None:
     monkeypatch.setattr(cli_module, "load_config", lambda: {"base_url": BASE_URL})
     monkeypatch.setattr(cli_module, "get_session", lambda _base_url: (_ for _ in ()).throw(AuthError("missing session")))
+    opened_urls: list[str] = []
+
+    def fake_open(url: str) -> bool:
+        opened_urls.append(url)
+        return True
+
+    monkeypatch.setattr(webbrowser, "open", fake_open)
 
     exit_code, stdout, stderr = run_main(monkeypatch, capsys, ["user"])
 
     assert exit_code == 1
     assert stdout == ""
     assert "Auth error: missing session" in stderr
+    assert f"Opened browser login page: {BASE_URL}/login/index.php" in stderr
+    assert "Log in there, then rerun the command." in stderr
+    assert opened_urls == [f"{BASE_URL}/login/index.php"]
+
+
+def test_main_prints_login_url_when_browser_cannot_open(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(cli_module, "load_config", lambda: {"base_url": BASE_URL})
+    monkeypatch.setattr(cli_module, "get_session", lambda _base_url: (_ for _ in ()).throw(AuthError("missing session")))
+    opened_urls: list[str] = []
+
+    def fake_open(url: str) -> bool:
+        opened_urls.append(url)
+        return False
+
+    monkeypatch.setattr(webbrowser, "open", fake_open)
+
+    exit_code, stdout, stderr = run_main(monkeypatch, capsys, ["courses"])
+
+    assert exit_code == 1
+    assert stdout == ""
+    assert f"Open this login page in your browser: {BASE_URL}/login/index.php" in stderr
+    assert "Log in there, then rerun the command." in stderr
+    assert opened_urls == [f"{BASE_URL}/login/index.php"]
 
 
 def test_main_renders_api_error_from_real_command(
