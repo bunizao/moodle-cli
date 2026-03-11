@@ -50,7 +50,28 @@ jobs:
       - name: Build package
         run: uv build
 
-      - name: Publish GitHub release
+      - name: Resolve release notes file
+        id: notes
+        run: |
+          notes_file="RELEASE_NOTES_${GITHUB_REF_NAME}.md"
+          if [ -f "${notes_file}" ]; then
+            echo "has_manual_notes=true" >> "$GITHUB_OUTPUT"
+            echo "notes_file=${notes_file}" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_manual_notes=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Publish GitHub release with manual notes
+        if: steps.notes.outputs.has_manual_notes == 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          body_path: ${{ steps.notes.outputs.notes_file }}
+          files: |
+            dist/*.tar.gz
+            dist/*.whl
+
+      - name: Publish GitHub release with generated notes
+        if: steps.notes.outputs.has_manual_notes != 'true'
         uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: true
