@@ -66,6 +66,42 @@ class Activity:
 
 
 @dataclass
+class TodoItem:
+    id: int
+    name: str
+    activity_name: str
+    modname: str
+    course_id: int
+    course_name: str
+    due_at: int
+    overdue: bool = False
+    actionable: bool = False
+    action_name: str = ""
+    action_url: str = ""
+    url: str = ""
+    event_type: str = ""
+    course_progress: int | None = None
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "name": self.name,
+            "activity_name": self.activity_name,
+            "modname": self.modname,
+            "course_id": self.course_id,
+            "course_name": self.course_name,
+            "due_at": self.due_at,
+            "overdue": self.overdue,
+            "actionable": self.actionable,
+            "action_name": self.action_name,
+            "action_url": self.action_url,
+            "url": self.url,
+            "event_type": self.event_type,
+            "course_progress": self.course_progress,
+        }
+
+
+@dataclass
 class Section:
     id: int
     name: str

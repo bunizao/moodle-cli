@@ -1,6 +1,7 @@
 """Moodle client using authenticated page scraping and AJAX fallbacks."""
 
 import logging
+import time
 
 import requests
 
@@ -8,14 +9,15 @@ from moodle_cli.constants import (
     AJAX_SERVICE_PATH,
     COURSE_PATH,
     DASHBOARD_PATH,
+    FUNC_GET_ACTION_EVENTS,
     FUNC_GET_COURSES,
     FUNC_GET_COURSES_BY_TIMELINE,
     FUNC_GET_COURSE_CONTENTS,
     FUNC_GET_SITE_INFO,
 )
 from moodle_cli.exceptions import AuthError, MoodleAPIError
-from moodle_cli.models import Course, Section, UserInfo
-from moodle_cli.parser import parse_courses, parse_user_info
+from moodle_cli.models import Course, Section, TodoItem, UserInfo
+from moodle_cli.parser import parse_courses, parse_todo_items, parse_user_info
 from moodle_cli.scraper import parse_course_contents_html, parse_course_section_numbers, parse_page_context
 
 log = logging.getLogger(__name__)
@@ -155,6 +157,31 @@ class MoodleClient:
         response = self._get(COURSE_PATH, {"id": course_id})
         sections = self._scrape_course_contents(course_id, response.text)
         return sections
+
+    def get_todo(self, limit: int = 20, days: int | None = None) -> list[TodoItem]:
+        """Get upcoming action events from the Moodle timeline."""
+        self._ensure_session()
+
+        now = int(time.time())
+        timesort_to = now + days * 24 * 60 * 60 if days is not None else 0
+        data = self._call(
+            FUNC_GET_ACTION_EVENTS,
+            {
+                "limitnum": limit,
+                "timesortfrom": now,
+                "timesortto": timesort_to,
+                "aftereventid": 0,
+                "limittononsuspendedevents": True,
+            },
+        )
+        if not isinstance(data, dict):
+            return []
+
+        events = data.get("events", [])
+        if not isinstance(events, list):
+            return []
+
+        return parse_todo_items(events)
 
     def _get_courses_timeline(self) -> list[Course]:
         """Get enrolled courses from the dashboard timeline API."""

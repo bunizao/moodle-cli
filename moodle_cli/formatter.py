@@ -1,11 +1,13 @@
 """Rich terminal output: tables and trees for Moodle data."""
 
+from datetime import datetime
+
 from rich.console import Console
 from rich.table import Table
-from rich.tree import Tree
 from rich.text import Text
+from rich.tree import Tree
 
-from moodle_cli.models import Course, Section, UserInfo
+from moodle_cli.models import Course, Section, TodoItem, UserInfo
 
 console = Console()
 
@@ -67,6 +69,36 @@ def print_course_contents(sections: list[Section], course_label: str = "Course")
     console.print(tree)
 
 
+def print_todo_items(items: list[TodoItem]) -> None:
+    """Display upcoming Moodle action events as a table."""
+    table = Table(title="Todo")
+    table.add_column("Due", style="cyan")
+    table.add_column("Course", style="bold")
+    table.add_column("Activity")
+    table.add_column("Type", style="dim")
+    table.add_column("Action", style="green")
+
+    if not items:
+        table.add_row("No upcoming items", "", "", "", "")
+        console.print(table)
+        return
+
+    for item in items:
+        due = _format_timestamp(item.due_at)
+        if item.overdue:
+            due = f"[red]{due}[/]"
+
+        course_name = item.course_name
+        if item.course_progress is not None:
+            course_name = f"{course_name} ({item.course_progress}%)"
+
+        activity_name = item.activity_name or item.name
+        action = item.action_name if item.actionable else ""
+        table.add_row(due, course_name, activity_name, item.modname or item.event_type, action)
+
+    console.print(table)
+
+
 def _activity_icon(modname: str) -> str:
     """Map Moodle module types to terminal-friendly icons."""
     icons = {
@@ -88,3 +120,9 @@ def _activity_icon(modname: str) -> str:
         "lti": "[yellow]E[/]",
     }
     return icons.get(modname, "[dim]·[/]")
+
+
+def _format_timestamp(value: int) -> str:
+    if value <= 0:
+        return "-"
+    return datetime.fromtimestamp(value).strftime("%Y-%m-%d %H:%M")

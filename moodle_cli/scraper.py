@@ -34,7 +34,7 @@ def parse_page_context(html: str, base_url: str) -> PageContext:
     fallback_lang = soup.html.get("lang", "") if soup.html else ""
     lang = str(config.get("language") or fallback_lang)
 
-    if not sesskey or not user_id or not fullname:
+    if not sesskey or not user_id:
         raise AuthError("Session appears invalid — could not load authenticated Moodle context")
 
     return PageContext(

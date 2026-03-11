@@ -13,6 +13,7 @@ FUNC_GET_SITE_INFO = "core_webservice_get_site_info"
 FUNC_GET_COURSES = "core_enrol_get_users_courses"
 FUNC_GET_COURSES_BY_TIMELINE = "core_course_get_enrolled_courses_by_timeline_classification"
 FUNC_GET_COURSE_CONTENTS = "core_course_get_contents"
+FUNC_GET_ACTION_EVENTS = "core_calendar_get_action_events_by_timesort"
 
 # Config file locations (checked in order)
 CONFIG_FILENAME = "config.yaml"

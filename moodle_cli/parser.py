@@ -1,6 +1,6 @@
 """Parse raw Moodle JSON responses into typed models."""
 
-from moodle_cli.models import Activity, Course, Section, UserInfo
+from moodle_cli.models import Activity, Course, Section, TodoItem, UserInfo
 
 
 def parse_user_info(data: dict) -> UserInfo:
@@ -55,3 +55,30 @@ def parse_section(data: dict) -> Section:
 
 def parse_course_contents(data: list[dict]) -> list[Section]:
     return [parse_section(s) for s in data]
+
+
+def parse_todo_item(data: dict) -> TodoItem:
+    course = data.get("course", {})
+    action = data.get("action", {})
+    progress = course.get("progress")
+
+    return TodoItem(
+        id=data["id"],
+        name=data.get("name", ""),
+        activity_name=data.get("activityname", ""),
+        modname=data.get("modulename", ""),
+        course_id=course.get("id", 0),
+        course_name=course.get("fullname", ""),
+        due_at=data.get("timesort") or data.get("timestart") or 0,
+        overdue=bool(data.get("overdue", False)),
+        actionable=bool(action.get("actionable", False)),
+        action_name=action.get("name", ""),
+        action_url=action.get("url", ""),
+        url=data.get("url", ""),
+        event_type=data.get("eventtype", ""),
+        course_progress=progress if isinstance(progress, int) else None,
+    )
+
+
+def parse_todo_items(data: list[dict]) -> list[TodoItem]:
+    return [parse_todo_item(item) for item in data]

@@ -14,8 +14,9 @@ from click.testing import CliRunner
 
 import moodle_cli.cli as cli_module
 import moodle_cli.config as config_module
+import moodle_cli.scraper as scraper_module
 from moodle_cli.exceptions import AuthError, MoodleAPIError, MoodleCLIError
-from moodle_cli.models import Activity, Course, Section, UserInfo
+from moodle_cli.models import Activity, Course, Section, TodoItem, UserInfo
 from moodle_cli.update_check import UpdateInfo
 
 BASE_URL = "https://school.example.edu"
@@ -46,11 +47,44 @@ SECTIONS = [
     ),
     Section(id=12, name="Week 2", section=2, visible=False, activities=[]),
 ]
+TODO_ITEMS = [
+    TodoItem(
+        id=301,
+        name="Quiz 1 is due",
+        activity_name="Quiz 1",
+        modname="quiz",
+        course_id=101,
+        course_name="Mathematics 101",
+        due_at=1760000000,
+        actionable=True,
+        action_name="Attempt quiz",
+        action_url="https://school.example.edu/mod/quiz/view.php?id=301",
+        url="https://school.example.edu/mod/quiz/view.php?id=301",
+        event_type="due",
+        course_progress=42,
+    ),
+    TodoItem(
+        id=302,
+        name="Essay is due",
+        activity_name="Essay",
+        modname="assign",
+        course_id=202,
+        course_name="History 202",
+        due_at=1760500000,
+        actionable=True,
+        action_name="Add submission",
+        action_url="https://school.example.edu/mod/assign/view.php?id=302&action=editsubmission",
+        url="https://school.example.edu/mod/assign/view.php?id=302",
+        event_type="due",
+        course_progress=10,
+    ),
+]
 
 
 class FakeClient:
     def __init__(self) -> None:
         self.course_ids: list[int] = []
+        self.todo_calls: list[tuple[int, int | None]] = []
 
     def get_site_info(self) -> UserInfo:
         return USER
@@ -61,6 +95,10 @@ class FakeClient:
     def get_course_contents(self, course_id: int) -> list[Section]:
         self.course_ids.append(course_id)
         return SECTIONS
+
+    def get_todo(self, limit: int = 20, days: int | None = None) -> list[TodoItem]:
+        self.todo_calls.append((limit, days))
+        return TODO_ITEMS
 
 
 class FakeTTY:
@@ -132,6 +170,7 @@ def test_global_help_and_version_do_not_load_runtime(monkeypatch: pytest.MonkeyP
         assert "Terminal-first CLI for Moodle LMS." in result.stdout
         assert "activities" in result.stdout
         assert "courses" in result.stdout
+        assert "todo" in result.stdout
         assert "update" in result.stdout
     else:
         assert "version 0.1.1" in result.stdout
@@ -166,20 +205,23 @@ def test_verbose_flag_sets_logging_level(
 
 
 @pytest.mark.parametrize(
-    ("args", "loader", "expected", "texts", "expected_course_ids"),
+    ("args", "loader", "expected", "texts", "expected_course_ids", "expected_todo_calls"),
     [
-        (["user"], None, None, ["Alice Example", "Campus", BASE_URL, "User ID"], []),
-        (["user", "--json"], json.loads, USER.to_dict(), None, []),
-        (["user", "--yaml"], yaml.safe_load, USER.to_dict(), None, []),
-        (["courses"], None, None, ["Enrolled Courses", "MATH101", "History 202", "Yes", "No"], []),
-        (["courses", "--json"], json.loads, [course.to_dict() for course in COURSES], None, []),
-        (["courses", "--yaml"], yaml.safe_load, [course.to_dict() for course in COURSES], None, []),
-        (["activities", "42"], None, None, ["Course 42", "Introduction", "Syllabus", "Quiz 1", "Week 2", "No activities"], [42]),
-        (["activities", "42", "--json"], json.loads, [section.to_dict() for section in SECTIONS], None, [42]),
-        (["activities", "42", "--yaml"], yaml.safe_load, [section.to_dict() for section in SECTIONS], None, [42]),
-        (["course", "42"], None, None, ["Course 42", "Introduction", "Syllabus", "Quiz 1", "Week 2", "No activities"], [42]),
-        (["course", "42", "--json"], json.loads, [section.to_dict() for section in SECTIONS], None, [42]),
-        (["course", "42", "--yaml"], yaml.safe_load, [section.to_dict() for section in SECTIONS], None, [42]),
+        (["user"], None, None, ["Alice Example", "Campus", BASE_URL, "User ID"], [], []),
+        (["user", "--json"], json.loads, USER.to_dict(), None, [], []),
+        (["user", "--yaml"], yaml.safe_load, USER.to_dict(), None, [], []),
+        (["courses"], None, None, ["Enrolled Courses", "MATH101", "History 202", "Yes", "No"], [], []),
+        (["courses", "--json"], json.loads, [course.to_dict() for course in COURSES], None, [], []),
+        (["courses", "--yaml"], yaml.safe_load, [course.to_dict() for course in COURSES], None, [], []),
+        (["todo"], None, None, ["Todo", "Mathematics 101", "Quiz 1", "Attempt quiz", "History 202", "Essay"], [], [(20, None)]),
+        (["todo", "--days", "7", "--limit", "5", "--json"], json.loads, [item.to_dict() for item in TODO_ITEMS], None, [], [(5, 7)]),
+        (["todo", "--yaml"], yaml.safe_load, [item.to_dict() for item in TODO_ITEMS], None, [], [(20, None)]),
+        (["activities", "42"], None, None, ["Course 42", "Introduction", "Syllabus", "Quiz 1", "Week 2", "No activities"], [42], []),
+        (["activities", "42", "--json"], json.loads, [section.to_dict() for section in SECTIONS], None, [42], []),
+        (["activities", "42", "--yaml"], yaml.safe_load, [section.to_dict() for section in SECTIONS], None, [42], []),
+        (["course", "42"], None, None, ["Course 42", "Introduction", "Syllabus", "Quiz 1", "Week 2", "No activities"], [42], []),
+        (["course", "42", "--json"], json.loads, [section.to_dict() for section in SECTIONS], None, [42], []),
+        (["course", "42", "--yaml"], yaml.safe_load, [section.to_dict() for section in SECTIONS], None, [42], []),
     ],
 )
 def test_commands_cover_all_output_modes(
@@ -190,6 +232,7 @@ def test_commands_cover_all_output_modes(
     expected,
     texts: list[str] | None,
     expected_course_ids: list[int],
+    expected_todo_calls: list[tuple[int, int | None]],
 ) -> None:
     client, state = patch_runtime(monkeypatch)
 
@@ -199,6 +242,7 @@ def test_commands_cover_all_output_modes(
     assert state["session_base_urls"] == [BASE_URL]
     assert state["client_inits"] == [(BASE_URL, "session-cookie")]
     assert client.course_ids == expected_course_ids
+    assert client.todo_calls == expected_todo_calls
 
     if loader is None:
         assert texts is not None
@@ -353,6 +397,7 @@ def test_unknown_command_shows_click_error(monkeypatch: pytest.MonkeyPatch, runn
     ("args", "expected_stderr"),
     [
         (["courses"], "Loading courses..."),
+        (["todo"], "Loading todo items..."),
         (["activities", "42"], "Loading activities for course 42..."),
         (["course", "42"], "Loading course 42..."),
     ],
@@ -472,6 +517,27 @@ def test_probe_base_url_accepts_moodle_token_endpoint() -> None:
         assert config_module._probe_base_url("https://learning.monash.edu") == (True, "")
     finally:
         config_module.requests.get = original_get
+
+
+def test_parse_page_context_allows_missing_fullname_when_session_data_exists() -> None:
+    html = """
+    <html lang="en">
+      <head>
+        <title>Dashboard | Campus</title>
+        <script>
+          var M = {};
+          M.cfg = {"sesskey":"abc123","userId":56,"language":"en"};
+        </script>
+      </head>
+      <body></body>
+    </html>
+    """
+
+    context = scraper_module.parse_page_context(html, BASE_URL)
+
+    assert context.sesskey == "abc123"
+    assert context.user_info.userid == 56
+    assert context.user_info.fullname == ""
 
 
 def test_main_reports_missing_base_url_with_example_config_noninteractively(

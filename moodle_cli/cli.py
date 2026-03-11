@@ -14,7 +14,7 @@ from moodle_cli.client import MoodleClient
 from moodle_cli.config import load_config
 from moodle_cli.constants import LOGIN_PATH
 from moodle_cli.exceptions import AuthError, MoodleAPIError, MoodleCLIError
-from moodle_cli.formatter import print_courses, print_course_contents, print_user_info
+from moodle_cli.formatter import print_courses, print_course_contents, print_todo_items, print_user_info
 from moodle_cli.output import output_json, output_yaml
 from moodle_cli.update_check import check_for_updates
 
@@ -117,6 +117,26 @@ def courses(ctx: click.Context, as_json: bool, as_yaml: bool) -> None:
         output_yaml([c.to_dict() for c in course_list])
     else:
         print_courses(course_list)
+
+
+@cli.command()
+@click.option("--limit", type=click.IntRange(min=1), default=20, show_default=True, help="Maximum number of items.")
+@click.option("--days", type=click.IntRange(min=1), help="Only include items due within the next N days.")
+@click.option("--json", "as_json", is_flag=True, help="Output as JSON.")
+@click.option("--yaml", "as_yaml", is_flag=True, help="Output as YAML.")
+@click.pass_context
+def todo(ctx: click.Context, limit: int, days: int | None, as_json: bool, as_yaml: bool) -> None:
+    """List upcoming actionable timeline items."""
+    _print_loading("Loading todo items...")
+    client = ctx.obj["get_client"]()
+    items = client.get_todo(limit=limit, days=days)
+
+    if as_json:
+        output_json([item.to_dict() for item in items])
+    elif as_yaml:
+        output_yaml([item.to_dict() for item in items])
+    else:
+        print_todo_items(items)
 
 
 @cli.command(name="update")

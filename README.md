@@ -7,6 +7,7 @@ Terminal-first CLI for Moodle LMS that reuses an authenticated browser session.
 - No API token setup required
 - Reads `MoodleSession` from your browser or `MOODLE_SESSION`
 - Works with Moodle AJAX APIs and falls back to authenticated page scraping when needed
+- Upcoming timeline items for student-facing deadlines and actions
 - Terminal output plus `--json` and `--yaml`
 
 ## Requirements
@@ -38,6 +39,7 @@ uv sync
 ```bash
 moodle --help
 moodle user
+moodle todo
 moodle courses
 moodle activities 34637
 moodle update
