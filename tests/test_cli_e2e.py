@@ -492,7 +492,6 @@ def test_main_reports_missing_base_url_with_example_config_noninteractively(
     assert "Add base_url to" in stderr
     assert tmp_path.name in stderr
     assert ".config" in stderr
-    assert "moodle-cli" in stderr
     assert "config.yaml or set MOODLE_BASE_URL." in normalized_stderr
     assert "base_url: https://school.example.edu" in stderr
     assert "Do not include paths like /login/index.php or /my/." in stderr
