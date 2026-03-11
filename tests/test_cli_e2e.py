@@ -14,6 +14,8 @@ from click.testing import CliRunner
 
 import moodle_cli.cli as cli_module
 import moodle_cli.config as config_module
+import moodle_cli.models as models_module
+import moodle_cli.output as output_module
 import moodle_cli.scraper as scraper_module
 from moodle_cli.exceptions import AuthError, MoodleAPIError, MoodleCLIError, MoodleRequestError
 from moodle_cli.models import (
@@ -262,6 +264,10 @@ def normalize_terminal_text(text: str) -> str:
     return " ".join(ANSI_ESCAPE_RE.sub("", text).split())
 
 
+def expected_json(data):
+    return output_module.optimize_json_data(data)
+
+
 @pytest.mark.parametrize("args", [["--help"], ["--version"]])
 def test_global_help_and_version_do_not_load_runtime(monkeypatch: pytest.MonkeyPatch, runner: CliRunner, args: list[str]) -> None:
     monkeypatch.setattr(cli_module, "load_config", lambda: pytest.fail("load_config should not run"))
@@ -326,28 +332,28 @@ def test_verbose_flag_sets_logging_level(
     ),
     [
         (["user"], None, None, ["Alice Example", "Campus", BASE_URL, "User ID"], [], [], [], [], []),
-        (["user", "--json"], json.loads, USER.to_dict(), None, [], [], [], [], []),
+        (["user", "--json"], json.loads, expected_json(USER.to_dict()), None, [], [], [], [], []),
         (["user", "--yaml"], yaml.safe_load, USER.to_dict(), None, [], [], [], [], []),
         (["courses"], None, None, ["Enrolled Courses", "MATH101", "History 202", "Yes", "No"], [], [], [], [], []),
-        (["courses", "--json"], json.loads, [course.to_dict() for course in COURSES], None, [], [], [], [], []),
+        (["courses", "--json"], json.loads, expected_json([course.to_dict() for course in COURSES]), None, [], [], [], [], []),
         (["courses", "--yaml"], yaml.safe_load, [course.to_dict() for course in COURSES], None, [], [], [], [], []),
         (["alerts"], None, None, ["Alerts", "Unread Notifications", "Overdue: Assignment 1", "Direct Messages", "Notifications"], [], [], [], [20], []),
-        (["alerts", "--limit", "5", "--json"], json.loads, ALERTS.to_dict(), None, [], [], [], [5], []),
+        (["alerts", "--limit", "5", "--json"], json.loads, expected_json(ALERTS.to_dict()), None, [], [], [], [5], []),
         (["alerts", "--yaml"], yaml.safe_load, ALERTS.to_dict(), None, [], [], [], [20], []),
         (["todo"], None, None, ["Todo", "Mathematics 101", "Quiz 1", "Attempt quiz", "History 202", "Essay"], [], [(20, None)], [], [], []),
-        (["todo", "--days", "7", "--limit", "5", "--json"], json.loads, [item.to_dict() for item in TODO_ITEMS], None, [], [(5, 7)], [], [], []),
+        (["todo", "--days", "7", "--limit", "5", "--json"], json.loads, expected_json([item.to_dict() for item in TODO_ITEMS]), None, [], [(5, 7)], [], [], []),
         (["todo", "--yaml"], yaml.safe_load, [item.to_dict() for item in TODO_ITEMS], None, [], [(20, None)], [], [], []),
         (["overview"], None, None, ["Overview", "Alice Example", "Courses", "Todo", "Alerts"], [], [], [], [], [(5, None, 5)]),
-        (["overview", "--todo-limit", "3", "--todo-days", "7", "--alerts-limit", "2", "--json"], json.loads, OVERVIEW.to_dict(), None, [], [], [], [], [(3, 7, 2)]),
+        (["overview", "--todo-limit", "3", "--todo-days", "7", "--alerts-limit", "2", "--json"], json.loads, expected_json(OVERVIEW.to_dict()), None, [], [], [], [], [(3, 7, 2)]),
         (["overview", "--yaml"], yaml.safe_load, OVERVIEW.to_dict(), None, [], [], [], [], [(5, None, 5)]),
         (["grades", "101"], None, None, ["Grades: Mathematics 101", "Alice Example", "Course Total", "73.00", "Quiz 1", "Essay", "Pass"], [], [], [101], [], []),
-        (["grades", "101", "--json"], json.loads, GRADES.to_dict(), None, [], [], [101], [], []),
+        (["grades", "101", "--json"], json.loads, expected_json(GRADES.to_dict()), None, [], [], [101], [], []),
         (["grades", "101", "--yaml"], yaml.safe_load, GRADES.to_dict(), None, [], [], [101], [], []),
         (["activities", "42"], None, None, ["Course 42", "Introduction", "Syllabus", "Quiz 1", "Week 2", "No activities"], [42], [], [], [], []),
-        (["activities", "42", "--json"], json.loads, [section.to_dict() for section in SECTIONS], None, [42], [], [], [], []),
+        (["activities", "42", "--json"], json.loads, expected_json([section.to_dict() for section in SECTIONS]), None, [42], [], [], [], []),
         (["activities", "42", "--yaml"], yaml.safe_load, [section.to_dict() for section in SECTIONS], None, [42], [], [], [], []),
         (["course", "42"], None, None, ["Course 42", "Introduction", "Syllabus", "Quiz 1", "Week 2", "No activities"], [42], [], [], [], []),
-        (["course", "42", "--json"], json.loads, [section.to_dict() for section in SECTIONS], None, [42], [], [], [], []),
+        (["course", "42", "--json"], json.loads, expected_json([section.to_dict() for section in SECTIONS]), None, [42], [], [], [], []),
         (["course", "42", "--yaml"], yaml.safe_load, [section.to_dict() for section in SECTIONS], None, [42], [], [], [], []),
     ],
 )
@@ -391,7 +397,7 @@ def test_json_takes_precedence_over_yaml(monkeypatch: pytest.MonkeyPatch, runner
     result = runner.invoke(cli_module.cli, ["user", "--json", "--yaml"])
 
     assert result.exit_code == 0
-    assert json.loads(result.stdout) == USER.to_dict()
+    assert json.loads(result.stdout) == expected_json(USER.to_dict())
 
 
 @pytest.mark.parametrize(
@@ -493,6 +499,19 @@ def test_update_outputs_without_loading_moodle_runtime(
             assert text in normalize_terminal_text(result.output)
     else:
         assert loader(result.stdout) == expected
+
+
+def test_json_output_is_compact_and_prunes_empty_values(monkeypatch: pytest.MonkeyPatch, runner: CliRunner) -> None:
+    _, _ = patch_runtime(monkeypatch)
+
+    result = runner.invoke(cli_module.cli, ["overview", "--json"])
+
+    assert result.exit_code == 0
+    assert result.stdout.count("\n") == 1
+    payload = json.loads(result.stdout)
+    assert payload == expected_json(OVERVIEW.to_dict())
+    assert '"errors"' not in result.stdout
+    assert '"lang"' not in result.stdout
 
 
 @pytest.mark.parametrize("command", ["activities", "course", "grades"])
@@ -779,6 +798,37 @@ def test_parse_alert_summary_extracts_notifications_and_counts() -> None:
     assert result.starred_message_count == 2
     assert result.direct_message_count == 3
     assert result.unread_direct_message_count == 2
+
+
+def test_course_to_dict_hides_past_enddate(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(models_module.time, "time", lambda: 200)
+
+    course = Course(id=1, shortname="TEST", fullname="Test Course", enddate=100)
+
+    assert course.to_dict() == {
+        "id": 1,
+        "shortname": "TEST",
+        "fullname": "Test Course",
+        "category": 0,
+        "visible": True,
+        "startdate": 0,
+    }
+
+
+def test_course_to_dict_keeps_future_enddate(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(models_module.time, "time", lambda: 200)
+
+    course = Course(id=1, shortname="TEST", fullname="Test Course", enddate=300)
+
+    assert course.to_dict() == {
+        "id": 1,
+        "shortname": "TEST",
+        "fullname": "Test Course",
+        "category": 0,
+        "visible": True,
+        "startdate": 0,
+        "enddate": 300,
+    }
 
 
 def test_main_reports_missing_base_url_with_example_config_noninteractively(

@@ -1,6 +1,7 @@
 """Data models for Moodle entities."""
 
 from dataclasses import dataclass, field
+import time
 
 
 @dataclass
@@ -34,15 +35,17 @@ class Course:
     enddate: int = 0
 
     def to_dict(self) -> dict:
-        return {
+        data = {
             "id": self.id,
             "shortname": self.shortname,
             "fullname": self.fullname,
             "category": self.category,
             "visible": self.visible,
             "startdate": self.startdate,
-            "enddate": self.enddate,
         }
+        if self.enddate > int(time.time()):
+            data["enddate"] = self.enddate
+        return data
 
 
 @dataclass
