@@ -41,6 +41,7 @@ moodle --help
 moodle user
 moodle todo
 moodle courses
+moodle grades 34637
 moodle activities 34637
 moodle update
 ```

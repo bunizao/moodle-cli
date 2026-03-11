@@ -11,7 +11,7 @@ from urllib.parse import urljoin
 from bs4 import BeautifulSoup
 
 from moodle_cli.exceptions import AuthError
-from moodle_cli.models import Activity, Section, UserInfo
+from moodle_cli.models import Activity, CourseGrades, GradeItem, Section, UserInfo
 
 
 @dataclass
@@ -146,6 +146,115 @@ def parse_course_section_numbers(html: str, course_id: int) -> list[int]:
     return section_numbers
 
 
+def parse_course_grades_html(html: str, course_id: int, base_url: str) -> CourseGrades:
+    """Parse the per-course Moodle user grade report."""
+    soup = BeautifulSoup(html, "html.parser")
+    course_name = _clean_text_from_node(soup.select_one("h1"))
+    learner_name = _clean_text_from_node(
+        soup.select_one(".grade-report-user .page-header-headings h2")
+        or soup.select_one(".page-header-image + .page-header-headings h2")
+        or soup.select_one(".page-header-headings h2")
+        or soup.select_one(".grade-report-user h2 a, .grade-report-user h2")
+        or soup.select_one('h2 a[href*="/user/view.php?id="], h2 a[href*="/user/profile.php?id="]')
+        or soup.select_one("h2 a")
+    )
+    report = CourseGrades(course_id=course_id, course_name=course_name, learner_name=learner_name)
+
+    table = soup.select_one("table.user-grade")
+    if table is None:
+        return report
+
+    for row in table.select("tr"):
+        title = _clean_text_from_node(row.select_one(".rowtitle"))
+        if not title:
+            continue
+
+        if row.select_one(".toggle-category") is not None:
+            continue
+
+        if title == "Course total":
+            report.total_grade = _clean_table_cell(row.select_one("td.column-grade"))
+            report.total_range = _clean_table_cell(row.select_one("td.column-range"))
+            report.total_percentage = _clean_table_cell(row.select_one("td.column-percentage"))
+            continue
+
+        link = row.select_one(".rowtitle a.gradeitemheader, .rowtitle a")
+        if link is None:
+            continue
+
+        status = ""
+        status_icon = row.select_one("td.column-grade i[aria-label], td.column-grade i[title]")
+        if status_icon is not None:
+            status = (status_icon.get("aria-label") or status_icon.get("title") or "").strip()
+
+        item_type = (
+            _clean_text(row.select_one(".item img.itemicon, .courseitem img.itemicon").get("alt", ""))
+            if row.select_one(".item img.itemicon, .courseitem img.itemicon") is not None
+            else ""
+        )
+        report.items.append(
+            GradeItem(
+                name=title,
+                item_type=item_type,
+                grade=_clean_table_cell(row.select_one("td.column-grade")),
+                range=_clean_table_cell(row.select_one("td.column-range")),
+                percentage=_clean_table_cell(row.select_one("td.column-percentage")),
+                weight=_clean_table_cell(row.select_one("td.column-weight")),
+                contribution=_clean_table_cell(row.select_one("td.column-contributiontocoursetotal")),
+                feedback=_clean_table_cell(row.select_one("td.column-feedback")),
+                url=urljoin(base_url, link.get("href") or ""),
+                status=status,
+            )
+        )
+
+    return report
+
+
+def parse_course_grades_url(html: str, base_url: str) -> str:
+    """Extract the course-specific grades URL from course navigation."""
+    soup = BeautifulSoup(html, "html.parser")
+    link = (
+        soup.select_one('li[data-key="grades"] a[href]')
+        or soup.select_one('.secondary-navigation a[href*="mode=grade"]')
+        or soup.select_one('.secondary-navigation a[href*="/grade/report/"]')
+    )
+    if link is None:
+        return ""
+    return urljoin(base_url, link.get("href") or "")
+
+
+def has_course_grades_html(html: str) -> bool:
+    """Return whether the HTML contains a Moodle user grade report table."""
+    soup = BeautifulSoup(html, "html.parser")
+    return soup.select_one("table.user-grade") is not None
+
+
+def parse_grade_overview_rows(html: str, base_url: str) -> dict[int, dict[str, str]]:
+    """Parse the grade overview table keyed by course ID."""
+    soup = BeautifulSoup(html, "html.parser")
+    rows: dict[int, dict[str, str]] = {}
+
+    for row in soup.select("table#overview-grade tbody tr"):
+        link = row.select_one("td a[href]")
+        if link is None:
+            continue
+
+        href = urljoin(base_url, link.get("href") or "")
+        match = re.search(r"[?&]id=(\d+)", href)
+        if match is None:
+            continue
+
+        course_id = int(match.group(1))
+        cells = row.select("td")
+        rows[course_id] = {
+            "course_name": _clean_text_from_node(link),
+            "grade": _clean_text_from_node(cells[1]) if len(cells) > 1 else "",
+            "url": href,
+        }
+
+    return rows
+
+
 def _parse_moodle_config(html: str) -> dict:
     match = re.search(r"M\.cfg\s*=\s*({.*?});", html, re.S)
     if not match:
@@ -184,3 +293,13 @@ def _clean_text_from_node(node) -> str:
 
 def _clean_text(value: str) -> str:
     return " ".join(unescape(value or "").split())
+
+
+def _clean_table_cell(node) -> str:
+    if node is None:
+        return ""
+
+    node = BeautifulSoup(str(node), "html.parser")
+    for unwanted in node.select(".action-menu, .dropdown, script, style"):
+        unwanted.decompose()
+    return _clean_text(node.get_text(" ", strip=True).replace("( Empty )", "(Empty)"))

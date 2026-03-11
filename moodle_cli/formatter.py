@@ -4,10 +4,9 @@ from datetime import datetime
 
 from rich.console import Console
 from rich.table import Table
-from rich.text import Text
 from rich.tree import Tree
 
-from moodle_cli.models import Course, Section, TodoItem, UserInfo
+from moodle_cli.models import Course, CourseGrades, Section, TodoItem, UserInfo
 
 console = Console()
 
@@ -95,6 +94,88 @@ def print_todo_items(items: list[TodoItem]) -> None:
         activity_name = item.activity_name or item.name
         action = item.action_name if item.actionable else ""
         table.add_row(due, course_name, activity_name, item.modname or item.event_type, action)
+
+    console.print(table)
+
+
+def print_course_grades(course_grades: CourseGrades) -> None:
+    """Display a course grade report."""
+    summary = Table(title=f"Grades: {course_grades.course_name}", show_header=False, box=None, padding=(0, 2))
+    summary.add_column(style="bold cyan")
+    summary.add_column()
+
+    if course_grades.learner_name:
+        summary.add_row("Learner", course_grades.learner_name)
+    if course_grades.total_grade:
+        summary.add_row("Course Total", course_grades.total_grade)
+    if course_grades.total_percentage:
+        summary.add_row("Percentage", course_grades.total_percentage)
+    if course_grades.total_range:
+        summary.add_row("Range", course_grades.total_range)
+    console.print(summary)
+
+    table = Table(title="Grade Items")
+    table.add_column("Item", style="bold")
+    table.add_column("Type", style="dim")
+    table.add_column("Grade")
+
+    show_range = any(item.range for item in course_grades.items)
+    show_percent = any(item.percentage for item in course_grades.items)
+    show_weight = any(item.weight for item in course_grades.items)
+    show_contribution = any(item.contribution for item in course_grades.items)
+    show_feedback = any(item.feedback for item in course_grades.items)
+    show_status = any(item.status for item in course_grades.items)
+
+    if show_range:
+        table.add_column("Range")
+    if show_percent:
+        table.add_column("Percent")
+    if show_weight:
+        table.add_column("Weight")
+    if show_contribution:
+        table.add_column("Contribution")
+    if show_feedback:
+        table.add_column("Feedback")
+    if show_status:
+        table.add_column("Status", style="green")
+
+    if not course_grades.items:
+        empty_cells = ["No grade items", "", ""]
+        if show_range:
+            empty_cells.append("")
+        if show_percent:
+            empty_cells.append("")
+        if show_weight:
+            empty_cells.append("")
+        if show_contribution:
+            empty_cells.append("")
+        if show_feedback:
+            empty_cells.append("")
+        if show_status:
+            empty_cells.append("")
+        table.add_row(*empty_cells)
+        console.print(table)
+        return
+
+    for item in course_grades.items:
+        row = [
+            item.name,
+            item.item_type,
+            item.grade or "-",
+        ]
+        if show_range:
+            row.append(item.range or "-")
+        if show_percent:
+            row.append(item.percentage or "-")
+        if show_weight:
+            row.append(item.weight or "-")
+        if show_contribution:
+            row.append(item.contribution or "-")
+        if show_feedback:
+            row.append(item.feedback or "-")
+        if show_status:
+            row.append(item.status)
+        table.add_row(*row)
 
     console.print(table)
 

@@ -6,6 +6,9 @@ PYPI_JSON_URL = f"https://pypi.org/pypi/{PACKAGE_NAME}/json"
 AJAX_SERVICE_PATH = "/lib/ajax/service.php"
 DASHBOARD_PATH = "/my/"
 COURSE_PATH = "/course/view.php"
+GRADE_REPORT_INDEX_PATH = "/grade/report/index.php"
+GRADE_REPORT_OVERVIEW_PATH = "/grade/report/overview/index.php"
+GRADE_REPORT_PATH = "/grade/report/user/index.php"
 LOGIN_PATH = "/login/index.php"
 
 # Moodle AJAX function names

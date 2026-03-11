@@ -15,8 +15,8 @@ from click.testing import CliRunner
 import moodle_cli.cli as cli_module
 import moodle_cli.config as config_module
 import moodle_cli.scraper as scraper_module
-from moodle_cli.exceptions import AuthError, MoodleAPIError, MoodleCLIError
-from moodle_cli.models import Activity, Course, Section, TodoItem, UserInfo
+from moodle_cli.exceptions import AuthError, MoodleAPIError, MoodleCLIError, MoodleRequestError
+from moodle_cli.models import Activity, Course, CourseGrades, GradeItem, Section, TodoItem, UserInfo
 from moodle_cli.update_check import UpdateInfo
 
 BASE_URL = "https://school.example.edu"
@@ -79,12 +79,47 @@ TODO_ITEMS = [
         course_progress=10,
     ),
 ]
+GRADES = CourseGrades(
+    course_id=101,
+    course_name="Mathematics 101",
+    learner_name="Alice Example",
+    total_grade="73.00",
+    total_range="0-100",
+    total_percentage="73.00 %",
+    items=[
+        GradeItem(
+            name="Quiz 1",
+            item_type="Quiz",
+            grade="8.00",
+            range="0-10",
+            percentage="80.00 %",
+            weight="100.00 %",
+            contribution="20.00 %",
+            feedback="",
+            url="https://school.example.edu/mod/quiz/view.php?id=21",
+            status="Pass",
+        ),
+        GradeItem(
+            name="Essay",
+            item_type="Assignment",
+            grade="65.00",
+            range="0-100",
+            percentage="65.00 %",
+            weight="100.00 %",
+            contribution="53.00 %",
+            feedback="Strong structure.",
+            url="https://school.example.edu/mod/assign/view.php?id=22",
+            status="",
+        ),
+    ],
+)
 
 
 class FakeClient:
     def __init__(self) -> None:
         self.course_ids: list[int] = []
         self.todo_calls: list[tuple[int, int | None]] = []
+        self.grade_course_ids: list[int] = []
 
     def get_site_info(self) -> UserInfo:
         return USER
@@ -99,6 +134,10 @@ class FakeClient:
     def get_todo(self, limit: int = 20, days: int | None = None) -> list[TodoItem]:
         self.todo_calls.append((limit, days))
         return TODO_ITEMS
+
+    def get_course_grades(self, course_id: int) -> CourseGrades:
+        self.grade_course_ids.append(course_id)
+        return GRADES
 
 
 class FakeTTY:
@@ -170,10 +209,11 @@ def test_global_help_and_version_do_not_load_runtime(monkeypatch: pytest.MonkeyP
         assert "Terminal-first CLI for Moodle LMS." in result.stdout
         assert "activities" in result.stdout
         assert "courses" in result.stdout
+        assert "grades" in result.stdout
         assert "todo" in result.stdout
         assert "update" in result.stdout
     else:
-        assert "version 0.1.1" in result.stdout
+        assert "version 0.2.0" in result.stdout
 
 
 @pytest.mark.parametrize(
@@ -205,23 +245,26 @@ def test_verbose_flag_sets_logging_level(
 
 
 @pytest.mark.parametrize(
-    ("args", "loader", "expected", "texts", "expected_course_ids", "expected_todo_calls"),
+    ("args", "loader", "expected", "texts", "expected_course_ids", "expected_todo_calls", "expected_grade_course_ids"),
     [
-        (["user"], None, None, ["Alice Example", "Campus", BASE_URL, "User ID"], [], []),
-        (["user", "--json"], json.loads, USER.to_dict(), None, [], []),
-        (["user", "--yaml"], yaml.safe_load, USER.to_dict(), None, [], []),
-        (["courses"], None, None, ["Enrolled Courses", "MATH101", "History 202", "Yes", "No"], [], []),
-        (["courses", "--json"], json.loads, [course.to_dict() for course in COURSES], None, [], []),
-        (["courses", "--yaml"], yaml.safe_load, [course.to_dict() for course in COURSES], None, [], []),
-        (["todo"], None, None, ["Todo", "Mathematics 101", "Quiz 1", "Attempt quiz", "History 202", "Essay"], [], [(20, None)]),
-        (["todo", "--days", "7", "--limit", "5", "--json"], json.loads, [item.to_dict() for item in TODO_ITEMS], None, [], [(5, 7)]),
-        (["todo", "--yaml"], yaml.safe_load, [item.to_dict() for item in TODO_ITEMS], None, [], [(20, None)]),
-        (["activities", "42"], None, None, ["Course 42", "Introduction", "Syllabus", "Quiz 1", "Week 2", "No activities"], [42], []),
-        (["activities", "42", "--json"], json.loads, [section.to_dict() for section in SECTIONS], None, [42], []),
-        (["activities", "42", "--yaml"], yaml.safe_load, [section.to_dict() for section in SECTIONS], None, [42], []),
-        (["course", "42"], None, None, ["Course 42", "Introduction", "Syllabus", "Quiz 1", "Week 2", "No activities"], [42], []),
-        (["course", "42", "--json"], json.loads, [section.to_dict() for section in SECTIONS], None, [42], []),
-        (["course", "42", "--yaml"], yaml.safe_load, [section.to_dict() for section in SECTIONS], None, [42], []),
+        (["user"], None, None, ["Alice Example", "Campus", BASE_URL, "User ID"], [], [], []),
+        (["user", "--json"], json.loads, USER.to_dict(), None, [], [], []),
+        (["user", "--yaml"], yaml.safe_load, USER.to_dict(), None, [], [], []),
+        (["courses"], None, None, ["Enrolled Courses", "MATH101", "History 202", "Yes", "No"], [], [], []),
+        (["courses", "--json"], json.loads, [course.to_dict() for course in COURSES], None, [], [], []),
+        (["courses", "--yaml"], yaml.safe_load, [course.to_dict() for course in COURSES], None, [], [], []),
+        (["todo"], None, None, ["Todo", "Mathematics 101", "Quiz 1", "Attempt quiz", "History 202", "Essay"], [], [(20, None)], []),
+        (["todo", "--days", "7", "--limit", "5", "--json"], json.loads, [item.to_dict() for item in TODO_ITEMS], None, [], [(5, 7)], []),
+        (["todo", "--yaml"], yaml.safe_load, [item.to_dict() for item in TODO_ITEMS], None, [], [(20, None)], []),
+        (["grades", "101"], None, None, ["Grades: Mathematics 101", "Alice Example", "Course Total", "73.00", "Quiz 1", "Essay", "Pass"], [], [], [101]),
+        (["grades", "101", "--json"], json.loads, GRADES.to_dict(), None, [], [], [101]),
+        (["grades", "101", "--yaml"], yaml.safe_load, GRADES.to_dict(), None, [], [], [101]),
+        (["activities", "42"], None, None, ["Course 42", "Introduction", "Syllabus", "Quiz 1", "Week 2", "No activities"], [42], [], []),
+        (["activities", "42", "--json"], json.loads, [section.to_dict() for section in SECTIONS], None, [42], [], []),
+        (["activities", "42", "--yaml"], yaml.safe_load, [section.to_dict() for section in SECTIONS], None, [42], [], []),
+        (["course", "42"], None, None, ["Course 42", "Introduction", "Syllabus", "Quiz 1", "Week 2", "No activities"], [42], [], []),
+        (["course", "42", "--json"], json.loads, [section.to_dict() for section in SECTIONS], None, [42], [], []),
+        (["course", "42", "--yaml"], yaml.safe_load, [section.to_dict() for section in SECTIONS], None, [42], [], []),
     ],
 )
 def test_commands_cover_all_output_modes(
@@ -233,6 +276,7 @@ def test_commands_cover_all_output_modes(
     texts: list[str] | None,
     expected_course_ids: list[int],
     expected_todo_calls: list[tuple[int, int | None]],
+    expected_grade_course_ids: list[int],
 ) -> None:
     client, state = patch_runtime(monkeypatch)
 
@@ -243,6 +287,7 @@ def test_commands_cover_all_output_modes(
     assert state["client_inits"] == [(BASE_URL, "session-cookie")]
     assert client.course_ids == expected_course_ids
     assert client.todo_calls == expected_todo_calls
+    assert client.grade_course_ids == expected_grade_course_ids
 
     if loader is None:
         assert texts is not None
@@ -268,22 +313,22 @@ def test_json_takes_precedence_over_yaml(monkeypatch: pytest.MonkeyPatch, runner
             ["update"],
             UpdateInfo(
                 package_name="moodle-cli",
-                current_version="0.1.1",
-                latest_version="0.1.2",
+                current_version="0.2.0",
+                latest_version="0.2.1",
                 update_available=True,
                 upgrade_commands=["uv tool upgrade moodle-cli", "pipx upgrade moodle-cli"],
                 pypi_url="https://pypi.org/project/moodle-cli/",
             ),
             None,
             None,
-            ["Update available:", "0.1.2", "installed: 0.1.1", "uv tool upgrade moodle-cli"],
+            ["Update available:", "0.2.1", "installed: 0.2.0", "uv tool upgrade moodle-cli"],
         ),
         (
             ["update", "--json"],
             UpdateInfo(
                 package_name="moodle-cli",
-                current_version="0.1.1",
-                latest_version="0.1.2",
+                current_version="0.2.0",
+                latest_version="0.2.1",
                 update_available=True,
                 upgrade_commands=["uv tool upgrade moodle-cli", "pipx upgrade moodle-cli"],
                 pypi_url="https://pypi.org/project/moodle-cli/",
@@ -291,8 +336,8 @@ def test_json_takes_precedence_over_yaml(monkeypatch: pytest.MonkeyPatch, runner
             json.loads,
             {
                 "package_name": "moodle-cli",
-                "current_version": "0.1.1",
-                "latest_version": "0.1.2",
+                "current_version": "0.2.0",
+                "latest_version": "0.2.1",
                 "update_available": True,
                 "upgrade_commands": ["uv tool upgrade moodle-cli", "pipx upgrade moodle-cli"],
                 "pypi_url": "https://pypi.org/project/moodle-cli/",
@@ -303,8 +348,8 @@ def test_json_takes_precedence_over_yaml(monkeypatch: pytest.MonkeyPatch, runner
             ["update", "--yaml"],
             UpdateInfo(
                 package_name="moodle-cli",
-                current_version="0.1.1",
-                latest_version="0.1.2",
+                current_version="0.2.0",
+                latest_version="0.2.1",
                 update_available=True,
                 upgrade_commands=["uv tool upgrade moodle-cli", "pipx upgrade moodle-cli"],
                 pypi_url="https://pypi.org/project/moodle-cli/",
@@ -312,8 +357,8 @@ def test_json_takes_precedence_over_yaml(monkeypatch: pytest.MonkeyPatch, runner
             yaml.safe_load,
             {
                 "package_name": "moodle-cli",
-                "current_version": "0.1.1",
-                "latest_version": "0.1.2",
+                "current_version": "0.2.0",
+                "latest_version": "0.2.1",
                 "update_available": True,
                 "upgrade_commands": ["uv tool upgrade moodle-cli", "pipx upgrade moodle-cli"],
                 "pypi_url": "https://pypi.org/project/moodle-cli/",
@@ -324,15 +369,15 @@ def test_json_takes_precedence_over_yaml(monkeypatch: pytest.MonkeyPatch, runner
             ["update"],
             UpdateInfo(
                 package_name="moodle-cli",
-                current_version="0.1.1",
-                latest_version="0.1.1",
+                current_version="0.2.0",
+                latest_version="0.2.0",
                 update_available=False,
                 upgrade_commands=["uv tool upgrade moodle-cli", "pipx upgrade moodle-cli"],
                 pypi_url="https://pypi.org/project/moodle-cli/",
             ),
             None,
             None,
-            ["moodle-cli is up to date", "(0.1.1)"],
+            ["moodle-cli is up to date", "(0.2.0)"],
         ),
     ],
 )
@@ -362,7 +407,7 @@ def test_update_outputs_without_loading_moodle_runtime(
         assert loader(result.stdout) == expected
 
 
-@pytest.mark.parametrize("command", ["activities", "course"])
+@pytest.mark.parametrize("command", ["activities", "course", "grades"])
 def test_course_commands_require_course_id(monkeypatch: pytest.MonkeyPatch, runner: CliRunner, command: str) -> None:
     monkeypatch.setattr(cli_module, "load_config", lambda: {"base_url": BASE_URL})
 
@@ -374,7 +419,7 @@ def test_course_commands_require_course_id(monkeypatch: pytest.MonkeyPatch, runn
     assert f"then retry with 'moodle {command} COURSE_ID'" in result.output
 
 
-@pytest.mark.parametrize("command", ["activities", "course"])
+@pytest.mark.parametrize("command", ["activities", "course", "grades"])
 def test_course_commands_validate_course_id_type(monkeypatch: pytest.MonkeyPatch, runner: CliRunner, command: str) -> None:
     monkeypatch.setattr(cli_module, "load_config", lambda: {"base_url": BASE_URL})
 
@@ -398,6 +443,7 @@ def test_unknown_command_shows_click_error(monkeypatch: pytest.MonkeyPatch, runn
     [
         (["courses"], "Loading courses..."),
         (["todo"], "Loading todo items..."),
+        (["grades", "101"], "Loading grades for course 101..."),
         (["activities", "42"], "Loading activities for course 42..."),
         (["course", "42"], "Loading course 42..."),
     ],
@@ -540,6 +586,74 @@ def test_parse_page_context_allows_missing_fullname_when_session_data_exists() -
     assert context.user_info.fullname == ""
 
 
+def test_parse_course_grades_html_extracts_total_and_items() -> None:
+    html = """
+    <html>
+      <body>
+        <h1>Mathematics 101</h1>
+        <h2><a>Alice Example</a></h2>
+        <table class="user-grade">
+          <tr>
+            <th scope="row">
+              <div class="item">
+                <div><img class="itemicon" alt="Quiz" /></div>
+                <div>
+                  <div class="rowtitle"><a class="gradeitemheader" href="https://school.example.edu/mod/quiz/view.php?id=21">Quiz 1</a></div>
+                </div>
+              </div>
+            </th>
+            <td class="column-weight">100.00 %</td>
+            <td class="column-grade"><div><i aria-label="Pass"></i>8.00</div><div class="action-menu">Actions</div></td>
+            <td class="column-range">0-10</td>
+            <td class="column-percentage">80.00 %</td>
+            <td class="column-feedback">&nbsp;</td>
+            <td class="column-contributiontocoursetotal">20.00 %</td>
+          </tr>
+          <tr>
+            <th scope="row">
+              <div class="courseitem">
+                <div><img class="itemicon" alt="Natural" /></div>
+                <div><div class="rowtitle"><span class="gradeitemheader" title="Course total">Course total</span></div></div>
+              </div>
+            </th>
+            <td class="column-weight">-</td>
+            <td class="column-grade">73.00</td>
+            <td class="column-range">0-100</td>
+            <td class="column-percentage">73.00 %</td>
+            <td class="column-feedback">&nbsp;</td>
+            <td class="column-contributiontocoursetotal">-</td>
+          </tr>
+        </table>
+      </body>
+    </html>
+    """
+
+    parsed = scraper_module.parse_course_grades_html(html, 101, BASE_URL)
+
+    assert parsed.course_id == 101
+    assert parsed.course_name == "Mathematics 101"
+    assert parsed.learner_name == "Alice Example"
+    assert parsed.total_grade == "73.00"
+    assert parsed.total_percentage == "73.00 %"
+    assert len(parsed.items) == 1
+    assert parsed.items[0].name == "Quiz 1"
+    assert parsed.items[0].item_type == "Quiz"
+    assert parsed.items[0].grade == "8.00"
+    assert parsed.items[0].status == "Pass"
+
+
+def test_parse_course_grades_url_finds_course_nav_link() -> None:
+    html = """
+    <html>
+      <body>
+        <li data-key="grades"><a href="/grade/report/index.php?id=101">Grades</a></li>
+      </body>
+    </html>
+    """
+
+    assert scraper_module.parse_course_grades_url(html, BASE_URL) == f"{BASE_URL}/grade/report/index.php?id=101"
+
+
 def test_main_reports_missing_base_url_with_example_config_noninteractively(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
@@ -648,6 +762,25 @@ def test_main_renders_api_error_from_real_command(
     assert stdout == ""
     assert "API error: timeline disabled" in stderr
     assert "Error code: servicenotavailable" in stderr
+
+
+def test_main_renders_request_error_from_real_command(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    class BrokenClient:
+        def get_course_grades(self, _course_id: int) -> CourseGrades:
+            raise MoodleRequestError("grade report unavailable")
+
+    monkeypatch.setattr(cli_module, "load_config", lambda: {"base_url": BASE_URL})
+    monkeypatch.setattr(cli_module, "get_session", lambda _base_url: "session-cookie")
+    monkeypatch.setattr(cli_module, "MoodleClient", lambda *_args: BrokenClient())
+
+    exit_code, stdout, stderr = run_main(monkeypatch, capsys, ["grades", "101"])
+
+    assert exit_code == 1
+    assert stdout == ""
+    assert "Error: grade report unavailable" in stderr
 
 
 @pytest.mark.parametrize(

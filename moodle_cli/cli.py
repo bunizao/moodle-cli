@@ -14,7 +14,7 @@ from moodle_cli.client import MoodleClient
 from moodle_cli.config import load_config
 from moodle_cli.constants import LOGIN_PATH
 from moodle_cli.exceptions import AuthError, MoodleAPIError, MoodleCLIError
-from moodle_cli.formatter import print_courses, print_course_contents, print_todo_items, print_user_info
+from moodle_cli.formatter import print_course_grades, print_courses, print_course_contents, print_todo_items, print_user_info
 from moodle_cli.output import output_json, output_yaml
 from moodle_cli.update_check import check_for_updates
 
@@ -137,6 +137,26 @@ def todo(ctx: click.Context, limit: int, days: int | None, as_json: bool, as_yam
         output_yaml([item.to_dict() for item in items])
     else:
         print_todo_items(items)
+
+
+@cli.command()
+@click.argument("course_id", type=int, required=False)
+@click.option("--json", "as_json", is_flag=True, help="Output as JSON.")
+@click.option("--yaml", "as_yaml", is_flag=True, help="Output as YAML.")
+@click.pass_context
+def grades(ctx: click.Context, course_id: int | None, as_json: bool, as_yaml: bool) -> None:
+    """Show grade details for a course."""
+    course_id = _require_course_id(ctx, course_id)
+    _print_loading(f"Loading grades for course {course_id}...")
+    client = ctx.obj["get_client"]()
+    course_grades = client.get_course_grades(course_id)
+
+    if as_json:
+        output_json(course_grades.to_dict())
+    elif as_yaml:
+        output_yaml(course_grades.to_dict())
+    else:
+        print_course_grades(course_grades)
 
 
 @cli.command(name="update")

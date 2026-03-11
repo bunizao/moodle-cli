@@ -102,6 +102,56 @@ class TodoItem:
 
 
 @dataclass
+class GradeItem:
+    name: str
+    item_type: str
+    grade: str = ""
+    range: str = ""
+    percentage: str = ""
+    weight: str = ""
+    contribution: str = ""
+    feedback: str = ""
+    url: str = ""
+    status: str = ""
+
+    def to_dict(self) -> dict:
+        return {
+            "name": self.name,
+            "item_type": self.item_type,
+            "grade": self.grade,
+            "range": self.range,
+            "percentage": self.percentage,
+            "weight": self.weight,
+            "contribution": self.contribution,
+            "feedback": self.feedback,
+            "url": self.url,
+            "status": self.status,
+        }
+
+
+@dataclass
+class CourseGrades:
+    course_id: int
+    course_name: str
+    learner_name: str = ""
+    total_grade: str = ""
+    total_range: str = ""
+    total_percentage: str = ""
+    items: list[GradeItem] = field(default_factory=list)
+
+    def to_dict(self) -> dict:
+        return {
+            "course_id": self.course_id,
+            "course_name": self.course_name,
+            "learner_name": self.learner_name,
+            "total_grade": self.total_grade,
+            "total_range": self.total_range,
+            "total_percentage": self.total_percentage,
+            "items": [item.to_dict() for item in self.items],
+        }
+
+
+@dataclass
 class Section:
     id: int
     name: str

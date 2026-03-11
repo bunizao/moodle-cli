@@ -14,11 +14,22 @@ from moodle_cli.constants import (
     FUNC_GET_COURSES_BY_TIMELINE,
     FUNC_GET_COURSE_CONTENTS,
     FUNC_GET_SITE_INFO,
+    GRADE_REPORT_INDEX_PATH,
+    GRADE_REPORT_OVERVIEW_PATH,
+    GRADE_REPORT_PATH,
 )
-from moodle_cli.exceptions import AuthError, MoodleAPIError
-from moodle_cli.models import Course, Section, TodoItem, UserInfo
+from moodle_cli.exceptions import AuthError, MoodleAPIError, MoodleRequestError
+from moodle_cli.models import Course, CourseGrades, Section, TodoItem, UserInfo
 from moodle_cli.parser import parse_courses, parse_todo_items, parse_user_info
-from moodle_cli.scraper import parse_course_contents_html, parse_course_section_numbers, parse_page_context
+from moodle_cli.scraper import (
+    has_course_grades_html,
+    parse_course_contents_html,
+    parse_course_grades_html,
+    parse_course_grades_url,
+    parse_grade_overview_rows,
+    parse_course_section_numbers,
+    parse_page_context,
+)
 
 log = logging.getLogger(__name__)
 
@@ -43,6 +54,12 @@ class MoodleClient:
     def _get(self, path: str, params: dict | None = None) -> requests.Response:
         """Fetch an authenticated Moodle page."""
         resp = self.session.get(f"{self.base_url}{path}", params=params)
+        resp.raise_for_status()
+        return resp
+
+    def _get_absolute(self, url: str) -> requests.Response:
+        """Fetch an authenticated Moodle page by absolute URL."""
+        resp = self.session.get(url)
         resp.raise_for_status()
         return resp
 
@@ -182,6 +199,67 @@ class MoodleClient:
             return []
 
         return parse_todo_items(events)
+
+    def get_course_grades(self, course_id: int) -> CourseGrades:
+        """Get the authenticated user's grade report for a course."""
+        self._ensure_session()
+        try:
+            course_response = self._get(COURSE_PATH, {"id": course_id})
+        except requests.RequestException as exc:
+            raise MoodleRequestError(f"Could not load course {course_id}: {exc}") from exc
+
+        candidate_urls = [
+            parse_course_grades_url(course_response.text, self.base_url),
+            f"{self.base_url}/course/user.php?mode=grade&id={course_id}&user={self._userid}",
+            f"{self.base_url}{GRADE_REPORT_OVERVIEW_PATH}",
+            f"{self.base_url}{GRADE_REPORT_INDEX_PATH}?id={course_id}",
+            f"{self.base_url}{GRADE_REPORT_PATH}?id={course_id}",
+        ]
+        seen_urls: set[str] = set()
+        overview_rows: dict[int, dict[str, str]] = {}
+
+        for url in candidate_urls:
+            if not url or url in seen_urls:
+                continue
+            seen_urls.add(url)
+            try:
+                response = self._get_absolute(url)
+            except requests.HTTPError as exc:
+                status_code = exc.response.status_code if exc.response is not None else None
+                if status_code == 404:
+                    continue
+                raise MoodleRequestError(f"Could not load grades for course {course_id}: {exc}") from exc
+            except requests.RequestException as exc:
+                raise MoodleRequestError(f"Could not load grades for course {course_id}: {exc}") from exc
+
+            if has_course_grades_html(response.text):
+                return parse_course_grades_html(response.text, course_id, self.base_url)
+
+            overview_rows = parse_grade_overview_rows(response.text, self.base_url)
+            if overview_rows:
+                entry = overview_rows.get(course_id)
+                if entry is not None:
+                    overview_url = entry.get("url", "")
+                    if overview_url and overview_url not in seen_urls:
+                        candidate_urls.append(overview_url)
+                        continue
+
+                    return CourseGrades(
+                        course_id=course_id,
+                        course_name=entry.get("course_name", ""),
+                        total_grade=entry.get("grade", ""),
+                    )
+
+        if overview_rows and course_id not in overview_rows:
+            raise MoodleRequestError(
+                f"Grades are not listed for course {course_id} in this site's overview report. "
+                "The course may not expose grades to students."
+            )
+
+        raise MoodleRequestError(
+            f"Could not find a usable grades page for course {course_id}. "
+            "This Moodle site may use a different grade report configuration."
+        )
 
     def _get_courses_timeline(self) -> list[Course]:
         """Get enrolled courses from the dashboard timeline API."""
