@@ -39,7 +39,9 @@ uv sync
 ```bash
 moodle --help
 moodle user
+moodle alerts
 moodle todo
+moodle overview
 moodle courses
 moodle grades 34637
 moodle activities 34637

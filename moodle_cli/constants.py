@@ -17,6 +17,9 @@ FUNC_GET_COURSES = "core_enrol_get_users_courses"
 FUNC_GET_COURSES_BY_TIMELINE = "core_course_get_enrolled_courses_by_timeline_classification"
 FUNC_GET_COURSE_CONTENTS = "core_course_get_contents"
 FUNC_GET_ACTION_EVENTS = "core_calendar_get_action_events_by_timesort"
+FUNC_GET_POPUP_NOTIFICATIONS = "message_popup_get_popup_notifications"
+FUNC_GET_CONVERSATION_COUNTS = "core_message_get_conversation_counts"
+FUNC_GET_UNREAD_CONVERSATION_COUNTS = "core_message_get_unread_conversation_counts"
 
 # Config file locations (checked in order)
 CONFIG_FILENAME = "config.yaml"

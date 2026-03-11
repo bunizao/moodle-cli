@@ -3,10 +3,11 @@
 from datetime import datetime
 
 from rich.console import Console
+from rich.panel import Panel
 from rich.table import Table
 from rich.tree import Tree
 
-from moodle_cli.models import Course, CourseGrades, Section, TodoItem, UserInfo
+from moodle_cli.models import AlertSummary, Course, CourseGrades, Overview, Section, TodoItem, UserInfo
 
 console = Console()
 
@@ -178,6 +179,71 @@ def print_course_grades(course_grades: CourseGrades) -> None:
         table.add_row(*row)
 
     console.print(table)
+
+
+def print_alerts(alerts: AlertSummary) -> None:
+    """Display notifications and message counts."""
+    summary = Table(title="Alerts", show_header=False, box=None, padding=(0, 2))
+    summary.add_column(style="bold cyan")
+    summary.add_column()
+    summary.add_row("Notifications", str(alerts.notification_count))
+    summary.add_row("Unread Notifications", str(alerts.unread_notification_count))
+    summary.add_row("Direct Messages", str(alerts.direct_message_count))
+    summary.add_row("Unread Direct", str(alerts.unread_direct_message_count))
+    summary.add_row("Group Messages", str(alerts.group_message_count))
+    summary.add_row("Unread Group", str(alerts.unread_group_message_count))
+    summary.add_row("Starred", str(alerts.starred_message_count))
+    summary.add_row("Unread Starred", str(alerts.unread_starred_message_count))
+    console.print(summary)
+
+    table = Table(title="Notifications")
+    table.add_column("When", style="cyan")
+    table.add_column("Subject", style="bold")
+    table.add_column("Type", style="dim")
+    table.add_column("Link")
+
+    if not alerts.notifications:
+        table.add_row("No notifications", "", "", "")
+        console.print(table)
+        return
+
+    for notification in alerts.notifications:
+        table.add_row(
+            notification.created_pretty or _format_timestamp(notification.created_at),
+            notification.short_subject or notification.subject,
+            notification.event_type or notification.component,
+            notification.context_name or notification.context_url,
+        )
+
+    console.print(table)
+
+
+def print_overview(overview: Overview) -> None:
+    """Display a compact cross-command summary."""
+    summary = Table(title="Overview", show_header=False, box=None, padding=(0, 2))
+    summary.add_column(style="bold cyan")
+    summary.add_column()
+    summary.add_row("User", overview.user.fullname or str(overview.user.userid))
+    summary.add_row("Courses", str(len(overview.courses)))
+    summary.add_row("Todo Items", str(len(overview.todo)))
+
+    if overview.alerts is not None:
+        summary.add_row("Unread Notifications", str(overview.alerts.unread_notification_count))
+        summary.add_row("Unread Direct Messages", str(overview.alerts.unread_direct_message_count))
+
+    if overview.errors:
+        summary.add_row("Warnings", str(len(overview.errors)))
+
+    console.print(summary)
+
+    if overview.todo:
+        print_todo_items(overview.todo)
+
+    if overview.alerts is not None:
+        print_alerts(overview.alerts)
+
+    if overview.errors:
+        console.print(Panel("\n".join(overview.errors), title="Warnings", border_style="yellow"))
 
 
 def _activity_icon(modname: str) -> str:

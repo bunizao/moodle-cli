@@ -102,6 +102,64 @@ class TodoItem:
 
 
 @dataclass
+class AlertNotification:
+    id: int
+    subject: str
+    short_subject: str
+    event_type: str
+    component: str
+    created_at: int
+    created_pretty: str = ""
+    read: bool = False
+    context_url: str = ""
+    context_name: str = ""
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "subject": self.subject,
+            "short_subject": self.short_subject,
+            "event_type": self.event_type,
+            "component": self.component,
+            "created_at": self.created_at,
+            "created_pretty": self.created_pretty,
+            "read": self.read,
+            "context_url": self.context_url,
+            "context_name": self.context_name,
+        }
+
+
+@dataclass
+class AlertSummary:
+    notifications: list[AlertNotification] = field(default_factory=list)
+    notification_count: int = 0
+    unread_notification_count: int = 0
+    starred_message_count: int = 0
+    direct_message_count: int = 0
+    group_message_count: int = 0
+    self_message_count: int = 0
+    unread_starred_message_count: int = 0
+    unread_direct_message_count: int = 0
+    unread_group_message_count: int = 0
+    unread_self_message_count: int = 0
+
+    def to_dict(self) -> dict:
+        return {
+            "notifications": [notification.to_dict() for notification in self.notifications],
+            "notification_count": self.notification_count,
+            "unread_notification_count": self.unread_notification_count,
+            "starred_message_count": self.starred_message_count,
+            "direct_message_count": self.direct_message_count,
+            "group_message_count": self.group_message_count,
+            "self_message_count": self.self_message_count,
+            "unread_starred_message_count": self.unread_starred_message_count,
+            "unread_direct_message_count": self.unread_direct_message_count,
+            "unread_group_message_count": self.unread_group_message_count,
+            "unread_self_message_count": self.unread_self_message_count,
+        }
+
+
+@dataclass
 class GradeItem:
     name: str
     item_type: str
@@ -148,6 +206,24 @@ class CourseGrades:
             "total_range": self.total_range,
             "total_percentage": self.total_percentage,
             "items": [item.to_dict() for item in self.items],
+        }
+
+
+@dataclass
+class Overview:
+    user: UserInfo
+    courses: list[Course] = field(default_factory=list)
+    todo: list[TodoItem] = field(default_factory=list)
+    alerts: AlertSummary | None = None
+    errors: list[str] = field(default_factory=list)
+
+    def to_dict(self) -> dict:
+        return {
+            "user": self.user.to_dict(),
+            "courses": [course.to_dict() for course in self.courses],
+            "todo": [item.to_dict() for item in self.todo],
+            "alerts": self.alerts.to_dict() if self.alerts is not None else None,
+            "errors": self.errors,
         }
 
 

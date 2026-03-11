@@ -1,6 +1,6 @@
 """Parse raw Moodle JSON responses into typed models."""
 
-from moodle_cli.models import Activity, Course, Section, TodoItem, UserInfo
+from moodle_cli.models import Activity, AlertNotification, AlertSummary, Course, Section, TodoItem, UserInfo
 
 
 def parse_user_info(data: dict) -> UserInfo:
@@ -82,3 +82,42 @@ def parse_todo_item(data: dict) -> TodoItem:
 
 def parse_todo_items(data: list[dict]) -> list[TodoItem]:
     return [parse_todo_item(item) for item in data]
+
+
+def parse_alert_notification(data: dict) -> AlertNotification:
+    return AlertNotification(
+        id=data["id"],
+        subject=data.get("subject", ""),
+        short_subject=data.get("shortenedsubject", ""),
+        event_type=data.get("eventtype", ""),
+        component=data.get("component", ""),
+        created_at=data.get("timecreated", 0),
+        created_pretty=data.get("timecreatedpretty", ""),
+        read=bool(data.get("read", False)),
+        context_url=data.get("contexturl", ""),
+        context_name=data.get("contexturlname", ""),
+    )
+
+
+def parse_alert_notifications(data: list[dict]) -> list[AlertNotification]:
+    return [parse_alert_notification(item) for item in data]
+
+
+def parse_alert_summary(notifications_data: dict, counts_data: dict, unread_counts_data: dict) -> AlertSummary:
+    notifications = parse_alert_notifications(notifications_data.get("notifications", []))
+    types = counts_data.get("types", {})
+    unread_types = unread_counts_data.get("types", {})
+
+    return AlertSummary(
+        notifications=notifications,
+        notification_count=len(notifications),
+        unread_notification_count=sum(1 for notification in notifications if not notification.read),
+        starred_message_count=counts_data.get("favourites", 0),
+        direct_message_count=types.get("1", 0),
+        group_message_count=types.get("2", 0),
+        self_message_count=types.get("3", 0),
+        unread_starred_message_count=unread_counts_data.get("favourites", 0),
+        unread_direct_message_count=unread_types.get("1", 0),
+        unread_group_message_count=unread_types.get("2", 0),
+        unread_self_message_count=unread_types.get("3", 0),
+    )

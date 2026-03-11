@@ -16,7 +16,18 @@ import moodle_cli.cli as cli_module
 import moodle_cli.config as config_module
 import moodle_cli.scraper as scraper_module
 from moodle_cli.exceptions import AuthError, MoodleAPIError, MoodleCLIError, MoodleRequestError
-from moodle_cli.models import Activity, Course, CourseGrades, GradeItem, Section, TodoItem, UserInfo
+from moodle_cli.models import (
+    Activity,
+    AlertNotification,
+    AlertSummary,
+    Course,
+    CourseGrades,
+    GradeItem,
+    Overview,
+    Section,
+    TodoItem,
+    UserInfo,
+)
 from moodle_cli.update_check import UpdateInfo
 
 BASE_URL = "https://school.example.edu"
@@ -113,6 +124,51 @@ GRADES = CourseGrades(
         ),
     ],
 )
+ALERTS = AlertSummary(
+    notifications=[
+        AlertNotification(
+            id=401,
+            subject="Overdue: Assignment 1",
+            short_subject="Overdue: Assignment 1",
+            event_type="assign_overdue",
+            component="mod_assign",
+            created_at=1761000000,
+            created_pretty="2 hours ago",
+            read=False,
+            context_url="https://school.example.edu/mod/assign/view.php?id=401",
+            context_name="Assignment 1",
+        ),
+        AlertNotification(
+            id=402,
+            subject="Quiz closes soon",
+            short_subject="Quiz closes soon",
+            event_type="quiz_due",
+            component="mod_quiz",
+            created_at=1761000500,
+            created_pretty="1 hour ago",
+            read=True,
+            context_url="https://school.example.edu/mod/quiz/view.php?id=402",
+            context_name="Quiz 2",
+        ),
+    ],
+    notification_count=2,
+    unread_notification_count=1,
+    starred_message_count=1,
+    direct_message_count=3,
+    group_message_count=1,
+    self_message_count=0,
+    unread_starred_message_count=0,
+    unread_direct_message_count=2,
+    unread_group_message_count=1,
+    unread_self_message_count=0,
+)
+OVERVIEW = Overview(
+    user=USER,
+    courses=COURSES,
+    todo=TODO_ITEMS,
+    alerts=ALERTS,
+    errors=[],
+)
 
 
 class FakeClient:
@@ -120,6 +176,8 @@ class FakeClient:
         self.course_ids: list[int] = []
         self.todo_calls: list[tuple[int, int | None]] = []
         self.grade_course_ids: list[int] = []
+        self.alert_limits: list[int] = []
+        self.overview_calls: list[tuple[int, int | None, int]] = []
 
     def get_site_info(self) -> UserInfo:
         return USER
@@ -138,6 +196,14 @@ class FakeClient:
     def get_course_grades(self, course_id: int) -> CourseGrades:
         self.grade_course_ids.append(course_id)
         return GRADES
+
+    def get_alerts(self, limit: int = 20) -> AlertSummary:
+        self.alert_limits.append(limit)
+        return ALERTS
+
+    def get_overview(self, todo_limit: int = 5, todo_days: int | None = None, alerts_limit: int = 5) -> Overview:
+        self.overview_calls.append((todo_limit, todo_days, alerts_limit))
+        return OVERVIEW
 
 
 class FakeTTY:
@@ -208,8 +274,10 @@ def test_global_help_and_version_do_not_load_runtime(monkeypatch: pytest.MonkeyP
     if args == ["--help"]:
         assert "Terminal-first CLI for Moodle LMS." in result.stdout
         assert "activities" in result.stdout
+        assert "alerts" in result.stdout
         assert "courses" in result.stdout
         assert "grades" in result.stdout
+        assert "overview" in result.stdout
         assert "todo" in result.stdout
         assert "update" in result.stdout
     else:
@@ -245,26 +313,42 @@ def test_verbose_flag_sets_logging_level(
 
 
 @pytest.mark.parametrize(
-    ("args", "loader", "expected", "texts", "expected_course_ids", "expected_todo_calls", "expected_grade_course_ids"),
+    (
+        "args",
+        "loader",
+        "expected",
+        "texts",
+        "expected_course_ids",
+        "expected_todo_calls",
+        "expected_grade_course_ids",
+        "expected_alert_limits",
+        "expected_overview_calls",
+    ),
     [
-        (["user"], None, None, ["Alice Example", "Campus", BASE_URL, "User ID"], [], [], []),
-        (["user", "--json"], json.loads, USER.to_dict(), None, [], [], []),
-        (["user", "--yaml"], yaml.safe_load, USER.to_dict(), None, [], [], []),
-        (["courses"], None, None, ["Enrolled Courses", "MATH101", "History 202", "Yes", "No"], [], [], []),
-        (["courses", "--json"], json.loads, [course.to_dict() for course in COURSES], None, [], [], []),
-        (["courses", "--yaml"], yaml.safe_load, [course.to_dict() for course in COURSES], None, [], [], []),
-        (["todo"], None, None, ["Todo", "Mathematics 101", "Quiz 1", "Attempt quiz", "History 202", "Essay"], [], [(20, None)], []),
-        (["todo", "--days", "7", "--limit", "5", "--json"], json.loads, [item.to_dict() for item in TODO_ITEMS], None, [], [(5, 7)], []),
-        (["todo", "--yaml"], yaml.safe_load, [item.to_dict() for item in TODO_ITEMS], None, [], [(20, None)], []),
-        (["grades", "101"], None, None, ["Grades: Mathematics 101", "Alice Example", "Course Total", "73.00", "Quiz 1", "Essay", "Pass"], [], [], [101]),
-        (["grades", "101", "--json"], json.loads, GRADES.to_dict(), None, [], [], [101]),
-        (["grades", "101", "--yaml"], yaml.safe_load, GRADES.to_dict(), None, [], [], [101]),
-        (["activities", "42"], None, None, ["Course 42", "Introduction", "Syllabus", "Quiz 1", "Week 2", "No activities"], [42], [], []),
-        (["activities", "42", "--json"], json.loads, [section.to_dict() for section in SECTIONS], None, [42], [], []),
-        (["activities", "42", "--yaml"], yaml.safe_load, [section.to_dict() for section in SECTIONS], None, [42], [], []),
-        (["course", "42"], None, None, ["Course 42", "Introduction", "Syllabus", "Quiz 1", "Week 2", "No activities"], [42], [], []),
-        (["course", "42", "--json"], json.loads, [section.to_dict() for section in SECTIONS], None, [42], [], []),
-        (["course", "42", "--yaml"], yaml.safe_load, [section.to_dict() for section in SECTIONS], None, [42], [], []),
+        (["user"], None, None, ["Alice Example", "Campus", BASE_URL, "User ID"], [], [], [], [], []),
+        (["user", "--json"], json.loads, USER.to_dict(), None, [], [], [], [], []),
+        (["user", "--yaml"], yaml.safe_load, USER.to_dict(), None, [], [], [], [], []),
+        (["courses"], None, None, ["Enrolled Courses", "MATH101", "History 202", "Yes", "No"], [], [], [], [], []),
+        (["courses", "--json"], json.loads, [course.to_dict() for course in COURSES], None, [], [], [], [], []),
+        (["courses", "--yaml"], yaml.safe_load, [course.to_dict() for course in COURSES], None, [], [], [], [], []),
+        (["alerts"], None, None, ["Alerts", "Unread Notifications", "Overdue: Assignment 1", "Direct Messages", "Notifications"], [], [], [], [20], []),
+        (["alerts", "--limit", "5", "--json"], json.loads, ALERTS.to_dict(), None, [], [], [], [5], []),
+        (["alerts", "--yaml"], yaml.safe_load, ALERTS.to_dict(), None, [], [], [], [20], []),
+        (["todo"], None, None, ["Todo", "Mathematics 101", "Quiz 1", "Attempt quiz", "History 202", "Essay"], [], [(20, None)], [], [], []),
+        (["todo", "--days", "7", "--limit", "5", "--json"], json.loads, [item.to_dict() for item in TODO_ITEMS], None, [], [(5, 7)], [], [], []),
+        (["todo", "--yaml"], yaml.safe_load, [item.to_dict() for item in TODO_ITEMS], None, [], [(20, None)], [], [], []),
+        (["overview"], None, None, ["Overview", "Alice Example", "Courses", "Todo", "Alerts"], [], [], [], [], [(5, None, 5)]),
+        (["overview", "--todo-limit", "3", "--todo-days", "7", "--alerts-limit", "2", "--json"], json.loads, OVERVIEW.to_dict(), None, [], [], [], [], [(3, 7, 2)]),
+        (["overview", "--yaml"], yaml.safe_load, OVERVIEW.to_dict(), None, [], [], [], [], [(5, None, 5)]),
+        (["grades", "101"], None, None, ["Grades: Mathematics 101", "Alice Example", "Course Total", "73.00", "Quiz 1", "Essay", "Pass"], [], [], [101], [], []),
+        (["grades", "101", "--json"], json.loads, GRADES.to_dict(), None, [], [], [101], [], []),
+        (["grades", "101", "--yaml"], yaml.safe_load, GRADES.to_dict(), None, [], [], [101], [], []),
+        (["activities", "42"], None, None, ["Course 42", "Introduction", "Syllabus", "Quiz 1", "Week 2", "No activities"], [42], [], [], [], []),
+        (["activities", "42", "--json"], json.loads, [section.to_dict() for section in SECTIONS], None, [42], [], [], [], []),
+        (["activities", "42", "--yaml"], yaml.safe_load, [section.to_dict() for section in SECTIONS], None, [42], [], [], [], []),
+        (["course", "42"], None, None, ["Course 42", "Introduction", "Syllabus", "Quiz 1", "Week 2", "No activities"], [42], [], [], [], []),
+        (["course", "42", "--json"], json.loads, [section.to_dict() for section in SECTIONS], None, [42], [], [], [], []),
+        (["course", "42", "--yaml"], yaml.safe_load, [section.to_dict() for section in SECTIONS], None, [42], [], [], [], []),
     ],
 )
 def test_commands_cover_all_output_modes(
@@ -277,6 +361,8 @@ def test_commands_cover_all_output_modes(
     expected_course_ids: list[int],
     expected_todo_calls: list[tuple[int, int | None]],
     expected_grade_course_ids: list[int],
+    expected_alert_limits: list[int],
+    expected_overview_calls: list[tuple[int, int | None, int]],
 ) -> None:
     client, state = patch_runtime(monkeypatch)
 
@@ -288,6 +374,8 @@ def test_commands_cover_all_output_modes(
     assert client.course_ids == expected_course_ids
     assert client.todo_calls == expected_todo_calls
     assert client.grade_course_ids == expected_grade_course_ids
+    assert client.alert_limits == expected_alert_limits
+    assert client.overview_calls == expected_overview_calls
 
     if loader is None:
         assert texts is not None
@@ -442,7 +530,9 @@ def test_unknown_command_shows_click_error(monkeypatch: pytest.MonkeyPatch, runn
     ("args", "expected_stderr"),
     [
         (["courses"], "Loading courses..."),
+        (["alerts"], "Loading alerts..."),
         (["todo"], "Loading todo items..."),
+        (["overview"], "Loading overview..."),
         (["grades", "101"], "Loading grades for course 101..."),
         (["activities", "42"], "Loading activities for course 42..."),
         (["course", "42"], "Loading course 42..."),
@@ -652,6 +742,43 @@ def test_parse_course_grades_url_finds_course_nav_link() -> None:
     """
 
     assert scraper_module.parse_course_grades_url(html, BASE_URL) == f"{BASE_URL}/grade/report/index.php?id=101"
+
+
+def test_parse_alert_summary_extracts_notifications_and_counts() -> None:
+    parsed = cli_module.MoodleClient  # Keep imports in test module minimal.
+    del parsed
+
+    summary = scraper_module  # Avoid unused-import lint patterns.
+    del summary
+
+    from moodle_cli.parser import parse_alert_summary
+
+    result = parse_alert_summary(
+        {
+            "notifications": [
+                {
+                    "id": 1,
+                    "subject": "Due soon",
+                    "shortenedsubject": "Due soon",
+                    "eventtype": "assign_due",
+                    "component": "mod_assign",
+                    "timecreated": 123,
+                    "timecreatedpretty": "just now",
+                    "read": False,
+                    "contexturl": "https://school.example.edu/mod/assign/view.php?id=1",
+                    "contexturlname": "Assignment 1",
+                }
+            ]
+        },
+        {"favourites": 2, "types": {"1": 3, "2": 1, "3": 0}},
+        {"favourites": 1, "types": {"1": 2, "2": 0, "3": 0}},
+    )
+
+    assert result.notification_count == 1
+    assert result.unread_notification_count == 1
+    assert result.starred_message_count == 2
+    assert result.direct_message_count == 3
+    assert result.unread_direct_message_count == 2
 
 
 def test_main_reports_missing_base_url_with_example_config_noninteractively(

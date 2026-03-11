@@ -14,7 +14,15 @@ from moodle_cli.client import MoodleClient
 from moodle_cli.config import load_config
 from moodle_cli.constants import LOGIN_PATH
 from moodle_cli.exceptions import AuthError, MoodleAPIError, MoodleCLIError
-from moodle_cli.formatter import print_course_grades, print_courses, print_course_contents, print_todo_items, print_user_info
+from moodle_cli.formatter import (
+    print_alerts,
+    print_course_grades,
+    print_courses,
+    print_course_contents,
+    print_overview,
+    print_todo_items,
+    print_user_info,
+)
 from moodle_cli.output import output_json, output_yaml
 from moodle_cli.update_check import check_for_updates
 
@@ -137,6 +145,53 @@ def todo(ctx: click.Context, limit: int, days: int | None, as_json: bool, as_yam
         output_yaml([item.to_dict() for item in items])
     else:
         print_todo_items(items)
+
+
+@cli.command()
+@click.option("--limit", type=click.IntRange(min=1), default=20, show_default=True, help="Maximum number of notifications.")
+@click.option("--json", "as_json", is_flag=True, help="Output as JSON.")
+@click.option("--yaml", "as_yaml", is_flag=True, help="Output as YAML.")
+@click.pass_context
+def alerts(ctx: click.Context, limit: int, as_json: bool, as_yaml: bool) -> None:
+    """List notifications and message counts."""
+    _print_loading("Loading alerts...")
+    client = ctx.obj["get_client"]()
+    alerts_summary = client.get_alerts(limit=limit)
+
+    if as_json:
+        output_json(alerts_summary.to_dict())
+    elif as_yaml:
+        output_yaml(alerts_summary.to_dict())
+    else:
+        print_alerts(alerts_summary)
+
+
+@cli.command()
+@click.option("--todo-limit", type=click.IntRange(min=1), default=5, show_default=True, help="Maximum number of todo items.")
+@click.option("--todo-days", type=click.IntRange(min=1), help="Only include todo items due within the next N days.")
+@click.option("--alerts-limit", type=click.IntRange(min=1), default=5, show_default=True, help="Maximum number of notifications.")
+@click.option("--json", "as_json", is_flag=True, help="Output as JSON.")
+@click.option("--yaml", "as_yaml", is_flag=True, help="Output as YAML.")
+@click.pass_context
+def overview(
+    ctx: click.Context,
+    todo_limit: int,
+    todo_days: int | None,
+    alerts_limit: int,
+    as_json: bool,
+    as_yaml: bool,
+) -> None:
+    """Show a compact multi-source overview."""
+    _print_loading("Loading overview...")
+    client = ctx.obj["get_client"]()
+    overview_data = client.get_overview(todo_limit=todo_limit, todo_days=todo_days, alerts_limit=alerts_limit)
+
+    if as_json:
+        output_json(overview_data.to_dict())
+    elif as_yaml:
+        output_yaml(overview_data.to_dict())
+    else:
+        print_overview(overview_data)
 
 
 @cli.command()

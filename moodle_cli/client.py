@@ -10,17 +10,20 @@ from moodle_cli.constants import (
     COURSE_PATH,
     DASHBOARD_PATH,
     FUNC_GET_ACTION_EVENTS,
+    FUNC_GET_CONVERSATION_COUNTS,
     FUNC_GET_COURSES,
     FUNC_GET_COURSES_BY_TIMELINE,
     FUNC_GET_COURSE_CONTENTS,
+    FUNC_GET_POPUP_NOTIFICATIONS,
     FUNC_GET_SITE_INFO,
+    FUNC_GET_UNREAD_CONVERSATION_COUNTS,
     GRADE_REPORT_INDEX_PATH,
     GRADE_REPORT_OVERVIEW_PATH,
     GRADE_REPORT_PATH,
 )
 from moodle_cli.exceptions import AuthError, MoodleAPIError, MoodleRequestError
-from moodle_cli.models import Course, CourseGrades, Section, TodoItem, UserInfo
-from moodle_cli.parser import parse_courses, parse_todo_items, parse_user_info
+from moodle_cli.models import AlertSummary, Course, CourseGrades, Overview, Section, TodoItem, UserInfo
+from moodle_cli.parser import parse_alert_summary, parse_courses, parse_todo_items, parse_user_info
 from moodle_cli.scraper import (
     has_course_grades_html,
     parse_course_contents_html,
@@ -199,6 +202,51 @@ class MoodleClient:
             return []
 
         return parse_todo_items(events)
+
+    def get_alerts(self, limit: int = 20) -> AlertSummary:
+        """Get notifications and message counts for the authenticated user."""
+        self._ensure_session()
+
+        notifications_data = self._call(
+            FUNC_GET_POPUP_NOTIFICATIONS,
+            {"useridto": self._userid, "limit": limit, "offset": 0},
+        )
+        counts_data = self._call(FUNC_GET_CONVERSATION_COUNTS, {"userid": self._userid})
+        unread_counts_data = self._call(FUNC_GET_UNREAD_CONVERSATION_COUNTS, {"userid": self._userid})
+
+        if not isinstance(notifications_data, dict):
+            notifications_data = {}
+        if not isinstance(counts_data, dict):
+            counts_data = {}
+        if not isinstance(unread_counts_data, dict):
+            unread_counts_data = {}
+
+        return parse_alert_summary(notifications_data, counts_data, unread_counts_data)
+
+    def get_overview(self, todo_limit: int = 5, todo_days: int | None = None, alerts_limit: int = 5) -> Overview:
+        """Get a compact best-effort overview for agent workflows."""
+        user = self.get_site_info()
+        overview = Overview(user=user)
+
+        for label, loader in [
+            ("courses", lambda: self.get_courses()),
+            ("todo", lambda: self.get_todo(limit=todo_limit, days=todo_days)),
+            ("alerts", lambda: self.get_alerts(limit=alerts_limit)),
+        ]:
+            try:
+                value = loader()
+            except (MoodleAPIError, MoodleRequestError) as exc:
+                overview.errors.append(f"{label}: {exc}")
+                continue
+
+            if label == "courses":
+                overview.courses = value
+            elif label == "todo":
+                overview.todo = value
+            elif label == "alerts":
+                overview.alerts = value
+
+        return overview
 
     def get_course_grades(self, course_id: int) -> CourseGrades:
         """Get the authenticated user's grade report for a course."""
