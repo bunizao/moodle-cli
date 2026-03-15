@@ -5,7 +5,7 @@ Terminal-first CLI for Moodle LMS that reuses an authenticated browser session.
 ## Features
 
 - No API token setup required
-- Reads `MoodleSession` from your browser or `MOODLE_SESSION`
+- Reuses `MoodleSession` from `okta-auth`, your browser, or `MOODLE_SESSION`
 - Works with Moodle AJAX APIs and falls back to authenticated page scraping when needed
 - Upcoming timeline items for student-facing deadlines and actions
 - Terminal output plus `--json` and `--yaml`
@@ -14,13 +14,20 @@ Terminal-first CLI for Moodle LMS that reuses an authenticated browser session.
 
 - Python 3.10+
 - `uv`
-- An active Moodle browser session, or a `MOODLE_SESSION` environment variable
+- One of:
+  - `okta-auth-cli` configured for your Moodle site
+  - An active Moodle browser session
+  - A `MOODLE_SESSION` environment variable
 
 ## Install
 
 ```bash
 # Recommended: uv tool
 uv tool install moodle-cli
+
+# Optional: automatic Okta login and session reuse
+uv tool install okta-auth-cli
+okta config
 
 # Alternative: pipx
 pipx install moodle-cli

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import os
+import json
+import subprocess
 import types
 from http.cookiejar import Cookie, CookieJar
 
@@ -129,4 +131,77 @@ def test_load_from_okta_triggers_login_when_stored_cookie_is_missing(
         ("get_cookie_value", BASE_URL),
         ("ensure_login", BASE_URL),
         ("get_cookie_value", BASE_URL),
+    ]
+
+
+def test_load_from_okta_cli_uses_stored_cookie(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[list[str]] = []
+    payload = {
+        "count": 1,
+        "cookies": [
+            {"name": "MoodleSession", "value": "stored-session", "domain": f".{DOMAIN}"},
+        ],
+        "url": BASE_URL,
+    }
+
+    monkeypatch.setattr(auth_module.shutil, "which", lambda name: "/usr/bin/okta" if name == "okta" else None)
+    monkeypatch.setattr(auth_module, "_is_valid_session", lambda _base_url, value: value == "stored-session")
+
+    def fake_run(args, **kwargs):
+        calls.append(args)
+        assert kwargs == {
+            "stdin": subprocess.DEVNULL,
+            "capture_output": True,
+            "text": True,
+            "check": False,
+        }
+        return subprocess.CompletedProcess(args=args, returncode=0, stdout=json.dumps(payload), stderr="")
+
+    monkeypatch.setattr(auth_module.subprocess, "run", fake_run)
+
+    assert auth_module._load_from_okta_cli(BASE_URL) == "stored-session"
+    assert calls == [["/usr/bin/okta", "cookies", BASE_URL, "--json"]]
+
+
+def test_load_from_okta_cli_triggers_login_when_cookie_is_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[list[str]] = []
+
+    monkeypatch.setattr(auth_module.shutil, "which", lambda name: "/usr/bin/okta" if name == "okta" else None)
+    monkeypatch.setattr(auth_module, "_is_valid_session", lambda _base_url, value: value == "fresh-session")
+
+    def fake_run(args, **kwargs):
+        calls.append(args)
+        assert kwargs == {
+            "stdin": subprocess.DEVNULL,
+            "capture_output": True,
+            "text": True,
+            "check": False,
+        }
+        command = args[1]
+        if command == "cookies" and len(calls) == 1:
+            payload = {"count": 0, "cookies": [], "url": BASE_URL}
+        elif command == "login":
+            payload = {"success": True, "message": "Login succeeded", "url": BASE_URL}
+        elif command == "cookies" and len(calls) == 3:
+            payload = {
+                "count": 1,
+                "cookies": [
+                    {"name": "MoodleSession", "value": "fresh-session", "domain": DOMAIN},
+                ],
+                "url": BASE_URL,
+            }
+        else:
+            raise AssertionError(f"Unexpected okta CLI invocation: {args}")
+
+        return subprocess.CompletedProcess(args=args, returncode=0, stdout=json.dumps(payload), stderr="")
+
+    monkeypatch.setattr(auth_module.subprocess, "run", fake_run)
+
+    assert auth_module._load_from_okta_cli(BASE_URL) == "fresh-session"
+    assert calls == [
+        ["/usr/bin/okta", "cookies", BASE_URL, "--json"],
+        ["/usr/bin/okta", "login", BASE_URL, "--json"],
+        ["/usr/bin/okta", "cookies", BASE_URL, "--json"],
     ]

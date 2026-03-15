@@ -1,8 +1,11 @@
 """Authentication: extract MoodleSession from env, okta-auth, or browser."""
 
 import glob
+import json
 import logging
 import os
+import shutil
+import subprocess
 import sys
 from urllib.parse import urlparse
 
@@ -16,12 +19,117 @@ from moodle_cli.scraper import parse_page_context
 log = logging.getLogger(__name__)
 
 
+def _okta_cli_executable() -> str | None:
+    """Return the first available okta-auth CLI executable."""
+    for executable in ("okta", "okta-auth"):
+        path = shutil.which(executable)
+        if path:
+            return path
+    return None
+
+
+def _run_okta_cli_json(args: list[str]) -> dict[str, object] | None:
+    """Run okta-auth CLI and parse a JSON response."""
+    executable = _okta_cli_executable()
+    if not executable:
+        return None
+
+    try:
+        result = subprocess.run(
+            [executable, *args, "--json"],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError as exc:
+        log.debug("Could not run okta-auth CLI: %s", exc)
+        return None
+
+    stdout = result.stdout.strip()
+    if result.returncode != 0:
+        detail = result.stderr.strip() or stdout or f"exit code {result.returncode}"
+        log.debug("okta-auth CLI %s failed: %s", " ".join(args), detail)
+        return None
+
+    if not stdout:
+        log.debug("okta-auth CLI %s returned no output", " ".join(args))
+        return None
+
+    try:
+        payload = json.loads(stdout)
+    except json.JSONDecodeError as exc:
+        log.debug("Could not parse okta-auth CLI output for %s: %s", " ".join(args), exc)
+        return None
+
+    if not isinstance(payload, dict):
+        log.debug("Unexpected okta-auth CLI payload for %s: %r", " ".join(args), payload)
+        return None
+
+    return payload
+
+
+def _get_okta_cli_cookie_value(base_url: str, cookie_name: str) -> str | None:
+    """Read a cookie value from a stored okta-auth CLI session."""
+    payload = _run_okta_cli_json(["cookies", base_url])
+    if not payload:
+        return None
+
+    cookies = payload.get("cookies")
+    if not isinstance(cookies, list):
+        return None
+
+    host = (urlparse(base_url).hostname or "").lower()
+    preferred: str | None = None
+
+    for cookie in cookies:
+        if not isinstance(cookie, dict) or cookie.get("name") != cookie_name:
+            continue
+
+        value = cookie.get("value")
+        if not isinstance(value, str) or not value:
+            continue
+
+        cookie_domain = cookie.get("domain")
+        if preferred is None:
+            preferred = value
+        if isinstance(cookie_domain, str) and cookie_domain.lstrip(".").lower() == host:
+            return value
+
+    return preferred
+
+
+def _load_from_okta_cli(base_url: str) -> str | None:
+    """Try to resolve MoodleSession through the okta-auth CLI."""
+    if not _okta_cli_executable():
+        return None
+
+    session = _get_okta_cli_cookie_value(base_url, "MoodleSession")
+    if session and _is_valid_session(base_url, session):
+        log.debug("Using MoodleSession from okta-auth CLI")
+        return session
+
+    if session:
+        log.debug("Rejected stale MoodleSession from okta-auth CLI")
+
+    result = _run_okta_cli_json(["login", base_url])
+    if not result:
+        return None
+
+    session = _get_okta_cli_cookie_value(base_url, "MoodleSession")
+    if session and _is_valid_session(base_url, session):
+        log.debug("Using MoodleSession from okta-auth CLI after automatic login")
+        return session
+
+    return None
+
+
 def _load_from_okta(base_url: str) -> str | None:
     """Try to resolve MoodleSession through okta-auth's local session store."""
     try:
         from okta_auth.adapter import OktaAdapterError, ensure_login, get_cookie_value
     except ImportError:
-        return None
+        return _load_from_okta_cli(base_url)
 
     try:
         session = get_cookie_value(base_url, "MoodleSession")
