@@ -14,6 +14,7 @@ from click.testing import CliRunner
 
 import moodle_cli.cli as cli_module
 import moodle_cli.config as config_module
+from moodle_cli import __version__
 import moodle_cli.models as models_module
 import moodle_cli.output as output_module
 import moodle_cli.scraper as scraper_module
@@ -287,7 +288,7 @@ def test_global_help_and_version_do_not_load_runtime(monkeypatch: pytest.MonkeyP
         assert "todo" in result.stdout
         assert "update" in result.stdout
     else:
-        assert "version 0.2.1" in result.stdout
+        assert f"version {__version__}" in result.stdout
 
 
 @pytest.mark.parametrize(
