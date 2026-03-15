@@ -12,7 +12,12 @@ from moodle_cli import __version__
 from moodle_cli.auth import get_session
 from moodle_cli.client import MoodleClient
 from moodle_cli.config import load_config
-from moodle_cli.constants import LOGIN_PATH
+from moodle_cli.constants import (
+    LOGIN_PATH,
+    OKTA_AUTH_CONFIG_COMMAND,
+    OKTA_AUTH_INSTALL_COMMAND,
+    OKTA_AUTH_URL,
+)
 from moodle_cli.exceptions import AuthError, MoodleAPIError, MoodleCLIError
 from moodle_cli.formatter import (
     print_alerts,
@@ -56,6 +61,18 @@ def _login_url(base_url: str) -> str:
 def _open_login_page(base_url: str) -> bool:
     """Try to open the Moodle login page in the user's browser."""
     return bool(webbrowser.open(_login_url(base_url)))
+
+
+def _print_okta_auth_hint() -> None:
+    """Print a short hint about automatic session reuse via okta-auth."""
+    stderr_console.print(
+        "Tired of expired browser cookies? Try [bold cyan]okta-auth[/] for automatic "
+        f"login and session reuse: [underline]{OKTA_AUTH_URL}[/]"
+    )
+    stderr_console.print(
+        f"Install with [bold]{OKTA_AUTH_INSTALL_COMMAND}[/], then run "
+        f"[bold]{OKTA_AUTH_CONFIG_COMMAND}[/]."
+    )
 
 
 @click.group()
@@ -291,6 +308,7 @@ def main() -> None:
         sys.exit(e.exit_code)
     except AuthError as e:
         stderr_console.print(f"[bold red]Auth error:[/] {e}")
+        _print_okta_auth_hint()
         try:
             base_url = load_config()["base_url"]
         except (MoodleCLIError, click.ClickException):

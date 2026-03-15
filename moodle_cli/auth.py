@@ -1,4 +1,4 @@
-"""Authentication: extract MoodleSession cookie from env or browser."""
+"""Authentication: extract MoodleSession from env, okta-auth, or browser."""
 
 import glob
 import logging
@@ -14,6 +14,45 @@ from moodle_cli.scraper import parse_page_context
 
 
 log = logging.getLogger(__name__)
+
+
+def _load_from_okta(base_url: str) -> str | None:
+    """Try to resolve MoodleSession through okta-auth's local session store."""
+    try:
+        from okta_auth.adapter import OktaAdapterError, ensure_login, get_cookie_value
+    except ImportError:
+        return None
+
+    try:
+        session = get_cookie_value(base_url, "MoodleSession")
+    except OktaAdapterError as exc:
+        log.debug("Could not read okta-auth session for %s: %s", base_url, exc)
+        session = None
+
+    if session and _is_valid_session(base_url, session):
+        log.debug("Using MoodleSession from okta-auth")
+        return session
+
+    try:
+        result = ensure_login(base_url)
+    except OktaAdapterError as exc:
+        log.debug("okta-auth could not establish a Moodle session for %s: %s", base_url, exc)
+        return None
+
+    try:
+        session = get_cookie_value(base_url, "MoodleSession")
+    except OktaAdapterError as exc:
+        log.debug("okta-auth login succeeded but MoodleSession could not be read: %s", exc)
+        return None
+
+    if session and _is_valid_session(base_url, session):
+        if result.get("performed_login"):
+            log.debug("Using MoodleSession from okta-auth after automatic login")
+        else:
+            log.debug("Using existing MoodleSession from okta-auth")
+        return session
+
+    return None
 
 
 def load_from_env() -> str | None:
@@ -162,7 +201,7 @@ def _is_valid_session(base_url: str, moodle_session: str) -> bool:
 def get_session(base_url: str) -> str:
     """Get a valid MoodleSession cookie value.
 
-    Priority: env var → browser cookies.
+    Priority: env var → okta-auth session reuse → browser cookies.
     Raises AuthError if no session is found.
     """
     # 1. Environment variable
@@ -172,7 +211,12 @@ def get_session(base_url: str) -> str:
     if session:
         log.debug("Ignored invalid MoodleSession from environment variable")
 
-    # 2. Browser cookies
+    # 2. okta-auth session reuse and automatic login
+    session = _load_from_okta(base_url)
+    if session:
+        return session
+
+    # 3. Browser cookies
     domain = urlparse(base_url).hostname or ""
     for session in _iter_browser_sessions(domain):
         if _is_valid_session(base_url, session):
@@ -180,6 +224,7 @@ def get_session(base_url: str) -> str:
 
     raise AuthError(
         "No MoodleSession found. Either:\n"
-        f"  1. Log in to {base_url} in your browser, or\n"
-        f"  2. Set the {ENV_MOODLE_SESSION} environment variable"
+        f"  1. Configure okta-auth for {base_url}, or\n"
+        f"  2. Log in to {base_url} in your browser, or\n"
+        f"  3. Set the {ENV_MOODLE_SESSION} environment variable"
     )

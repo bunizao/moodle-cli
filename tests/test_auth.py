@@ -89,3 +89,44 @@ def test_get_session_falls_back_from_invalid_env_session_to_browser(
     monkeypatch.setitem(os.sys.modules, "browser_cookie3", fake_browser_cookie3)
 
     assert auth_module.get_session(BASE_URL) == "browser-session"
+
+
+def test_get_session_uses_okta_auth_before_browser(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("MOODLE_SESSION", raising=False)
+    monkeypatch.setattr(auth_module, "_load_from_okta", lambda _base_url: "okta-session")
+    monkeypatch.setattr(auth_module, "_is_valid_session", lambda _base_url, value: value == "okta-session")
+    monkeypatch.setattr(auth_module, "_iter_browser_sessions", lambda _domain: pytest.fail("browser fallback should not run"))
+
+    assert auth_module.get_session(BASE_URL) == "okta-session"
+
+
+def test_load_from_okta_triggers_login_when_stored_cookie_is_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, str]] = []
+
+    def fake_get_cookie_value(base_url: str, cookie_name: str) -> str | None:
+        calls.append(("get_cookie_value", base_url))
+        if len(calls) == 1:
+            return None
+        assert cookie_name == "MoodleSession"
+        return "fresh-session"
+
+    def fake_ensure_login(base_url: str) -> dict[str, object]:
+        calls.append(("ensure_login", base_url))
+        return {"success": True, "performed_login": True}
+
+    fake_adapter = types.SimpleNamespace(
+        OktaAdapterError=RuntimeError,
+        get_cookie_value=fake_get_cookie_value,
+        ensure_login=fake_ensure_login,
+    )
+    monkeypatch.setitem(os.sys.modules, "okta_auth.adapter", fake_adapter)
+    monkeypatch.setattr(auth_module, "_is_valid_session", lambda _base_url, value: value == "fresh-session")
+
+    assert auth_module._load_from_okta(BASE_URL) == "fresh-session"
+    assert calls == [
+        ("get_cookie_value", BASE_URL),
+        ("ensure_login", BASE_URL),
+        ("get_cookie_value", BASE_URL),
+    ]

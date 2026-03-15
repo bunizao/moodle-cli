@@ -893,6 +893,9 @@ def test_main_renders_auth_error_from_real_command(
     assert exit_code == 1
     assert stdout == ""
     assert "Auth error: missing session" in stderr
+    assert "Tired of expired browser cookies? Try okta-auth" in stderr
+    assert "https://github.com/bunizao/okta-auth" in stderr
+    assert "Install with uv tool install okta-auth-cli, then run okta config." in stderr
     assert f"Opened browser login page: {BASE_URL}/login/index.php" in stderr
     assert "Log in there, then rerun the command." in stderr
     assert opened_urls == [f"{BASE_URL}/login/index.php"]
@@ -916,6 +919,9 @@ def test_main_prints_login_url_when_browser_cannot_open(
 
     assert exit_code == 1
     assert stdout == ""
+    assert "Tired of expired browser cookies? Try okta-auth" in stderr
+    assert "https://github.com/bunizao/okta-auth" in stderr
+    assert "Install with uv tool install okta-auth-cli, then run okta config." in stderr
     assert f"Open this login page in your browser: {BASE_URL}/login/index.php" in stderr
     assert "Log in there, then rerun the command." in stderr
     assert opened_urls == [f"{BASE_URL}/login/index.php"]

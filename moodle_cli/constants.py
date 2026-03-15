@@ -28,3 +28,7 @@ CONFIG_DIR = "~/.config/moodle-cli"
 # Environment variable names
 ENV_MOODLE_SESSION = "MOODLE_SESSION"
 ENV_MOODLE_BASE_URL = "MOODLE_BASE_URL"
+
+OKTA_AUTH_URL = "https://github.com/bunizao/okta-auth"
+OKTA_AUTH_INSTALL_COMMAND = "uv tool install okta-auth-cli"
+OKTA_AUTH_CONFIG_COMMAND = "okta config"
