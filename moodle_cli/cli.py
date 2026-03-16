@@ -3,7 +3,7 @@
 import logging
 import sys
 import webbrowser
-from urllib.parse import urljoin
+from urllib.parse import parse_qs, urljoin, urlparse
 
 import click
 from rich.console import Console
@@ -24,6 +24,7 @@ from moodle_cli.formatter import (
     print_course_grades,
     print_courses,
     print_course_contents,
+    print_forum_discussion,
     print_overview,
     print_todo_items,
     print_user_info,
@@ -75,6 +76,61 @@ def _print_okta_auth_hint() -> None:
     )
 
 
+def _parse_discussion_reference(value: str) -> tuple[int, int | None]:
+    """Parse a discussion reference (ID or URL) into (discussion_id, post_id)."""
+    raw = value.strip()
+    if raw.isdigit():
+        return int(raw), None
+
+    parsed = urlparse(raw)
+    if not parsed.scheme or not parsed.netloc:
+        raise click.UsageError("DISCUSSION must be a numeric ID or a full discuss.php URL.")
+
+    query = parse_qs(parsed.query)
+    discussion_values = query.get("d") or []
+    if not discussion_values or not discussion_values[0].isdigit():
+        raise click.UsageError("Could not find discussion ID in URL query (expected ?d=...).")
+
+    discussion_id = int(discussion_values[0])
+    post_id: int | None = None
+
+    fragment = (parsed.fragment or "").strip()
+    if fragment.startswith("p") and fragment[1:].isdigit():
+        post_id = int(fragment[1:])
+
+    return discussion_id, post_id
+
+
+def _parse_forum_reference(ctx: click.Context, client: MoodleClient, value: str) -> int:
+    """Parse a forum reference (course-module ID or URL) into a forum view course-module ID."""
+    raw = value.strip()
+    if raw.isdigit():
+        return int(raw)
+
+    parsed = urlparse(raw)
+    if not parsed.scheme or not parsed.netloc:
+        raise click.UsageError("FORUM must be a numeric ID or a full forum URL.", ctx=ctx)
+
+    query = parse_qs(parsed.query)
+
+    if parsed.path.endswith("/mod/forum/view.php"):
+        values = query.get("id") or []
+        if not values or not values[0].isdigit():
+            raise click.UsageError("Could not find forum module ID in view.php URL (expected ?id=...).", ctx=ctx)
+        return int(values[0])
+
+    if parsed.path.endswith("/mod/forum/discuss.php"):
+        values = query.get("d") or []
+        if not values or not values[0].isdigit():
+            raise click.UsageError("Could not find discussion ID in discuss.php URL (expected ?d=...).", ctx=ctx)
+        forum_cmid = client.get_forum_view_cmid(int(values[0]))
+        if forum_cmid is None:
+            raise click.ClickException("Could not resolve forum ID from the discussion page.")
+        return forum_cmid
+
+    raise click.UsageError("Unsupported forum URL. Use a view.php?id=... or discuss.php?d=... URL.", ctx=ctx)
+
+
 @click.group()
 @click.option("-v", "--verbose", is_flag=True, help="Enable debug logging.")
 @click.version_option(version=__version__)
@@ -107,6 +163,158 @@ def cli(ctx: click.Context, verbose: bool) -> None:
         return ctx.obj["_client"]
 
     ctx.obj["get_client"] = get_client
+
+
+@cli.group()
+def forum() -> None:
+    """Forum utilities."""
+
+
+@forum.command(name="discussion")
+@click.argument("discussion", type=str, required=True)
+@click.option("--post", "post_id", type=int, help="Show a specific post ID (defaults to #p... from URL).")
+@click.option("--body", "show_body", is_flag=True, help="Show full post body (may be long).")
+@click.option("--json", "as_json", is_flag=True, help="Output as JSON.")
+@click.option("--yaml", "as_yaml", is_flag=True, help="Output as YAML.")
+@click.pass_context
+def forum_discussion(
+    ctx: click.Context,
+    discussion: str,
+    post_id: int | None,
+    show_body: bool,
+    as_json: bool,
+    as_yaml: bool,
+) -> None:
+    """Show posts in a forum discussion (DISCUSSION_ID or discuss.php URL)."""
+    discussion_id, url_post_id = _parse_discussion_reference(discussion)
+    if post_id is None:
+        post_id = url_post_id
+
+    _print_loading(f"Loading forum discussion {discussion_id}...")
+    client = ctx.obj["get_client"]()
+    thread = client.get_forum_discussion(discussion_id)
+
+    if post_id is not None:
+        filtered = [p for p in thread.posts if p.id == post_id]
+        if not filtered:
+            raise click.ClickException(f"Post {post_id} was not found in discussion {discussion_id}.")
+        from moodle_cli.models import ForumDiscussion
+
+        thread = ForumDiscussion(
+            id=thread.id,
+            subject=thread.subject,
+            course_id=thread.course_id,
+            forum_id=thread.forum_id,
+            url=thread.url,
+            posts=filtered,
+        )
+
+    if as_json:
+        output_json(thread.to_dict())
+    elif as_yaml:
+        output_yaml(thread.to_dict())
+    else:
+        print_forum_discussion(thread, highlight_post_id=post_id, show_body=show_body)
+
+
+@forum.command(name="discussions")
+@click.argument("forum", type=str, required=True)
+@click.option("--limit", type=click.IntRange(min=1), default=50, show_default=True, help="Maximum number of discussions.")
+@click.option("--json", "as_json", is_flag=True, help="Output as JSON.")
+@click.option("--yaml", "as_yaml", is_flag=True, help="Output as YAML.")
+@click.pass_context
+def forum_discussions(ctx: click.Context, forum: str, limit: int, as_json: bool, as_yaml: bool) -> None:
+    """List discussions from a forum (FORUM_ID or view.php/discuss.php URL)."""
+    client = ctx.obj["get_client"]()
+    forum_cmid = _parse_forum_reference(ctx, client, forum)
+
+    _print_loading(f"Loading forum discussions for forum {forum_cmid}...")
+    refs = client.get_forum_discussion_refs(forum_cmid)[:limit]
+
+    if as_json:
+        output_json([ref.to_dict() for ref in refs])
+    elif as_yaml:
+        output_yaml([ref.to_dict() for ref in refs])
+    else:
+        from rich.table import Table
+
+        table = Table(title=f"Forum {forum_cmid}: Discussions")
+        table.add_column("Discussion ID", style="dim", justify="right")
+        table.add_column("Subject", style="bold")
+        table.add_column("URL")
+        if not refs:
+            table.add_row("No discussions", "", "")
+        else:
+            for ref in refs:
+                table.add_row(str(ref.id), ref.subject, ref.url)
+        stdout_console.print(table)
+
+
+@forum.command(name="check")
+@click.argument("forum", type=str, required=True)
+@click.option("--limit", type=click.IntRange(min=1), default=20, show_default=True, help="Maximum number of discussions to validate.")
+@click.option("--json", "as_json", is_flag=True, help="Output as JSON.")
+@click.option("--yaml", "as_yaml", is_flag=True, help="Output as YAML.")
+@click.pass_context
+def forum_check(ctx: click.Context, forum: str, limit: int, as_json: bool, as_yaml: bool) -> None:
+    """Validate that discussions in a forum can be opened and rendered."""
+    client = ctx.obj["get_client"]()
+    forum_cmid = _parse_forum_reference(ctx, client, forum)
+
+    _print_loading(f"Loading forum discussions for forum {forum_cmid}...")
+    refs = client.get_forum_discussion_refs(forum_cmid)[:limit]
+
+    results: list[dict] = []
+    for ref in refs:
+        try:
+            discussion = client.get_forum_discussion(ref.id)
+            image_count = sum(len(post.image_urls) for post in discussion.posts)
+            results.append(
+                {
+                    "discussion_id": ref.id,
+                    "subject": ref.subject,
+                    "ok": True,
+                    "posts": len(discussion.posts),
+                    "images": image_count,
+                }
+            )
+        except Exception as exc:  # noqa: BLE001
+            results.append(
+                {
+                    "discussion_id": ref.id,
+                    "subject": ref.subject,
+                    "ok": False,
+                    "error": str(exc),
+                }
+            )
+
+    if as_json:
+        output_json(results)
+    elif as_yaml:
+        output_yaml(results)
+    else:
+        from rich.table import Table
+
+        table = Table(title=f"Forum {forum_cmid}: Discussion Check (first {len(results)})")
+        table.add_column("Discussion ID", style="dim", justify="right")
+        table.add_column("OK", justify="center")
+        table.add_column("Posts", style="cyan", justify="right")
+        table.add_column("Images", style="dim", justify="right")
+        table.add_column("Subject", style="bold")
+        table.add_column("Error")
+
+        for row in results:
+            ok = "[green]Yes[/]" if row.get("ok") else "[red]No[/]"
+            table.add_row(
+                str(row.get("discussion_id", "")),
+                ok,
+                str(row.get("posts", "")) if row.get("ok") else "",
+                str(row.get("images", "")) if row.get("ok") else "",
+                row.get("subject", ""),
+                row.get("error", ""),
+            )
+
+        stdout_console.print(table)
 
 
 @cli.command(name="user")

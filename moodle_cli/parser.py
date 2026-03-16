@@ -1,6 +1,18 @@
 """Parse raw Moodle JSON responses into typed models."""
 
-from moodle_cli.models import Activity, AlertNotification, AlertSummary, Course, Section, TodoItem, UserInfo
+from moodle_cli.html_utils import html_to_text_and_image_urls
+from moodle_cli.models import (
+    Activity,
+    AlertNotification,
+    AlertSummary,
+    Course,
+    ForumDiscussion,
+    ForumPost,
+    ForumPostAuthor,
+    Section,
+    TodoItem,
+    UserInfo,
+)
 
 
 def parse_user_info(data: dict) -> UserInfo:
@@ -120,4 +132,57 @@ def parse_alert_summary(notifications_data: dict, counts_data: dict, unread_coun
         unread_direct_message_count=unread_types.get("1", 0),
         unread_group_message_count=unread_types.get("2", 0),
         unread_self_message_count=unread_types.get("3", 0),
+    )
+
+
+def parse_forum_post_author(data: dict) -> ForumPostAuthor:
+    urls = data.get("urls", {}) if isinstance(data.get("urls"), dict) else {}
+    return ForumPostAuthor(
+        id=int(data.get("id") or 0),
+        fullname=str(data.get("fullname") or ""),
+        profile_url=str(urls.get("profile") or ""),
+        profile_image_url=str(urls.get("profileimage") or ""),
+    )
+
+
+def parse_forum_post(data: dict) -> ForumPost:
+    urls = data.get("urls", {}) if isinstance(data.get("urls"), dict) else {}
+    message_html = str(data.get("message") or "")
+    message_text, image_urls = html_to_text_and_image_urls(message_html, str(urls.get("view") or urls.get("discuss") or ""))
+    return ForumPost(
+        id=int(data.get("id") or 0),
+        discussion_id=int(data.get("discussionid") or 0),
+        subject=str(data.get("subject") or ""),
+        message_html=message_html,
+        message_text=message_text,
+        image_urls=image_urls,
+        author=parse_forum_post_author(data.get("author", {}) if isinstance(data.get("author"), dict) else {}),
+        parent_id=int(data.get("parentid") or 0),
+        time_created=int(data.get("timecreated") or 0),
+        time_modified=int(data.get("timemodified") or 0),
+        created_pretty="",
+        unread=bool(data.get("unread", False)),
+        is_deleted=bool(data.get("isdeleted", False)),
+        is_private_reply=bool(data.get("isprivatereply", False)),
+        url=str(urls.get("view") or urls.get("viewisolated") or ""),
+        reply_url=str(urls.get("reply") or ""),
+    )
+
+
+def parse_forum_discussion(data: dict, discussion_id: int) -> ForumDiscussion:
+    posts_raw = data.get("posts", []) if isinstance(data.get("posts"), list) else []
+    posts = [parse_forum_post(item) for item in posts_raw if isinstance(item, dict)]
+
+    subject = posts[0].subject if posts else ""
+    url = ""
+    if posts and posts[0].url:
+        url = posts[0].url.split("#", 1)[0]
+
+    return ForumDiscussion(
+        id=discussion_id,
+        subject=subject,
+        course_id=int(data.get("courseid") or 0),
+        forum_id=int(data.get("forumid") or 0),
+        url=url,
+        posts=posts,
     )

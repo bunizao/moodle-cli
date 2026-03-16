@@ -14,21 +14,27 @@ from moodle_cli.constants import (
     FUNC_GET_COURSES,
     FUNC_GET_COURSES_BY_TIMELINE,
     FUNC_GET_COURSE_CONTENTS,
+    FUNC_GET_DISCUSSION_POSTS,
     FUNC_GET_POPUP_NOTIFICATIONS,
     FUNC_GET_SITE_INFO,
     FUNC_GET_UNREAD_CONVERSATION_COUNTS,
+    FORUM_DISCUSS_PATH,
+    FORUM_VIEW_PATH,
     GRADE_REPORT_INDEX_PATH,
     GRADE_REPORT_OVERVIEW_PATH,
     GRADE_REPORT_PATH,
 )
 from moodle_cli.exceptions import AuthError, MoodleAPIError, MoodleRequestError
-from moodle_cli.models import AlertSummary, Course, CourseGrades, Overview, Section, TodoItem, UserInfo
-from moodle_cli.parser import parse_alert_summary, parse_courses, parse_todo_items, parse_user_info
+from moodle_cli.models import AlertSummary, Course, CourseGrades, ForumDiscussion, ForumDiscussionRef, Overview, Section, TodoItem, UserInfo
+from moodle_cli.parser import parse_alert_summary, parse_courses, parse_forum_discussion, parse_todo_items, parse_user_info
 from moodle_cli.scraper import (
     has_course_grades_html,
     parse_course_contents_html,
     parse_course_grades_html,
     parse_course_grades_url,
+    parse_forum_discussion_html,
+    parse_forum_discussion_refs_html,
+    parse_forum_view_cmid_from_discussion_html,
     parse_grade_overview_rows,
     parse_course_section_numbers,
     parse_page_context,
@@ -308,6 +314,49 @@ class MoodleClient:
             f"Could not find a usable grades page for course {course_id}. "
             "This Moodle site may use a different grade report configuration."
         )
+
+    def get_forum_discussion(self, discussion_id: int) -> ForumDiscussion:
+        """Get posts in a forum discussion, using AJAX when available."""
+        self._ensure_session()
+
+        try:
+            data = self._call(
+                FUNC_GET_DISCUSSION_POSTS,
+                {"discussionid": discussion_id, "sortby": "created", "sortdirection": "ASC", "includeinlineattachments": True},
+            )
+        except MoodleAPIError as exc:
+            should_fallback = exc.error_code in {"servicenotavailable", "accessexception"} or "Web service is not available" in str(exc)
+            if not should_fallback:
+                raise
+            log.debug("Falling back to scraping %s because %s is unavailable (%s)", FORUM_DISCUSS_PATH, FUNC_GET_DISCUSSION_POSTS, exc)
+        else:
+            if isinstance(data, dict):
+                return parse_forum_discussion(data, discussion_id)
+
+        try:
+            response = self._get(FORUM_DISCUSS_PATH, {"d": discussion_id})
+        except requests.RequestException as exc:
+            raise MoodleRequestError(f"Could not load forum discussion {discussion_id}: {exc}") from exc
+
+        return parse_forum_discussion_html(response.text, self.base_url, discussion_id)
+
+    def get_forum_view_cmid(self, discussion_id: int) -> int | None:
+        """Resolve the forum view course-module ID for a discussion."""
+        self._ensure_session()
+        try:
+            response = self._get(FORUM_DISCUSS_PATH, {"d": discussion_id})
+        except requests.RequestException as exc:
+            raise MoodleRequestError(f"Could not load forum discussion {discussion_id}: {exc}") from exc
+        return parse_forum_view_cmid_from_discussion_html(response.text)
+
+    def get_forum_discussion_refs(self, forum_cmid: int) -> list[ForumDiscussionRef]:
+        """List discussions from a forum view page."""
+        self._ensure_session()
+        try:
+            response = self._get(FORUM_VIEW_PATH, {"id": forum_cmid})
+        except requests.RequestException as exc:
+            raise MoodleRequestError(f"Could not load forum {forum_cmid}: {exc}") from exc
+        return parse_forum_discussion_refs_html(response.text, self.base_url)
 
     def _get_courses_timeline(self) -> list[Course]:
         """Get enrolled courses from the dashboard timeline API."""
