@@ -178,6 +178,11 @@ def _dispatch_top_level_url(ctx: click.Context, target: str) -> None:
         ctx.invoke(course, course_id=course_id, as_json=False, as_yaml=False)
         return
 
+    if path.endswith("/course/user.php") and ((query.get("mode") or [""])[0] == "grade"):
+        course_id = _parse_query_int(query, "id", "course ID")
+        ctx.invoke(grades, course_id=course_id, as_json=False, as_yaml=False)
+        return
+
     if "/grade/report/" in path:
         course_id = _parse_query_int(query, "id", "course ID")
         ctx.invoke(grades, course_id=course_id, as_json=False, as_yaml=False)
@@ -193,7 +198,7 @@ def _dispatch_top_level_url(ctx: click.Context, target: str) -> None:
         return
 
     raise click.UsageError(
-        "Unsupported Moodle URL. Supported paths: /mod/forum/discuss.php, /mod/forum/view.php, /mod/*/view.php, /course/view.php, /grade/report/*.",
+        "Unsupported Moodle URL. Supported paths: /mod/forum/discuss.php, /mod/forum/view.php, /mod/*/view.php, /course/view.php, /course/user.php?mode=grade, /grade/report/*.",
         ctx=ctx,
     )
 

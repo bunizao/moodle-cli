@@ -640,6 +640,16 @@ def test_top_level_url_routes_grade_report(monkeypatch: pytest.MonkeyPatch, runn
     assert "Grades: Mathematics 101" in result.output
 
 
+def test_top_level_url_routes_course_user_grade_page(monkeypatch: pytest.MonkeyPatch, runner: CliRunner) -> None:
+    client, _ = patch_runtime(monkeypatch)
+
+    result = runner.invoke(cli_module.cli, [f"{BASE_URL}/course/user.php?mode=grade&id=101&user=7"])
+
+    assert result.exit_code == 0
+    assert client.grade_course_ids == [101]
+    assert "Grades: Mathematics 101" in result.output
+
+
 def test_top_level_url_routes_activity_page_to_course(monkeypatch: pytest.MonkeyPatch, runner: CliRunner) -> None:
     client, _ = patch_runtime(monkeypatch)
 
