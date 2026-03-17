@@ -441,6 +441,8 @@ def forum_forums(
 @click.option("--titles-only", is_flag=True, help="Only search discussion titles.")
 @click.option("--unread-only", is_flag=True, help="Only include unread discussion or post matches.")
 @click.option("--recent", is_flag=True, help="Sort matches by newest activity instead of relevance.")
+@click.option("--limit-forums", type=click.IntRange(min=1), help="Maximum number of forums to scan.")
+@click.option("--limit-discussions", type=click.IntRange(min=1), help="Maximum number of discussions to scan per forum.")
 @click.option("--limit", type=click.IntRange(min=1), default=20, show_default=True, help="Maximum number of matches.")
 @click.option("--json", "as_json", is_flag=True, help="Output as JSON.")
 @click.option("--yaml", "as_yaml", is_flag=True, help="Output as YAML.")
@@ -453,6 +455,8 @@ def forum_search(
     titles_only: bool,
     unread_only: bool,
     recent: bool,
+    limit_forums: int | None,
+    limit_discussions: int | None,
     limit: int,
     as_json: bool,
     as_yaml: bool,
@@ -471,6 +475,8 @@ def forum_search(
         include_post_text=not titles_only,
         unread_only=unread_only,
         sort_by="recent" if recent else "relevance",
+        max_forums=limit_forums,
+        max_discussions_per_forum=limit_discussions,
     )
 
     if as_json:
@@ -488,6 +494,10 @@ def forum_search(
 @click.option("--titles-only", is_flag=True, help="Only search discussion titles.")
 @click.option("--unread-only", is_flag=True, help="Only include unread discussion or post matches.")
 @click.option("--body", "show_body", is_flag=True, help="Resolve the best match into the target post/discussion body.")
+@click.option("--list", "list_mode", is_flag=True, help="Return a shortlist instead of only the single best match.")
+@click.option("--limit-forums", type=click.IntRange(min=1), help="Maximum number of forums to scan.")
+@click.option("--limit-discussions", type=click.IntRange(min=1), help="Maximum number of discussions to scan per forum.")
+@click.option("--limit", type=click.IntRange(min=1), default=5, show_default=True, help="Maximum shortlist size when using --list.")
 @click.option("--json", "as_json", is_flag=True, help="Output as JSON.")
 @click.option("--yaml", "as_yaml", is_flag=True, help="Output as YAML.")
 @click.pass_context
@@ -499,6 +509,10 @@ def forum_find(
     titles_only: bool,
     unread_only: bool,
     show_body: bool,
+    list_mode: bool,
+    limit_forums: int | None,
+    limit_discussions: int | None,
+    limit: int,
     as_json: bool,
     as_yaml: bool,
 ) -> None:
@@ -510,12 +524,14 @@ def forum_find(
     _print_loading(f"Finding best forum match for '{query}'...")
     hits = client.search_forum_content(
         query,
-        limit=1,
+        limit=limit if list_mode else 1,
         course_id=course_id,
         forum_cmid=forum_cmid,
         include_post_text=not titles_only,
         unread_only=unread_only,
         sort_by="recent",
+        max_forums=limit_forums,
+        max_discussions_per_forum=limit_discussions,
     )
     hit = hits[0] if hits else None
 
@@ -528,6 +544,15 @@ def forum_find(
             output_yaml(discussion.to_dict())
         else:
             print_forum_discussion(discussion, highlight_post_id=hit.post_id or None, show_body=True)
+        return
+
+    if list_mode:
+        if as_json:
+            output_json([item.to_dict() for item in hits])
+        elif as_yaml:
+            output_yaml([item.to_dict() for item in hits])
+        else:
+            print_forum_search_hits(hits)
         return
 
     if as_json:
