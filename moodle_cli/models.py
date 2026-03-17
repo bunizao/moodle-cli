@@ -248,3 +248,161 @@ class Section:
             "summary": self.summary,
             "activities": [a.to_dict() for a in self.activities],
         }
+
+
+@dataclass
+class ForumPostAuthor:
+    id: int
+    fullname: str = ""
+    profile_url: str = ""
+    profile_image_url: str = ""
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "fullname": self.fullname,
+            "profile_url": self.profile_url,
+            "profile_image_url": self.profile_image_url,
+        }
+
+
+@dataclass
+class ForumPost:
+    id: int
+    discussion_id: int
+    subject: str = ""
+    message_html: str = ""
+    message_text: str = ""
+    image_urls: list[str] = field(default_factory=list)
+    links: list[dict[str, str]] = field(default_factory=list)
+    tables: list[dict[str, list]] = field(default_factory=list)
+    author: ForumPostAuthor = field(default_factory=lambda: ForumPostAuthor(id=0))
+    parent_id: int = 0
+    time_created: int = 0
+    time_modified: int = 0
+    created_pretty: str = ""
+    unread: bool = False
+    is_deleted: bool = False
+    is_private_reply: bool = False
+    url: str = ""
+    reply_url: str = ""
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "discussion_id": self.discussion_id,
+            "subject": self.subject,
+            "message_html": self.message_html,
+            "message_text": self.message_text,
+            "image_urls": self.image_urls,
+            "links": self.links,
+            "tables": self.tables,
+            "author": self.author.to_dict(),
+            "parent_id": self.parent_id,
+            "time_created": self.time_created,
+            "time_modified": self.time_modified,
+            "created_pretty": self.created_pretty,
+            "unread": self.unread,
+            "is_deleted": self.is_deleted,
+            "is_private_reply": self.is_private_reply,
+            "url": self.url,
+            "reply_url": self.reply_url,
+        }
+
+
+@dataclass
+class ForumDiscussion:
+    id: int
+    subject: str = ""
+    course_id: int = 0
+    forum_id: int = 0
+    group_id: int = 0
+    group_name: str = ""
+    url: str = ""
+    posts: list[ForumPost] = field(default_factory=list)
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "subject": self.subject,
+            "course_id": self.course_id,
+            "forum_id": self.forum_id,
+            "group_id": self.group_id,
+            "group_name": self.group_name,
+            "url": self.url,
+            "posts": [post.to_dict() for post in self.posts],
+        }
+
+
+@dataclass
+class ForumDiscussionRef:
+    id: int
+    subject: str = ""
+    group_id: int = 0
+    group_name: str = ""
+    url: str = ""
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "subject": self.subject,
+            "group_id": self.group_id,
+            "group_name": self.group_name,
+            "url": self.url,
+        }
+
+
+@dataclass
+class ForumActivityRef:
+    id: int
+    name: str = ""
+    course_id: int = 0
+    course_name: str = ""
+    url: str = ""
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "name": self.name,
+            "course_id": self.course_id,
+            "course_name": self.course_name,
+            "url": self.url,
+        }
+
+
+@dataclass
+class ForumSearchHit:
+    course_id: int = 0
+    course_name: str = ""
+    forum_id: int = 0
+    forum_name: str = ""
+    group_id: int = 0
+    group_name: str = ""
+    discussion_id: int = 0
+    discussion_subject: str = ""
+    post_id: int = 0
+    author_name: str = ""
+    matched_in: str = ""
+    snippet: str = ""
+    unread: bool = False
+    time_created: int = 0
+    url: str = ""
+
+    def to_dict(self) -> dict:
+        return {
+            "course_id": self.course_id,
+            "course_name": self.course_name,
+            "forum_id": self.forum_id,
+            "forum_name": self.forum_name,
+            "group_id": self.group_id,
+            "group_name": self.group_name,
+            "discussion_id": self.discussion_id,
+            "discussion_subject": self.discussion_subject,
+            "post_id": self.post_id,
+            "author_name": self.author_name,
+            "matched_in": self.matched_in,
+            "snippet": self.snippet,
+            "unread": self.unread,
+            "time_created": self.time_created,
+            "url": self.url,
+        }

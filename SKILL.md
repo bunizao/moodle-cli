@@ -13,6 +13,29 @@ Resolve course IDs with `moodle courses --json` before running course-specific c
 
 Avoid `moodle overview --json` unless the user explicitly asks for a combined snapshot across courses, deadlines, and alerts.
 
+For forum requests, prefer `moodle forum find` over manually chaining `forum forums`, `forum discussions`, and `forum discussion`.
+
+If the user already gives a forum discussion URL, skip search and open it directly with `moodle forum discussion URL --json`.
+
+If the user gives a forum view URL or discussion URL and wants to browse nearby discussions, use `moodle forum discussions URL --json`.
+
+Use scan budgets first when the site may be large:
+
+- `--course` to narrow to one course
+- `--limit-forums` to cap how many forums to scan
+- `--limit-discussions` to cap how many discussions to scan per forum
+
+Grouped forums are handled automatically. Do not assume an empty default forum page means the forum has no discussions.
+
+Default forum agent flow:
+
+1. Start with `moodle forum find QUERY --json`
+2. Add `--unread-only` when the user wants new or unseen content
+3. Add `--list --limit N` when one result is not enough and you need a shortlist
+4. Add `--body` only when the snippet is insufficient and you need the full target post/discussion
+
+Avoid `moodle forum search` unless you explicitly need a larger result set than `forum find --list`.
+
 # Intent To Command
 
 Use these mappings.
@@ -28,6 +51,11 @@ Use these mappings.
 | Show activities in a course | `moodle activities COURSE_ID --json` |
 | Show course contents or sections in a course | `moodle course COURSE_ID --json` |
 | Show grades for a course | `moodle grades COURSE_ID --json` |
+| Find the best forum match for a keyword | `moodle forum find QUERY --json` |
+| Find a shortlist of forum matches | `moodle forum find QUERY --list --limit 5 --json` |
+| Open the resolved forum post/discussion body | `moodle forum find QUERY --body --json` |
+| Open a known forum discussion URL or ID directly | `moodle forum discussion DISCUSSION_OR_URL --json` |
+| Browse discussions in a known forum URL or ID | `moodle forum discussions FORUM_OR_URL --json` |
 | Check whether this CLI has an update | `moodle update --json` |
 
 # Operating Rules
@@ -39,3 +67,12 @@ Do not paste full command output unless the user explicitly asks for raw JSON.
 If the user asks for "recent", "next", or "nearest", sort by relevance and mention exact timestamps from `due_at` or `created_at`.
 
 If a request is ambiguous between activities, courses, and grades, inspect courses first and then run the smallest follow-up command.
+
+For forum work, do not enumerate forums or discussions first unless the user explicitly asks to browse. Search first, then expand only if needed.
+
+For forum discussion output, prefer structured fields over heuristic text parsing when available:
+
+- `image_urls` for original image links
+- `links` for extracted hyperlinks
+- `tables` for structured table content
+- `group_id` and `group_name` for grouped forum context

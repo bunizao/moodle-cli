@@ -1,6 +1,7 @@
 """Moodle client using authenticated page scraping and AJAX fallbacks."""
 
 import logging
+import re
 import time
 
 import requests
@@ -14,21 +15,42 @@ from moodle_cli.constants import (
     FUNC_GET_COURSES,
     FUNC_GET_COURSES_BY_TIMELINE,
     FUNC_GET_COURSE_CONTENTS,
+    FUNC_GET_DISCUSSION_POSTS,
     FUNC_GET_POPUP_NOTIFICATIONS,
     FUNC_GET_SITE_INFO,
     FUNC_GET_UNREAD_CONVERSATION_COUNTS,
+    FORUM_DISCUSS_PATH,
+    FORUM_VIEW_PATH,
     GRADE_REPORT_INDEX_PATH,
     GRADE_REPORT_OVERVIEW_PATH,
     GRADE_REPORT_PATH,
 )
 from moodle_cli.exceptions import AuthError, MoodleAPIError, MoodleRequestError
-from moodle_cli.models import AlertSummary, Course, CourseGrades, Overview, Section, TodoItem, UserInfo
-from moodle_cli.parser import parse_alert_summary, parse_courses, parse_todo_items, parse_user_info
+from moodle_cli.models import (
+    AlertSummary,
+    Course,
+    CourseGrades,
+    ForumActivityRef,
+    ForumDiscussion,
+    ForumDiscussionRef,
+    ForumSearchHit,
+    Overview,
+    Section,
+    TodoItem,
+    UserInfo,
+)
+from moodle_cli.parser import parse_alert_summary, parse_courses, parse_forum_discussion, parse_todo_items, parse_user_info
 from moodle_cli.scraper import (
     has_course_grades_html,
     parse_course_contents_html,
     parse_course_grades_html,
     parse_course_grades_url,
+    parse_forum_discussion_html,
+    parse_forum_discussion_group_html,
+    parse_forum_discussion_refs_html,
+    parse_forum_groups_html,
+    parse_forum_group_ids_html,
+    parse_forum_view_cmid_from_discussion_html,
     parse_grade_overview_rows,
     parse_course_section_numbers,
     parse_page_context,
@@ -48,6 +70,8 @@ class MoodleClient:
         self._sesskey: str | None = None
         self._userid: int | None = None
         self._user_info: UserInfo | None = None
+        self._forum_discussions_cache: dict[int, ForumDiscussion] = {}
+        self._forum_discussion_refs_cache: dict[int, list[ForumDiscussionRef]] = {}
 
     def _ajax_url(self, function_name: str) -> str:
         """Build the AJAX service URL."""
@@ -309,6 +333,286 @@ class MoodleClient:
             "This Moodle site may use a different grade report configuration."
         )
 
+    def get_forum_discussion(self, discussion_id: int) -> ForumDiscussion:
+        """Get posts in a forum discussion, using AJAX when available."""
+        cached = self._forum_discussions_cache.get(discussion_id)
+        if cached is not None:
+            return cached
+
+        self._ensure_session()
+
+        try:
+            data = self._call(
+                FUNC_GET_DISCUSSION_POSTS,
+                {"discussionid": discussion_id, "sortby": "created", "sortdirection": "ASC", "includeinlineattachments": True},
+            )
+        except MoodleAPIError as exc:
+            should_fallback = exc.error_code in {"servicenotavailable", "accessexception"} or "Web service is not available" in str(exc)
+            if not should_fallback:
+                raise
+            log.debug("Falling back to scraping %s because %s is unavailable (%s)", FORUM_DISCUSS_PATH, FUNC_GET_DISCUSSION_POSTS, exc)
+        else:
+            if isinstance(data, dict):
+                discussion = parse_forum_discussion(data, discussion_id)
+                if discussion.group_id <= 0:
+                    try:
+                        response = self._get(FORUM_DISCUSS_PATH, {"d": discussion_id})
+                    except requests.RequestException:
+                        response = None
+                    if response is not None:
+                        discussion.group_id, discussion.group_name = parse_forum_discussion_group_html(response.text)
+                self._forum_discussions_cache[discussion_id] = discussion
+                return discussion
+
+        try:
+            response = self._get(FORUM_DISCUSS_PATH, {"d": discussion_id})
+        except requests.RequestException as exc:
+            raise MoodleRequestError(f"Could not load forum discussion {discussion_id}: {exc}") from exc
+
+        discussion = parse_forum_discussion_html(response.text, self.base_url, discussion_id)
+        self._forum_discussions_cache[discussion_id] = discussion
+        return discussion
+
+    def get_forum_view_cmid(self, discussion_id: int) -> int | None:
+        """Resolve the forum view course-module ID for a discussion."""
+        self._ensure_session()
+        try:
+            response = self._get(FORUM_DISCUSS_PATH, {"d": discussion_id})
+        except requests.RequestException as exc:
+            raise MoodleRequestError(f"Could not load forum discussion {discussion_id}: {exc}") from exc
+        return parse_forum_view_cmid_from_discussion_html(response.text)
+
+    def get_forum_discussion_refs(self, forum_cmid: int) -> list[ForumDiscussionRef]:
+        """List discussions from a forum view page."""
+        cached = self._forum_discussion_refs_cache.get(forum_cmid)
+        if cached is not None:
+            return cached
+
+        self._ensure_session()
+        try:
+            response = self._get(FORUM_VIEW_PATH, {"id": forum_cmid})
+        except requests.RequestException as exc:
+            raise MoodleRequestError(f"Could not load forum {forum_cmid}: {exc}") from exc
+
+        groups = parse_forum_groups_html(response.text)
+        refs = parse_forum_discussion_refs_html(response.text, self.base_url) if not groups else []
+        seen_ids = {ref.id for ref in refs}
+
+        for group_id, group_name in groups:
+            try:
+                group_response = self._get(FORUM_VIEW_PATH, {"id": forum_cmid, "group": group_id})
+            except requests.RequestException as exc:
+                raise MoodleRequestError(f"Could not load forum {forum_cmid} group {group_id}: {exc}") from exc
+
+            for ref in parse_forum_discussion_refs_html(group_response.text, self.base_url):
+                if ref.id in seen_ids:
+                    continue
+                seen_ids.add(ref.id)
+                ref.group_id = group_id
+                ref.group_name = group_name
+                refs.append(ref)
+
+        self._forum_discussion_refs_cache[forum_cmid] = refs
+        return refs
+
+    def get_course_forums(self, course_id: int, course_name: str = "") -> list[ForumActivityRef]:
+        """List forum activities in a course."""
+        sections = self.get_course_contents(course_id)
+        return [
+            ForumActivityRef(
+                id=activity.id,
+                name=activity.name,
+                course_id=course_id,
+                course_name=course_name,
+                url=activity.url,
+            )
+            for section in sections
+            for activity in section.activities
+            if activity.modname == "forum"
+        ]
+
+    def get_forums(self, course_id: int | None = None) -> list[ForumActivityRef]:
+        """List forum activities across one course or all enrolled courses."""
+        if course_id is not None:
+            course_name = ""
+            for course in self.get_courses():
+                if course.id == course_id:
+                    course_name = course.fullname or course.shortname
+                    break
+            return self.get_course_forums(course_id, course_name=course_name)
+
+        refs: list[ForumActivityRef] = []
+        for course in self.get_courses():
+            refs.extend(self.get_course_forums(course.id, course_name=course.fullname or course.shortname))
+        return refs
+
+    def search_forum_content(
+        self,
+        query: str,
+        limit: int = 20,
+        course_id: int | None = None,
+        forum_cmid: int | None = None,
+        include_post_text: bool = True,
+        unread_only: bool = False,
+        sort_by: str = "relevance",
+        max_forums: int | None = None,
+        max_discussions_per_forum: int | None = None,
+    ) -> list[ForumSearchHit]:
+        """Search forum discussion titles and optionally post content."""
+        query = query.strip()
+        if not query:
+            return []
+
+        forum_refs = self.get_forums(course_id=course_id)
+        if forum_cmid is not None:
+            forum_refs = [ref for ref in forum_refs if ref.id == forum_cmid]
+            if not forum_refs:
+                forum_refs = [ForumActivityRef(id=forum_cmid, url=f"{self.base_url}{FORUM_VIEW_PATH}?id={forum_cmid}")]
+        elif max_forums is not None:
+            forum_refs = forum_refs[:max_forums]
+
+        hits: list[tuple[int, ForumSearchHit]] = []
+        seen: set[tuple[int, int]] = set()
+
+        for forum_ref in forum_refs:
+            refs = self.get_forum_discussion_refs(forum_ref.id)
+            if max_discussions_per_forum is not None:
+                refs = refs[:max_discussions_per_forum]
+            for ref in refs:
+                discussion: ForumDiscussion | None = None
+                latest_post = None
+                discussion_has_unread = False
+                matching_post_hits: list[tuple[int, ForumSearchHit]] = []
+
+                if include_post_text or unread_only or sort_by == "recent":
+                    discussion = self.get_forum_discussion(ref.id)
+                    if discussion.posts:
+                        latest_post = max(discussion.posts, key=lambda post: post.time_created or 0)
+                        discussion_has_unread = any(post.unread for post in discussion.posts)
+
+                if not include_post_text:
+                    subject_score = _match_score(ref.subject, query)
+                    if subject_score > 0 and (not unread_only or discussion_has_unread):
+                        key = (ref.id, 0)
+                        if key not in seen:
+                            seen.add(key)
+                            hits.append(
+                                (
+                                    400 + subject_score,
+                                    ForumSearchHit(
+                                        course_id=forum_ref.course_id,
+                                        course_name=forum_ref.course_name,
+                                        forum_id=forum_ref.id,
+                                        forum_name=forum_ref.name,
+                                        group_id=ref.group_id,
+                                        group_name=ref.group_name,
+                                        discussion_id=ref.id,
+                                        discussion_subject=ref.subject,
+                                        matched_in="discussion_subject",
+                                        snippet=_snippet_for_text(ref.subject, query),
+                                        unread=discussion_has_unread,
+                                        time_created=latest_post.time_created if latest_post is not None else 0,
+                                        url=ref.url,
+                                    ),
+                                )
+                            )
+                    continue
+
+                if discussion is None:
+                    discussion = self.get_forum_discussion(ref.id)
+                for post in discussion.posts:
+                    post_subject_score = _match_score(post.subject, query)
+                    post_body_score = _match_score(post.message_text, query)
+                    if post_subject_score <= 0 and post_body_score <= 0:
+                        continue
+                    if unread_only and not post.unread:
+                        continue
+
+                    matched_in = "post_subject" if post_subject_score >= post_body_score else "post_body"
+                    matched_text = post.subject if matched_in == "post_subject" else post.message_text
+                    score = 300 + max(post_subject_score, post_body_score)
+                    key = (ref.id, post.id)
+                    if key in seen:
+                        continue
+                    matching_post_hits.append(
+                        (
+                            score,
+                            ForumSearchHit(
+                                course_id=forum_ref.course_id,
+                                course_name=forum_ref.course_name,
+                                forum_id=forum_ref.id,
+                                forum_name=forum_ref.name,
+                                group_id=discussion.group_id or ref.group_id,
+                                group_name=discussion.group_name or ref.group_name,
+                                discussion_id=ref.id,
+                                discussion_subject=discussion.subject or ref.subject,
+                                post_id=post.id,
+                                author_name=post.author.fullname,
+                                matched_in=matched_in,
+                                snippet=_snippet_for_text(matched_text, query),
+                                unread=post.unread,
+                                time_created=post.time_created,
+                                url=post.url or ref.url,
+                            ),
+                        )
+                    )
+
+                if matching_post_hits:
+                    for score, hit in matching_post_hits:
+                        key = (hit.discussion_id, hit.post_id)
+                        if key in seen:
+                            continue
+                        seen.add(key)
+                        hits.append((score, hit))
+                    continue
+
+                subject_score = _match_score(ref.subject, query)
+                if subject_score > 0 and (not unread_only or discussion_has_unread):
+                    key = (ref.id, 0)
+                    if key not in seen:
+                        seen.add(key)
+                        hits.append(
+                            (
+                                400 + subject_score,
+                                ForumSearchHit(
+                                    course_id=forum_ref.course_id,
+                                    course_name=forum_ref.course_name,
+                                    forum_id=forum_ref.id,
+                                    forum_name=forum_ref.name,
+                                    discussion_id=ref.id,
+                                    discussion_subject=ref.subject,
+                                    matched_in="discussion_subject",
+                                    snippet=_snippet_for_text(ref.subject, query),
+                                    unread=discussion_has_unread,
+                                    time_created=latest_post.time_created if latest_post is not None else 0,
+                                    url=ref.url,
+                                ),
+                            )
+                        )
+
+        if sort_by == "recent":
+            hits.sort(
+                key=lambda item: (
+                    -(item[1].time_created or 0),
+                    -item[0],
+                    item[1].course_name.lower(),
+                    item[1].forum_name.lower(),
+                    item[1].discussion_id,
+                    item[1].post_id,
+                )
+            )
+        else:
+            hits.sort(
+                key=lambda item: (
+                    -item[0],
+                    item[1].course_name.lower(),
+                    item[1].forum_name.lower(),
+                    item[1].discussion_id,
+                    item[1].post_id,
+                )
+            )
+        return [hit for _, hit in hits[:limit]]
+
     def _get_courses_timeline(self) -> list[Course]:
         """Get enrolled courses from the dashboard timeline API."""
         courses: list[dict] = []
@@ -357,3 +661,52 @@ class MoodleClient:
                 sections.append(section)
 
         return sections
+
+
+def _normalize_query(value: str) -> tuple[str, list[str]]:
+    cleaned = " ".join((value or "").lower().split())
+    tokens = [token for token in re.split(r"\s+", cleaned) if token]
+    return cleaned, tokens
+
+
+def _match_score(text: str, query: str) -> int:
+    haystack = " ".join((text or "").lower().split())
+    if not haystack:
+        return 0
+
+    normalized_query, tokens = _normalize_query(query)
+    if not normalized_query:
+        return 0
+    if normalized_query in haystack:
+        return 100 + len(normalized_query)
+    if tokens and all(token in haystack for token in tokens):
+        return 60 + len(tokens)
+    return 0
+
+
+def _snippet_for_text(text: str, query: str, max_len: int = 120) -> str:
+    cleaned = " ".join((text or "").split())
+    if not cleaned:
+        return ""
+
+    normalized_query, tokens = _normalize_query(query)
+    lower = cleaned.lower()
+    start = lower.find(normalized_query) if normalized_query else -1
+    if start < 0:
+        for token in tokens:
+            start = lower.find(token)
+            if start >= 0:
+                break
+
+    if start < 0 or len(cleaned) <= max_len:
+        return cleaned if len(cleaned) <= max_len else f"{cleaned[: max_len - 1]}…"
+
+    half = max_len // 2
+    left = max(0, start - half)
+    right = min(len(cleaned), left + max_len)
+    snippet = cleaned[left:right]
+    if left > 0:
+        snippet = f"…{snippet}"
+    if right < len(cleaned):
+        snippet = f"{snippet}…"
+    return snippet

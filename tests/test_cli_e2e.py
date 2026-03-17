@@ -25,6 +25,12 @@ from moodle_cli.models import (
     AlertSummary,
     Course,
     CourseGrades,
+    ForumActivityRef,
+    ForumDiscussion,
+    ForumDiscussionRef,
+    ForumPost,
+    ForumPostAuthor,
+    ForumSearchHit,
     GradeItem,
     Overview,
     Section,
@@ -57,9 +63,102 @@ SECTIONS = [
         activities=[
             Activity(id=21, name="Syllabus", modname="resource", visible=True),
             Activity(id=22, name="Quiz 1", modname="quiz", visible=False),
+            Activity(id=501, name="General Discussion", modname="forum", visible=True, url=f"{BASE_URL}/mod/forum/view.php?id=501"),
         ],
     ),
     Section(id=12, name="Week 2", section=2, visible=False, activities=[]),
+]
+FORUM_REFS = [
+    ForumActivityRef(id=501, name="General Discussion", course_id=101, course_name="Mathematics 101", url=f"{BASE_URL}/mod/forum/view.php?id=501"),
+    ForumActivityRef(id=502, name="Essay Clinic", course_id=202, course_name="History 202", url=f"{BASE_URL}/mod/forum/view.php?id=502"),
+]
+FORUM_DISCUSSION_REFS = {
+    501: [
+        ForumDiscussionRef(id=9001, subject="Exam deadline questions", url=f"{BASE_URL}/mod/forum/discuss.php?d=9001"),
+        ForumDiscussionRef(id=9002, subject="Lecture recap", url=f"{BASE_URL}/mod/forum/discuss.php?d=9002"),
+    ],
+}
+FORUM_DISCUSSIONS = {
+    9001: ForumDiscussion(
+        id=9001,
+        subject="Exam deadline questions",
+        course_id=101,
+        forum_id=501,
+        url=f"{BASE_URL}/mod/forum/discuss.php?d=9001",
+        posts=[
+            ForumPost(
+                id=9101,
+                discussion_id=9001,
+                subject="Exam deadline questions",
+                message_text="Can we have an extension for the exam deadline?",
+                author=ForumPostAuthor(id=12, fullname="Alice Example"),
+                time_created=1762000000,
+                unread=True,
+                url=f"{BASE_URL}/mod/forum/discuss.php?d=9001#p9101",
+            ),
+            ForumPost(
+                id=9102,
+                discussion_id=9001,
+                subject="Re: Exam deadline questions",
+                message_text="The deadline stays the same.",
+                author=ForumPostAuthor(id=13, fullname="Tutor Example"),
+                time_created=1762000300,
+                unread=False,
+                url=f"{BASE_URL}/mod/forum/discuss.php?d=9001#p9102",
+            ),
+        ],
+    ),
+    9002: ForumDiscussion(
+        id=9002,
+        subject="Lecture recap",
+        course_id=101,
+        forum_id=501,
+        url=f"{BASE_URL}/mod/forum/discuss.php?d=9002",
+        posts=[
+            ForumPost(
+                id=9201,
+                discussion_id=9002,
+                subject="Lecture recap",
+                message_text="Deadline summary from the last lecture.",
+                author=ForumPostAuthor(id=14, fullname="Bob Example"),
+                time_created=1762000900,
+                unread=True,
+                url=f"{BASE_URL}/mod/forum/discuss.php?d=9002#p9201",
+            )
+        ],
+    ),
+}
+FORUM_SEARCH_HITS = [
+    ForumSearchHit(
+        course_id=101,
+        course_name="Mathematics 101",
+        forum_id=501,
+        forum_name="General Discussion",
+        discussion_id=9002,
+        discussion_subject="Lecture recap",
+        post_id=9201,
+        author_name="Bob Example",
+        matched_in="post_body",
+        snippet="Deadline summary from the last lecture.",
+        unread=True,
+        time_created=1762000900,
+        url=f"{BASE_URL}/mod/forum/discuss.php?d=9002#p9201",
+    ),
+    ForumSearchHit(
+        course_id=101,
+        course_name="Mathematics 101",
+        forum_id=501,
+        forum_name="General Discussion",
+        discussion_id=9001,
+        discussion_subject="Exam deadline questions",
+        post_id=9101,
+        author_name="Alice Example",
+        matched_in="post_body",
+        snippet="Can we have an extension for the exam deadline?",
+        unread=True,
+        time_created=1762000000,
+        url=f"{BASE_URL}/mod/forum/discuss.php?d=9001#p9101",
+    ),
 ]
 TODO_ITEMS = [
     TodoItem(
@@ -181,6 +280,9 @@ class FakeClient:
         self.grade_course_ids: list[int] = []
         self.alert_limits: list[int] = []
         self.overview_calls: list[tuple[int, int | None, int]] = []
+        self.forum_ref_ids: list[int] = []
+        self.forum_discussion_ids: list[int] = []
+        self.forum_search_calls: list[tuple[str, int, int | None, int | None, bool, bool, str, int | None, int | None]] = []
 
     def get_site_info(self) -> UserInfo:
         return USER
@@ -207,6 +309,49 @@ class FakeClient:
     def get_overview(self, todo_limit: int = 5, todo_days: int | None = None, alerts_limit: int = 5) -> Overview:
         self.overview_calls.append((todo_limit, todo_days, alerts_limit))
         return OVERVIEW
+
+    def get_forums(self, course_id: int | None = None) -> list[ForumActivityRef]:
+        if course_id is None:
+            return FORUM_REFS
+        return [ref for ref in FORUM_REFS if ref.course_id == course_id]
+
+    def get_forum_discussion_refs(self, forum_cmid: int) -> list[ForumDiscussionRef]:
+        self.forum_ref_ids.append(forum_cmid)
+        return FORUM_DISCUSSION_REFS.get(forum_cmid, [])
+
+    def get_forum_discussion(self, discussion_id: int) -> ForumDiscussion:
+        self.forum_discussion_ids.append(discussion_id)
+        return FORUM_DISCUSSIONS[discussion_id]
+
+    def get_forum_view_cmid(self, discussion_id: int) -> int | None:
+        return 501 if discussion_id in FORUM_DISCUSSIONS else None
+
+    def search_forum_content(
+        self,
+        query: str,
+        limit: int = 20,
+        course_id: int | None = None,
+        forum_cmid: int | None = None,
+        include_post_text: bool = True,
+        unread_only: bool = False,
+        sort_by: str = "relevance",
+        max_forums: int | None = None,
+        max_discussions_per_forum: int | None = None,
+    ) -> list[ForumSearchHit]:
+        self.forum_search_calls.append(
+            (
+                query,
+                limit,
+                course_id,
+                forum_cmid,
+                include_post_text,
+                unread_only,
+                sort_by,
+                max_forums,
+                max_discussions_per_forum,
+            )
+        )
+        return FORUM_SEARCH_HITS[:limit]
 
 
 class FakeTTY:
@@ -399,6 +544,148 @@ def test_json_takes_precedence_over_yaml(monkeypatch: pytest.MonkeyPatch, runner
 
     assert result.exit_code == 0
     assert json.loads(result.stdout) == expected_json(USER.to_dict())
+
+
+def test_forum_forums_supports_course_name_filter_and_json(monkeypatch: pytest.MonkeyPatch, runner: CliRunner) -> None:
+    client, state = patch_runtime(monkeypatch)
+
+    result = runner.invoke(cli_module.cli, ["forum", "forums", "--course", "math", "--json"])
+
+    assert result.exit_code == 0
+    assert state["session_base_urls"] == [BASE_URL]
+    assert client.forum_search_calls == []
+    assert json.loads(result.stdout) == expected_json([FORUM_REFS[0].to_dict()])
+
+
+def test_forum_discussions_supports_title_filter(monkeypatch: pytest.MonkeyPatch, runner: CliRunner) -> None:
+    client, _ = patch_runtime(monkeypatch)
+
+    result = runner.invoke(cli_module.cli, ["forum", "discussions", "501", "--query", "exam", "--json"])
+
+    assert result.exit_code == 0
+    assert client.forum_ref_ids == [501]
+    assert json.loads(result.stdout) == expected_json([FORUM_DISCUSSION_REFS[501][0].to_dict()])
+
+
+def test_forum_search_passes_shortest_path_filters_to_client(monkeypatch: pytest.MonkeyPatch, runner: CliRunner) -> None:
+    client, _ = patch_runtime(monkeypatch)
+
+    result = runner.invoke(
+        cli_module.cli,
+        ["forum", "search", "deadline", "--course", "mathematics", "--forum", "501", "--unread-only", "--recent", "--json"],
+    )
+
+    assert result.exit_code == 0
+    assert client.forum_search_calls == [("deadline", 20, 101, 501, True, True, "recent", None, None)]
+    assert json.loads(result.stdout) == expected_json([hit.to_dict() for hit in FORUM_SEARCH_HITS])
+
+
+def test_forum_find_returns_single_best_match(monkeypatch: pytest.MonkeyPatch, runner: CliRunner) -> None:
+    client, _ = patch_runtime(monkeypatch)
+
+    result = runner.invoke(cli_module.cli, ["forum", "find", "deadline", "--course", "mathematics", "--json"])
+
+    assert result.exit_code == 0
+    assert client.forum_search_calls == [("deadline", 1, 101, None, True, False, "recent", None, None)]
+    assert json.loads(result.stdout) == expected_json(FORUM_SEARCH_HITS[0].to_dict())
+
+
+def test_forum_find_body_resolves_directly_to_target_post(monkeypatch: pytest.MonkeyPatch, runner: CliRunner) -> None:
+    client, _ = patch_runtime(monkeypatch)
+
+    result = runner.invoke(cli_module.cli, ["forum", "find", "deadline", "--body", "--json"])
+
+    assert result.exit_code == 0
+    assert client.forum_search_calls == [("deadline", 1, None, None, True, False, "recent", None, None)]
+    assert client.forum_discussion_ids == [9002]
+    filtered = FORUM_DISCUSSIONS[9002]
+    expected = ForumDiscussion(
+        id=filtered.id,
+        subject=filtered.subject,
+        course_id=filtered.course_id,
+        forum_id=filtered.forum_id,
+        url=filtered.url,
+        posts=[filtered.posts[0]],
+    )
+    assert json.loads(result.stdout) == expected_json(expected.to_dict())
+
+
+def test_forum_find_passes_scan_budget_to_client(monkeypatch: pytest.MonkeyPatch, runner: CliRunner) -> None:
+    client, _ = patch_runtime(monkeypatch)
+
+    result = runner.invoke(
+        cli_module.cli,
+        ["forum", "find", "deadline", "--limit-forums", "2", "--limit-discussions", "7", "--json"],
+    )
+
+    assert result.exit_code == 0
+    assert client.forum_search_calls == [("deadline", 1, None, None, True, False, "recent", 2, 7)]
+
+
+def test_forum_find_list_returns_shortlist_instead_of_single_hit(monkeypatch: pytest.MonkeyPatch, runner: CliRunner) -> None:
+    client, _ = patch_runtime(monkeypatch)
+
+    result = runner.invoke(
+        cli_module.cli,
+        ["forum", "find", "deadline", "--list", "--limit", "2", "--json"],
+    )
+
+    assert result.exit_code == 0
+    assert client.forum_search_calls == [("deadline", 2, None, None, True, False, "recent", None, None)]
+    assert json.loads(result.stdout) == expected_json([hit.to_dict() for hit in FORUM_SEARCH_HITS[:2]])
+
+
+def test_top_level_url_routes_forum_discussion_with_fragment(monkeypatch: pytest.MonkeyPatch, runner: CliRunner) -> None:
+    _, _ = patch_runtime(monkeypatch)
+
+    result = runner.invoke(cli_module.cli, [f"{BASE_URL}/mod/forum/discuss.php?d=9001#p9101"])
+
+    assert result.exit_code == 0
+    text = normalize_terminal_text(result.output)
+    assert "Discussion 9001" in text
+    assert "9101" in text
+    assert "9102" not in text
+
+
+def test_top_level_url_routes_forum_view_to_discussions(monkeypatch: pytest.MonkeyPatch, runner: CliRunner) -> None:
+    _, _ = patch_runtime(monkeypatch)
+
+    result = runner.invoke(cli_module.cli, [f"{BASE_URL}/mod/forum/view.php?id=501"])
+
+    assert result.exit_code == 0
+    text = normalize_terminal_text(result.output)
+    assert "Forum 501: Discussions" in text
+    assert "9001" in text
+    assert "9002" in text
+
+
+def test_top_level_url_routes_course_view(monkeypatch: pytest.MonkeyPatch, runner: CliRunner) -> None:
+    client, _ = patch_runtime(monkeypatch)
+
+    result = runner.invoke(cli_module.cli, [f"{BASE_URL}/course/view.php?id=101"])
+
+    assert result.exit_code == 0
+    assert client.course_ids == [101]
+    assert "Course 101" in result.output
+
+
+def test_top_level_url_routes_grade_report(monkeypatch: pytest.MonkeyPatch, runner: CliRunner) -> None:
+    client, _ = patch_runtime(monkeypatch)
+
+    result = runner.invoke(cli_module.cli, [f"{BASE_URL}/grade/report/user/index.php?id=101"])
+
+    assert result.exit_code == 0
+    assert client.grade_course_ids == [101]
+    assert "Grades: Mathematics 101" in result.output
+
+
+def test_top_level_url_rejects_unsupported_path(monkeypatch: pytest.MonkeyPatch, runner: CliRunner) -> None:
+    _, _ = patch_runtime(monkeypatch)
+
+    result = runner.invoke(cli_module.cli, [f"{BASE_URL}/mod/assign/view.php?id=301"])
+
+    assert result.exit_code == 2
+    assert "Unsupported Moodle URL" in result.output
 
 
 @pytest.mark.parametrize(

@@ -6,12 +6,23 @@ import json
 import re
 from dataclasses import dataclass
 from html import unescape
-from urllib.parse import urljoin
+from urllib.parse import parse_qs, urljoin, urlparse
 
 from bs4 import BeautifulSoup
 
 from moodle_cli.exceptions import AuthError
-from moodle_cli.models import Activity, CourseGrades, GradeItem, Section, UserInfo
+from moodle_cli.html_utils import html_to_structured_content
+from moodle_cli.models import (
+    Activity,
+    CourseGrades,
+    ForumDiscussion,
+    ForumDiscussionRef,
+    ForumPost,
+    ForumPostAuthor,
+    GradeItem,
+    Section,
+    UserInfo,
+)
 
 
 @dataclass
@@ -48,6 +59,178 @@ def parse_page_context(html: str, base_url: str) -> PageContext:
             lang=lang,
         ),
     )
+
+
+def parse_forum_discussion_html(html: str, base_url: str, discussion_id: int) -> ForumDiscussion:
+    """Parse a rendered Moodle forum discussion page into posts."""
+    soup = BeautifulSoup(html, "html.parser")
+    post_els = soup.select("div.forumpost[data-post-id]")
+    if not post_els:
+        post_els = soup.select("article[data-post-id]")
+
+    group_id, group_name = parse_forum_discussion_group_html(html)
+
+    posts: list[ForumPost] = []
+    for el in post_els:
+        post_id = _safe_int(el.get("data-post-id"))
+        if not post_id:
+            continue
+
+        header = el.select_one("header") or el.select_one(".header")
+        subject = _clean_text_from_node(
+            (header.select_one("h3") if header is not None else None)
+            or el.select_one("h3")
+            or el.select_one("[data-region='post-title']")
+        )
+
+        author_link = (
+            (header.select_one('a[href*="/user/"]') if header is not None else None)
+            or el.select_one('a[href*="/user/"]')
+            or el.select_one('a[href*="/user/profile.php"]')
+        )
+        author_name = _clean_text(author_link.get_text(" ", strip=True) if author_link is not None else "")
+        author_url = urljoin(base_url, author_link.get("href") or "") if author_link is not None else ""
+
+        date_el = (header.select_one(".date") if header is not None else None) or (header.select_one("time") if header else None)
+        created_pretty = _clean_text_from_node(date_el) if date_el is not None else ""
+
+        message_el = (
+            el.select_one(".post-content-container")
+            or el.select_one(".content")
+            or el.select_one("[data-region='post-content']")
+            or el.select_one("[data-region-content='forum-post-core']")
+        )
+        message_html = message_el.decode_contents() if message_el is not None else ""
+        message_text, image_urls, links, tables = html_to_structured_content(message_html, base_url)
+
+        posts.append(
+            ForumPost(
+                id=post_id,
+                discussion_id=discussion_id,
+                subject=subject,
+                message_html=message_html,
+                message_text=message_text,
+                image_urls=image_urls,
+                links=links,
+                tables=tables,
+                author=ForumPostAuthor(id=0, fullname=author_name, profile_url=author_url),
+                created_pretty=created_pretty,
+                url=f"{base_url.rstrip('/')}/mod/forum/discuss.php?d={discussion_id}#p{post_id}",
+                reply_url=f"{base_url.rstrip('/')}/mod/forum/post.php?reply={post_id}#mformforum",
+            )
+        )
+
+    subject = posts[0].subject if posts else ""
+    url = f"{base_url.rstrip('/')}/mod/forum/discuss.php?d={discussion_id}"
+    return ForumDiscussion(id=discussion_id, subject=subject, group_id=group_id, group_name=group_name, url=url, posts=posts)
+
+
+def parse_forum_view_cmid_from_discussion_html(html: str) -> int | None:
+    """Extract the forum view course-module ID from a discussion page."""
+    soup = BeautifulSoup(html, "html.parser")
+    link = soup.select_one('a[href*="/mod/forum/view.php?id="], a[href*="mod/forum/view.php?id="]')
+    if link is None:
+        return None
+
+    href = link.get("href") or ""
+    parsed = urlparse(href)
+    if "/mod/forum/view.php" not in parsed.path:
+        return None
+    query = parse_qs(parsed.query)
+    values = query.get("id") or []
+    if not values or not values[0].isdigit():
+        return None
+    return int(values[0])
+
+
+def parse_forum_discussion_refs_html(html: str, base_url: str) -> list[ForumDiscussionRef]:
+    """Extract discussion IDs and subjects from a forum view page."""
+    soup = BeautifulSoup(html, "html.parser")
+    refs: list[ForumDiscussionRef] = []
+    seen: set[int] = set()
+
+    for link in soup.select('a[href*="/mod/forum/discuss.php?d="], a[href*="mod/forum/discuss.php?d="], a[href*="discuss.php?d="]'):
+        href = link.get("href") or ""
+        parsed = urlparse(href)
+        if "/mod/forum/discuss.php" not in parsed.path:
+            continue
+        query = parse_qs(parsed.query)
+        values = query.get("d") or []
+        if not values or not values[0].isdigit():
+            continue
+
+        discussion_id = int(values[0])
+        if discussion_id in seen:
+            continue
+
+        subject = _clean_text_from_node(link)
+        if not subject or subject.lower() in {"permalink", "discuss"}:
+            continue
+
+        seen.add(discussion_id)
+        refs.append(
+            ForumDiscussionRef(
+                id=discussion_id,
+                subject=subject,
+                url=urljoin(base_url, href),
+            )
+        )
+
+    return refs
+
+
+def parse_forum_groups_html(html: str) -> list[tuple[int, str]]:
+    """Extract visible forum groups from the group selector on a forum page."""
+    soup = BeautifulSoup(html, "html.parser")
+    groups: list[tuple[int, str]] = []
+
+    select = soup.select_one("form#selectgroup select[name='group']") or soup.select_one("select[name='group']")
+    if select is None:
+        return groups
+
+    for option in select.select("option"):
+        value = str(option.get("value") or "").strip()
+        if not value.isdigit():
+            continue
+        group_id = int(value)
+        group_name = _clean_text_from_node(option)
+        if (group_id, group_name) not in groups:
+            groups.append((group_id, group_name))
+
+    return groups
+
+
+def parse_forum_group_ids_html(html: str) -> list[int]:
+    """Extract visible forum group IDs from the group selector on a forum page."""
+    return [group_id for group_id, _group_name in parse_forum_groups_html(html)]
+
+
+def parse_forum_discussion_group_html(html: str) -> tuple[int, str]:
+    """Extract the selected group ID and name from a discussion page."""
+    soup = BeautifulSoup(html, "html.parser")
+    group_id = _safe_int(_attr_from_selector(soup, "form#mformforum input[name='groupid']", "value"))
+    return group_id, _selected_group_name(soup, group_id)
+
+
+def _selected_group_name(soup: BeautifulSoup, group_id: int) -> str:
+    if group_id <= 0:
+        return ""
+
+    for selector in ("select[name='groupinfo']", "select[name='group']"):
+        select = soup.select_one(selector)
+        if select is None:
+            continue
+        option = select.select_one(f"option[value='{group_id}']")
+        if option is not None:
+            return _clean_text_from_node(option)
+    return ""
+
+
+def _attr_from_selector(soup: BeautifulSoup, selector: str, attribute: str) -> str:
+    node = soup.select_one(selector)
+    if node is None:
+        return ""
+    return str(node.get(attribute) or "")
 
 
 def parse_course_contents_html(html: str, base_url: str) -> list[Section]:

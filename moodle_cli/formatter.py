@@ -7,7 +7,19 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.tree import Tree
 
-from moodle_cli.models import AlertSummary, Course, CourseGrades, Overview, Section, TodoItem, UserInfo
+from moodle_cli.models import (
+    AlertSummary,
+    Course,
+    CourseGrades,
+    ForumActivityRef,
+    ForumDiscussion,
+    ForumPost,
+    ForumSearchHit,
+    Overview,
+    Section,
+    TodoItem,
+    UserInfo,
+)
 
 console = Console()
 
@@ -244,6 +256,164 @@ def print_overview(overview: Overview) -> None:
 
     if overview.errors:
         console.print(Panel("\n".join(overview.errors), title="Warnings", border_style="yellow"))
+
+
+def print_forum_discussion(discussion: ForumDiscussion, highlight_post_id: int | None = None, show_body: bool = False) -> None:
+    """Display a forum discussion as a table of posts."""
+    header = Table(show_header=False, box=None, padding=(0, 2))
+    header.add_column(style="bold cyan")
+    header.add_column()
+    header.add_row("Discussion", str(discussion.id))
+    if discussion.subject:
+        header.add_row("Subject", discussion.subject)
+    if discussion.url:
+        header.add_row("URL", discussion.url)
+    if discussion.course_id:
+        header.add_row("Course ID", str(discussion.course_id))
+    if discussion.forum_id:
+        header.add_row("Forum ID", str(discussion.forum_id))
+    console.print(header)
+
+    if show_body:
+        if not discussion.posts:
+            console.print(Panel("No posts", title="Posts", border_style="dim"))
+            return
+
+        for post in discussion.posts:
+            when = post.created_pretty or (_format_timestamp(post.time_created) if post.time_created else "-")
+            title = f"Post {post.id}"
+            if highlight_post_id is not None and post.id == highlight_post_id:
+                title = f"[bold yellow]{title}[/]"
+
+            body_parts: list[str] = []
+            if post.subject:
+                body_parts.append(f"[bold]{post.subject}[/]")
+            body_parts.append(f"[dim]Author:[/] {post.author.fullname or '-'}")
+            body_parts.append(f"[dim]When:[/] {when}")
+            if post.url:
+                body_parts.append(f"[dim]URL:[/] {post.url}")
+            if post.message_text:
+                body_parts.append("")
+                body_parts.append(post.message_text)
+            if post.image_urls:
+                body_parts.append("")
+                body_parts.append("[dim]Images:[/]")
+                body_parts.extend([f"- {url}" for url in post.image_urls])
+
+            console.print(Panel("\n".join(body_parts), title=title, border_style="cyan"))
+
+        return
+
+    table = Table(title="Posts")
+    table.add_column("Post ID", style="dim", justify="right")
+    table.add_column("Author", style="bold")
+    table.add_column("When", style="cyan")
+    table.add_column("Subject")
+    table.add_column("Unread", justify="center")
+    table.add_column("Images", style="dim", justify="right")
+    table.add_column("Preview")
+
+    if not discussion.posts:
+        table.add_row("No posts", "", "", "", "", "", "")
+        console.print(table)
+        return
+
+    for post in discussion.posts:
+        table.add_row(*_forum_post_row(post, highlight_post_id=highlight_post_id, show_body=show_body))
+
+    console.print(table)
+
+
+def print_forum_activities(forums: list[ForumActivityRef]) -> None:
+    """Display forum activities as a table."""
+    table = Table(title="Forums")
+    table.add_column("Forum ID", style="dim", justify="right")
+    table.add_column("Forum", style="bold")
+    table.add_column("Course")
+    table.add_column("Course ID", style="dim", justify="right")
+    table.add_column("URL")
+
+    if not forums:
+        table.add_row("No forums", "", "", "", "")
+        console.print(table)
+        return
+
+    for forum in forums:
+        table.add_row(
+            str(forum.id),
+            forum.name,
+            forum.course_name,
+            str(forum.course_id) if forum.course_id else "",
+            forum.url,
+        )
+
+    console.print(table)
+
+
+def print_forum_search_hits(hits: list[ForumSearchHit]) -> None:
+    """Display forum search results."""
+    table = Table(title="Forum Search")
+    table.add_column("Course", style="bold")
+    table.add_column("Forum")
+    table.add_column("Discussion")
+    table.add_column("Discussion ID", style="dim", justify="right")
+    table.add_column("Post ID", style="dim", justify="right")
+    table.add_column("When", style="cyan")
+    table.add_column("Unread", justify="center")
+    table.add_column("Matched In", style="cyan")
+    table.add_column("Author")
+    table.add_column("Snippet")
+    table.add_column("URL")
+
+    if not hits:
+        table.add_row("No matches", "", "", "", "", "", "", "", "", "", "")
+        console.print(table)
+        return
+
+    for hit in hits:
+        table.add_row(
+            hit.course_name,
+            hit.forum_name,
+            hit.discussion_subject,
+            str(hit.discussion_id) if hit.discussion_id else "",
+            str(hit.post_id) if hit.post_id else "",
+            _format_timestamp(hit.time_created),
+            "[green]Yes[/]" if hit.unread else "",
+            hit.matched_in,
+            hit.author_name,
+            hit.snippet or hit.discussion_subject,
+            hit.url,
+        )
+
+    console.print(table)
+
+
+def _forum_post_row(post: ForumPost, highlight_post_id: int | None, show_body: bool) -> list[str]:
+    post_id_cell = str(post.id)
+    if highlight_post_id is not None and post.id == highlight_post_id:
+        post_id_cell = f"[bold yellow]{post_id_cell}[/]"
+
+    when = post.created_pretty or (_format_timestamp(post.time_created) if post.time_created else "-")
+    unread = "[green]Yes[/]" if post.unread else ""
+    subject = post.subject or ""
+
+    if show_body:
+        preview = post.message_text or ""
+    else:
+        preview = _truncate_preview(post.message_text)
+
+    author = post.author.fullname or str(post.author.id) if post.author.id else ""
+    if not author:
+        author = "-"
+
+    return [post_id_cell, author, when, subject, unread, str(len(post.image_urls) if post.image_urls else ""), preview]
+
+
+def _truncate_preview(text: str, max_len: int = 100) -> str:
+    cleaned = " ".join((text or "").split())
+    if len(cleaned) <= max_len:
+        return cleaned
+    return f"{cleaned[: max_len - 1]}…"
 
 
 def _activity_icon(modname: str) -> str:
