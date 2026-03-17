@@ -243,6 +243,36 @@ class Assignment:
 
 
 @dataclass
+class Quiz:
+    id: int
+    name: str
+    course_id: int = 0
+    course_name: str = ""
+    section_name: str = ""
+    opens_pretty: str = ""
+    closes_pretty: str = ""
+    attempts_allowed: str = ""
+    availability: str = ""
+    grade: str = ""
+    url: str = ""
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "name": self.name,
+            "course_id": self.course_id,
+            "course_name": self.course_name,
+            "section_name": self.section_name,
+            "opens_pretty": self.opens_pretty,
+            "closes_pretty": self.closes_pretty,
+            "attempts_allowed": self.attempts_allowed,
+            "availability": self.availability,
+            "grade": self.grade,
+            "url": self.url,
+        }
+
+
+@dataclass
 class Overview:
     user: UserInfo
     courses: list[Course] = field(default_factory=list)

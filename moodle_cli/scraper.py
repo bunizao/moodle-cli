@@ -21,6 +21,7 @@ from moodle_cli.models import (
     ForumPost,
     ForumPostAuthor,
     GradeItem,
+    Quiz,
     Section,
     UserInfo,
 )
@@ -415,6 +416,43 @@ def parse_assignment_html(html: str, assignment_id: int, base_url: str) -> Assig
     return assignment
 
 
+def parse_quiz_html(html: str, quiz_id: int, base_url: str) -> Quiz:
+    """Parse a rendered quiz page into a compact summary."""
+    soup = BeautifulSoup(html, "html.parser")
+    quiz = Quiz(
+        id=quiz_id,
+        name=_clean_text_from_node(soup.select_one("h1")),
+        course_id=parse_course_id_from_page_html(html) or 0,
+        url=f"{base_url.rstrip('/')}/mod/quiz/view.php?id={quiz_id}",
+    )
+
+    breadcrumb_links = soup.select('nav[aria-label="Breadcrumb"] a[href], #page-navbar .breadcrumb a[href]')
+    for link in breadcrumb_links:
+        href = link.get("href") or ""
+        if "/course/view.php" in href and "section=" in href:
+            quiz.section_name = _clean_text_from_node(link)
+
+        course_id = _parse_course_id_from_href(href)
+        if course_id is not None:
+            quiz.course_id = course_id
+            if not quiz.course_name:
+                quiz.course_name = (link.get("title") or "").strip() or _clean_text_from_node(link)
+
+    quiz.opens_pretty = _extract_labeled_text(soup, "Opens:")
+    quiz.closes_pretty = _extract_labeled_text(soup, "Closes:")
+
+    attempts_text = soup.find(string=re.compile(r"Attempts allowed:", re.I))
+    if attempts_text is not None:
+        quiz.attempts_allowed = _clean_text(str(attempts_text)).split(":", 1)[-1].strip()
+
+    availability = soup.find(string=re.compile(r"This quiz is currently", re.I))
+    if availability is not None:
+        quiz.availability = _clean_text(str(availability))
+
+    quiz.grade = _find_table_value(soup, "Grade")
+    return quiz
+
+
 def has_course_grades_html(html: str) -> bool:
     """Return whether the HTML contains a Moodle user grade report table."""
     soup = BeautifulSoup(html, "html.parser")
@@ -501,6 +539,19 @@ def _find_table_value(soup: BeautifulSoup, label: str) -> str:
             value_cell = cells[-1] if cells else None
         return _clean_table_cell(value_cell)
     return ""
+
+
+def _extract_labeled_text(soup: BeautifulSoup, label: str) -> str:
+    label_node = soup.find(["strong", "b"], string=re.compile(rf"^\s*{re.escape(label)}\s*$"))
+    if label_node is None:
+        return ""
+
+    parts = []
+    for sibling in label_node.next_siblings:
+        text = _clean_text_from_node(sibling) if hasattr(sibling, "get_text") else _clean_text(str(sibling))
+        if text:
+            parts.append(text)
+    return " ".join(parts).strip()
 
 
 def _clean_text_from_node(node) -> str:

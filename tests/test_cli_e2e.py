@@ -32,6 +32,7 @@ from moodle_cli.models import (
     ForumPostAuthor,
     GradeItem,
     Overview,
+    Quiz,
     Section,
     TodoItem,
     UserInfo,
@@ -178,6 +179,18 @@ ASSIGNMENT = Assignment(
     grade="",
     url="https://school.example.edu/mod/assign/view.php?id=302",
 )
+QUIZ = Quiz(
+    id=301,
+    name="Week 4 Workshop Quiz",
+    course_id=101,
+    course_name="Mathematics 101",
+    section_name="Week 4",
+    opens_pretty="Monday, 23 March 2026, 5:00 AM",
+    closes_pretty="Wednesday, 25 March 2026, 11:55 PM",
+    attempts_allowed="1",
+    availability="This quiz is currently not available.",
+    url="https://school.example.edu/mod/quiz/view.php?id=301",
+)
 ALERTS = AlertSummary(
     notifications=[
         AlertNotification(
@@ -231,6 +244,7 @@ class FakeClient:
         self.todo_calls: list[tuple[int, int | None]] = []
         self.grade_course_ids: list[int] = []
         self.assignment_ids: list[int] = []
+        self.quiz_ids: list[int] = []
         self.alert_limits: list[int] = []
         self.overview_calls: list[tuple[int, int | None, int]] = []
         self.resolved_page_urls: list[str] = []
@@ -256,6 +270,10 @@ class FakeClient:
     def get_assignment(self, assignment_id: int) -> Assignment:
         self.assignment_ids.append(assignment_id)
         return ASSIGNMENT
+
+    def get_quiz(self, quiz_id: int) -> Quiz:
+        self.quiz_ids.append(quiz_id)
+        return QUIZ
 
     def get_alerts(self, limit: int = 20) -> AlertSummary:
         self.alert_limits.append(limit)
@@ -355,6 +373,7 @@ def test_global_help_and_version_do_not_load_runtime(monkeypatch: pytest.MonkeyP
         assert "courses" in result.stdout
         assert "grades" in result.stdout
         assert "overview" in result.stdout
+        assert "quiz" in result.stdout
         assert "todo" in result.stdout
         assert "update" in result.stdout
     else:
@@ -423,6 +442,9 @@ def test_verbose_flag_sets_logging_level(
         (["assignment", "302"], None, None, ["Assignment: Essay 1", "History 202", "Assessments", "No attempt", "Not graded"], [], [], [], [], []),
         (["assignment", "302", "--json"], json.loads, expected_json(ASSIGNMENT.to_dict()), None, [], [], [], [], []),
         (["assignment", "302", "--yaml"], yaml.safe_load, ASSIGNMENT.to_dict(), None, [], [], [], [], []),
+        (["quiz", "301"], None, None, ["Quiz: Week 4 Workshop Quiz", "Mathematics 101", "Week 4", "Monday, 23 March 2026, 5:00 AM", "This quiz is currently not available."], [], [], [], [], []),
+        (["quiz", "301", "--json"], json.loads, expected_json(QUIZ.to_dict()), None, [], [], [], [], []),
+        (["quiz", "301", "--yaml"], yaml.safe_load, QUIZ.to_dict(), None, [], [], [], [], []),
         (["activities", "42"], None, None, ["Course 42", "Introduction", "Syllabus", "Quiz 1", "Week 2", "No activities"], [42], [], [], [], []),
         (["activities", "42", "--json"], json.loads, expected_json([section.to_dict() for section in SECTIONS]), None, [42], [], [], [], []),
         (["activities", "42", "--yaml"], yaml.safe_load, [section.to_dict() for section in SECTIONS], None, [42], [], [], [], []),
@@ -694,6 +716,17 @@ def test_top_level_url_routes_assignment_page(monkeypatch: pytest.MonkeyPatch, r
     assert "Assignment: Essay 1" in result.output
 
 
+def test_top_level_url_routes_quiz_page(monkeypatch: pytest.MonkeyPatch, runner: CliRunner) -> None:
+    client, _ = patch_runtime(monkeypatch)
+
+    result = runner.invoke(cli_module.cli, [f"{BASE_URL}/mod/quiz/view.php?id=301"])
+
+    assert result.exit_code == 0
+    assert client.quiz_ids == [301]
+    assert client.course_ids == []
+    assert "Quiz: Week 4 Workshop Quiz" in result.output
+
+
 def test_top_level_url_routes_generic_activity_page_to_course(monkeypatch: pytest.MonkeyPatch, runner: CliRunner) -> None:
     client, _ = patch_runtime(monkeypatch)
 
@@ -724,6 +757,7 @@ def test_top_level_url_rejects_unresolved_generic_activity_page(monkeypatch: pyt
         (["overview"], "Loading overview..."),
         (["grades", "101"], "Loading grades for course 101..."),
         (["assignment", "302"], "Loading assignment 302..."),
+        (["quiz", "301"], "Loading quiz 301..."),
         (["activities", "42"], "Loading activities for course 42..."),
         (["course", "42"], "Loading course 42..."),
     ],
@@ -1019,6 +1053,54 @@ def test_parse_assignment_html_extracts_summary() -> None:
     assert parsed.grading_status == "Not graded"
     assert parsed.time_remaining == "2 days 3 hours remaining"
     assert parsed.grade == "72 / 100"
+
+
+def test_parse_quiz_html_extracts_summary() -> None:
+    html = """
+    <html>
+      <body>
+        <header>
+          <h1>Week 4 Workshop Quiz</h1>
+        </header>
+        <div id="page-navbar">
+          <nav aria-label="Breadcrumb">
+            <ol class="breadcrumb">
+              <li class="breadcrumb-item">
+                <a href="https://school.example.edu/course/view.php?id=101" title="Mathematics 101">MATH101</a>
+              </li>
+              <li class="breadcrumb-item">
+                <a href="https://school.example.edu/course/view.php?id=101&section=4">Week 4</a>
+              </li>
+            </ol>
+          </nav>
+        </div>
+        <div>
+          <strong>Opens:</strong>
+          Monday, 23 March 2026, 5:00 AM
+        </div>
+        <div>
+          <strong>Closes:</strong>
+          Wednesday, 25 March 2026, 11:55 PM
+        </div>
+        <p>Attempts allowed: 1</p>
+        <div>
+          <p>This quiz is currently not available.</p>
+        </div>
+      </body>
+    </html>
+    """
+
+    parsed = scraper_module.parse_quiz_html(html, 301, BASE_URL)
+
+    assert parsed.id == 301
+    assert parsed.name == "Week 4 Workshop Quiz"
+    assert parsed.course_id == 101
+    assert parsed.course_name == "Mathematics 101"
+    assert parsed.section_name == "Week 4"
+    assert parsed.opens_pretty == "Monday, 23 March 2026, 5:00 AM"
+    assert parsed.closes_pretty == "Wednesday, 25 March 2026, 11:55 PM"
+    assert parsed.attempts_allowed == "1"
+    assert parsed.availability == "This quiz is currently not available."
 
 
 def test_parse_alert_summary_extracts_notifications_and_counts() -> None:

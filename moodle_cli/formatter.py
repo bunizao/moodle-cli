@@ -7,7 +7,7 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.tree import Tree
 
-from moodle_cli.models import AlertSummary, Assignment, Course, CourseGrades, ForumDiscussion, ForumPost, Overview, Section, TodoItem, UserInfo
+from moodle_cli.models import AlertSummary, Assignment, Course, CourseGrades, ForumDiscussion, ForumPost, Overview, Quiz, Section, TodoItem, UserInfo
 
 console = Console()
 
@@ -203,6 +203,32 @@ def print_assignment(assignment: Assignment) -> None:
         table.add_row("Grade", assignment.grade)
     if assignment.url:
         table.add_row("URL", assignment.url)
+
+    console.print(table)
+
+
+def print_quiz(quiz: Quiz) -> None:
+    """Display a Moodle quiz summary."""
+    table = Table(title=f"Quiz: {quiz.name}", show_header=False, box=None, padding=(0, 2))
+    table.add_column(style="bold cyan")
+    table.add_column()
+
+    if quiz.course_name:
+        table.add_row("Course", quiz.course_name)
+    if quiz.section_name:
+        table.add_row("Section", quiz.section_name)
+    if quiz.opens_pretty:
+        table.add_row("Opens", quiz.opens_pretty)
+    if quiz.closes_pretty:
+        table.add_row("Closes", quiz.closes_pretty)
+    if quiz.attempts_allowed:
+        table.add_row("Attempts", quiz.attempts_allowed)
+    if quiz.availability:
+        table.add_row("Availability", quiz.availability)
+    if quiz.grade:
+        table.add_row("Grade", quiz.grade)
+    if quiz.url:
+        table.add_row("URL", quiz.url)
 
     console.print(table)
 

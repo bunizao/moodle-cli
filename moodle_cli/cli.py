@@ -27,6 +27,7 @@ from moodle_cli.formatter import (
     print_course_contents,
     print_forum_discussion,
     print_overview,
+    print_quiz,
     print_todo_items,
     print_user_info,
 )
@@ -152,6 +153,25 @@ def _parse_assignment_reference(ctx: click.Context, value: str) -> int:
     return int(values[0])
 
 
+def _parse_quiz_reference(ctx: click.Context, value: str) -> int:
+    """Parse a quiz reference (course-module ID or URL) into a course-module ID."""
+    raw = value.strip()
+    if raw.isdigit():
+        return int(raw)
+
+    parsed = urlparse(raw)
+    if not parsed.scheme or not parsed.netloc:
+        raise click.UsageError("QUIZ must be a numeric ID or a full quiz URL.", ctx=ctx)
+    if not parsed.path.endswith("/mod/quiz/view.php"):
+        raise click.UsageError("Unsupported quiz URL. Use a view.php?id=... URL.", ctx=ctx)
+
+    query = parse_qs(parsed.query)
+    values = query.get("id") or []
+    if not values or not values[0].isdigit():
+        raise click.UsageError("Could not find quiz module ID in view.php URL (expected ?id=...).", ctx=ctx)
+    return int(values[0])
+
+
 def _dispatch_top_level_url(ctx: click.Context, target: str) -> None:
     resolved = resolve_top_level_url(
         base_url=ctx.obj["get_config"]()["base_url"],
@@ -164,6 +184,7 @@ def _dispatch_top_level_url(ctx: click.Context, target: str) -> None:
         "forum_discussions": forum_discussions,
         "course": course,
         "grades": grades,
+        "quiz": quiz,
     }
     ctx.invoke(command_map[resolved.command_name], **resolved.kwargs)
 
@@ -416,6 +437,26 @@ def assignment(ctx: click.Context, assignment: str, as_json: bool, as_yaml: bool
         output_yaml(details.to_dict())
     else:
         print_assignment(details)
+
+
+@cli.command()
+@click.argument("quiz", type=str, required=True)
+@click.option("--json", "as_json", is_flag=True, help="Output as JSON.")
+@click.option("--yaml", "as_yaml", is_flag=True, help="Output as YAML.")
+@click.pass_context
+def quiz(ctx: click.Context, quiz: str, as_json: bool, as_yaml: bool) -> None:
+    """Show quiz details (QUIZ_ID or view.php URL)."""
+    quiz_id = _parse_quiz_reference(ctx, quiz)
+    _print_loading(f"Loading quiz {quiz_id}...")
+    client = ctx.obj["get_client"]()
+    details = client.get_quiz(quiz_id)
+
+    if as_json:
+        output_json(details.to_dict())
+    elif as_yaml:
+        output_yaml(details.to_dict())
+    else:
+        print_quiz(details)
 
 
 @cli.command()

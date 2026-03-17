@@ -99,6 +99,18 @@ def test_resolve_assignment_page() -> None:
     )
 
 
+def test_resolve_quiz_page() -> None:
+    resolved = resolve_top_level_url(
+        base_url=BASE_URL,
+        target=f"{BASE_URL}/mod/quiz/view.php?id=5235525",
+    )
+
+    assert resolved == ResolvedURLTarget(
+        command_name="quiz",
+        kwargs={"quiz": "5235525", "as_json": False, "as_yaml": False},
+    )
+
+
 def test_resolve_generic_activity_page_uses_callback() -> None:
     seen: list[str] = []
 
