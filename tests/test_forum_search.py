@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import pytest
 
+import moodle_cli.client as client_module
+from moodle_cli.exceptions import MoodleAPIError
 from moodle_cli.client import MoodleClient
 from moodle_cli.models import ForumActivityRef, ForumDiscussion, ForumDiscussionRef, ForumPost, ForumPostAuthor
 
@@ -99,3 +101,69 @@ def test_search_forum_content_titles_only_skips_discussion_fetch(monkeypatch: py
     hits = client.search_forum_content("deadline", include_post_text=False)
 
     assert [(hit.discussion_id, hit.post_id, hit.matched_in) for hit in hits] == [(9001, 0, "discussion_subject")]
+
+
+def test_get_forum_discussion_refs_reuses_cached_page_result(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = make_client()
+    calls = {"get": 0, "parse": 0}
+    refs = [ForumDiscussionRef(id=9001, subject="Exam deadline questions", url=f"{BASE_URL}/mod/forum/discuss.php?d=9001")]
+
+    class FakeResponse:
+        text = "<html></html>"
+
+    monkeypatch.setattr(client, "_ensure_session", lambda: None)
+
+    def fake_get(path: str, params: dict | None = None) -> FakeResponse:
+        assert path == "/mod/forum/view.php"
+        assert params == {"id": 501}
+        calls["get"] += 1
+        return FakeResponse()
+
+    def fake_parse(html: str, base_url: str) -> list[ForumDiscussionRef]:
+        assert html == "<html></html>"
+        assert base_url == BASE_URL
+        calls["parse"] += 1
+        return refs
+
+    monkeypatch.setattr(client, "_get", fake_get)
+    monkeypatch.setattr(client_module, "parse_forum_discussion_refs_html", fake_parse)
+
+    assert client.get_forum_discussion_refs(501) == refs
+    assert client.get_forum_discussion_refs(501) == refs
+    assert calls == {"get": 1, "parse": 1}
+
+
+def test_get_forum_discussion_reuses_cached_discussion(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = make_client()
+    calls = {"get": 0, "parse": 0}
+    discussion = ForumDiscussion(id=9001, subject="Exam deadline questions")
+
+    class FakeResponse:
+        text = "<html></html>"
+
+    monkeypatch.setattr(client, "_ensure_session", lambda: None)
+    monkeypatch.setattr(
+        client,
+        "_call",
+        lambda _function_name, _args=None: (_ for _ in ()).throw(MoodleAPIError("disabled", error_code="servicenotavailable")),
+    )
+
+    def fake_get(path: str, params: dict | None = None) -> FakeResponse:
+        assert path == "/mod/forum/discuss.php"
+        assert params == {"d": 9001}
+        calls["get"] += 1
+        return FakeResponse()
+
+    def fake_parse(html: str, base_url: str, discussion_id: int) -> ForumDiscussion:
+        assert html == "<html></html>"
+        assert base_url == BASE_URL
+        assert discussion_id == 9001
+        calls["parse"] += 1
+        return discussion
+
+    monkeypatch.setattr(client, "_get", fake_get)
+    monkeypatch.setattr(client_module, "parse_forum_discussion_html", fake_parse)
+
+    assert client.get_forum_discussion(9001) == discussion
+    assert client.get_forum_discussion(9001) == discussion
+    assert calls == {"get": 1, "parse": 1}

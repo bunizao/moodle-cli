@@ -281,6 +281,7 @@ class FakeClient:
         self.alert_limits: list[int] = []
         self.overview_calls: list[tuple[int, int | None, int]] = []
         self.forum_ref_ids: list[int] = []
+        self.forum_discussion_ids: list[int] = []
         self.forum_search_calls: list[tuple[str, int, int | None, int | None, bool, bool, str]] = []
 
     def get_site_info(self) -> UserInfo:
@@ -319,6 +320,7 @@ class FakeClient:
         return FORUM_DISCUSSION_REFS.get(forum_cmid, [])
 
     def get_forum_discussion(self, discussion_id: int) -> ForumDiscussion:
+        self.forum_discussion_ids.append(discussion_id)
         return FORUM_DISCUSSIONS[discussion_id]
 
     def get_forum_view_cmid(self, discussion_id: int) -> int | None:
@@ -562,6 +564,89 @@ def test_forum_search_passes_shortest_path_filters_to_client(monkeypatch: pytest
     assert result.exit_code == 0
     assert client.forum_search_calls == [("deadline", 20, 101, 501, True, True, "recent")]
     assert json.loads(result.stdout) == expected_json([hit.to_dict() for hit in FORUM_SEARCH_HITS])
+
+
+def test_forum_find_returns_single_best_match(monkeypatch: pytest.MonkeyPatch, runner: CliRunner) -> None:
+    client, _ = patch_runtime(monkeypatch)
+
+    result = runner.invoke(cli_module.cli, ["forum", "find", "deadline", "--course", "mathematics", "--json"])
+
+    assert result.exit_code == 0
+    assert client.forum_search_calls == [("deadline", 1, 101, None, True, False, "recent")]
+    assert json.loads(result.stdout) == expected_json(FORUM_SEARCH_HITS[0].to_dict())
+
+
+def test_forum_find_body_resolves_directly_to_target_post(monkeypatch: pytest.MonkeyPatch, runner: CliRunner) -> None:
+    client, _ = patch_runtime(monkeypatch)
+
+    result = runner.invoke(cli_module.cli, ["forum", "find", "deadline", "--body", "--json"])
+
+    assert result.exit_code == 0
+    assert client.forum_search_calls == [("deadline", 1, None, None, True, False, "recent")]
+    assert client.forum_discussion_ids == [9002]
+    filtered = FORUM_DISCUSSIONS[9002]
+    expected = ForumDiscussion(
+        id=filtered.id,
+        subject=filtered.subject,
+        course_id=filtered.course_id,
+        forum_id=filtered.forum_id,
+        url=filtered.url,
+        posts=[filtered.posts[0]],
+    )
+    assert json.loads(result.stdout) == expected_json(expected.to_dict())
+
+
+def test_top_level_url_routes_forum_discussion_with_fragment(monkeypatch: pytest.MonkeyPatch, runner: CliRunner) -> None:
+    _, _ = patch_runtime(monkeypatch)
+
+    result = runner.invoke(cli_module.cli, [f"{BASE_URL}/mod/forum/discuss.php?d=9001#p9101"])
+
+    assert result.exit_code == 0
+    text = normalize_terminal_text(result.output)
+    assert "Discussion 9001" in text
+    assert "9101" in text
+    assert "9102" not in text
+
+
+def test_top_level_url_routes_forum_view_to_discussions(monkeypatch: pytest.MonkeyPatch, runner: CliRunner) -> None:
+    _, _ = patch_runtime(monkeypatch)
+
+    result = runner.invoke(cli_module.cli, [f"{BASE_URL}/mod/forum/view.php?id=501"])
+
+    assert result.exit_code == 0
+    text = normalize_terminal_text(result.output)
+    assert "Forum 501: Discussions" in text
+    assert "9001" in text
+    assert "9002" in text
+
+
+def test_top_level_url_routes_course_view(monkeypatch: pytest.MonkeyPatch, runner: CliRunner) -> None:
+    client, _ = patch_runtime(monkeypatch)
+
+    result = runner.invoke(cli_module.cli, [f"{BASE_URL}/course/view.php?id=101"])
+
+    assert result.exit_code == 0
+    assert client.course_ids == [101]
+    assert "Course 101" in result.output
+
+
+def test_top_level_url_routes_grade_report(monkeypatch: pytest.MonkeyPatch, runner: CliRunner) -> None:
+    client, _ = patch_runtime(monkeypatch)
+
+    result = runner.invoke(cli_module.cli, [f"{BASE_URL}/grade/report/user/index.php?id=101"])
+
+    assert result.exit_code == 0
+    assert client.grade_course_ids == [101]
+    assert "Grades: Mathematics 101" in result.output
+
+
+def test_top_level_url_rejects_unsupported_path(monkeypatch: pytest.MonkeyPatch, runner: CliRunner) -> None:
+    _, _ = patch_runtime(monkeypatch)
+
+    result = runner.invoke(cli_module.cli, [f"{BASE_URL}/mod/assign/view.php?id=301"])
+
+    assert result.exit_code == 2
+    assert "Unsupported Moodle URL" in result.output
 
 
 @pytest.mark.parametrize(
