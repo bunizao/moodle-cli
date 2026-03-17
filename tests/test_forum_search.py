@@ -167,3 +167,57 @@ def test_get_forum_discussion_reuses_cached_discussion(monkeypatch: pytest.Monke
     assert client.get_forum_discussion(9001) == discussion
     assert client.get_forum_discussion(9001) == discussion
     assert calls == {"get": 1, "parse": 1}
+
+
+def test_search_forum_content_respects_forum_and_discussion_scan_budgets(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = make_client()
+    forum_calls: list[int] = []
+    discussion_calls: list[int] = []
+
+    forums = [
+        ForumActivityRef(id=501, name="Forum A", course_id=101, course_name="Mathematics 101"),
+        ForumActivityRef(id=502, name="Forum B", course_id=101, course_name="Mathematics 101"),
+        ForumActivityRef(id=503, name="Forum C", course_id=101, course_name="Mathematics 101"),
+    ]
+    refs_by_forum = {
+        501: [
+            ForumDiscussionRef(id=9001, subject="deadline alpha", url=f"{BASE_URL}/mod/forum/discuss.php?d=9001"),
+            ForumDiscussionRef(id=9002, subject="deadline beta", url=f"{BASE_URL}/mod/forum/discuss.php?d=9002"),
+            ForumDiscussionRef(id=9003, subject="deadline gamma", url=f"{BASE_URL}/mod/forum/discuss.php?d=9003"),
+        ],
+        502: [
+            ForumDiscussionRef(id=9101, subject="deadline delta", url=f"{BASE_URL}/mod/forum/discuss.php?d=9101"),
+            ForumDiscussionRef(id=9102, subject="deadline epsilon", url=f"{BASE_URL}/mod/forum/discuss.php?d=9102"),
+        ],
+        503: [ForumDiscussionRef(id=9201, subject="deadline zeta", url=f"{BASE_URL}/mod/forum/discuss.php?d=9201")],
+    }
+    discussions = {
+        9001: ForumDiscussion(id=9001, subject="deadline alpha", posts=[]),
+        9002: ForumDiscussion(id=9002, subject="deadline beta", posts=[]),
+        9101: ForumDiscussion(id=9101, subject="deadline delta", posts=[]),
+        9102: ForumDiscussion(id=9102, subject="deadline epsilon", posts=[]),
+    }
+
+    monkeypatch.setattr(client, "get_forums", lambda course_id=None: forums)
+
+    def fake_get_forum_discussion_refs(forum_cmid: int) -> list[ForumDiscussionRef]:
+        forum_calls.append(forum_cmid)
+        return refs_by_forum[forum_cmid]
+
+    def fake_get_forum_discussion(discussion_id: int) -> ForumDiscussion:
+        discussion_calls.append(discussion_id)
+        return discussions[discussion_id]
+
+    monkeypatch.setattr(client, "get_forum_discussion_refs", fake_get_forum_discussion_refs)
+    monkeypatch.setattr(client, "get_forum_discussion", fake_get_forum_discussion)
+
+    hits = client.search_forum_content(
+        "deadline",
+        include_post_text=False,
+        max_forums=2,
+        max_discussions_per_forum=2,
+    )
+
+    assert forum_calls == [501, 502]
+    assert discussion_calls == []
+    assert [hit.discussion_id for hit in hits] == [9001, 9002, 9101, 9102]

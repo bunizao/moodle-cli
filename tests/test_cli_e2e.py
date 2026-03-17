@@ -282,7 +282,7 @@ class FakeClient:
         self.overview_calls: list[tuple[int, int | None, int]] = []
         self.forum_ref_ids: list[int] = []
         self.forum_discussion_ids: list[int] = []
-        self.forum_search_calls: list[tuple[str, int, int | None, int | None, bool, bool, str]] = []
+        self.forum_search_calls: list[tuple[str, int, int | None, int | None, bool, bool, str, int | None, int | None]] = []
 
     def get_site_info(self) -> UserInfo:
         return USER
@@ -335,8 +335,22 @@ class FakeClient:
         include_post_text: bool = True,
         unread_only: bool = False,
         sort_by: str = "relevance",
+        max_forums: int | None = None,
+        max_discussions_per_forum: int | None = None,
     ) -> list[ForumSearchHit]:
-        self.forum_search_calls.append((query, limit, course_id, forum_cmid, include_post_text, unread_only, sort_by))
+        self.forum_search_calls.append(
+            (
+                query,
+                limit,
+                course_id,
+                forum_cmid,
+                include_post_text,
+                unread_only,
+                sort_by,
+                max_forums,
+                max_discussions_per_forum,
+            )
+        )
         return FORUM_SEARCH_HITS[:limit]
 
 
@@ -562,7 +576,7 @@ def test_forum_search_passes_shortest_path_filters_to_client(monkeypatch: pytest
     )
 
     assert result.exit_code == 0
-    assert client.forum_search_calls == [("deadline", 20, 101, 501, True, True, "recent")]
+    assert client.forum_search_calls == [("deadline", 20, 101, 501, True, True, "recent", None, None)]
     assert json.loads(result.stdout) == expected_json([hit.to_dict() for hit in FORUM_SEARCH_HITS])
 
 
@@ -572,7 +586,7 @@ def test_forum_find_returns_single_best_match(monkeypatch: pytest.MonkeyPatch, r
     result = runner.invoke(cli_module.cli, ["forum", "find", "deadline", "--course", "mathematics", "--json"])
 
     assert result.exit_code == 0
-    assert client.forum_search_calls == [("deadline", 1, 101, None, True, False, "recent")]
+    assert client.forum_search_calls == [("deadline", 1, 101, None, True, False, "recent", None, None)]
     assert json.loads(result.stdout) == expected_json(FORUM_SEARCH_HITS[0].to_dict())
 
 
@@ -582,7 +596,7 @@ def test_forum_find_body_resolves_directly_to_target_post(monkeypatch: pytest.Mo
     result = runner.invoke(cli_module.cli, ["forum", "find", "deadline", "--body", "--json"])
 
     assert result.exit_code == 0
-    assert client.forum_search_calls == [("deadline", 1, None, None, True, False, "recent")]
+    assert client.forum_search_calls == [("deadline", 1, None, None, True, False, "recent", None, None)]
     assert client.forum_discussion_ids == [9002]
     filtered = FORUM_DISCUSSIONS[9002]
     expected = ForumDiscussion(
@@ -594,6 +608,31 @@ def test_forum_find_body_resolves_directly_to_target_post(monkeypatch: pytest.Mo
         posts=[filtered.posts[0]],
     )
     assert json.loads(result.stdout) == expected_json(expected.to_dict())
+
+
+def test_forum_find_passes_scan_budget_to_client(monkeypatch: pytest.MonkeyPatch, runner: CliRunner) -> None:
+    client, _ = patch_runtime(monkeypatch)
+
+    result = runner.invoke(
+        cli_module.cli,
+        ["forum", "find", "deadline", "--limit-forums", "2", "--limit-discussions", "7", "--json"],
+    )
+
+    assert result.exit_code == 0
+    assert client.forum_search_calls == [("deadline", 1, None, None, True, False, "recent", 2, 7)]
+
+
+def test_forum_find_list_returns_shortlist_instead_of_single_hit(monkeypatch: pytest.MonkeyPatch, runner: CliRunner) -> None:
+    client, _ = patch_runtime(monkeypatch)
+
+    result = runner.invoke(
+        cli_module.cli,
+        ["forum", "find", "deadline", "--list", "--limit", "2", "--json"],
+    )
+
+    assert result.exit_code == 0
+    assert client.forum_search_calls == [("deadline", 2, None, None, True, False, "recent", None, None)]
+    assert json.loads(result.stdout) == expected_json([hit.to_dict() for hit in FORUM_SEARCH_HITS[:2]])
 
 
 def test_top_level_url_routes_forum_discussion_with_fragment(monkeypatch: pytest.MonkeyPatch, runner: CliRunner) -> None:

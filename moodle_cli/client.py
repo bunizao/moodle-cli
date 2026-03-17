@@ -427,6 +427,8 @@ class MoodleClient:
         include_post_text: bool = True,
         unread_only: bool = False,
         sort_by: str = "relevance",
+        max_forums: int | None = None,
+        max_discussions_per_forum: int | None = None,
     ) -> list[ForumSearchHit]:
         """Search forum discussion titles and optionally post content."""
         query = query.strip()
@@ -438,12 +440,16 @@ class MoodleClient:
             forum_refs = [ref for ref in forum_refs if ref.id == forum_cmid]
             if not forum_refs:
                 forum_refs = [ForumActivityRef(id=forum_cmid, url=f"{self.base_url}{FORUM_VIEW_PATH}?id={forum_cmid}")]
+        elif max_forums is not None:
+            forum_refs = forum_refs[:max_forums]
 
         hits: list[tuple[int, ForumSearchHit]] = []
         seen: set[tuple[int, int]] = set()
 
         for forum_ref in forum_refs:
             refs = self.get_forum_discussion_refs(forum_ref.id)
+            if max_discussions_per_forum is not None:
+                refs = refs[:max_discussions_per_forum]
             for ref in refs:
                 discussion: ForumDiscussion | None = None
                 latest_post = None
