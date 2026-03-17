@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 import moodle_cli.client as client_module
+import moodle_cli.scraper as scraper_module
 from moodle_cli.exceptions import MoodleAPIError
 from moodle_cli.client import MoodleClient
 from moodle_cli.models import ForumActivityRef, ForumDiscussion, ForumDiscussionRef, ForumPost, ForumPostAuthor
@@ -167,6 +168,63 @@ def test_get_forum_discussion_reuses_cached_discussion(monkeypatch: pytest.Monke
     assert client.get_forum_discussion(9001) == discussion
     assert client.get_forum_discussion(9001) == discussion
     assert calls == {"get": 1, "parse": 1}
+
+
+def test_parse_forum_group_ids_extracts_visible_group_options() -> None:
+    html = """
+    <html>
+      <body>
+        <form id="selectgroup" action="https://school.example.edu/mod/forum/view.php" method="get">
+          <select name="group" id="single_select123">
+            <option value="2077747">Applied</option>
+            <option value="2077757">Workshop</option>
+            <option value="1973651">CALLISTA</option>
+          </select>
+        </form>
+      </body>
+    </html>
+    """
+
+    assert scraper_module.parse_forum_group_ids_html(html) == [2077747, 2077757, 1973651]
+
+
+def test_get_forum_discussion_refs_collects_discussions_from_all_groups(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = make_client()
+    calls: list[dict | None] = []
+
+    class FakeResponse:
+        def __init__(self, text: str) -> None:
+            self.text = text
+
+    monkeypatch.setattr(client, "_ensure_session", lambda: None)
+
+    group_html = {
+        None: "<html><select name='group'><option value='10'>A</option><option value='20'>B</option></select></html>",
+        10: "<html><a href='/mod/forum/discuss.php?d=9001'>Week 1</a></html>",
+        20: "<html><a href='/mod/forum/discuss.php?d=9002'>Week 2</a></html>",
+    }
+
+    def fake_get(path: str, params: dict | None = None) -> FakeResponse:
+        assert path == "/mod/forum/view.php"
+        calls.append(params)
+        group = None if params is None else params.get("group")
+        return FakeResponse(group_html[group])
+
+    def fake_parse_refs(html: str, base_url: str) -> list[ForumDiscussionRef]:
+        if "9001" in html:
+            return [ForumDiscussionRef(id=9001, subject="Week 1", url=f"{BASE_URL}/mod/forum/discuss.php?d=9001")]
+        if "9002" in html:
+            return [ForumDiscussionRef(id=9002, subject="Week 2", url=f"{BASE_URL}/mod/forum/discuss.php?d=9002")]
+        return []
+
+    monkeypatch.setattr(client, "_get", fake_get)
+    monkeypatch.setattr(client_module, "parse_forum_discussion_refs_html", fake_parse_refs)
+    monkeypatch.setattr(client_module, "parse_forum_group_ids_html", lambda html: [10, 20] if "select" in html else [])
+
+    refs = client.get_forum_discussion_refs(501)
+
+    assert calls == [{"id": 501}, {"id": 501, "group": 10}, {"id": 501, "group": 20}]
+    assert [ref.id for ref in refs] == [9001, 9002]
 
 
 def test_search_forum_content_respects_forum_and_discussion_scan_budgets(monkeypatch: pytest.MonkeyPatch) -> None:
