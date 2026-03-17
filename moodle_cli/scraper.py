@@ -175,6 +175,26 @@ def parse_forum_discussion_refs_html(html: str, base_url: str) -> list[ForumDisc
     return refs
 
 
+def parse_forum_group_ids_html(html: str) -> list[int]:
+    """Extract visible forum group IDs from the group selector on a forum page."""
+    soup = BeautifulSoup(html, "html.parser")
+    group_ids: list[int] = []
+
+    select = soup.select_one("form#selectgroup select[name='group']") or soup.select_one("select[name='group']")
+    if select is None:
+        return group_ids
+
+    for option in select.select("option"):
+        value = str(option.get("value") or "").strip()
+        if not value.isdigit():
+            continue
+        group_id = int(value)
+        if group_id not in group_ids:
+            group_ids.append(group_id)
+
+    return group_ids
+
+
 def parse_course_contents_html(html: str, base_url: str) -> list[Section]:
     """Parse rendered Moodle course HTML into sections and activities."""
     soup = BeautifulSoup(html, "html.parser")

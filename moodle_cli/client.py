@@ -47,6 +47,7 @@ from moodle_cli.scraper import (
     parse_course_grades_url,
     parse_forum_discussion_html,
     parse_forum_discussion_refs_html,
+    parse_forum_group_ids_html,
     parse_forum_view_cmid_from_discussion_html,
     parse_grade_overview_rows,
     parse_course_section_numbers,
@@ -383,7 +384,23 @@ class MoodleClient:
             response = self._get(FORUM_VIEW_PATH, {"id": forum_cmid})
         except requests.RequestException as exc:
             raise MoodleRequestError(f"Could not load forum {forum_cmid}: {exc}") from exc
+
         refs = parse_forum_discussion_refs_html(response.text, self.base_url)
+        group_ids = parse_forum_group_ids_html(response.text)
+        seen_ids = {ref.id for ref in refs}
+
+        for group_id in group_ids:
+            try:
+                group_response = self._get(FORUM_VIEW_PATH, {"id": forum_cmid, "group": group_id})
+            except requests.RequestException as exc:
+                raise MoodleRequestError(f"Could not load forum {forum_cmid} group {group_id}: {exc}") from exc
+
+            for ref in parse_forum_discussion_refs_html(group_response.text, self.base_url):
+                if ref.id in seen_ids:
+                    continue
+                seen_ids.add(ref.id)
+                refs.append(ref)
+
         self._forum_discussion_refs_cache[forum_cmid] = refs
         return refs
 
