@@ -15,11 +15,17 @@ Avoid `moodle overview --json` unless the user explicitly asks for a combined sn
 
 For forum requests, prefer `moodle forum find` over manually chaining `forum forums`, `forum discussions`, and `forum discussion`.
 
+If the user already gives a forum discussion URL, skip search and open it directly with `moodle forum discussion URL --json`.
+
+If the user gives a forum view URL or discussion URL and wants to browse nearby discussions, use `moodle forum discussions URL --json`.
+
 Use scan budgets first when the site may be large:
 
 - `--course` to narrow to one course
 - `--limit-forums` to cap how many forums to scan
 - `--limit-discussions` to cap how many discussions to scan per forum
+
+Grouped forums are handled automatically. Do not assume an empty default forum page means the forum has no discussions.
 
 Default forum agent flow:
 
@@ -48,6 +54,8 @@ Use these mappings.
 | Find the best forum match for a keyword | `moodle forum find QUERY --json` |
 | Find a shortlist of forum matches | `moodle forum find QUERY --list --limit 5 --json` |
 | Open the resolved forum post/discussion body | `moodle forum find QUERY --body --json` |
+| Open a known forum discussion URL or ID directly | `moodle forum discussion DISCUSSION_OR_URL --json` |
+| Browse discussions in a known forum URL or ID | `moodle forum discussions FORUM_OR_URL --json` |
 | Check whether this CLI has an update | `moodle update --json` |
 
 # Operating Rules
@@ -61,3 +69,10 @@ If the user asks for "recent", "next", or "nearest", sort by relevance and menti
 If a request is ambiguous between activities, courses, and grades, inspect courses first and then run the smallest follow-up command.
 
 For forum work, do not enumerate forums or discussions first unless the user explicitly asks to browse. Search first, then expand only if needed.
+
+For forum discussion output, prefer structured fields over heuristic text parsing when available:
+
+- `image_urls` for original image links
+- `links` for extracted hyperlinks
+- `tables` for structured table content
+- `group_id` and `group_name` for grouped forum context
