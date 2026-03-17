@@ -24,7 +24,9 @@ from moodle_cli.formatter import (
     print_course_grades,
     print_courses,
     print_course_contents,
+    print_forum_activities,
     print_forum_discussion,
+    print_forum_search_hits,
     print_overview,
     print_todo_items,
     print_user_info,
@@ -131,6 +133,40 @@ def _parse_forum_reference(ctx: click.Context, client: MoodleClient, value: str)
     raise click.UsageError("Unsupported forum URL. Use a view.php?id=... or discuss.php?d=... URL.", ctx=ctx)
 
 
+def _parse_course_reference(ctx: click.Context, client: MoodleClient, value: str) -> int:
+    """Parse a course reference (ID or unique name match) into a course ID."""
+    raw = value.strip()
+    if raw.isdigit():
+        return int(raw)
+
+    matches = [
+        course
+        for course in client.get_courses()
+        if _query_matches_text(course.fullname, raw) or _query_matches_text(course.shortname, raw)
+    ]
+    if len(matches) == 1:
+        return matches[0].id
+    if not matches:
+        raise click.UsageError(
+            f"Could not find a course matching '{raw}'. Run 'moodle courses' to inspect course IDs.",
+            ctx=ctx,
+        )
+
+    sample = ", ".join(f"{course.id}:{course.fullname or course.shortname}" for course in matches[:5])
+    raise click.UsageError(f"Course '{raw}' is ambiguous. Matches: {sample}", ctx=ctx)
+
+
+def _query_matches_text(text: str, query: str) -> bool:
+    haystack = " ".join((text or "").lower().split())
+    needle = " ".join((query or "").lower().split())
+    if not needle:
+        return True
+    if needle in haystack:
+        return True
+    tokens = [token for token in needle.split(" ") if token]
+    return bool(tokens) and all(token in haystack for token in tokens)
+
+
 @click.group()
 @click.option("-v", "--verbose", is_flag=True, help="Enable debug logging.")
 @click.version_option(version=__version__)
@@ -220,16 +256,20 @@ def forum_discussion(
 @forum.command(name="discussions")
 @click.argument("forum", type=str, required=True)
 @click.option("--limit", type=click.IntRange(min=1), default=50, show_default=True, help="Maximum number of discussions.")
+@click.option("--query", type=str, help="Filter discussion titles by query.")
 @click.option("--json", "as_json", is_flag=True, help="Output as JSON.")
 @click.option("--yaml", "as_yaml", is_flag=True, help="Output as YAML.")
 @click.pass_context
-def forum_discussions(ctx: click.Context, forum: str, limit: int, as_json: bool, as_yaml: bool) -> None:
+def forum_discussions(ctx: click.Context, forum: str, limit: int, query: str | None, as_json: bool, as_yaml: bool) -> None:
     """List discussions from a forum (FORUM_ID or view.php/discuss.php URL)."""
     client = ctx.obj["get_client"]()
     forum_cmid = _parse_forum_reference(ctx, client, forum)
 
     _print_loading(f"Loading forum discussions for forum {forum_cmid}...")
-    refs = client.get_forum_discussion_refs(forum_cmid)[:limit]
+    refs = client.get_forum_discussion_refs(forum_cmid)
+    if query:
+        refs = [ref for ref in refs if _query_matches_text(ref.subject, query)]
+    refs = refs[:limit]
 
     if as_json:
         output_json([ref.to_dict() for ref in refs])
@@ -248,6 +288,84 @@ def forum_discussions(ctx: click.Context, forum: str, limit: int, as_json: bool,
             for ref in refs:
                 table.add_row(str(ref.id), ref.subject, ref.url)
         stdout_console.print(table)
+
+
+@forum.command(name="forums")
+@click.argument("query", type=str, required=False)
+@click.option("--course", "course_ref", type=str, help="Restrict to a course ID or unique course name match.")
+@click.option("--limit", type=click.IntRange(min=1), default=50, show_default=True, help="Maximum number of forums.")
+@click.option("--json", "as_json", is_flag=True, help="Output as JSON.")
+@click.option("--yaml", "as_yaml", is_flag=True, help="Output as YAML.")
+@click.pass_context
+def forum_forums(
+    ctx: click.Context,
+    query: str | None,
+    course_ref: str | None,
+    limit: int,
+    as_json: bool,
+    as_yaml: bool,
+) -> None:
+    """List forum activities, optionally filtered by course or query."""
+    client = ctx.obj["get_client"]()
+    course_id = _parse_course_reference(ctx, client, course_ref) if course_ref else None
+
+    _print_loading("Loading forum activities...")
+    forums = client.get_forums(course_id=course_id)
+    if query:
+        forums = [
+            forum
+            for forum in forums
+            if _query_matches_text(forum.name, query) or _query_matches_text(forum.course_name, query)
+        ]
+    forums = forums[:limit]
+
+    if as_json:
+        output_json([forum.to_dict() for forum in forums])
+    elif as_yaml:
+        output_yaml([forum.to_dict() for forum in forums])
+    else:
+        print_forum_activities(forums)
+
+
+@forum.command(name="search")
+@click.argument("query", type=str, required=True)
+@click.option("--course", "course_ref", type=str, help="Restrict to a course ID or unique course name match.")
+@click.option("--forum", "forum_ref", type=str, help="Restrict to a forum ID or forum URL.")
+@click.option("--titles-only", is_flag=True, help="Only search discussion titles.")
+@click.option("--limit", type=click.IntRange(min=1), default=20, show_default=True, help="Maximum number of matches.")
+@click.option("--json", "as_json", is_flag=True, help="Output as JSON.")
+@click.option("--yaml", "as_yaml", is_flag=True, help="Output as YAML.")
+@click.pass_context
+def forum_search(
+    ctx: click.Context,
+    query: str,
+    course_ref: str | None,
+    forum_ref: str | None,
+    titles_only: bool,
+    limit: int,
+    as_json: bool,
+    as_yaml: bool,
+) -> None:
+    """Search forums by discussion title or post text and return direct jump URLs."""
+    client = ctx.obj["get_client"]()
+    course_id = _parse_course_reference(ctx, client, course_ref) if course_ref else None
+    forum_cmid = _parse_forum_reference(ctx, client, forum_ref) if forum_ref else None
+
+    _print_loading(f"Searching forums for '{query}'...")
+    hits = client.search_forum_content(
+        query,
+        limit=limit,
+        course_id=course_id,
+        forum_cmid=forum_cmid,
+        include_post_text=not titles_only,
+    )
+
+    if as_json:
+        output_json([hit.to_dict() for hit in hits])
+    elif as_yaml:
+        output_yaml([hit.to_dict() for hit in hits])
+    else:
+        print_forum_search_hits(hits)
 
 
 @forum.command(name="check")

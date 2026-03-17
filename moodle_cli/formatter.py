@@ -7,7 +7,19 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.tree import Tree
 
-from moodle_cli.models import AlertSummary, Course, CourseGrades, ForumDiscussion, ForumPost, Overview, Section, TodoItem, UserInfo
+from moodle_cli.models import (
+    AlertSummary,
+    Course,
+    CourseGrades,
+    ForumActivityRef,
+    ForumDiscussion,
+    ForumPost,
+    ForumSearchHit,
+    Overview,
+    Section,
+    TodoItem,
+    UserInfo,
+)
 
 console = Console()
 
@@ -308,6 +320,66 @@ def print_forum_discussion(discussion: ForumDiscussion, highlight_post_id: int |
 
     for post in discussion.posts:
         table.add_row(*_forum_post_row(post, highlight_post_id=highlight_post_id, show_body=show_body))
+
+    console.print(table)
+
+
+def print_forum_activities(forums: list[ForumActivityRef]) -> None:
+    """Display forum activities as a table."""
+    table = Table(title="Forums")
+    table.add_column("Forum ID", style="dim", justify="right")
+    table.add_column("Forum", style="bold")
+    table.add_column("Course")
+    table.add_column("Course ID", style="dim", justify="right")
+    table.add_column("URL")
+
+    if not forums:
+        table.add_row("No forums", "", "", "", "")
+        console.print(table)
+        return
+
+    for forum in forums:
+        table.add_row(
+            str(forum.id),
+            forum.name,
+            forum.course_name,
+            str(forum.course_id) if forum.course_id else "",
+            forum.url,
+        )
+
+    console.print(table)
+
+
+def print_forum_search_hits(hits: list[ForumSearchHit]) -> None:
+    """Display forum search results."""
+    table = Table(title="Forum Search")
+    table.add_column("Course", style="bold")
+    table.add_column("Forum")
+    table.add_column("Discussion")
+    table.add_column("Discussion ID", style="dim", justify="right")
+    table.add_column("Post ID", style="dim", justify="right")
+    table.add_column("Matched In", style="cyan")
+    table.add_column("Author")
+    table.add_column("Snippet")
+    table.add_column("URL")
+
+    if not hits:
+        table.add_row("No matches", "", "", "", "", "", "", "", "")
+        console.print(table)
+        return
+
+    for hit in hits:
+        table.add_row(
+            hit.course_name,
+            hit.forum_name,
+            hit.discussion_subject,
+            str(hit.discussion_id) if hit.discussion_id else "",
+            str(hit.post_id) if hit.post_id else "",
+            hit.matched_in,
+            hit.author_name,
+            hit.snippet or hit.discussion_subject,
+            hit.url,
+        )
 
     console.print(table)
 

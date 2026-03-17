@@ -334,3 +334,51 @@ class ForumDiscussionRef:
 
     def to_dict(self) -> dict:
         return {"id": self.id, "subject": self.subject, "url": self.url}
+
+
+@dataclass
+class ForumActivityRef:
+    id: int
+    name: str = ""
+    course_id: int = 0
+    course_name: str = ""
+    url: str = ""
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "name": self.name,
+            "course_id": self.course_id,
+            "course_name": self.course_name,
+            "url": self.url,
+        }
+
+
+@dataclass
+class ForumSearchHit:
+    course_id: int = 0
+    course_name: str = ""
+    forum_id: int = 0
+    forum_name: str = ""
+    discussion_id: int = 0
+    discussion_subject: str = ""
+    post_id: int = 0
+    author_name: str = ""
+    matched_in: str = ""
+    snippet: str = ""
+    url: str = ""
+
+    def to_dict(self) -> dict:
+        return {
+            "course_id": self.course_id,
+            "course_name": self.course_name,
+            "forum_id": self.forum_id,
+            "forum_name": self.forum_name,
+            "discussion_id": self.discussion_id,
+            "discussion_subject": self.discussion_subject,
+            "post_id": self.post_id,
+            "author_name": self.author_name,
+            "matched_in": self.matched_in,
+            "snippet": self.snippet,
+            "url": self.url,
+        }
