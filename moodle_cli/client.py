@@ -67,6 +67,8 @@ class MoodleClient:
         self._sesskey: str | None = None
         self._userid: int | None = None
         self._user_info: UserInfo | None = None
+        self._forum_discussions_cache: dict[int, ForumDiscussion] = {}
+        self._forum_discussion_refs_cache: dict[int, list[ForumDiscussionRef]] = {}
 
     def _ajax_url(self, function_name: str) -> str:
         """Build the AJAX service URL."""
@@ -330,6 +332,10 @@ class MoodleClient:
 
     def get_forum_discussion(self, discussion_id: int) -> ForumDiscussion:
         """Get posts in a forum discussion, using AJAX when available."""
+        cached = self._forum_discussions_cache.get(discussion_id)
+        if cached is not None:
+            return cached
+
         self._ensure_session()
 
         try:
@@ -344,14 +350,18 @@ class MoodleClient:
             log.debug("Falling back to scraping %s because %s is unavailable (%s)", FORUM_DISCUSS_PATH, FUNC_GET_DISCUSSION_POSTS, exc)
         else:
             if isinstance(data, dict):
-                return parse_forum_discussion(data, discussion_id)
+                discussion = parse_forum_discussion(data, discussion_id)
+                self._forum_discussions_cache[discussion_id] = discussion
+                return discussion
 
         try:
             response = self._get(FORUM_DISCUSS_PATH, {"d": discussion_id})
         except requests.RequestException as exc:
             raise MoodleRequestError(f"Could not load forum discussion {discussion_id}: {exc}") from exc
 
-        return parse_forum_discussion_html(response.text, self.base_url, discussion_id)
+        discussion = parse_forum_discussion_html(response.text, self.base_url, discussion_id)
+        self._forum_discussions_cache[discussion_id] = discussion
+        return discussion
 
     def get_forum_view_cmid(self, discussion_id: int) -> int | None:
         """Resolve the forum view course-module ID for a discussion."""
@@ -364,12 +374,18 @@ class MoodleClient:
 
     def get_forum_discussion_refs(self, forum_cmid: int) -> list[ForumDiscussionRef]:
         """List discussions from a forum view page."""
+        cached = self._forum_discussion_refs_cache.get(forum_cmid)
+        if cached is not None:
+            return cached
+
         self._ensure_session()
         try:
             response = self._get(FORUM_VIEW_PATH, {"id": forum_cmid})
         except requests.RequestException as exc:
             raise MoodleRequestError(f"Could not load forum {forum_cmid}: {exc}") from exc
-        return parse_forum_discussion_refs_html(response.text, self.base_url)
+        refs = parse_forum_discussion_refs_html(response.text, self.base_url)
+        self._forum_discussion_refs_cache[forum_cmid] = refs
+        return refs
 
     def get_course_forums(self, course_id: int, course_name: str = "") -> list[ForumActivityRef]:
         """List forum activities in a course."""

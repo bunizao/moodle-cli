@@ -167,7 +167,106 @@ def _query_matches_text(text: str, query: str) -> bool:
     return bool(tokens) and all(token in haystack for token in tokens)
 
 
-@click.group()
+def _filter_discussion_to_post(discussion, post_id: int | None):
+    """Keep only the matched post when a search result resolves to a specific post."""
+    if post_id is None:
+        return discussion
+
+    filtered = [post for post in discussion.posts if post.id == post_id]
+    if not filtered:
+        raise click.ClickException(f"Post {post_id} was not found in discussion {discussion.id}.")
+
+    from moodle_cli.models import ForumDiscussion
+
+    return ForumDiscussion(
+        id=discussion.id,
+        subject=discussion.subject,
+        course_id=discussion.course_id,
+        forum_id=discussion.forum_id,
+        url=discussion.url,
+        posts=filtered,
+    )
+
+
+def _parse_query_int(query: dict[str, list[str]], key: str, label: str) -> int:
+    values = query.get(key) or []
+    if not values or not values[0].isdigit():
+        raise click.UsageError(f"Could not find {label} in URL query (expected ?{key}=...).")
+    return int(values[0])
+
+
+def _dispatch_top_level_url(ctx: click.Context, target: str) -> None:
+    parsed = urlparse(target.strip())
+    if not parsed.scheme or not parsed.netloc:
+        raise click.UsageError(f"No such command '{target}'.", ctx=ctx)
+
+    path = parsed.path.rstrip("/")
+    query = parse_qs(parsed.query)
+
+    if path.endswith("/mod/forum/discuss.php"):
+        discussion_id = _parse_query_int(query, "d", "discussion ID")
+        post_id: int | None = None
+        fragment = (parsed.fragment or "").strip()
+        if fragment.startswith("p") and fragment[1:].isdigit():
+            post_id = int(fragment[1:])
+        ctx.invoke(
+            forum_discussion,
+            discussion=str(discussion_id),
+            post_id=post_id,
+            show_body=False,
+            as_json=False,
+            as_yaml=False,
+        )
+        return
+
+    if path.endswith("/mod/forum/view.php"):
+        forum_id = _parse_query_int(query, "id", "forum module ID")
+        ctx.invoke(
+            forum_discussions,
+            forum=str(forum_id),
+            limit=50,
+            query=None,
+            as_json=False,
+            as_yaml=False,
+        )
+        return
+
+    if path.endswith("/course/view.php"):
+        course_id = _parse_query_int(query, "id", "course ID")
+        ctx.invoke(course, course_id=course_id, as_json=False, as_yaml=False)
+        return
+
+    if "/grade/report/" in path:
+        course_id = _parse_query_int(query, "id", "course ID")
+        ctx.invoke(grades, course_id=course_id, as_json=False, as_yaml=False)
+        return
+
+    raise click.UsageError(
+        "Unsupported Moodle URL. Supported paths: /mod/forum/discuss.php, /mod/forum/view.php, /course/view.php, /grade/report/*.",
+        ctx=ctx,
+    )
+
+
+def _looks_like_url(value: str) -> bool:
+    parsed = urlparse(value.strip())
+    return bool(parsed.scheme and parsed.netloc)
+
+
+class URLTargetGroup(click.Group):
+    """Click group that treats a top-level URL as a routed target."""
+
+    def resolve_command(self, ctx: click.Context, args: list[str]) -> tuple[str | None, click.Command, list[str]]:
+        try:
+            return super().resolve_command(ctx, args)
+        except click.UsageError:
+            if args and _looks_like_url(args[0]):
+                command = self.get_command(ctx, "__url_target__")
+                if command is not None:
+                    return "__url_target__", command, args
+            raise
+
+
+@click.group(cls=URLTargetGroup)
 @click.option("-v", "--verbose", is_flag=True, help="Enable debug logging.")
 @click.version_option(version=__version__)
 @click.pass_context
@@ -199,6 +298,14 @@ def cli(ctx: click.Context, verbose: bool) -> None:
         return ctx.obj["_client"]
 
     ctx.obj["get_client"] = get_client
+
+
+@cli.command(name="__url_target__", hidden=True)
+@click.argument("target", type=str, required=True)
+@click.pass_context
+def cli_url_target(ctx: click.Context, target: str) -> None:
+    """Route a supported Moodle URL to the shortest existing command path."""
+    _dispatch_top_level_url(ctx, target)
 
 
 @cli.group()
@@ -372,6 +479,63 @@ def forum_search(
         output_yaml([hit.to_dict() for hit in hits])
     else:
         print_forum_search_hits(hits)
+
+
+@forum.command(name="find")
+@click.argument("query", type=str, required=True)
+@click.option("--course", "course_ref", type=str, help="Restrict to a course ID or unique course name match.")
+@click.option("--forum", "forum_ref", type=str, help="Restrict to a forum ID or forum URL.")
+@click.option("--titles-only", is_flag=True, help="Only search discussion titles.")
+@click.option("--unread-only", is_flag=True, help="Only include unread discussion or post matches.")
+@click.option("--body", "show_body", is_flag=True, help="Resolve the best match into the target post/discussion body.")
+@click.option("--json", "as_json", is_flag=True, help="Output as JSON.")
+@click.option("--yaml", "as_yaml", is_flag=True, help="Output as YAML.")
+@click.pass_context
+def forum_find(
+    ctx: click.Context,
+    query: str,
+    course_ref: str | None,
+    forum_ref: str | None,
+    titles_only: bool,
+    unread_only: bool,
+    show_body: bool,
+    as_json: bool,
+    as_yaml: bool,
+) -> None:
+    """Find the best forum match with shortest-path defaults for agent workflows."""
+    client = ctx.obj["get_client"]()
+    course_id = _parse_course_reference(ctx, client, course_ref) if course_ref else None
+    forum_cmid = _parse_forum_reference(ctx, client, forum_ref) if forum_ref else None
+
+    _print_loading(f"Finding best forum match for '{query}'...")
+    hits = client.search_forum_content(
+        query,
+        limit=1,
+        course_id=course_id,
+        forum_cmid=forum_cmid,
+        include_post_text=not titles_only,
+        unread_only=unread_only,
+        sort_by="recent",
+    )
+    hit = hits[0] if hits else None
+
+    if show_body and hit is not None:
+        discussion = client.get_forum_discussion(hit.discussion_id)
+        discussion = _filter_discussion_to_post(discussion, hit.post_id or None)
+        if as_json:
+            output_json(discussion.to_dict())
+        elif as_yaml:
+            output_yaml(discussion.to_dict())
+        else:
+            print_forum_discussion(discussion, highlight_post_id=hit.post_id or None, show_body=True)
+        return
+
+    if as_json:
+        output_json(hit.to_dict() if hit is not None else None)
+    elif as_yaml:
+        output_yaml(hit.to_dict() if hit is not None else None)
+    else:
+        print_forum_search_hits([hit] if hit is not None else [])
 
 
 @forum.command(name="check")
