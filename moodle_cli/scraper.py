@@ -14,6 +14,7 @@ from moodle_cli.exceptions import AuthError
 from moodle_cli.html_utils import html_to_text_and_image_urls
 from moodle_cli.models import (
     Activity,
+    Assignment,
     CourseGrades,
     ForumDiscussion,
     ForumDiscussionRef,
@@ -376,6 +377,44 @@ def parse_course_id_from_page_html(html: str) -> int | None:
     return int(match.group(1))
 
 
+def parse_assignment_html(html: str, assignment_id: int, base_url: str) -> Assignment:
+    """Parse a rendered assignment page into a compact summary."""
+    soup = BeautifulSoup(html, "html.parser")
+    assignment = Assignment(
+        id=assignment_id,
+        name=_clean_text_from_node(soup.select_one("h1")),
+        course_id=parse_course_id_from_page_html(html) or 0,
+        url=f"{base_url.rstrip('/')}/mod/assign/view.php?id={assignment_id}",
+    )
+
+    breadcrumb_links = soup.select('nav[aria-label="Breadcrumb"] a[href], #page-navbar .breadcrumb a[href]')
+    for link in breadcrumb_links:
+        href = link.get("href") or ""
+        if not assignment.section_name and "/course/view.php" in href and "section=" in href:
+            assignment.section_name = _clean_text_from_node(link)
+
+        course_id = _parse_course_id_from_href(href)
+        if course_id is not None:
+            assignment.course_id = course_id
+            if not assignment.course_name:
+                assignment.course_name = (link.get("title") or "").strip() or _clean_text_from_node(link)
+
+    due_label = soup.find(["strong", "b"], string=re.compile(r"^\s*Due:\s*$"))
+    if due_label is not None:
+        due_parts = []
+        for sibling in due_label.next_siblings:
+            text = _clean_text_from_node(sibling) if hasattr(sibling, "get_text") else _clean_text(str(sibling))
+            if text:
+                due_parts.append(text)
+        assignment.due_pretty = " ".join(due_parts).strip()
+
+    assignment.submission_status = _find_table_value(soup, "Submission status")
+    assignment.grading_status = _find_table_value(soup, "Grading status")
+    assignment.time_remaining = _find_table_value(soup, "Time remaining")
+    assignment.grade = _find_table_value(soup, "Grade")
+    return assignment
+
+
 def has_course_grades_html(html: str) -> bool:
     """Return whether the HTML contains a Moodle user grade report table."""
     soup = BeautifulSoup(html, "html.parser")
@@ -448,6 +487,20 @@ def _parse_course_id_from_href(href: str) -> int | None:
     if not values or not values[0].isdigit():
         return None
     return int(values[0])
+
+
+def _find_table_value(soup: BeautifulSoup, label: str) -> str:
+    for row in soup.select("tr"):
+        header = _clean_text_from_node(row.select_one("th, td.cell.c0"))
+        if header != label:
+            continue
+
+        value_cell = row.select_one("td") or row.select_one("th + td")
+        if value_cell is None:
+            cells = row.select("td")
+            value_cell = cells[-1] if cells else None
+        return _clean_table_cell(value_cell)
+    return ""
 
 
 def _clean_text_from_node(node) -> str:

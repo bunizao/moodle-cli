@@ -213,6 +213,36 @@ class CourseGrades:
 
 
 @dataclass
+class Assignment:
+    id: int
+    name: str
+    course_id: int = 0
+    course_name: str = ""
+    section_name: str = ""
+    due_pretty: str = ""
+    submission_status: str = ""
+    grading_status: str = ""
+    time_remaining: str = ""
+    grade: str = ""
+    url: str = ""
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "name": self.name,
+            "course_id": self.course_id,
+            "course_name": self.course_name,
+            "section_name": self.section_name,
+            "due_pretty": self.due_pretty,
+            "submission_status": self.submission_status,
+            "grading_status": self.grading_status,
+            "time_remaining": self.time_remaining,
+            "grade": self.grade,
+            "url": self.url,
+        }
+
+
+@dataclass
 class Overview:
     user: UserInfo
     courses: list[Course] = field(default_factory=list)

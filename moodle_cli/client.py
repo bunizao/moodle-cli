@@ -7,6 +7,7 @@ import requests
 
 from moodle_cli.constants import (
     AJAX_SERVICE_PATH,
+    ASSIGN_VIEW_PATH,
     COURSE_PATH,
     DASHBOARD_PATH,
     FUNC_GET_ACTION_EVENTS,
@@ -25,10 +26,11 @@ from moodle_cli.constants import (
     GRADE_REPORT_PATH,
 )
 from moodle_cli.exceptions import AuthError, MoodleAPIError, MoodleRequestError
-from moodle_cli.models import AlertSummary, Course, CourseGrades, ForumDiscussion, ForumDiscussionRef, Overview, Section, TodoItem, UserInfo
+from moodle_cli.models import AlertSummary, Assignment, Course, CourseGrades, ForumDiscussion, ForumDiscussionRef, Overview, Section, TodoItem, UserInfo
 from moodle_cli.parser import parse_alert_summary, parse_courses, parse_forum_discussion, parse_todo_items, parse_user_info
 from moodle_cli.scraper import (
     has_course_grades_html,
+    parse_assignment_html,
     parse_course_id_from_page_html,
     parse_course_contents_html,
     parse_course_grades_html,
@@ -315,6 +317,15 @@ class MoodleClient:
             f"Could not find a usable grades page for course {course_id}. "
             "This Moodle site may use a different grade report configuration."
         )
+
+    def get_assignment(self, assignment_id: int) -> Assignment:
+        """Get a compact summary for an assignment activity."""
+        self._ensure_session()
+        try:
+            response = self._get(ASSIGN_VIEW_PATH, {"id": assignment_id})
+        except requests.RequestException as exc:
+            raise MoodleRequestError(f"Could not load assignment {assignment_id}: {exc}") from exc
+        return parse_assignment_html(response.text, assignment_id, self.base_url)
 
     def get_forum_discussion(self, discussion_id: int) -> ForumDiscussion:
         """Get posts in a forum discussion, using AJAX when available."""

@@ -7,7 +7,7 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.tree import Tree
 
-from moodle_cli.models import AlertSummary, Course, CourseGrades, ForumDiscussion, ForumPost, Overview, Section, TodoItem, UserInfo
+from moodle_cli.models import AlertSummary, Assignment, Course, CourseGrades, ForumDiscussion, ForumPost, Overview, Section, TodoItem, UserInfo
 
 console = Console()
 
@@ -177,6 +177,32 @@ def print_course_grades(course_grades: CourseGrades) -> None:
         if show_status:
             row.append(item.status)
         table.add_row(*row)
+
+    console.print(table)
+
+
+def print_assignment(assignment: Assignment) -> None:
+    """Display a Moodle assignment summary."""
+    table = Table(title=f"Assignment: {assignment.name}", show_header=False, box=None, padding=(0, 2))
+    table.add_column(style="bold cyan")
+    table.add_column()
+
+    if assignment.course_name:
+        table.add_row("Course", assignment.course_name)
+    if assignment.section_name:
+        table.add_row("Section", assignment.section_name)
+    if assignment.due_pretty:
+        table.add_row("Due", assignment.due_pretty)
+    if assignment.submission_status:
+        table.add_row("Submission", assignment.submission_status)
+    if assignment.grading_status:
+        table.add_row("Grading", assignment.grading_status)
+    if assignment.time_remaining:
+        table.add_row("Time Remaining", assignment.time_remaining)
+    if assignment.grade:
+        table.add_row("Grade", assignment.grade)
+    if assignment.url:
+        table.add_row("URL", assignment.url)
 
     console.print(table)
 

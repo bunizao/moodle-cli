@@ -21,6 +21,7 @@ from moodle_cli.constants import (
 from moodle_cli.exceptions import AuthError, MoodleAPIError, MoodleCLIError
 from moodle_cli.formatter import (
     print_alerts,
+    print_assignment,
     print_course_grades,
     print_courses,
     print_course_contents,
@@ -31,6 +32,7 @@ from moodle_cli.formatter import (
 )
 from moodle_cli.output import output_json, output_yaml
 from moodle_cli.update_check import check_for_updates
+from moodle_cli.url_resolver import resolve_top_level_url
 
 stdout_console = Console()
 stderr_console = Console(stderr=True)
@@ -131,94 +133,39 @@ def _parse_forum_reference(ctx: click.Context, client: MoodleClient, value: str)
     raise click.UsageError("Unsupported forum URL. Use a view.php?id=... or discuss.php?d=... URL.", ctx=ctx)
 
 
-def _parse_query_int(query: dict[str, list[str]], key: str, label: str) -> int:
-    values = query.get(key) or []
+def _parse_assignment_reference(ctx: click.Context, value: str) -> int:
+    """Parse an assignment reference (course-module ID or URL) into a course-module ID."""
+    raw = value.strip()
+    if raw.isdigit():
+        return int(raw)
+
+    parsed = urlparse(raw)
+    if not parsed.scheme or not parsed.netloc:
+        raise click.UsageError("ASSIGNMENT must be a numeric ID or a full assignment URL.", ctx=ctx)
+    if not parsed.path.endswith("/mod/assign/view.php"):
+        raise click.UsageError("Unsupported assignment URL. Use a view.php?id=... URL.", ctx=ctx)
+
+    query = parse_qs(parsed.query)
+    values = query.get("id") or []
     if not values or not values[0].isdigit():
-        raise click.UsageError(f"Could not find {label} in URL query (expected ?{key}=...).")
+        raise click.UsageError("Could not find assignment module ID in view.php URL (expected ?id=...).", ctx=ctx)
     return int(values[0])
 
 
-def _require_configured_site_host(ctx: click.Context, parsed_target) -> None:
-    """Reject top-level URLs that do not belong to the configured Moodle site."""
-    config = ctx.obj["get_config"]()
-    configured = urlparse(config["base_url"])
-    configured_host = configured.netloc.lower()
-    target_host = parsed_target.netloc.lower()
-
-    if target_host == configured_host:
-        return
-
-    raise click.UsageError(
-        f"URL host '{target_host}' does not match configured Moodle site '{configured_host}'. "
-        "Paste the Moodle page URL, not an external login redirect.",
-        ctx=ctx,
-    )
-
-
 def _dispatch_top_level_url(ctx: click.Context, target: str) -> None:
-    parsed = urlparse(target.strip())
-    if not parsed.scheme or not parsed.netloc:
-        raise click.UsageError(f"No such command '{target}'.", ctx=ctx)
-    _require_configured_site_host(ctx, parsed)
-
-    path = parsed.path.rstrip("/")
-    query = parse_qs(parsed.query)
-
-    if path.endswith("/mod/forum/discuss.php"):
-        discussion_id = _parse_query_int(query, "d", "discussion ID")
-        post_id: int | None = None
-        fragment = (parsed.fragment or "").strip()
-        if fragment.startswith("p") and fragment[1:].isdigit():
-            post_id = int(fragment[1:])
-        ctx.invoke(
-            forum_discussion,
-            discussion=str(discussion_id),
-            post_id=post_id,
-            show_body=False,
-            as_json=False,
-            as_yaml=False,
-        )
-        return
-
-    if path.endswith("/mod/forum/view.php"):
-        forum_id = _parse_query_int(query, "id", "forum module ID")
-        ctx.invoke(
-            forum_discussions,
-            forum=str(forum_id),
-            limit=50,
-            as_json=False,
-            as_yaml=False,
-        )
-        return
-
-    if path.endswith("/course/view.php"):
-        course_id = _parse_query_int(query, "id", "course ID")
-        ctx.invoke(course, course_id=course_id, as_json=False, as_yaml=False)
-        return
-
-    if path.endswith("/course/user.php") and ((query.get("mode") or [""])[0] == "grade"):
-        course_id = _parse_query_int(query, "id", "course ID")
-        ctx.invoke(grades, course_id=course_id, as_json=False, as_yaml=False)
-        return
-
-    if "/grade/report/" in path:
-        course_id = _parse_query_int(query, "id", "course ID")
-        ctx.invoke(grades, course_id=course_id, as_json=False, as_yaml=False)
-        return
-
-    if path.startswith("/mod/") and path.endswith("/view.php"):
-        _parse_query_int(query, "id", "activity module ID")
-        client = ctx.obj["get_client"]()
-        course_id = client.resolve_course_id_for_url(target)
-        if course_id is None:
-            raise click.ClickException("Could not resolve course ID from the activity page.")
-        ctx.invoke(course, course_id=course_id, as_json=False, as_yaml=False)
-        return
-
-    raise click.UsageError(
-        "Unsupported Moodle URL. Supported paths: /mod/forum/discuss.php, /mod/forum/view.php, /mod/*/view.php, /course/view.php, /course/user.php?mode=grade, /grade/report/*.",
-        ctx=ctx,
+    resolved = resolve_top_level_url(
+        base_url=ctx.obj["get_config"]()["base_url"],
+        target=target,
+        resolve_course_id_for_url=lambda url: ctx.obj["get_client"]().resolve_course_id_for_url(url),
     )
+    command_map = {
+        "assignment": assignment,
+        "forum_discussion": forum_discussion,
+        "forum_discussions": forum_discussions,
+        "course": course,
+        "grades": grades,
+    }
+    ctx.invoke(command_map[resolved.command_name], **resolved.kwargs)
 
 
 def _looks_like_url(value: str) -> bool:
@@ -449,6 +396,26 @@ def user(ctx: click.Context, as_json: bool, as_yaml: bool) -> None:
         output_yaml(info.to_dict())
     else:
         print_user_info(info)
+
+
+@cli.command()
+@click.argument("assignment", type=str, required=True)
+@click.option("--json", "as_json", is_flag=True, help="Output as JSON.")
+@click.option("--yaml", "as_yaml", is_flag=True, help="Output as YAML.")
+@click.pass_context
+def assignment(ctx: click.Context, assignment: str, as_json: bool, as_yaml: bool) -> None:
+    """Show assignment details (ASSIGNMENT_ID or view.php URL)."""
+    assignment_id = _parse_assignment_reference(ctx, assignment)
+    _print_loading(f"Loading assignment {assignment_id}...")
+    client = ctx.obj["get_client"]()
+    details = client.get_assignment(assignment_id)
+
+    if as_json:
+        output_json(details.to_dict())
+    elif as_yaml:
+        output_yaml(details.to_dict())
+    else:
+        print_assignment(details)
 
 
 @cli.command()

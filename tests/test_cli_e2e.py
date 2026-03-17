@@ -21,6 +21,7 @@ import moodle_cli.scraper as scraper_module
 from moodle_cli.exceptions import AuthError, MoodleAPIError, MoodleCLIError, MoodleRequestError
 from moodle_cli.models import (
     Activity,
+    Assignment,
     AlertNotification,
     AlertSummary,
     Course,
@@ -164,6 +165,19 @@ GRADES = CourseGrades(
         ),
     ],
 )
+ASSIGNMENT = Assignment(
+    id=302,
+    name="Essay 1",
+    course_id=202,
+    course_name="History 202",
+    section_name="Assessments",
+    due_pretty="Friday, 18 April 2026, 11:55 PM",
+    submission_status="No attempt",
+    grading_status="Not graded",
+    time_remaining="2 days 3 hours remaining",
+    grade="",
+    url="https://school.example.edu/mod/assign/view.php?id=302",
+)
 ALERTS = AlertSummary(
     notifications=[
         AlertNotification(
@@ -216,6 +230,7 @@ class FakeClient:
         self.course_ids: list[int] = []
         self.todo_calls: list[tuple[int, int | None]] = []
         self.grade_course_ids: list[int] = []
+        self.assignment_ids: list[int] = []
         self.alert_limits: list[int] = []
         self.overview_calls: list[tuple[int, int | None, int]] = []
         self.resolved_page_urls: list[str] = []
@@ -237,6 +252,10 @@ class FakeClient:
     def get_course_grades(self, course_id: int) -> CourseGrades:
         self.grade_course_ids.append(course_id)
         return GRADES
+
+    def get_assignment(self, assignment_id: int) -> Assignment:
+        self.assignment_ids.append(assignment_id)
+        return ASSIGNMENT
 
     def get_alerts(self, limit: int = 20) -> AlertSummary:
         self.alert_limits.append(limit)
@@ -330,6 +349,7 @@ def test_global_help_and_version_do_not_load_runtime(monkeypatch: pytest.MonkeyP
     assert result.exit_code == 0
     if args == ["--help"]:
         assert "Terminal-first CLI for Moodle LMS." in result.stdout
+        assert "assignment" in result.stdout
         assert "activities" in result.stdout
         assert "alerts" in result.stdout
         assert "courses" in result.stdout
@@ -400,6 +420,9 @@ def test_verbose_flag_sets_logging_level(
         (["grades", "101"], None, None, ["Grades: Mathematics 101", "Alice Example", "Course Total", "73.00", "Quiz 1", "Essay", "Pass"], [], [], [101], [], []),
         (["grades", "101", "--json"], json.loads, expected_json(GRADES.to_dict()), None, [], [], [101], [], []),
         (["grades", "101", "--yaml"], yaml.safe_load, GRADES.to_dict(), None, [], [], [101], [], []),
+        (["assignment", "302"], None, None, ["Assignment: Essay 1", "History 202", "Assessments", "No attempt", "Not graded"], [], [], [], [], []),
+        (["assignment", "302", "--json"], json.loads, expected_json(ASSIGNMENT.to_dict()), None, [], [], [], [], []),
+        (["assignment", "302", "--yaml"], yaml.safe_load, ASSIGNMENT.to_dict(), None, [], [], [], [], []),
         (["activities", "42"], None, None, ["Course 42", "Introduction", "Syllabus", "Quiz 1", "Week 2", "No activities"], [42], [], [], [], []),
         (["activities", "42", "--json"], json.loads, expected_json([section.to_dict() for section in SECTIONS]), None, [42], [], [], [], []),
         (["activities", "42", "--yaml"], yaml.safe_load, [section.to_dict() for section in SECTIONS], None, [42], [], [], [], []),
@@ -660,22 +683,33 @@ def test_top_level_url_routes_course_user_grade_page(monkeypatch: pytest.MonkeyP
     assert "Grades: Mathematics 101" in result.output
 
 
-def test_top_level_url_routes_activity_page_to_course(monkeypatch: pytest.MonkeyPatch, runner: CliRunner) -> None:
+def test_top_level_url_routes_assignment_page(monkeypatch: pytest.MonkeyPatch, runner: CliRunner) -> None:
     client, _ = patch_runtime(monkeypatch)
 
-    result = runner.invoke(cli_module.cli, [f"{BASE_URL}/mod/assign/view.php?id=301"])
+    result = runner.invoke(cli_module.cli, [f"{BASE_URL}/mod/assign/view.php?id=302"])
 
     assert result.exit_code == 0
-    assert client.resolved_page_urls == [f"{BASE_URL}/mod/assign/view.php?id=301"]
+    assert client.assignment_ids == [302]
+    assert client.course_ids == []
+    assert "Assignment: Essay 1" in result.output
+
+
+def test_top_level_url_routes_generic_activity_page_to_course(monkeypatch: pytest.MonkeyPatch, runner: CliRunner) -> None:
+    client, _ = patch_runtime(monkeypatch)
+
+    result = runner.invoke(cli_module.cli, [f"{BASE_URL}/mod/resource/view.php?id=301"])
+
+    assert result.exit_code == 0
+    assert client.resolved_page_urls == [f"{BASE_URL}/mod/resource/view.php?id=301"]
     assert client.course_ids == [101]
     assert "Course 101" in result.output
 
 
-def test_top_level_url_rejects_unresolved_activity_page(monkeypatch: pytest.MonkeyPatch, runner: CliRunner) -> None:
+def test_top_level_url_rejects_unresolved_generic_activity_page(monkeypatch: pytest.MonkeyPatch, runner: CliRunner) -> None:
     client, _ = patch_runtime(monkeypatch)
     monkeypatch.setattr(client, "resolve_course_id_for_url", lambda _url: None)
 
-    result = runner.invoke(cli_module.cli, [f"{BASE_URL}/mod/assign/view.php?id=301"])
+    result = runner.invoke(cli_module.cli, [f"{BASE_URL}/mod/resource/view.php?id=301"])
 
     assert result.exit_code == 1
     assert "Could not resolve course ID from the activity page." in result.output
@@ -689,6 +723,7 @@ def test_top_level_url_rejects_unresolved_activity_page(monkeypatch: pytest.Monk
         (["todo"], "Loading todo items..."),
         (["overview"], "Loading overview..."),
         (["grades", "101"], "Loading grades for course 101..."),
+        (["assignment", "302"], "Loading assignment 302..."),
         (["activities", "42"], "Loading activities for course 42..."),
         (["course", "42"], "Loading course 42..."),
     ],
@@ -934,6 +969,56 @@ def test_parse_course_id_from_page_html_prefers_breadcrumb_course_link() -> None
     """
 
     assert scraper_module.parse_course_id_from_page_html(html) == 41031
+
+
+def test_parse_assignment_html_extracts_summary() -> None:
+    html = """
+    <html>
+      <body>
+        <header>
+          <h1>Essay 1</h1>
+        </header>
+        <div id="page-navbar">
+          <nav aria-label="Breadcrumb">
+            <ol class="breadcrumb">
+              <li class="breadcrumb-item">
+                <a href="https://school.example.edu/course/view.php?id=202" title="History 202">HIST202</a>
+              </li>
+              <li class="breadcrumb-item">
+                <a href="https://school.example.edu/course/view.php?id=202&section=7">Assessments</a>
+              </li>
+            </ol>
+          </nav>
+        </div>
+        <div>
+          <strong>Due:</strong>
+          Friday, 18 April 2026, 11:55 PM
+        </div>
+        <table>
+          <tr><th>Submission status</th><td>No attempt</td></tr>
+          <tr><th>Grading status</th><td>Not graded</td></tr>
+          <tr><th>Time remaining</th><td>2 days 3 hours remaining</td></tr>
+        </table>
+        <h3>Feedback</h3>
+        <table>
+          <tr><th>Grade</th><td>72 / 100</td></tr>
+        </table>
+      </body>
+    </html>
+    """
+
+    parsed = scraper_module.parse_assignment_html(html, 302, BASE_URL)
+
+    assert parsed.id == 302
+    assert parsed.name == "Essay 1"
+    assert parsed.course_id == 202
+    assert parsed.course_name == "History 202"
+    assert parsed.section_name == "Assessments"
+    assert parsed.due_pretty == "Friday, 18 April 2026, 11:55 PM"
+    assert parsed.submission_status == "No attempt"
+    assert parsed.grading_status == "Not graded"
+    assert parsed.time_remaining == "2 days 3 hours remaining"
+    assert parsed.grade == "72 / 100"
 
 
 def test_parse_alert_summary_extracts_notifications_and_counts() -> None:
