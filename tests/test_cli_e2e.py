@@ -218,6 +218,7 @@ class FakeClient:
         self.grade_course_ids: list[int] = []
         self.alert_limits: list[int] = []
         self.overview_calls: list[tuple[int, int | None, int]] = []
+        self.resolved_page_urls: list[str] = []
 
     def get_site_info(self) -> UserInfo:
         return USER
@@ -252,6 +253,10 @@ class FakeClient:
     def get_forum_discussion_refs(self, forum_cmid: int) -> list[ForumDiscussionRef]:
         assert forum_cmid == 501
         return FORUM_DISCUSSION_REFS
+
+    def resolve_course_id_for_url(self, url: str) -> int | None:
+        self.resolved_page_urls.append(url)
+        return 101
 
 
 class FakeTTY:
@@ -635,13 +640,25 @@ def test_top_level_url_routes_grade_report(monkeypatch: pytest.MonkeyPatch, runn
     assert "Grades: Mathematics 101" in result.output
 
 
-def test_top_level_url_rejects_unsupported_path(monkeypatch: pytest.MonkeyPatch, runner: CliRunner) -> None:
-    _, _ = patch_runtime(monkeypatch)
+def test_top_level_url_routes_activity_page_to_course(monkeypatch: pytest.MonkeyPatch, runner: CliRunner) -> None:
+    client, _ = patch_runtime(monkeypatch)
 
     result = runner.invoke(cli_module.cli, [f"{BASE_URL}/mod/assign/view.php?id=301"])
 
-    assert result.exit_code == 2
-    assert "Unsupported Moodle URL" in result.output
+    assert result.exit_code == 0
+    assert client.resolved_page_urls == [f"{BASE_URL}/mod/assign/view.php?id=301"]
+    assert client.course_ids == [101]
+    assert "Course 101" in result.output
+
+
+def test_top_level_url_rejects_unresolved_activity_page(monkeypatch: pytest.MonkeyPatch, runner: CliRunner) -> None:
+    client, _ = patch_runtime(monkeypatch)
+    monkeypatch.setattr(client, "resolve_course_id_for_url", lambda _url: None)
+
+    result = runner.invoke(cli_module.cli, [f"{BASE_URL}/mod/assign/view.php?id=301"])
+
+    assert result.exit_code == 1
+    assert "Could not resolve course ID from the activity page." in result.output
 
 
 @pytest.mark.parametrize(
@@ -860,6 +877,20 @@ def test_parse_course_grades_url_finds_course_nav_link() -> None:
     """
 
     assert scraper_module.parse_course_grades_url(html, BASE_URL) == f"{BASE_URL}/grade/report/index.php?id=101"
+
+
+def test_parse_course_id_from_page_html_finds_course_home_link() -> None:
+    html = """
+    <html>
+      <body>
+        <nav>
+          <li data-key="coursehome"><a href="/course/view.php?id=101">Course</a></li>
+        </nav>
+      </body>
+    </html>
+    """
+
+    assert scraper_module.parse_course_id_from_page_html(html) == 101
 
 
 def test_parse_alert_summary_extracts_notifications_and_counts() -> None:

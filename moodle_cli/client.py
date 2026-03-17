@@ -29,6 +29,7 @@ from moodle_cli.models import AlertSummary, Course, CourseGrades, ForumDiscussio
 from moodle_cli.parser import parse_alert_summary, parse_courses, parse_forum_discussion, parse_todo_items, parse_user_info
 from moodle_cli.scraper import (
     has_course_grades_html,
+    parse_course_id_from_page_html,
     parse_course_contents_html,
     parse_course_grades_html,
     parse_course_grades_url,
@@ -357,6 +358,15 @@ class MoodleClient:
         except requests.RequestException as exc:
             raise MoodleRequestError(f"Could not load forum {forum_cmid}: {exc}") from exc
         return parse_forum_discussion_refs_html(response.text, self.base_url)
+
+    def resolve_course_id_for_url(self, url: str) -> int | None:
+        """Resolve the owning course ID for an authenticated Moodle page URL."""
+        self._ensure_session()
+        try:
+            response = self._get_absolute(url)
+        except requests.RequestException as exc:
+            raise MoodleRequestError(f"Could not load page: {exc}") from exc
+        return parse_course_id_from_page_html(response.text)
 
     def _get_courses_timeline(self) -> list[Course]:
         """Get enrolled courses from the dashboard timeline API."""

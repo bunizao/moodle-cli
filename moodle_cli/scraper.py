@@ -348,6 +348,32 @@ def parse_course_grades_url(html: str, base_url: str) -> str:
     return urljoin(base_url, link.get("href") or "")
 
 
+def parse_course_id_from_page_html(html: str) -> int | None:
+    """Extract a course ID from a rendered Moodle page."""
+    soup = BeautifulSoup(html, "html.parser")
+    selectors = [
+        'li[data-key="coursehome"] a[href*="/course/view.php?id="]',
+        '.breadcrumb a[href*="/course/view.php?id="]',
+        '.page-context-header a[href*="/course/view.php?id="]',
+        '.secondary-navigation a[href*="/course/view.php?id="]',
+        'a[href*="/course/view.php?id="]',
+    ]
+
+    for selector in selectors:
+        link = soup.select_one(selector)
+        if link is None:
+            continue
+
+        course_id = _parse_course_id_from_href(link.get("href") or "")
+        if course_id is not None:
+            return course_id
+
+    match = re.search(r"/course/view\.php\?[^\"'>]*[?&]id=(\d+)", html)
+    if match is None:
+        return None
+    return int(match.group(1))
+
+
 def has_course_grades_html(html: str) -> bool:
     """Return whether the HTML contains a Moodle user grade report table."""
     soup = BeautifulSoup(html, "html.parser")
@@ -408,6 +434,18 @@ def _safe_int(value: str | None) -> int:
         return int(value or 0)
     except ValueError:
         return 0
+
+
+def _parse_course_id_from_href(href: str) -> int | None:
+    parsed = urlparse(href)
+    if "/course/view.php" not in parsed.path:
+        return None
+
+    query = parse_qs(parsed.query)
+    values = query.get("id") or []
+    if not values or not values[0].isdigit():
+        return None
+    return int(values[0])
 
 
 def _clean_text_from_node(node) -> str:

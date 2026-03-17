@@ -183,8 +183,17 @@ def _dispatch_top_level_url(ctx: click.Context, target: str) -> None:
         ctx.invoke(grades, course_id=course_id, as_json=False, as_yaml=False)
         return
 
+    if path.startswith("/mod/") and path.endswith("/view.php"):
+        _parse_query_int(query, "id", "activity module ID")
+        client = ctx.obj["get_client"]()
+        course_id = client.resolve_course_id_for_url(target)
+        if course_id is None:
+            raise click.ClickException("Could not resolve course ID from the activity page.")
+        ctx.invoke(course, course_id=course_id, as_json=False, as_yaml=False)
+        return
+
     raise click.UsageError(
-        "Unsupported Moodle URL. Supported paths: /mod/forum/discuss.php, /mod/forum/view.php, /course/view.php, /grade/report/*.",
+        "Unsupported Moodle URL. Supported paths: /mod/forum/discuss.php, /mod/forum/view.php, /mod/*/view.php, /course/view.php, /grade/report/*.",
         ctx=ctx,
     )
 
