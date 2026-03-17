@@ -46,7 +46,9 @@ from moodle_cli.scraper import (
     parse_course_grades_html,
     parse_course_grades_url,
     parse_forum_discussion_html,
+    parse_forum_discussion_group_html,
     parse_forum_discussion_refs_html,
+    parse_forum_groups_html,
     parse_forum_group_ids_html,
     parse_forum_view_cmid_from_discussion_html,
     parse_grade_overview_rows,
@@ -352,6 +354,13 @@ class MoodleClient:
         else:
             if isinstance(data, dict):
                 discussion = parse_forum_discussion(data, discussion_id)
+                if discussion.group_id <= 0:
+                    try:
+                        response = self._get(FORUM_DISCUSS_PATH, {"d": discussion_id})
+                    except requests.RequestException:
+                        response = None
+                    if response is not None:
+                        discussion.group_id, discussion.group_name = parse_forum_discussion_group_html(response.text)
                 self._forum_discussions_cache[discussion_id] = discussion
                 return discussion
 
@@ -385,11 +394,11 @@ class MoodleClient:
         except requests.RequestException as exc:
             raise MoodleRequestError(f"Could not load forum {forum_cmid}: {exc}") from exc
 
-        refs = parse_forum_discussion_refs_html(response.text, self.base_url)
-        group_ids = parse_forum_group_ids_html(response.text)
+        groups = parse_forum_groups_html(response.text)
+        refs = parse_forum_discussion_refs_html(response.text, self.base_url) if not groups else []
         seen_ids = {ref.id for ref in refs}
 
-        for group_id in group_ids:
+        for group_id, group_name in groups:
             try:
                 group_response = self._get(FORUM_VIEW_PATH, {"id": forum_cmid, "group": group_id})
             except requests.RequestException as exc:
@@ -399,6 +408,8 @@ class MoodleClient:
                 if ref.id in seen_ids:
                     continue
                 seen_ids.add(ref.id)
+                ref.group_id = group_id
+                ref.group_name = group_name
                 refs.append(ref)
 
         self._forum_discussion_refs_cache[forum_cmid] = refs
@@ -493,6 +504,8 @@ class MoodleClient:
                                         course_name=forum_ref.course_name,
                                         forum_id=forum_ref.id,
                                         forum_name=forum_ref.name,
+                                        group_id=ref.group_id,
+                                        group_name=ref.group_name,
                                         discussion_id=ref.id,
                                         discussion_subject=ref.subject,
                                         matched_in="discussion_subject",
@@ -529,6 +542,8 @@ class MoodleClient:
                                 course_name=forum_ref.course_name,
                                 forum_id=forum_ref.id,
                                 forum_name=forum_ref.name,
+                                group_id=discussion.group_id or ref.group_id,
+                                group_name=discussion.group_name or ref.group_name,
                                 discussion_id=ref.id,
                                 discussion_subject=discussion.subject or ref.subject,
                                 post_id=post.id,

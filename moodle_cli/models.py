@@ -274,6 +274,8 @@ class ForumPost:
     message_html: str = ""
     message_text: str = ""
     image_urls: list[str] = field(default_factory=list)
+    links: list[dict[str, str]] = field(default_factory=list)
+    tables: list[dict[str, list]] = field(default_factory=list)
     author: ForumPostAuthor = field(default_factory=lambda: ForumPostAuthor(id=0))
     parent_id: int = 0
     time_created: int = 0
@@ -293,6 +295,8 @@ class ForumPost:
             "message_html": self.message_html,
             "message_text": self.message_text,
             "image_urls": self.image_urls,
+            "links": self.links,
+            "tables": self.tables,
             "author": self.author.to_dict(),
             "parent_id": self.parent_id,
             "time_created": self.time_created,
@@ -312,6 +316,8 @@ class ForumDiscussion:
     subject: str = ""
     course_id: int = 0
     forum_id: int = 0
+    group_id: int = 0
+    group_name: str = ""
     url: str = ""
     posts: list[ForumPost] = field(default_factory=list)
 
@@ -321,6 +327,8 @@ class ForumDiscussion:
             "subject": self.subject,
             "course_id": self.course_id,
             "forum_id": self.forum_id,
+            "group_id": self.group_id,
+            "group_name": self.group_name,
             "url": self.url,
             "posts": [post.to_dict() for post in self.posts],
         }
@@ -330,10 +338,18 @@ class ForumDiscussion:
 class ForumDiscussionRef:
     id: int
     subject: str = ""
+    group_id: int = 0
+    group_name: str = ""
     url: str = ""
 
     def to_dict(self) -> dict:
-        return {"id": self.id, "subject": self.subject, "url": self.url}
+        return {
+            "id": self.id,
+            "subject": self.subject,
+            "group_id": self.group_id,
+            "group_name": self.group_name,
+            "url": self.url,
+        }
 
 
 @dataclass
@@ -360,6 +376,8 @@ class ForumSearchHit:
     course_name: str = ""
     forum_id: int = 0
     forum_name: str = ""
+    group_id: int = 0
+    group_name: str = ""
     discussion_id: int = 0
     discussion_subject: str = ""
     post_id: int = 0
@@ -376,6 +394,8 @@ class ForumSearchHit:
             "course_name": self.course_name,
             "forum_id": self.forum_id,
             "forum_name": self.forum_name,
+            "group_id": self.group_id,
+            "group_name": self.group_name,
             "discussion_id": self.discussion_id,
             "discussion_subject": self.discussion_subject,
             "post_id": self.post_id,

@@ -11,7 +11,7 @@ from urllib.parse import parse_qs, urljoin, urlparse
 from bs4 import BeautifulSoup
 
 from moodle_cli.exceptions import AuthError
-from moodle_cli.html_utils import html_to_text_and_image_urls
+from moodle_cli.html_utils import html_to_structured_content
 from moodle_cli.models import (
     Activity,
     CourseGrades,
@@ -68,6 +68,8 @@ def parse_forum_discussion_html(html: str, base_url: str, discussion_id: int) ->
     if not post_els:
         post_els = soup.select("article[data-post-id]")
 
+    group_id, group_name = parse_forum_discussion_group_html(html)
+
     posts: list[ForumPost] = []
     for el in post_els:
         post_id = _safe_int(el.get("data-post-id"))
@@ -99,7 +101,7 @@ def parse_forum_discussion_html(html: str, base_url: str, discussion_id: int) ->
             or el.select_one("[data-region-content='forum-post-core']")
         )
         message_html = message_el.decode_contents() if message_el is not None else ""
-        message_text, image_urls = html_to_text_and_image_urls(message_html, base_url)
+        message_text, image_urls, links, tables = html_to_structured_content(message_html, base_url)
 
         posts.append(
             ForumPost(
@@ -109,6 +111,8 @@ def parse_forum_discussion_html(html: str, base_url: str, discussion_id: int) ->
                 message_html=message_html,
                 message_text=message_text,
                 image_urls=image_urls,
+                links=links,
+                tables=tables,
                 author=ForumPostAuthor(id=0, fullname=author_name, profile_url=author_url),
                 created_pretty=created_pretty,
                 url=f"{base_url.rstrip('/')}/mod/forum/discuss.php?d={discussion_id}#p{post_id}",
@@ -118,7 +122,7 @@ def parse_forum_discussion_html(html: str, base_url: str, discussion_id: int) ->
 
     subject = posts[0].subject if posts else ""
     url = f"{base_url.rstrip('/')}/mod/forum/discuss.php?d={discussion_id}"
-    return ForumDiscussion(id=discussion_id, subject=subject, url=url, posts=posts)
+    return ForumDiscussion(id=discussion_id, subject=subject, group_id=group_id, group_name=group_name, url=url, posts=posts)
 
 
 def parse_forum_view_cmid_from_discussion_html(html: str) -> int | None:
@@ -175,24 +179,58 @@ def parse_forum_discussion_refs_html(html: str, base_url: str) -> list[ForumDisc
     return refs
 
 
-def parse_forum_group_ids_html(html: str) -> list[int]:
-    """Extract visible forum group IDs from the group selector on a forum page."""
+def parse_forum_groups_html(html: str) -> list[tuple[int, str]]:
+    """Extract visible forum groups from the group selector on a forum page."""
     soup = BeautifulSoup(html, "html.parser")
-    group_ids: list[int] = []
+    groups: list[tuple[int, str]] = []
 
     select = soup.select_one("form#selectgroup select[name='group']") or soup.select_one("select[name='group']")
     if select is None:
-        return group_ids
+        return groups
 
     for option in select.select("option"):
         value = str(option.get("value") or "").strip()
         if not value.isdigit():
             continue
         group_id = int(value)
-        if group_id not in group_ids:
-            group_ids.append(group_id)
+        group_name = _clean_text_from_node(option)
+        if (group_id, group_name) not in groups:
+            groups.append((group_id, group_name))
 
-    return group_ids
+    return groups
+
+
+def parse_forum_group_ids_html(html: str) -> list[int]:
+    """Extract visible forum group IDs from the group selector on a forum page."""
+    return [group_id for group_id, _group_name in parse_forum_groups_html(html)]
+
+
+def parse_forum_discussion_group_html(html: str) -> tuple[int, str]:
+    """Extract the selected group ID and name from a discussion page."""
+    soup = BeautifulSoup(html, "html.parser")
+    group_id = _safe_int(_attr_from_selector(soup, "form#mformforum input[name='groupid']", "value"))
+    return group_id, _selected_group_name(soup, group_id)
+
+
+def _selected_group_name(soup: BeautifulSoup, group_id: int) -> str:
+    if group_id <= 0:
+        return ""
+
+    for selector in ("select[name='groupinfo']", "select[name='group']"):
+        select = soup.select_one(selector)
+        if select is None:
+            continue
+        option = select.select_one(f"option[value='{group_id}']")
+        if option is not None:
+            return _clean_text_from_node(option)
+    return ""
+
+
+def _attr_from_selector(soup: BeautifulSoup, selector: str, attribute: str) -> str:
+    node = soup.select_one(selector)
+    if node is None:
+        return ""
+    return str(node.get(attribute) or "")
 
 
 def parse_course_contents_html(html: str, base_url: str) -> list[Section]:

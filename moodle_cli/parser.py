@@ -1,6 +1,6 @@
 """Parse raw Moodle JSON responses into typed models."""
 
-from moodle_cli.html_utils import html_to_text_and_image_urls
+from moodle_cli.html_utils import html_to_structured_content
 from moodle_cli.models import (
     Activity,
     AlertNotification,
@@ -148,7 +148,10 @@ def parse_forum_post_author(data: dict) -> ForumPostAuthor:
 def parse_forum_post(data: dict) -> ForumPost:
     urls = data.get("urls", {}) if isinstance(data.get("urls"), dict) else {}
     message_html = str(data.get("message") or "")
-    message_text, image_urls = html_to_text_and_image_urls(message_html, str(urls.get("view") or urls.get("discuss") or ""))
+    message_text, image_urls, links, tables = html_to_structured_content(
+        message_html,
+        str(urls.get("view") or urls.get("discuss") or ""),
+    )
     return ForumPost(
         id=int(data.get("id") or 0),
         discussion_id=int(data.get("discussionid") or 0),
@@ -156,6 +159,8 @@ def parse_forum_post(data: dict) -> ForumPost:
         message_html=message_html,
         message_text=message_text,
         image_urls=image_urls,
+        links=links,
+        tables=tables,
         author=parse_forum_post_author(data.get("author", {}) if isinstance(data.get("author"), dict) else {}),
         parent_id=int(data.get("parentid") or 0),
         time_created=int(data.get("timecreated") or 0),
@@ -183,6 +188,8 @@ def parse_forum_discussion(data: dict, discussion_id: int) -> ForumDiscussion:
         subject=subject,
         course_id=int(data.get("courseid") or 0),
         forum_id=int(data.get("forumid") or 0),
+        group_id=int(data.get("groupid") or 0),
+        group_name=str(data.get("groupname") or ""),
         url=url,
         posts=posts,
     )
