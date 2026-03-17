@@ -332,6 +332,8 @@ def forum_forums(
 @click.option("--course", "course_ref", type=str, help="Restrict to a course ID or unique course name match.")
 @click.option("--forum", "forum_ref", type=str, help="Restrict to a forum ID or forum URL.")
 @click.option("--titles-only", is_flag=True, help="Only search discussion titles.")
+@click.option("--unread-only", is_flag=True, help="Only include unread discussion or post matches.")
+@click.option("--recent", is_flag=True, help="Sort matches by newest activity instead of relevance.")
 @click.option("--limit", type=click.IntRange(min=1), default=20, show_default=True, help="Maximum number of matches.")
 @click.option("--json", "as_json", is_flag=True, help="Output as JSON.")
 @click.option("--yaml", "as_yaml", is_flag=True, help="Output as YAML.")
@@ -342,6 +344,8 @@ def forum_search(
     course_ref: str | None,
     forum_ref: str | None,
     titles_only: bool,
+    unread_only: bool,
+    recent: bool,
     limit: int,
     as_json: bool,
     as_yaml: bool,
@@ -358,6 +362,8 @@ def forum_search(
         course_id=course_id,
         forum_cmid=forum_cmid,
         include_post_text=not titles_only,
+        unread_only=unread_only,
+        sort_by="recent" if recent else "relevance",
     )
 
     if as_json:

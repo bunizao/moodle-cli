@@ -409,6 +409,8 @@ class MoodleClient:
         course_id: int | None = None,
         forum_cmid: int | None = None,
         include_post_text: bool = True,
+        unread_only: bool = False,
+        sort_by: str = "relevance",
     ) -> list[ForumSearchHit]:
         """Search forum discussion titles and optionally post content."""
         query = query.strip()
@@ -427,8 +429,91 @@ class MoodleClient:
         for forum_ref in forum_refs:
             refs = self.get_forum_discussion_refs(forum_ref.id)
             for ref in refs:
+                discussion: ForumDiscussion | None = None
+                latest_post = None
+                discussion_has_unread = False
+                matching_post_hits: list[tuple[int, ForumSearchHit]] = []
+
+                if include_post_text or unread_only or sort_by == "recent":
+                    discussion = self.get_forum_discussion(ref.id)
+                    if discussion.posts:
+                        latest_post = max(discussion.posts, key=lambda post: post.time_created or 0)
+                        discussion_has_unread = any(post.unread for post in discussion.posts)
+
+                if not include_post_text:
+                    subject_score = _match_score(ref.subject, query)
+                    if subject_score > 0 and (not unread_only or discussion_has_unread):
+                        key = (ref.id, 0)
+                        if key not in seen:
+                            seen.add(key)
+                            hits.append(
+                                (
+                                    400 + subject_score,
+                                    ForumSearchHit(
+                                        course_id=forum_ref.course_id,
+                                        course_name=forum_ref.course_name,
+                                        forum_id=forum_ref.id,
+                                        forum_name=forum_ref.name,
+                                        discussion_id=ref.id,
+                                        discussion_subject=ref.subject,
+                                        matched_in="discussion_subject",
+                                        snippet=_snippet_for_text(ref.subject, query),
+                                        unread=discussion_has_unread,
+                                        time_created=latest_post.time_created if latest_post is not None else 0,
+                                        url=ref.url,
+                                    ),
+                                )
+                            )
+                    continue
+
+                if discussion is None:
+                    discussion = self.get_forum_discussion(ref.id)
+                for post in discussion.posts:
+                    post_subject_score = _match_score(post.subject, query)
+                    post_body_score = _match_score(post.message_text, query)
+                    if post_subject_score <= 0 and post_body_score <= 0:
+                        continue
+                    if unread_only and not post.unread:
+                        continue
+
+                    matched_in = "post_subject" if post_subject_score >= post_body_score else "post_body"
+                    matched_text = post.subject if matched_in == "post_subject" else post.message_text
+                    score = 300 + max(post_subject_score, post_body_score)
+                    key = (ref.id, post.id)
+                    if key in seen:
+                        continue
+                    matching_post_hits.append(
+                        (
+                            score,
+                            ForumSearchHit(
+                                course_id=forum_ref.course_id,
+                                course_name=forum_ref.course_name,
+                                forum_id=forum_ref.id,
+                                forum_name=forum_ref.name,
+                                discussion_id=ref.id,
+                                discussion_subject=discussion.subject or ref.subject,
+                                post_id=post.id,
+                                author_name=post.author.fullname,
+                                matched_in=matched_in,
+                                snippet=_snippet_for_text(matched_text, query),
+                                unread=post.unread,
+                                time_created=post.time_created,
+                                url=post.url or ref.url,
+                            ),
+                        )
+                    )
+
+                if matching_post_hits:
+                    for score, hit in matching_post_hits:
+                        key = (hit.discussion_id, hit.post_id)
+                        if key in seen:
+                            continue
+                        seen.add(key)
+                        hits.append((score, hit))
+                    continue
+
                 subject_score = _match_score(ref.subject, query)
-                if subject_score > 0:
+                if subject_score > 0 and (not unread_only or discussion_has_unread):
                     key = (ref.id, 0)
                     if key not in seen:
                         seen.add(key)
@@ -444,56 +529,34 @@ class MoodleClient:
                                     discussion_subject=ref.subject,
                                     matched_in="discussion_subject",
                                     snippet=_snippet_for_text(ref.subject, query),
+                                    unread=discussion_has_unread,
+                                    time_created=latest_post.time_created if latest_post is not None else 0,
                                     url=ref.url,
                                 ),
                             )
                         )
 
-                if not include_post_text:
-                    continue
-
-                discussion = self.get_forum_discussion(ref.id)
-                for post in discussion.posts:
-                    post_subject_score = _match_score(post.subject, query)
-                    post_body_score = _match_score(post.message_text, query)
-                    if post_subject_score <= 0 and post_body_score <= 0:
-                        continue
-
-                    matched_in = "post_subject" if post_subject_score >= post_body_score else "post_body"
-                    matched_text = post.subject if matched_in == "post_subject" else post.message_text
-                    score = 300 + max(post_subject_score, post_body_score)
-                    key = (ref.id, post.id)
-                    if key in seen:
-                        continue
-                    seen.add(key)
-                    hits.append(
-                        (
-                            score,
-                            ForumSearchHit(
-                                course_id=forum_ref.course_id,
-                                course_name=forum_ref.course_name,
-                                forum_id=forum_ref.id,
-                                forum_name=forum_ref.name,
-                                discussion_id=ref.id,
-                                discussion_subject=discussion.subject or ref.subject,
-                                post_id=post.id,
-                                author_name=post.author.fullname,
-                                matched_in=matched_in,
-                                snippet=_snippet_for_text(matched_text, query),
-                                url=post.url or ref.url,
-                            ),
-                        )
-                    )
-
-        hits.sort(
-            key=lambda item: (
-                -item[0],
-                item[1].course_name.lower(),
-                item[1].forum_name.lower(),
-                item[1].discussion_id,
-                item[1].post_id,
+        if sort_by == "recent":
+            hits.sort(
+                key=lambda item: (
+                    -(item[1].time_created or 0),
+                    -item[0],
+                    item[1].course_name.lower(),
+                    item[1].forum_name.lower(),
+                    item[1].discussion_id,
+                    item[1].post_id,
+                )
             )
-        )
+        else:
+            hits.sort(
+                key=lambda item: (
+                    -item[0],
+                    item[1].course_name.lower(),
+                    item[1].forum_name.lower(),
+                    item[1].discussion_id,
+                    item[1].post_id,
+                )
+            )
         return [hit for _, hit in hits[:limit]]
 
     def _get_courses_timeline(self) -> list[Course]:

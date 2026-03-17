@@ -358,13 +358,15 @@ def print_forum_search_hits(hits: list[ForumSearchHit]) -> None:
     table.add_column("Discussion")
     table.add_column("Discussion ID", style="dim", justify="right")
     table.add_column("Post ID", style="dim", justify="right")
+    table.add_column("When", style="cyan")
+    table.add_column("Unread", justify="center")
     table.add_column("Matched In", style="cyan")
     table.add_column("Author")
     table.add_column("Snippet")
     table.add_column("URL")
 
     if not hits:
-        table.add_row("No matches", "", "", "", "", "", "", "", "")
+        table.add_row("No matches", "", "", "", "", "", "", "", "", "", "")
         console.print(table)
         return
 
@@ -375,6 +377,8 @@ def print_forum_search_hits(hits: list[ForumSearchHit]) -> None:
             hit.discussion_subject,
             str(hit.discussion_id) if hit.discussion_id else "",
             str(hit.post_id) if hit.post_id else "",
+            _format_timestamp(hit.time_created),
+            "[green]Yes[/]" if hit.unread else "",
             hit.matched_in,
             hit.author_name,
             hit.snippet or hit.discussion_subject,

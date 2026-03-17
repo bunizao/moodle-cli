@@ -366,6 +366,8 @@ class ForumSearchHit:
     author_name: str = ""
     matched_in: str = ""
     snippet: str = ""
+    unread: bool = False
+    time_created: int = 0
     url: str = ""
 
     def to_dict(self) -> dict:
@@ -380,5 +382,7 @@ class ForumSearchHit:
             "author_name": self.author_name,
             "matched_in": self.matched_in,
             "snippet": self.snippet,
+            "unread": self.unread,
+            "time_created": self.time_created,
             "url": self.url,
         }
