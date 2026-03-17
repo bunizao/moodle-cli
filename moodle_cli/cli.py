@@ -388,12 +388,13 @@ def forum_discussions(ctx: click.Context, forum: str, limit: int, query: str | N
         table = Table(title=f"Forum {forum_cmid}: Discussions")
         table.add_column("Discussion ID", style="dim", justify="right")
         table.add_column("Subject", style="bold")
+        table.add_column("Group")
         table.add_column("URL")
         if not refs:
-            table.add_row("No discussions", "", "")
+            table.add_row("No discussions", "", "", "")
         else:
             for ref in refs:
-                table.add_row(str(ref.id), ref.subject, ref.url)
+                table.add_row(str(ref.id), ref.subject, ref.group_name, ref.url)
         stdout_console.print(table)
 
 
