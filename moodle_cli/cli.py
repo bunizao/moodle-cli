@@ -131,7 +131,84 @@ def _parse_forum_reference(ctx: click.Context, client: MoodleClient, value: str)
     raise click.UsageError("Unsupported forum URL. Use a view.php?id=... or discuss.php?d=... URL.", ctx=ctx)
 
 
-@click.group()
+def _parse_query_int(query: dict[str, list[str]], key: str, label: str) -> int:
+    values = query.get(key) or []
+    if not values or not values[0].isdigit():
+        raise click.UsageError(f"Could not find {label} in URL query (expected ?{key}=...).")
+    return int(values[0])
+
+
+def _dispatch_top_level_url(ctx: click.Context, target: str) -> None:
+    parsed = urlparse(target.strip())
+    if not parsed.scheme or not parsed.netloc:
+        raise click.UsageError(f"No such command '{target}'.", ctx=ctx)
+
+    path = parsed.path.rstrip("/")
+    query = parse_qs(parsed.query)
+
+    if path.endswith("/mod/forum/discuss.php"):
+        discussion_id = _parse_query_int(query, "d", "discussion ID")
+        post_id: int | None = None
+        fragment = (parsed.fragment or "").strip()
+        if fragment.startswith("p") and fragment[1:].isdigit():
+            post_id = int(fragment[1:])
+        ctx.invoke(
+            forum_discussion,
+            discussion=str(discussion_id),
+            post_id=post_id,
+            show_body=False,
+            as_json=False,
+            as_yaml=False,
+        )
+        return
+
+    if path.endswith("/mod/forum/view.php"):
+        forum_id = _parse_query_int(query, "id", "forum module ID")
+        ctx.invoke(
+            forum_discussions,
+            forum=str(forum_id),
+            limit=50,
+            as_json=False,
+            as_yaml=False,
+        )
+        return
+
+    if path.endswith("/course/view.php"):
+        course_id = _parse_query_int(query, "id", "course ID")
+        ctx.invoke(course, course_id=course_id, as_json=False, as_yaml=False)
+        return
+
+    if "/grade/report/" in path:
+        course_id = _parse_query_int(query, "id", "course ID")
+        ctx.invoke(grades, course_id=course_id, as_json=False, as_yaml=False)
+        return
+
+    raise click.UsageError(
+        "Unsupported Moodle URL. Supported paths: /mod/forum/discuss.php, /mod/forum/view.php, /course/view.php, /grade/report/*.",
+        ctx=ctx,
+    )
+
+
+def _looks_like_url(value: str) -> bool:
+    parsed = urlparse(value.strip())
+    return bool(parsed.scheme and parsed.netloc)
+
+
+class URLTargetGroup(click.Group):
+    """Click group that treats a top-level URL as a routed target."""
+
+    def resolve_command(self, ctx: click.Context, args: list[str]) -> tuple[str | None, click.Command, list[str]]:
+        try:
+            return super().resolve_command(ctx, args)
+        except click.UsageError:
+            if args and _looks_like_url(args[0]):
+                command = self.get_command(ctx, "__url_target__")
+                if command is not None:
+                    return "__url_target__", command, args
+            raise
+
+
+@click.group(cls=URLTargetGroup)
 @click.option("-v", "--verbose", is_flag=True, help="Enable debug logging.")
 @click.version_option(version=__version__)
 @click.pass_context
@@ -163,6 +240,14 @@ def cli(ctx: click.Context, verbose: bool) -> None:
         return ctx.obj["_client"]
 
     ctx.obj["get_client"] = get_client
+
+
+@cli.command(name="__url_target__", hidden=True)
+@click.argument("target", type=str, required=True)
+@click.pass_context
+def cli_url_target(ctx: click.Context, target: str) -> None:
+    """Route a supported Moodle URL to the shortest existing command path."""
+    _dispatch_top_level_url(ctx, target)
 
 
 @cli.group()

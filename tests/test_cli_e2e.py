@@ -25,6 +25,10 @@ from moodle_cli.models import (
     AlertSummary,
     Course,
     CourseGrades,
+    ForumDiscussion,
+    ForumDiscussionRef,
+    ForumPost,
+    ForumPostAuthor,
     GradeItem,
     Overview,
     Section,
@@ -61,6 +65,39 @@ SECTIONS = [
     ),
     Section(id=12, name="Week 2", section=2, visible=False, activities=[]),
 ]
+FORUM_DISCUSSION_REFS = [
+    ForumDiscussionRef(id=9001, subject="Exam deadline questions", url=f"{BASE_URL}/mod/forum/discuss.php?d=9001"),
+    ForumDiscussionRef(id=9002, subject="Lecture recap", url=f"{BASE_URL}/mod/forum/discuss.php?d=9002"),
+]
+FORUM_DISCUSSION = ForumDiscussion(
+    id=9001,
+    subject="Exam deadline questions",
+    course_id=101,
+    forum_id=501,
+    url=f"{BASE_URL}/mod/forum/discuss.php?d=9001",
+    posts=[
+        ForumPost(
+            id=9101,
+            discussion_id=9001,
+            subject="Exam deadline questions",
+            message_text="Can we have an extension for the exam deadline?",
+            author=ForumPostAuthor(id=12, fullname="Alice Example"),
+            time_created=1762000000,
+            unread=True,
+            url=f"{BASE_URL}/mod/forum/discuss.php?d=9001#p9101",
+        ),
+        ForumPost(
+            id=9102,
+            discussion_id=9001,
+            subject="Re: Exam deadline questions",
+            message_text="The deadline stays the same.",
+            author=ForumPostAuthor(id=13, fullname="Tutor Example"),
+            time_created=1762000300,
+            unread=False,
+            url=f"{BASE_URL}/mod/forum/discuss.php?d=9001#p9102",
+        ),
+    ],
+)
 TODO_ITEMS = [
     TodoItem(
         id=301,
@@ -207,6 +244,14 @@ class FakeClient:
     def get_overview(self, todo_limit: int = 5, todo_days: int | None = None, alerts_limit: int = 5) -> Overview:
         self.overview_calls.append((todo_limit, todo_days, alerts_limit))
         return OVERVIEW
+
+    def get_forum_discussion(self, discussion_id: int) -> ForumDiscussion:
+        assert discussion_id == 9001
+        return FORUM_DISCUSSION
+
+    def get_forum_discussion_refs(self, forum_cmid: int) -> list[ForumDiscussionRef]:
+        assert forum_cmid == 501
+        return FORUM_DISCUSSION_REFS
 
 
 class FakeTTY:
@@ -544,6 +589,59 @@ def test_unknown_command_shows_click_error(monkeypatch: pytest.MonkeyPatch, runn
 
     assert result.exit_code == 2
     assert "No such command 'unknown'" in result.output
+
+
+def test_top_level_url_routes_forum_discussion_with_fragment(monkeypatch: pytest.MonkeyPatch, runner: CliRunner) -> None:
+    _, _ = patch_runtime(monkeypatch)
+
+    result = runner.invoke(cli_module.cli, [f"{BASE_URL}/mod/forum/discuss.php?d=9001#p9101"])
+
+    assert result.exit_code == 0
+    text = normalize_terminal_text(result.output)
+    assert "Discussion 9001" in text
+    assert "9101" in text
+    assert "9102" not in text
+
+
+def test_top_level_url_routes_forum_view_to_discussions(monkeypatch: pytest.MonkeyPatch, runner: CliRunner) -> None:
+    _, _ = patch_runtime(monkeypatch)
+
+    result = runner.invoke(cli_module.cli, [f"{BASE_URL}/mod/forum/view.php?id=501"])
+
+    assert result.exit_code == 0
+    text = normalize_terminal_text(result.output)
+    assert "Forum 501: Discussions" in text
+    assert "9001" in text
+    assert "9002" in text
+
+
+def test_top_level_url_routes_course_view(monkeypatch: pytest.MonkeyPatch, runner: CliRunner) -> None:
+    client, _ = patch_runtime(monkeypatch)
+
+    result = runner.invoke(cli_module.cli, [f"{BASE_URL}/course/view.php?id=101"])
+
+    assert result.exit_code == 0
+    assert client.course_ids == [101]
+    assert "Course 101" in result.output
+
+
+def test_top_level_url_routes_grade_report(monkeypatch: pytest.MonkeyPatch, runner: CliRunner) -> None:
+    client, _ = patch_runtime(monkeypatch)
+
+    result = runner.invoke(cli_module.cli, [f"{BASE_URL}/grade/report/user/index.php?id=101"])
+
+    assert result.exit_code == 0
+    assert client.grade_course_ids == [101]
+    assert "Grades: Mathematics 101" in result.output
+
+
+def test_top_level_url_rejects_unsupported_path(monkeypatch: pytest.MonkeyPatch, runner: CliRunner) -> None:
+    _, _ = patch_runtime(monkeypatch)
+
+    result = runner.invoke(cli_module.cli, [f"{BASE_URL}/mod/assign/view.php?id=301"])
+
+    assert result.exit_code == 2
+    assert "Unsupported Moodle URL" in result.output
 
 
 @pytest.mark.parametrize(
