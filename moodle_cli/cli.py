@@ -138,10 +138,28 @@ def _parse_query_int(query: dict[str, list[str]], key: str, label: str) -> int:
     return int(values[0])
 
 
+def _require_configured_site_host(ctx: click.Context, parsed_target) -> None:
+    """Reject top-level URLs that do not belong to the configured Moodle site."""
+    config = ctx.obj["get_config"]()
+    configured = urlparse(config["base_url"])
+    configured_host = configured.netloc.lower()
+    target_host = parsed_target.netloc.lower()
+
+    if target_host == configured_host:
+        return
+
+    raise click.UsageError(
+        f"URL host '{target_host}' does not match configured Moodle site '{configured_host}'. "
+        "Paste the Moodle page URL, not an external login redirect.",
+        ctx=ctx,
+    )
+
+
 def _dispatch_top_level_url(ctx: click.Context, target: str) -> None:
     parsed = urlparse(target.strip())
     if not parsed.scheme or not parsed.netloc:
         raise click.UsageError(f"No such command '{target}'.", ctx=ctx)
+    _require_configured_site_host(ctx, parsed)
 
     path = parsed.path.rstrip("/")
     query = parse_qs(parsed.query)

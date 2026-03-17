@@ -352,6 +352,8 @@ def parse_course_id_from_page_html(html: str) -> int | None:
     """Extract a course ID from a rendered Moodle page."""
     soup = BeautifulSoup(html, "html.parser")
     selectors = [
+        'nav[aria-label="Breadcrumb"] a[href*="/course/view.php?id="]',
+        '#page-navbar a[href*="/course/view.php?id="]',
         'li[data-key="coursehome"] a[href*="/course/view.php?id="]',
         '.breadcrumb a[href*="/course/view.php?id="]',
         '.page-context-header a[href*="/course/view.php?id="]',

@@ -608,6 +608,16 @@ def test_top_level_url_routes_forum_discussion_with_fragment(monkeypatch: pytest
     assert "9102" not in text
 
 
+def test_top_level_url_rejects_different_host(monkeypatch: pytest.MonkeyPatch, runner: CliRunner) -> None:
+    _, _ = patch_runtime(monkeypatch)
+
+    result = runner.invoke(cli_module.cli, ["https://monashuni.okta.com/app/example/sso/saml?RelayState=https%3A%2F%2Flearning.monash.edu%2Fcourse%2Fview.php%3Fid%3D101"])
+
+    assert result.exit_code == 2
+    assert "does not match configured Moodle site" in result.output
+    assert "Paste the Moodle page URL, not an external login redirect." in result.output
+
+
 def test_top_level_url_routes_forum_view_to_discussions(monkeypatch: pytest.MonkeyPatch, runner: CliRunner) -> None:
     _, _ = patch_runtime(monkeypatch)
 
@@ -901,6 +911,29 @@ def test_parse_course_id_from_page_html_finds_course_home_link() -> None:
     """
 
     assert scraper_module.parse_course_id_from_page_html(html) == 101
+
+
+def test_parse_course_id_from_page_html_prefers_breadcrumb_course_link() -> None:
+    html = """
+    <html>
+      <body>
+        <div id="page-navbar">
+          <nav aria-label="Breadcrumb">
+            <ol class="breadcrumb">
+              <li class="breadcrumb-item">
+                <a href="https://learning.monash.edu/course/view.php?id=41031">FIT2099_S1_2026</a>
+              </li>
+            </ol>
+          </nav>
+        </div>
+        <div class="footer-links">
+          <a href="https://learning.monash.edu/course/view.php?id=9680">IT Student Portal</a>
+        </div>
+      </body>
+    </html>
+    """
+
+    assert scraper_module.parse_course_id_from_page_html(html) == 41031
 
 
 def test_parse_alert_summary_extracts_notifications_and_counts() -> None:
