@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 import moodle_cli.client as client_module
+import moodle_cli.parser as parser_module
 import moodle_cli.scraper as scraper_module
 from moodle_cli.exceptions import MoodleAPIError
 from moodle_cli.client import MoodleClient
@@ -170,6 +171,48 @@ def test_get_forum_discussion_reuses_cached_discussion(monkeypatch: pytest.Monke
     assert calls == {"get": 1, "parse": 1}
 
 
+def test_get_forum_discussion_enriches_group_metadata_after_ajax_parse(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = make_client()
+
+    class FakeResponse:
+        text = """
+        <html>
+          <body>
+            <form id="mformforum">
+              <input name="groupid" value="1973651">
+              <select name="groupinfo">
+                <option value="1973651">CALLISTA</option>
+              </select>
+            </form>
+          </body>
+        </html>
+        """
+
+    monkeypatch.setattr(client, "_ensure_session", lambda: None)
+    monkeypatch.setattr(
+        client,
+        "_call",
+        lambda _function_name, _args=None: {
+            "posts": [
+                {
+                    "id": 9001,
+                    "discussionid": 7001,
+                    "subject": "Week 3 Attendance Codes",
+                    "message": "<p>Hello</p>",
+                    "author": {"id": 1, "fullname": "Teacher"},
+                    "urls": {"view": f"{BASE_URL}/mod/forum/discuss.php?d=7001#p9001"},
+                }
+            ]
+        },
+    )
+    monkeypatch.setattr(client, "_get", lambda path, params=None: FakeResponse())
+
+    discussion = client.get_forum_discussion(7001)
+
+    assert discussion.group_id == 1973651
+    assert discussion.group_name == "CALLISTA"
+
+
 def test_parse_forum_group_ids_extracts_visible_group_options() -> None:
     html = """
     <html>
@@ -219,12 +262,77 @@ def test_get_forum_discussion_refs_collects_discussions_from_all_groups(monkeypa
 
     monkeypatch.setattr(client, "_get", fake_get)
     monkeypatch.setattr(client_module, "parse_forum_discussion_refs_html", fake_parse_refs)
-    monkeypatch.setattr(client_module, "parse_forum_group_ids_html", lambda html: [10, 20] if "select" in html else [])
+    monkeypatch.setattr(
+        client_module,
+        "parse_forum_groups_html",
+        lambda html: [(10, "A"), (20, "B")] if "select" in html else [],
+    )
 
     refs = client.get_forum_discussion_refs(501)
 
     assert calls == [{"id": 501}, {"id": 501, "group": 10}, {"id": 501, "group": 20}]
     assert [ref.id for ref in refs] == [9001, 9002]
+    assert [(ref.group_id, ref.group_name) for ref in refs] == [(10, "A"), (20, "B")]
+
+
+def test_parse_forum_post_extracts_links_tables_and_images() -> None:
+    post = parser_module.parse_forum_post(
+        {
+            "id": 9001,
+            "discussionid": 7001,
+            "subject": "Week 3 Attendance Codes",
+            "message": """
+                <p>See <a href="/mod/resource/view.php?id=55">schedule</a>.</p>
+                <table>
+                  <tr><th>Type</th><th>Code</th></tr>
+                  <tr><td>Tutorial</td><td>685B5</td></tr>
+                </table>
+                <p><img src="/pluginfile.php/1/image.png" alt=""></p>
+            """,
+            "author": {"id": 1, "fullname": "Teacher"},
+            "urls": {"view": f"{BASE_URL}/mod/forum/discuss.php?d=7001#p9001"},
+        }
+    )
+
+    assert post.links == [{"text": "schedule", "url": f"{BASE_URL}/mod/resource/view.php?id=55"}]
+    assert post.tables == [{"headers": ["Type", "Code"], "rows": [["Tutorial", "685B5"]]}]
+    assert post.image_urls == [f"{BASE_URL}/pluginfile.php/1/image.png"]
+
+
+def test_parse_forum_discussion_html_extracts_group_and_structured_content() -> None:
+    html = f"""
+    <html>
+      <body>
+        <form id="mformforum">
+          <input name="groupid" value="1973651">
+          <select name="groupinfo" id="id_groupinfo">
+            <option value="1973651">CALLISTA</option>
+          </select>
+        </form>
+        <div class="forumpost" data-post-id="9001">
+          <div class="header">
+            <h3>Week 3 Attendance Codes</h3>
+            <a href="/user/view.php?id=1">Teacher</a>
+            <div class="date">Today</div>
+          </div>
+          <div class="content">
+            <p>See <a href="/mod/resource/view.php?id=55">schedule</a>.</p>
+            <table>
+              <tr><th>Type</th><th>Code</th></tr>
+              <tr><td>Tutorial</td><td>685B5</td></tr>
+            </table>
+          </div>
+        </div>
+      </body>
+    </html>
+    """
+
+    discussion = scraper_module.parse_forum_discussion_html(html, BASE_URL, 7001)
+
+    assert discussion.group_id == 1973651
+    assert discussion.group_name == "CALLISTA"
+    assert discussion.posts[0].links == [{"text": "schedule", "url": f"{BASE_URL}/mod/resource/view.php?id=55"}]
+    assert discussion.posts[0].tables == [{"headers": ["Type", "Code"], "rows": [["Tutorial", "685B5"]]}]
 
 
 def test_search_forum_content_respects_forum_and_discussion_scan_budgets(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -279,3 +387,18 @@ def test_search_forum_content_respects_forum_and_discussion_scan_budgets(monkeyp
     assert forum_calls == [501, 502]
     assert discussion_calls == []
     assert [hit.discussion_id for hit in hits] == [9001, 9002, 9101, 9102]
+
+
+def test_search_forum_content_carries_group_metadata_into_hits(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = make_client()
+
+    forums = [ForumActivityRef(id=501, name="Forum A", course_id=101, course_name="Mathematics 101")]
+    refs = [ForumDiscussionRef(id=9001, subject="deadline alpha", group_id=10, group_name="Tutorial A", url=f"{BASE_URL}/mod/forum/discuss.php?d=9001")]
+
+    monkeypatch.setattr(client, "get_forums", lambda course_id=None: forums)
+    monkeypatch.setattr(client, "get_forum_discussion_refs", lambda _forum_cmid: refs)
+    monkeypatch.setattr(client, "get_forum_discussion", lambda _discussion_id: pytest.fail("titles-only search should not fetch discussion posts"))
+
+    hits = client.search_forum_content("deadline", include_post_text=False)
+
+    assert [(hit.group_id, hit.group_name) for hit in hits] == [(10, "Tutorial A")]
