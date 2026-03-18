@@ -25,9 +25,11 @@ from moodle_cli.constants import (
     GRADE_REPORT_OVERVIEW_PATH,
     GRADE_REPORT_PATH,
     QUIZ_VIEW_PATH,
+    RESOURCE_VIEW_PATH,
+    URL_VIEW_PATH,
 )
 from moodle_cli.exceptions import AuthError, MoodleAPIError, MoodleRequestError
-from moodle_cli.models import AlertSummary, Assignment, Course, CourseGrades, ForumDiscussion, ForumDiscussionRef, Overview, Quiz, Section, TodoItem, UserInfo
+from moodle_cli.models import AlertSummary, Assignment, Course, CourseGrades, ForumDiscussion, ForumDiscussionRef, Link, Overview, Quiz, Resource, Section, TodoItem, UserInfo
 from moodle_cli.parser import parse_alert_summary, parse_courses, parse_forum_discussion, parse_todo_items, parse_user_info
 from moodle_cli.scraper import (
     has_course_grades_html,
@@ -43,6 +45,8 @@ from moodle_cli.scraper import (
     parse_course_section_numbers,
     parse_page_context,
     parse_quiz_html,
+    parse_resource_html,
+    parse_link_html,
 )
 
 log = logging.getLogger(__name__)
@@ -337,6 +341,24 @@ class MoodleClient:
         except requests.RequestException as exc:
             raise MoodleRequestError(f"Could not load quiz {quiz_id}: {exc}") from exc
         return parse_quiz_html(response.text, quiz_id, self.base_url)
+
+    def get_resource(self, resource_id: int) -> Resource:
+        """Get a compact summary for a file/resource activity."""
+        self._ensure_session()
+        try:
+            response = self._get(RESOURCE_VIEW_PATH, {"id": resource_id})
+        except requests.RequestException as exc:
+            raise MoodleRequestError(f"Could not load resource {resource_id}: {exc}") from exc
+        return parse_resource_html(response.text, resource_id, self.base_url)
+
+    def get_link(self, link_id: int) -> Link:
+        """Get a compact summary for an external-link activity."""
+        self._ensure_session()
+        try:
+            response = self._get(URL_VIEW_PATH, {"id": link_id})
+        except requests.RequestException as exc:
+            raise MoodleRequestError(f"Could not load link {link_id}: {exc}") from exc
+        return parse_link_html(response.text, link_id, self.base_url)
 
     def get_forum_discussion(self, discussion_id: int) -> ForumDiscussion:
         """Get posts in a forum discussion, using AJAX when available."""

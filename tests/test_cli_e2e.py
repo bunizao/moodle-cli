@@ -33,6 +33,8 @@ from moodle_cli.models import (
     GradeItem,
     Overview,
     Quiz,
+    Resource,
+    Link,
     Section,
     TodoItem,
     UserInfo,
@@ -191,6 +193,25 @@ QUIZ = Quiz(
     availability="This quiz is currently not available.",
     url="https://school.example.edu/mod/quiz/view.php?id=301",
 )
+RESOURCE = Resource(
+    id=401,
+    name="Week 4 Slides",
+    course_id=101,
+    course_name="Mathematics 101",
+    section_name="Week 4",
+    target_name="week4-slides.pdf",
+    target_url="https://school.example.edu/mod/resource/view.php?id=401&redirect=1",
+    url="https://school.example.edu/mod/resource/view.php?id=401",
+)
+LINK = Link(
+    id=501,
+    name="Unit Handbook",
+    course_id=101,
+    course_name="Mathematics 101",
+    section_name="Week 4",
+    target_url="https://example.edu/handbook",
+    url="https://school.example.edu/mod/url/view.php?id=501",
+)
 ALERTS = AlertSummary(
     notifications=[
         AlertNotification(
@@ -245,6 +266,8 @@ class FakeClient:
         self.grade_course_ids: list[int] = []
         self.assignment_ids: list[int] = []
         self.quiz_ids: list[int] = []
+        self.resource_ids: list[int] = []
+        self.link_ids: list[int] = []
         self.alert_limits: list[int] = []
         self.overview_calls: list[tuple[int, int | None, int]] = []
         self.resolved_page_urls: list[str] = []
@@ -274,6 +297,14 @@ class FakeClient:
     def get_quiz(self, quiz_id: int) -> Quiz:
         self.quiz_ids.append(quiz_id)
         return QUIZ
+
+    def get_resource(self, resource_id: int) -> Resource:
+        self.resource_ids.append(resource_id)
+        return RESOURCE
+
+    def get_link(self, link_id: int) -> Link:
+        self.link_ids.append(link_id)
+        return LINK
 
     def get_alerts(self, limit: int = 20) -> AlertSummary:
         self.alert_limits.append(limit)
@@ -372,8 +403,10 @@ def test_global_help_and_version_do_not_load_runtime(monkeypatch: pytest.MonkeyP
         assert "alerts" in result.stdout
         assert "courses" in result.stdout
         assert "grades" in result.stdout
+        assert "link" in result.stdout
         assert "overview" in result.stdout
         assert "quiz" in result.stdout
+        assert "resource" in result.stdout
         assert "todo" in result.stdout
         assert "update" in result.stdout
     else:
@@ -445,6 +478,12 @@ def test_verbose_flag_sets_logging_level(
         (["quiz", "301"], None, None, ["Quiz: Week 4 Workshop Quiz", "Mathematics 101", "Week 4", "Monday, 23 March 2026, 5:00 AM", "This quiz is currently not available."], [], [], [], [], []),
         (["quiz", "301", "--json"], json.loads, expected_json(QUIZ.to_dict()), None, [], [], [], [], []),
         (["quiz", "301", "--yaml"], yaml.safe_load, QUIZ.to_dict(), None, [], [], [], [], []),
+        (["resource", "401"], None, None, ["Resource: Week 4 Slides", "Mathematics 101", "Week 4", "week4-slides.pdf"], [], [], [], [], []),
+        (["resource", "401", "--json"], json.loads, expected_json(RESOURCE.to_dict()), None, [], [], [], [], []),
+        (["resource", "401", "--yaml"], yaml.safe_load, RESOURCE.to_dict(), None, [], [], [], [], []),
+        (["link", "501"], None, None, ["Link: Unit Handbook", "Mathematics 101", "Week 4", "https://example.edu/handbook"], [], [], [], [], []),
+        (["link", "501", "--json"], json.loads, expected_json(LINK.to_dict()), None, [], [], [], [], []),
+        (["link", "501", "--yaml"], yaml.safe_load, LINK.to_dict(), None, [], [], [], [], []),
         (["activities", "42"], None, None, ["Course 42", "Introduction", "Syllabus", "Quiz 1", "Week 2", "No activities"], [42], [], [], [], []),
         (["activities", "42", "--json"], json.loads, expected_json([section.to_dict() for section in SECTIONS]), None, [42], [], [], [], []),
         (["activities", "42", "--yaml"], yaml.safe_load, [section.to_dict() for section in SECTIONS], None, [42], [], [], [], []),
@@ -727,13 +766,35 @@ def test_top_level_url_routes_quiz_page(monkeypatch: pytest.MonkeyPatch, runner:
     assert "Quiz: Week 4 Workshop Quiz" in result.output
 
 
+def test_top_level_url_routes_resource_page(monkeypatch: pytest.MonkeyPatch, runner: CliRunner) -> None:
+    client, _ = patch_runtime(monkeypatch)
+
+    result = runner.invoke(cli_module.cli, [f"{BASE_URL}/mod/resource/view.php?id=401"])
+
+    assert result.exit_code == 0
+    assert client.resource_ids == [401]
+    assert client.course_ids == []
+    assert "Resource: Week 4 Slides" in result.output
+
+
+def test_top_level_url_routes_link_page(monkeypatch: pytest.MonkeyPatch, runner: CliRunner) -> None:
+    client, _ = patch_runtime(monkeypatch)
+
+    result = runner.invoke(cli_module.cli, [f"{BASE_URL}/mod/url/view.php?id=501"])
+
+    assert result.exit_code == 0
+    assert client.link_ids == [501]
+    assert client.course_ids == []
+    assert "Link: Unit Handbook" in result.output
+
+
 def test_top_level_url_routes_generic_activity_page_to_course(monkeypatch: pytest.MonkeyPatch, runner: CliRunner) -> None:
     client, _ = patch_runtime(monkeypatch)
 
-    result = runner.invoke(cli_module.cli, [f"{BASE_URL}/mod/resource/view.php?id=301"])
+    result = runner.invoke(cli_module.cli, [f"{BASE_URL}/mod/page/view.php?id=301"])
 
     assert result.exit_code == 0
-    assert client.resolved_page_urls == [f"{BASE_URL}/mod/resource/view.php?id=301"]
+    assert client.resolved_page_urls == [f"{BASE_URL}/mod/page/view.php?id=301"]
     assert client.course_ids == [101]
     assert "Course 101" in result.output
 
@@ -742,7 +803,7 @@ def test_top_level_url_rejects_unresolved_generic_activity_page(monkeypatch: pyt
     client, _ = patch_runtime(monkeypatch)
     monkeypatch.setattr(client, "resolve_course_id_for_url", lambda _url: None)
 
-    result = runner.invoke(cli_module.cli, [f"{BASE_URL}/mod/resource/view.php?id=301"])
+    result = runner.invoke(cli_module.cli, [f"{BASE_URL}/mod/page/view.php?id=301"])
 
     assert result.exit_code == 1
     assert "Could not resolve course ID from the activity page." in result.output
@@ -758,6 +819,8 @@ def test_top_level_url_rejects_unresolved_generic_activity_page(monkeypatch: pyt
         (["grades", "101"], "Loading grades for course 101..."),
         (["assignment", "302"], "Loading assignment 302..."),
         (["quiz", "301"], "Loading quiz 301..."),
+        (["resource", "401"], "Loading resource 401..."),
+        (["link", "501"], "Loading link 501..."),
         (["activities", "42"], "Loading activities for course 42..."),
         (["course", "42"], "Loading course 42..."),
     ],
@@ -1101,6 +1164,67 @@ def test_parse_quiz_html_extracts_summary() -> None:
     assert parsed.closes_pretty == "Wednesday, 25 March 2026, 11:55 PM"
     assert parsed.attempts_allowed == "1"
     assert parsed.availability == "This quiz is currently not available."
+
+
+def test_parse_resource_html_extracts_summary() -> None:
+    html = """
+    <html>
+      <body>
+        <header><h1>Week 4 Slides</h1></header>
+        <div id="page-navbar">
+          <nav aria-label="Breadcrumb">
+            <ol class="breadcrumb">
+              <li class="breadcrumb-item"><a href="https://school.example.edu/course/view.php?id=101" title="Mathematics 101">MATH101</a></li>
+              <li class="breadcrumb-item"><a href="https://school.example.edu/course/view.php?id=101&section=4">Week 4</a></li>
+            </ol>
+          </nav>
+        </div>
+        <div class="resourceworkaround">
+          <a href="https://school.example.edu/mod/resource/view.php?id=401&amp;redirect=1">week4-slides.pdf</a>
+        </div>
+      </body>
+    </html>
+    """
+
+    parsed = scraper_module.parse_resource_html(html, 401, BASE_URL)
+
+    assert parsed.id == 401
+    assert parsed.name == "Week 4 Slides"
+    assert parsed.course_id == 101
+    assert parsed.course_name == "Mathematics 101"
+    assert parsed.section_name == "Week 4"
+    assert parsed.target_name == "week4-slides.pdf"
+    assert parsed.target_url == "https://school.example.edu/mod/resource/view.php?id=401&redirect=1"
+
+
+def test_parse_link_html_extracts_summary() -> None:
+    html = """
+    <html>
+      <body>
+        <header><h1>Unit Handbook</h1></header>
+        <div id="page-navbar">
+          <nav aria-label="Breadcrumb">
+            <ol class="breadcrumb">
+              <li class="breadcrumb-item"><a href="https://school.example.edu/course/view.php?id=101" title="Mathematics 101">MATH101</a></li>
+              <li class="breadcrumb-item"><a href="https://school.example.edu/course/view.php?id=101&section=4">Week 4</a></li>
+            </ol>
+          </nav>
+        </div>
+        <div class="urlworkaround">
+          <a href="https://example.edu/handbook">Go to resource</a>
+        </div>
+      </body>
+    </html>
+    """
+
+    parsed = scraper_module.parse_link_html(html, 501, BASE_URL)
+
+    assert parsed.id == 501
+    assert parsed.name == "Unit Handbook"
+    assert parsed.course_id == 101
+    assert parsed.course_name == "Mathematics 101"
+    assert parsed.section_name == "Week 4"
+    assert parsed.target_url == "https://example.edu/handbook"
 
 
 def test_parse_alert_summary_extracts_notifications_and_counts() -> None:

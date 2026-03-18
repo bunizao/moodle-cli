@@ -26,8 +26,10 @@ from moodle_cli.formatter import (
     print_courses,
     print_course_contents,
     print_forum_discussion,
+    print_link,
     print_overview,
     print_quiz,
+    print_resource,
     print_todo_items,
     print_user_info,
 )
@@ -172,6 +174,44 @@ def _parse_quiz_reference(ctx: click.Context, value: str) -> int:
     return int(values[0])
 
 
+def _parse_resource_reference(ctx: click.Context, value: str) -> int:
+    """Parse a resource reference (course-module ID or URL) into a course-module ID."""
+    raw = value.strip()
+    if raw.isdigit():
+        return int(raw)
+
+    parsed = urlparse(raw)
+    if not parsed.scheme or not parsed.netloc:
+        raise click.UsageError("RESOURCE must be a numeric ID or a full resource URL.", ctx=ctx)
+    if not parsed.path.endswith("/mod/resource/view.php"):
+        raise click.UsageError("Unsupported resource URL. Use a view.php?id=... URL.", ctx=ctx)
+
+    query = parse_qs(parsed.query)
+    values = query.get("id") or []
+    if not values or not values[0].isdigit():
+        raise click.UsageError("Could not find resource module ID in view.php URL (expected ?id=...).", ctx=ctx)
+    return int(values[0])
+
+
+def _parse_link_reference(ctx: click.Context, value: str) -> int:
+    """Parse a link reference (course-module ID or URL) into a course-module ID."""
+    raw = value.strip()
+    if raw.isdigit():
+        return int(raw)
+
+    parsed = urlparse(raw)
+    if not parsed.scheme or not parsed.netloc:
+        raise click.UsageError("LINK must be a numeric ID or a full link URL.", ctx=ctx)
+    if not parsed.path.endswith("/mod/url/view.php"):
+        raise click.UsageError("Unsupported link URL. Use a view.php?id=... URL.", ctx=ctx)
+
+    query = parse_qs(parsed.query)
+    values = query.get("id") or []
+    if not values or not values[0].isdigit():
+        raise click.UsageError("Could not find link module ID in view.php URL (expected ?id=...).", ctx=ctx)
+    return int(values[0])
+
+
 def _dispatch_top_level_url(ctx: click.Context, target: str) -> None:
     resolved = resolve_top_level_url(
         base_url=ctx.obj["get_config"]()["base_url"],
@@ -184,7 +224,9 @@ def _dispatch_top_level_url(ctx: click.Context, target: str) -> None:
         "forum_discussions": forum_discussions,
         "course": course,
         "grades": grades,
+        "link": link,
         "quiz": quiz,
+        "resource": resource,
     }
     ctx.invoke(command_map[resolved.command_name], **resolved.kwargs)
 
@@ -457,6 +499,46 @@ def quiz(ctx: click.Context, quiz: str, as_json: bool, as_yaml: bool) -> None:
         output_yaml(details.to_dict())
     else:
         print_quiz(details)
+
+
+@cli.command()
+@click.argument("resource", type=str, required=True)
+@click.option("--json", "as_json", is_flag=True, help="Output as JSON.")
+@click.option("--yaml", "as_yaml", is_flag=True, help="Output as YAML.")
+@click.pass_context
+def resource(ctx: click.Context, resource: str, as_json: bool, as_yaml: bool) -> None:
+    """Show resource details (RESOURCE_ID or view.php URL)."""
+    resource_id = _parse_resource_reference(ctx, resource)
+    _print_loading(f"Loading resource {resource_id}...")
+    client = ctx.obj["get_client"]()
+    details = client.get_resource(resource_id)
+
+    if as_json:
+        output_json(details.to_dict())
+    elif as_yaml:
+        output_yaml(details.to_dict())
+    else:
+        print_resource(details)
+
+
+@cli.command()
+@click.argument("link", type=str, required=True)
+@click.option("--json", "as_json", is_flag=True, help="Output as JSON.")
+@click.option("--yaml", "as_yaml", is_flag=True, help="Output as YAML.")
+@click.pass_context
+def link(ctx: click.Context, link: str, as_json: bool, as_yaml: bool) -> None:
+    """Show external-link details (LINK_ID or view.php URL)."""
+    link_id = _parse_link_reference(ctx, link)
+    _print_loading(f"Loading link {link_id}...")
+    client = ctx.obj["get_client"]()
+    details = client.get_link(link_id)
+
+    if as_json:
+        output_json(details.to_dict())
+    elif as_yaml:
+        output_yaml(details.to_dict())
+    else:
+        print_link(details)
 
 
 @cli.command()

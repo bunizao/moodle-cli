@@ -21,7 +21,9 @@ from moodle_cli.models import (
     ForumPost,
     ForumPostAuthor,
     GradeItem,
+    Link,
     Quiz,
+    Resource,
     Section,
     UserInfo,
 )
@@ -453,6 +455,43 @@ def parse_quiz_html(html: str, quiz_id: int, base_url: str) -> Quiz:
     return quiz
 
 
+def parse_resource_html(html: str, resource_id: int, base_url: str) -> Resource:
+    """Parse a rendered file/resource page into a compact summary."""
+    soup = BeautifulSoup(html, "html.parser")
+    resource = Resource(
+        id=resource_id,
+        name=_clean_text_from_node(soup.select_one("h1")),
+        course_id=parse_course_id_from_page_html(html) or 0,
+        url=f"{base_url.rstrip('/')}/mod/resource/view.php?id={resource_id}",
+    )
+    _populate_activity_breadcrumb_context(soup, resource)
+
+    link = soup.select_one('.resourceworkaround a[href], .resourcecontent a[href], a.resourceworkaround[href]')
+    if link is not None:
+        resource.target_name = _clean_text_from_node(link)
+        resource.target_url = urljoin(base_url, link.get("href") or "")
+
+    return resource
+
+
+def parse_link_html(html: str, link_id: int, base_url: str) -> Link:
+    """Parse a rendered external-link page into a compact summary."""
+    soup = BeautifulSoup(html, "html.parser")
+    link_page = Link(
+        id=link_id,
+        name=_clean_text_from_node(soup.select_one("h1")),
+        course_id=parse_course_id_from_page_html(html) or 0,
+        url=f"{base_url.rstrip('/')}/mod/url/view.php?id={link_id}",
+    )
+    _populate_activity_breadcrumb_context(soup, link_page)
+
+    link = soup.select_one('.urlworkaround a[href], .mod_url-content a[href], .externalurl a[href]')
+    if link is not None:
+        link_page.target_url = link.get("href") or ""
+
+    return link_page
+
+
 def has_course_grades_html(html: str) -> bool:
     """Return whether the HTML contains a Moodle user grade report table."""
     soup = BeautifulSoup(html, "html.parser")
@@ -539,6 +578,19 @@ def _find_table_value(soup: BeautifulSoup, label: str) -> str:
             value_cell = cells[-1] if cells else None
         return _clean_table_cell(value_cell)
     return ""
+
+
+def _populate_activity_breadcrumb_context(soup: BeautifulSoup, activity) -> None:
+    for link in soup.select('nav[aria-label="Breadcrumb"] a[href], #page-navbar .breadcrumb a[href]'):
+        href = link.get("href") or ""
+        if not getattr(activity, "section_name", "") and "/course/view.php" in href and "section=" in href:
+            activity.section_name = _clean_text_from_node(link)
+
+        course_id = _parse_course_id_from_href(href)
+        if course_id is not None:
+            activity.course_id = course_id
+            if not getattr(activity, "course_name", ""):
+                activity.course_name = (link.get("title") or "").strip() or _clean_text_from_node(link)
 
 
 def _extract_labeled_text(soup: BeautifulSoup, label: str) -> str:

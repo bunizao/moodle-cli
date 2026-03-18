@@ -273,6 +273,52 @@ class Quiz:
 
 
 @dataclass
+class Resource:
+    id: int
+    name: str
+    course_id: int = 0
+    course_name: str = ""
+    section_name: str = ""
+    target_name: str = ""
+    target_url: str = ""
+    url: str = ""
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "name": self.name,
+            "course_id": self.course_id,
+            "course_name": self.course_name,
+            "section_name": self.section_name,
+            "target_name": self.target_name,
+            "target_url": self.target_url,
+            "url": self.url,
+        }
+
+
+@dataclass
+class Link:
+    id: int
+    name: str
+    course_id: int = 0
+    course_name: str = ""
+    section_name: str = ""
+    target_url: str = ""
+    url: str = ""
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "name": self.name,
+            "course_id": self.course_id,
+            "course_name": self.course_name,
+            "section_name": self.section_name,
+            "target_url": self.target_url,
+            "url": self.url,
+        }
+
+
+@dataclass
 class Overview:
     user: UserInfo
     courses: list[Course] = field(default_factory=list)

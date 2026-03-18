@@ -7,7 +7,7 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.tree import Tree
 
-from moodle_cli.models import AlertSummary, Assignment, Course, CourseGrades, ForumDiscussion, ForumPost, Overview, Quiz, Section, TodoItem, UserInfo
+from moodle_cli.models import AlertSummary, Assignment, Course, CourseGrades, ForumDiscussion, ForumPost, Link, Overview, Quiz, Resource, Section, TodoItem, UserInfo
 
 console = Console()
 
@@ -229,6 +229,44 @@ def print_quiz(quiz: Quiz) -> None:
         table.add_row("Grade", quiz.grade)
     if quiz.url:
         table.add_row("URL", quiz.url)
+
+    console.print(table)
+
+
+def print_resource(resource: Resource) -> None:
+    """Display a Moodle file/resource summary."""
+    table = Table(title=f"Resource: {resource.name}", show_header=False, box=None, padding=(0, 2))
+    table.add_column(style="bold cyan")
+    table.add_column()
+
+    if resource.course_name:
+        table.add_row("Course", resource.course_name)
+    if resource.section_name:
+        table.add_row("Section", resource.section_name)
+    if resource.target_name:
+        table.add_row("Target", resource.target_name)
+    if resource.target_url:
+        table.add_row("URL", resource.target_url)
+    elif resource.url:
+        table.add_row("URL", resource.url)
+
+    console.print(table)
+
+
+def print_link(link: Link) -> None:
+    """Display a Moodle external-link summary."""
+    table = Table(title=f"Link: {link.name}", show_header=False, box=None, padding=(0, 2))
+    table.add_column(style="bold cyan")
+    table.add_column()
+
+    if link.course_name:
+        table.add_row("Course", link.course_name)
+    if link.section_name:
+        table.add_row("Section", link.section_name)
+    if link.target_url:
+        table.add_row("Target", link.target_url)
+    if link.url:
+        table.add_row("URL", link.url)
 
     console.print(table)
 
