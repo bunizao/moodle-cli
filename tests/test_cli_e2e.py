@@ -1144,7 +1144,7 @@ def test_parse_assignment_html_extracts_summary() -> None:
                 <a href="https://school.example.edu/course/view.php?id=202" title="History 202">HIST202</a>
               </li>
               <li class="breadcrumb-item">
-                <a href="https://school.example.edu/course/view.php?id=202&section=7">Assessments</a>
+                <a href="https://school.example.edu/course/view.php?id=202&amp;section=7">Assessments</a>
               </li>
             </ol>
           </nav>
@@ -1194,7 +1194,7 @@ def test_parse_quiz_html_extracts_summary() -> None:
                 <a href="https://school.example.edu/course/view.php?id=101" title="Mathematics 101">MATH101</a>
               </li>
               <li class="breadcrumb-item">
-                <a href="https://school.example.edu/course/view.php?id=101&section=4">Week 4</a>
+                <a href="https://school.example.edu/course/view.php?id=101&amp;section=4">Week 4</a>
               </li>
             </ol>
           </nav>
@@ -1237,7 +1237,7 @@ def test_parse_resource_html_extracts_summary() -> None:
           <nav aria-label="Breadcrumb">
             <ol class="breadcrumb">
               <li class="breadcrumb-item"><a href="https://school.example.edu/course/view.php?id=101" title="Mathematics 101">MATH101</a></li>
-              <li class="breadcrumb-item"><a href="https://school.example.edu/course/view.php?id=101&section=4">Week 4</a></li>
+              <li class="breadcrumb-item"><a href="https://school.example.edu/course/view.php?id=101&amp;section=4">Week 4</a></li>
             </ol>
           </nav>
         </div>
@@ -1268,7 +1268,7 @@ def test_parse_link_html_extracts_summary() -> None:
           <nav aria-label="Breadcrumb">
             <ol class="breadcrumb">
               <li class="breadcrumb-item"><a href="https://school.example.edu/course/view.php?id=101" title="Mathematics 101">MATH101</a></li>
-              <li class="breadcrumb-item"><a href="https://school.example.edu/course/view.php?id=101&section=4">Week 4</a></li>
+              <li class="breadcrumb-item"><a href="https://school.example.edu/course/view.php?id=101&amp;section=4">Week 4</a></li>
             </ol>
           </nav>
         </div>
@@ -1298,7 +1298,7 @@ def test_parse_page_html_extracts_summary() -> None:
           <nav aria-label="Breadcrumb">
             <ol class="breadcrumb">
               <li class="breadcrumb-item"><a href="https://school.example.edu/course/view.php?id=101" title="Mathematics 101">MATH101</a></li>
-              <li class="breadcrumb-item"><a href="https://school.example.edu/course/view.php?id=101&section=4">Week 4</a></li>
+              <li class="breadcrumb-item"><a href="https://school.example.edu/course/view.php?id=101&amp;section=4">Week 4</a></li>
             </ol>
           </nav>
         </div>
@@ -1330,7 +1330,7 @@ def test_parse_folder_html_extracts_files() -> None:
           <nav aria-label="Breadcrumb">
             <ol class="breadcrumb">
               <li class="breadcrumb-item"><a href="https://school.example.edu/course/view.php?id=101" title="Mathematics 101">MATH101</a></li>
-              <li class="breadcrumb-item"><a href="https://school.example.edu/course/view.php?id=101&section=4">Week 4</a></li>
+              <li class="breadcrumb-item"><a href="https://school.example.edu/course/view.php?id=101&amp;section=4">Week 4</a></li>
             </ol>
           </nav>
         </div>
