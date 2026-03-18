@@ -25,9 +25,11 @@ from moodle_cli.formatter import (
     print_course_grades,
     print_courses,
     print_course_contents,
+    print_folder,
     print_forum_discussion,
     print_link,
     print_overview,
+    print_page,
     print_quiz,
     print_resource,
     print_todo_items,
@@ -212,6 +214,44 @@ def _parse_link_reference(ctx: click.Context, value: str) -> int:
     return int(values[0])
 
 
+def _parse_page_reference(ctx: click.Context, value: str) -> int:
+    """Parse a page reference (course-module ID or URL) into a course-module ID."""
+    raw = value.strip()
+    if raw.isdigit():
+        return int(raw)
+
+    parsed = urlparse(raw)
+    if not parsed.scheme or not parsed.netloc:
+        raise click.UsageError("PAGE must be a numeric ID or a full page URL.", ctx=ctx)
+    if not parsed.path.endswith("/mod/page/view.php"):
+        raise click.UsageError("Unsupported page URL. Use a view.php?id=... URL.", ctx=ctx)
+
+    query = parse_qs(parsed.query)
+    values = query.get("id") or []
+    if not values or not values[0].isdigit():
+        raise click.UsageError("Could not find page module ID in view.php URL (expected ?id=...).", ctx=ctx)
+    return int(values[0])
+
+
+def _parse_folder_reference(ctx: click.Context, value: str) -> int:
+    """Parse a folder reference (course-module ID or URL) into a course-module ID."""
+    raw = value.strip()
+    if raw.isdigit():
+        return int(raw)
+
+    parsed = urlparse(raw)
+    if not parsed.scheme or not parsed.netloc:
+        raise click.UsageError("FOLDER must be a numeric ID or a full folder URL.", ctx=ctx)
+    if not parsed.path.endswith("/mod/folder/view.php"):
+        raise click.UsageError("Unsupported folder URL. Use a view.php?id=... URL.", ctx=ctx)
+
+    query = parse_qs(parsed.query)
+    values = query.get("id") or []
+    if not values or not values[0].isdigit():
+        raise click.UsageError("Could not find folder module ID in view.php URL (expected ?id=...).", ctx=ctx)
+    return int(values[0])
+
+
 def _dispatch_top_level_url(ctx: click.Context, target: str) -> None:
     resolved = resolve_top_level_url(
         base_url=ctx.obj["get_config"]()["base_url"],
@@ -223,8 +263,10 @@ def _dispatch_top_level_url(ctx: click.Context, target: str) -> None:
         "forum_discussion": forum_discussion,
         "forum_discussions": forum_discussions,
         "course": course,
+        "folder": folder,
         "grades": grades,
         "link": link,
+        "page": page,
         "quiz": quiz,
         "resource": resource,
     }
@@ -539,6 +581,46 @@ def link(ctx: click.Context, link: str, as_json: bool, as_yaml: bool) -> None:
         output_yaml(details.to_dict())
     else:
         print_link(details)
+
+
+@cli.command()
+@click.argument("page_id", type=str, required=True)
+@click.option("--json", "as_json", is_flag=True, help="Output as JSON.")
+@click.option("--yaml", "as_yaml", is_flag=True, help="Output as YAML.")
+@click.pass_context
+def page(ctx: click.Context, page_id: str, as_json: bool, as_yaml: bool) -> None:
+    """Show page details (PAGE_ID or view.php URL)."""
+    resolved_page_id = _parse_page_reference(ctx, page_id)
+    _print_loading(f"Loading page {resolved_page_id}...")
+    client = ctx.obj["get_client"]()
+    details = client.get_page(resolved_page_id)
+
+    if as_json:
+        output_json(details.to_dict())
+    elif as_yaml:
+        output_yaml(details.to_dict())
+    else:
+        print_page(details)
+
+
+@cli.command()
+@click.argument("folder", type=str, required=True)
+@click.option("--json", "as_json", is_flag=True, help="Output as JSON.")
+@click.option("--yaml", "as_yaml", is_flag=True, help="Output as YAML.")
+@click.pass_context
+def folder(ctx: click.Context, folder: str, as_json: bool, as_yaml: bool) -> None:
+    """Show folder details (FOLDER_ID or view.php URL)."""
+    folder_id = _parse_folder_reference(ctx, folder)
+    _print_loading(f"Loading folder {folder_id}...")
+    client = ctx.obj["get_client"]()
+    details = client.get_folder(folder_id)
+
+    if as_json:
+        output_json(details.to_dict())
+    elif as_yaml:
+        output_yaml(details.to_dict())
+    else:
+        print_folder(details)
 
 
 @cli.command()

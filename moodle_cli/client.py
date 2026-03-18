@@ -10,6 +10,7 @@ from moodle_cli.constants import (
     ASSIGN_VIEW_PATH,
     COURSE_PATH,
     DASHBOARD_PATH,
+    FOLDER_VIEW_PATH,
     FUNC_GET_ACTION_EVENTS,
     FUNC_GET_CONVERSATION_COUNTS,
     FUNC_GET_COURSES,
@@ -24,12 +25,13 @@ from moodle_cli.constants import (
     GRADE_REPORT_INDEX_PATH,
     GRADE_REPORT_OVERVIEW_PATH,
     GRADE_REPORT_PATH,
+    PAGE_VIEW_PATH,
     QUIZ_VIEW_PATH,
     RESOURCE_VIEW_PATH,
     URL_VIEW_PATH,
 )
 from moodle_cli.exceptions import AuthError, MoodleAPIError, MoodleRequestError
-from moodle_cli.models import AlertSummary, Assignment, Course, CourseGrades, ForumDiscussion, ForumDiscussionRef, Link, Overview, Quiz, Resource, Section, TodoItem, UserInfo
+from moodle_cli.models import AlertSummary, Assignment, Course, CourseGrades, Folder, ForumDiscussion, ForumDiscussionRef, Link, Overview, Page, Quiz, Resource, Section, TodoItem, UserInfo
 from moodle_cli.parser import parse_alert_summary, parse_courses, parse_forum_discussion, parse_todo_items, parse_user_info
 from moodle_cli.scraper import (
     has_course_grades_html,
@@ -44,7 +46,9 @@ from moodle_cli.scraper import (
     parse_grade_overview_rows,
     parse_course_section_numbers,
     parse_page_context,
+    parse_page_html,
     parse_quiz_html,
+    parse_folder_html,
     parse_resource_html,
     parse_link_html,
 )
@@ -359,6 +363,24 @@ class MoodleClient:
         except requests.RequestException as exc:
             raise MoodleRequestError(f"Could not load link {link_id}: {exc}") from exc
         return parse_link_html(response.text, link_id, self.base_url)
+
+    def get_page(self, page_id: int) -> Page:
+        """Get a compact summary for a page activity."""
+        self._ensure_session()
+        try:
+            response = self._get(PAGE_VIEW_PATH, {"id": page_id})
+        except requests.RequestException as exc:
+            raise MoodleRequestError(f"Could not load page {page_id}: {exc}") from exc
+        return parse_page_html(response.text, page_id, self.base_url)
+
+    def get_folder(self, folder_id: int) -> Folder:
+        """Get a compact summary for a folder activity."""
+        self._ensure_session()
+        try:
+            response = self._get(FOLDER_VIEW_PATH, {"id": folder_id})
+        except requests.RequestException as exc:
+            raise MoodleRequestError(f"Could not load folder {folder_id}: {exc}") from exc
+        return parse_folder_html(response.text, folder_id, self.base_url)
 
     def get_forum_discussion(self, discussion_id: int) -> ForumDiscussion:
         """Get posts in a forum discussion, using AJAX when available."""

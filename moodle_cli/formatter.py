@@ -7,7 +7,7 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.tree import Tree
 
-from moodle_cli.models import AlertSummary, Assignment, Course, CourseGrades, ForumDiscussion, ForumPost, Link, Overview, Quiz, Resource, Section, TodoItem, UserInfo
+from moodle_cli.models import AlertSummary, Assignment, Course, CourseGrades, Folder, ForumDiscussion, ForumPost, Link, Overview, Page, Quiz, Resource, Section, TodoItem, UserInfo
 
 console = Console()
 
@@ -267,6 +267,42 @@ def print_link(link: Link) -> None:
         table.add_row("Target", link.target_url)
     if link.url:
         table.add_row("URL", link.url)
+
+    console.print(table)
+
+
+def print_page(page: Page) -> None:
+    """Display a Moodle page summary."""
+    table = Table(title=f"Page: {page.name}", show_header=False, box=None, padding=(0, 2))
+    table.add_column(style="bold cyan")
+    table.add_column()
+
+    if page.course_name:
+        table.add_row("Course", page.course_name)
+    if page.section_name:
+        table.add_row("Section", page.section_name)
+    if page.content_text:
+        table.add_row("Content", page.content_text)
+    if page.url:
+        table.add_row("URL", page.url)
+
+    console.print(table)
+
+
+def print_folder(folder: Folder) -> None:
+    """Display a Moodle folder summary."""
+    table = Table(title=f"Folder: {folder.name}", show_header=False, box=None, padding=(0, 2))
+    table.add_column(style="bold cyan")
+    table.add_column()
+
+    if folder.course_name:
+        table.add_row("Course", folder.course_name)
+    if folder.section_name:
+        table.add_row("Section", folder.section_name)
+    if folder.files:
+        table.add_row("Files", "\n".join(folder.files))
+    if folder.url:
+        table.add_row("URL", folder.url)
 
     console.print(table)
 

@@ -16,12 +16,14 @@ from moodle_cli.models import (
     Activity,
     Assignment,
     CourseGrades,
+    Folder,
     ForumDiscussion,
     ForumDiscussionRef,
     ForumPost,
     ForumPostAuthor,
     GradeItem,
     Link,
+    Page,
     Quiz,
     Resource,
     Section,
@@ -490,6 +492,49 @@ def parse_link_html(html: str, link_id: int, base_url: str) -> Link:
         link_page.target_url = link.get("href") or ""
 
     return link_page
+
+
+def parse_page_html(html: str, page_id: int, base_url: str) -> Page:
+    """Parse a rendered Moodle page activity into a compact summary."""
+    soup = BeautifulSoup(html, "html.parser")
+    page = Page(
+        id=page_id,
+        name=_clean_text_from_node(soup.select_one("h1")),
+        course_id=parse_course_id_from_page_html(html) or 0,
+        url=f"{base_url.rstrip('/')}/mod/page/view.php?id={page_id}",
+    )
+    _populate_activity_breadcrumb_context(soup, page)
+
+    content = (
+        soup.select_one(".box.generalbox")
+        or soup.select_one(".activity-description")
+        or soup.select_one("[data-region='page-content']")
+        or soup.select_one("main")
+    )
+    if content is not None:
+        page.content_text, _ = html_to_text_and_image_urls(content.decode_contents(), base_url)
+
+    return page
+
+
+def parse_folder_html(html: str, folder_id: int, base_url: str) -> Folder:
+    """Parse a rendered Moodle folder activity into a compact summary."""
+    soup = BeautifulSoup(html, "html.parser")
+    folder = Folder(
+        id=folder_id,
+        name=_clean_text_from_node(soup.select_one("h1")),
+        course_id=parse_course_id_from_page_html(html) or 0,
+        url=f"{base_url.rstrip('/')}/mod/folder/view.php?id={folder_id}",
+    )
+    _populate_activity_breadcrumb_context(soup, folder)
+
+    files: list[str] = []
+    for link in soup.select(".foldertree a[href], .fp-filename-icon a[href]"):
+        name = _clean_text_from_node(link)
+        if name and name not in files:
+            files.append(name)
+    folder.files = files
+    return folder
 
 
 def has_course_grades_html(html: str) -> bool:

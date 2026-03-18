@@ -98,6 +98,26 @@ def resolve_top_level_url(
             },
         )
 
+    if path.endswith("/mod/page/view.php"):
+        return ResolvedURLTarget(
+            command_name="page",
+            kwargs={
+                "page_id": str(_parse_query_int(query, "id", "page module ID")),
+                "as_json": False,
+                "as_yaml": False,
+            },
+        )
+
+    if path.endswith("/mod/folder/view.php"):
+        return ResolvedURLTarget(
+            command_name="folder",
+            kwargs={
+                "folder": str(_parse_query_int(query, "id", "folder module ID")),
+                "as_json": False,
+                "as_yaml": False,
+            },
+        )
+
     if path.endswith("/course/view.php"):
         return ResolvedURLTarget(
             command_name="course",

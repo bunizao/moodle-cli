@@ -135,6 +135,30 @@ def test_resolve_link_page() -> None:
     )
 
 
+def test_resolve_page_page() -> None:
+    resolved = resolve_top_level_url(
+        base_url=BASE_URL,
+        target=f"{BASE_URL}/mod/page/view.php?id=9001",
+    )
+
+    assert resolved == ResolvedURLTarget(
+        command_name="page",
+        kwargs={"page_id": "9001", "as_json": False, "as_yaml": False},
+    )
+
+
+def test_resolve_folder_page() -> None:
+    resolved = resolve_top_level_url(
+        base_url=BASE_URL,
+        target=f"{BASE_URL}/mod/folder/view.php?id=9101",
+    )
+
+    assert resolved == ResolvedURLTarget(
+        command_name="folder",
+        kwargs={"folder": "9101", "as_json": False, "as_yaml": False},
+    )
+
+
 def test_resolve_generic_activity_page_uses_callback() -> None:
     seen: list[str] = []
 
@@ -144,11 +168,11 @@ def test_resolve_generic_activity_page_uses_callback() -> None:
 
     resolved = resolve_top_level_url(
         base_url=BASE_URL,
-        target=f"{BASE_URL}/mod/page/view.php?id=88",
+        target=f"{BASE_URL}/mod/glossary/view.php?id=88",
         resolve_course_id_for_url=resolve_course_id,
     )
 
-    assert seen == [f"{BASE_URL}/mod/page/view.php?id=88"]
+    assert seen == [f"{BASE_URL}/mod/glossary/view.php?id=88"]
     assert resolved == ResolvedURLTarget(
         command_name="course",
         kwargs={"course_id": 41031, "as_json": False, "as_yaml": False},
@@ -159,7 +183,7 @@ def test_resolve_generic_activity_page_rejects_unknown_course() -> None:
     with pytest.raises(click.ClickException, match="Could not resolve course ID from the activity page"):
         resolve_top_level_url(
             base_url=BASE_URL,
-            target=f"{BASE_URL}/mod/page/view.php?id=88",
+            target=f"{BASE_URL}/mod/glossary/view.php?id=88",
             resolve_course_id_for_url=lambda _target: None,
         )
 
