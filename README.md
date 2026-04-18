@@ -33,6 +33,22 @@ okta config
 pipx install moodle-cli
 ```
 
+## Agent Skill
+
+Install the agent skill with the shared `skills` CLI spec:
+
+```bash
+npx skills add https://github.com/bunizao/moodle-cli
+```
+
+If you already installed `moodle`, the CLI exposes the same thing as a thin alias:
+
+```bash
+moodle skills add
+```
+
+If `npx` is not available, the alias falls back to `npm exec`.
+
 Install from source:
 
 ```bash
@@ -54,12 +70,23 @@ moodle grades 34637
 moodle activities 34637
 moodle https://school.example.edu/course/view.php?id=34637
 moodle https://school.example.edu/mod/forum/discuss.php?d=9001#p9101 --json
+moodle skills
+moodle skills add
 moodle update
+moodle update --check-only
 ```
 
 You can also paste supported Moodle page URLs directly as the first argument. The CLI routes forum discussion, forum view, assignment, quiz, resource, link, page, folder, course, and grade report URLs to the shortest matching command.
 
-To upgrade after an update is available:
+To check without applying an upgrade:
+
+```bash
+moodle update --check-only
+```
+
+`moodle update` now tries to upgrade directly with `uv tool upgrade moodle-cli` and falls back to `pipx upgrade moodle-cli` when needed.
+
+To upgrade manually after an update is available:
 
 ```bash
 uv tool upgrade moodle-cli

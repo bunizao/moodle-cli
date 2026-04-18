@@ -38,6 +38,8 @@ from moodle_cli.formatter import (
     print_user_info,
 )
 from moodle_cli.output import output_json, output_yaml
+from moodle_cli.self_update import apply_update
+from moodle_cli.skill_bundle import format_skill_summary, install_skill
 from moodle_cli.update_check import check_for_updates
 from moodle_cli.url_resolver import resolve_top_level_url
 
@@ -61,6 +63,14 @@ def _require_course_id(ctx: click.Context, course_id: int | None) -> int:
 def _print_loading(message: str) -> None:
     """Print a short loading hint to stderr for slow network calls."""
     stderr_console.print(f"[dim]{message}[/]")
+
+
+def _run_skill_action(action) -> None:
+    """Run a skill action and present failures as Click errors."""
+    try:
+        action()
+    except RuntimeError as exc:
+        raise click.ClickException(str(exc)) from exc
 
 
 def _login_url(base_url: str) -> str:
@@ -303,6 +313,49 @@ def cli(ctx: click.Context, verbose: bool) -> None:
         return ctx.obj["_client"]
 
     ctx.obj["get_client"] = get_client
+
+
+@cli.group(
+    invoke_without_command=True,
+    context_settings={"ignore_unknown_options": True, "allow_extra_args": True},
+)
+@click.pass_context
+def skills(ctx: click.Context) -> None:
+    """Show skill metadata or delegate to the shared skills CLI."""
+    if ctx.invoked_subcommand is None:
+        click.echo(format_skill_summary())
+
+
+@skills.command(
+    "add",
+    context_settings={"ignore_unknown_options": True, "allow_extra_args": True},
+)
+@click.pass_context
+def skills_add(ctx: click.Context) -> None:
+    """Install the published skill through `npx skills add`."""
+    _run_skill_action(lambda: install_skill(list(ctx.args)))
+
+
+@skills.command(
+    "install",
+    hidden=True,
+    context_settings={"ignore_unknown_options": True, "allow_extra_args": True},
+)
+@click.pass_context
+def skills_install(ctx: click.Context) -> None:
+    """Backward-compatible alias for `skills add`."""
+    _run_skill_action(lambda: install_skill(list(ctx.args)))
+
+
+@skills.command(
+    "i",
+    hidden=True,
+    context_settings={"ignore_unknown_options": True, "allow_extra_args": True},
+)
+@click.pass_context
+def skills_i(ctx: click.Context) -> None:
+    """Backward-compatible alias for `skills add`."""
+    _run_skill_action(lambda: install_skill(list(ctx.args)))
 
 
 @cli.command(name="__url_target__", hidden=True)
@@ -888,10 +941,11 @@ def folder(ctx: click.Context, folder: str, as_json: bool, as_yaml: bool) -> Non
 
 
 @cli.command(name="update")
+@click.option("--check-only", is_flag=True, help="Only check for updates; do not install.")
 @click.option("--json", "as_json", is_flag=True, help="Output as JSON.")
 @click.option("--yaml", "as_yaml", is_flag=True, help="Output as YAML.")
-def update(as_json: bool, as_yaml: bool) -> None:
-    """Check whether a newer moodle-cli version is available."""
+def update(check_only: bool, as_json: bool, as_yaml: bool) -> None:
+    """Check for updates and upgrade the installed CLI."""
     _print_loading("Checking for updates...")
     info = check_for_updates()
 
@@ -904,9 +958,16 @@ def update(as_json: bool, as_yaml: bool) -> None:
             f"[yellow]Update available:[/] {info.latest_version} "
             f"(installed: {info.current_version})"
         )
-        stdout_console.print("Upgrade with:")
-        for command in info.upgrade_commands:
-            stdout_console.print(f"  {command}")
+        if check_only:
+            stdout_console.print("Upgrade with:")
+            for command in info.upgrade_commands:
+                stdout_console.print(f"  {command}")
+            return
+
+        _print_loading("Applying update...")
+        command = apply_update(info.package_name)
+        stdout_console.print(f"[green]Updated with:[/] {command}")
+        stdout_console.print("Run `moodle --version` in a fresh shell to confirm the installed version.")
     else:
         stdout_console.print(f"[green]{info.package_name} is up to date[/] ({info.current_version})")
 

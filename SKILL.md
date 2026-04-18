@@ -3,21 +3,56 @@ name: moodle-cli
 description: Use when the user wants Moodle data from this repository through the local `moodle` CLI. Route each request to the smallest command that answers it, prefer `moodle ... --json`, avoid broad commands such as `overview` when a narrower command exists, and summarize the parsed result instead of pasting raw JSON.
 ---
 
-# Moodle CLI Routing
+# moodle-cli
+
+Use `moodle` for read-only Moodle access.
+
+## Defaults
 
 Use the narrowest command that answers the request.
 
 Prefer `moodle ... --json` for agent work.
 
+Omit `--json` only when a human explicitly wants the formatted terminal view.
+
 Resolve course IDs with `moodle courses --json` before running course-specific commands when the user gives only a course name.
 
 Avoid `moodle overview --json` unless the user explicitly asks for a combined snapshot across courses, deadlines, and alerts.
 
+## Setup
+
+```bash
+uv tool install moodle-cli
+# or
+pipx install moodle-cli
+```
+
+Optional Okta session reuse:
+
+```bash
+uv tool install okta-auth-cli
+okta config
+```
+
+Upgrade:
+
+```bash
+uv tool upgrade moodle-cli
+# or
+pipx upgrade moodle-cli
+```
+
+Authenticate with an active Moodle browser session, `MOODLE_SESSION`, or `okta-auth-cli`.
+
+Set `MOODLE_BASE_URL` or let the first run prompt for the Moodle root URL and save it to config.
+
+## Forum Routing
+
 For forum requests, prefer `moodle forum find` over manually chaining `forum forums`, `forum discussions`, and `forum discussion`.
 
-If the user already gives a forum discussion URL, skip search and open it directly with `moodle forum discussion URL --json`.
+If the user already gives a forum discussion URL, skip search and open it directly with `moodle forum discussion DISCUSSION_OR_URL --json`.
 
-If the user gives a forum view URL or discussion URL and wants to browse nearby discussions, use `moodle forum discussions URL --json`.
+If the user gives a forum view URL or discussion URL and wants to browse nearby discussions, use `moodle forum discussions FORUM_OR_URL --json`.
 
 Use scan budgets first when the site may be large:
 
@@ -36,7 +71,7 @@ Default forum agent flow:
 
 Avoid `moodle forum search` unless you explicitly need a larger result set than `forum find --list`.
 
-# Intent To Command
+## Intent To Command
 
 Use these mappings.
 
@@ -58,7 +93,7 @@ Use these mappings.
 | Browse discussions in a known forum URL or ID | `moodle forum discussions FORUM_OR_URL --json` |
 | Check whether this CLI has an update | `moodle update --json` |
 
-# Operating Rules
+## Operating Rules
 
 Parse the JSON locally and return a concise answer.
 
@@ -76,3 +111,14 @@ For forum discussion output, prefer structured fields over heuristic text parsin
 - `links` for extracted hyperlinks
 - `tables` for structured table content
 - `group_id` and `group_name` for grouped forum context
+
+## Failure Modes
+
+- Authentication failed: sign in to Moodle in the browser, export `MOODLE_SESSION`, or configure `okta-auth-cli`.
+- Invalid base URL: use the Moodle site root such as `https://school.example.edu`, not `/login/index.php` or `/my/`.
+- `Could not check for updates`: retry with network access to PyPI, then run `uv tool upgrade moodle-cli` or `pipx upgrade moodle-cli`.
+
+## Safety
+
+- Treat `MOODLE_SESSION` as a secret and never paste it into chat or logs.
+- The CLI is read-only and does not create or modify Moodle content.

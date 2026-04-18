@@ -995,7 +995,7 @@ def test_top_level_url_rejects_unsupported_path(monkeypatch: pytest.MonkeyPatch,
     ("args", "info", "loader", "expected", "texts"),
     [
         (
-            ["update"],
+            ["update", "--check-only"],
             UpdateInfo(
                 package_name="moodle-cli",
                 current_version="0.2.1",
@@ -1090,6 +1090,78 @@ def test_update_outputs_without_loading_moodle_runtime(
             assert text in normalize_terminal_text(result.output)
     else:
         assert loader(result.stdout) == expected
+
+
+def test_update_applies_available_upgrade(monkeypatch: pytest.MonkeyPatch, runner: CliRunner) -> None:
+    monkeypatch.setattr(cli_module, "load_config", lambda: pytest.fail("load_config should not run"))
+    monkeypatch.setattr(cli_module, "get_session", lambda _base_url: pytest.fail("get_session should not run"))
+    monkeypatch.setattr(cli_module, "MoodleClient", lambda *_args: pytest.fail("MoodleClient should not run"))
+    monkeypatch.setattr(
+        cli_module,
+        "check_for_updates",
+        lambda: UpdateInfo(
+            package_name="moodle-cli",
+            current_version="0.2.1",
+            latest_version="0.2.2",
+            update_available=True,
+            upgrade_commands=["uv tool upgrade moodle-cli", "pipx upgrade moodle-cli"],
+            pypi_url="https://pypi.org/project/moodle-cli/",
+        ),
+    )
+    monkeypatch.setattr(cli_module, "apply_update", lambda package_name: f"uv tool upgrade {package_name}")
+
+    result = runner.invoke(cli_module.cli, ["update"])
+
+    assert result.exit_code == 0
+    assert "Checking for updates..." in normalize_terminal_text(result.stderr)
+    assert "Applying update..." in normalize_terminal_text(result.stderr)
+    assert "Updated with:" in normalize_terminal_text(result.output)
+    assert "uv tool upgrade moodle-cli" in normalize_terminal_text(result.output)
+
+
+def test_update_check_only_does_not_apply_upgrade(monkeypatch: pytest.MonkeyPatch, runner: CliRunner) -> None:
+    monkeypatch.setattr(
+        cli_module,
+        "check_for_updates",
+        lambda: UpdateInfo(
+            package_name="moodle-cli",
+            current_version="0.2.1",
+            latest_version="0.2.2",
+            update_available=True,
+            upgrade_commands=["uv tool upgrade moodle-cli", "pipx upgrade moodle-cli"],
+            pypi_url="https://pypi.org/project/moodle-cli/",
+        ),
+    )
+    monkeypatch.setattr(cli_module, "apply_update", lambda _package_name: pytest.fail("apply_update should not run"))
+
+    result = runner.invoke(cli_module.cli, ["update", "--check-only"])
+
+    assert result.exit_code == 0
+    assert "Upgrade with:" in normalize_terminal_text(result.output)
+
+
+def test_cli_skills_outputs_name_description_and_install_command(runner: CliRunner) -> None:
+    result = runner.invoke(cli_module.cli, ["skills"])
+
+    assert result.exit_code == 0
+    assert "Name: moodle-cli" in result.output
+    assert "Description: Inspect Moodle data from the terminal" in result.output
+    assert "Install: npx skills add https://github.com/bunizao/moodle-cli" in result.output
+    assert "CLI alias: moodle skills add (falls back to npm exec)" in result.output
+
+
+def test_cli_skills_add_delegates_extra_args(monkeypatch: pytest.MonkeyPatch, runner: CliRunner) -> None:
+    captured: dict[str, list[str]] = {}
+
+    def fake_install_skill(extra_args) -> None:
+        captured["args"] = list(extra_args)
+
+    monkeypatch.setattr(cli_module, "install_skill", fake_install_skill)
+
+    result = runner.invoke(cli_module.cli, ["skills", "add", "--agent", "codex", "--yes"])
+
+    assert result.exit_code == 0
+    assert captured["args"] == ["--agent", "codex", "--yes"]
 
 
 def test_json_output_is_compact_and_prunes_empty_values(monkeypatch: pytest.MonkeyPatch, runner: CliRunner) -> None:
