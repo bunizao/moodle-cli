@@ -213,6 +213,156 @@ class CourseGrades:
 
 
 @dataclass
+class Assignment:
+    id: int
+    name: str
+    course_id: int = 0
+    course_name: str = ""
+    section_name: str = ""
+    due_pretty: str = ""
+    submission_status: str = ""
+    grading_status: str = ""
+    time_remaining: str = ""
+    grade: str = ""
+    url: str = ""
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "name": self.name,
+            "course_id": self.course_id,
+            "course_name": self.course_name,
+            "section_name": self.section_name,
+            "due_pretty": self.due_pretty,
+            "submission_status": self.submission_status,
+            "grading_status": self.grading_status,
+            "time_remaining": self.time_remaining,
+            "grade": self.grade,
+            "url": self.url,
+        }
+
+
+@dataclass
+class Quiz:
+    id: int
+    name: str
+    course_id: int = 0
+    course_name: str = ""
+    section_name: str = ""
+    opens_pretty: str = ""
+    closes_pretty: str = ""
+    attempts_allowed: str = ""
+    availability: str = ""
+    grade: str = ""
+    url: str = ""
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "name": self.name,
+            "course_id": self.course_id,
+            "course_name": self.course_name,
+            "section_name": self.section_name,
+            "opens_pretty": self.opens_pretty,
+            "closes_pretty": self.closes_pretty,
+            "attempts_allowed": self.attempts_allowed,
+            "availability": self.availability,
+            "grade": self.grade,
+            "url": self.url,
+        }
+
+
+@dataclass
+class Resource:
+    id: int
+    name: str
+    course_id: int = 0
+    course_name: str = ""
+    section_name: str = ""
+    target_name: str = ""
+    target_url: str = ""
+    url: str = ""
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "name": self.name,
+            "course_id": self.course_id,
+            "course_name": self.course_name,
+            "section_name": self.section_name,
+            "target_name": self.target_name,
+            "target_url": self.target_url,
+            "url": self.url,
+        }
+
+
+@dataclass
+class Link:
+    id: int
+    name: str
+    course_id: int = 0
+    course_name: str = ""
+    section_name: str = ""
+    target_url: str = ""
+    url: str = ""
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "name": self.name,
+            "course_id": self.course_id,
+            "course_name": self.course_name,
+            "section_name": self.section_name,
+            "target_url": self.target_url,
+            "url": self.url,
+        }
+
+
+@dataclass
+class Page:
+    id: int
+    name: str
+    course_id: int = 0
+    course_name: str = ""
+    section_name: str = ""
+    content_text: str = ""
+    url: str = ""
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "name": self.name,
+            "course_id": self.course_id,
+            "course_name": self.course_name,
+            "section_name": self.section_name,
+            "content_text": self.content_text,
+            "url": self.url,
+        }
+
+
+@dataclass
+class Folder:
+    id: int
+    name: str
+    course_id: int = 0
+    course_name: str = ""
+    section_name: str = ""
+    files: list[str] = field(default_factory=list)
+    url: str = ""
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "name": self.name,
+            "course_id": self.course_id,
+            "course_name": self.course_name,
+            "section_name": self.section_name,
+            "files": self.files,
+            "url": self.url,
+        }
+
+
+@dataclass
 class Overview:
     user: UserInfo
     courses: list[Course] = field(default_factory=list)
