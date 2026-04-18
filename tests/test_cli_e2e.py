@@ -23,8 +23,10 @@ from moodle_cli.models import (
     Activity,
     AlertNotification,
     AlertSummary,
+    Assignment,
     Course,
     CourseGrades,
+    Folder,
     ForumActivityRef,
     ForumDiscussion,
     ForumDiscussionRef,
@@ -32,7 +34,11 @@ from moodle_cli.models import (
     ForumPostAuthor,
     ForumSearchHit,
     GradeItem,
+    Link,
     Overview,
+    Page,
+    Quiz,
+    Resource,
     Section,
     TodoItem,
     UserInfo,
@@ -226,6 +232,68 @@ GRADES = CourseGrades(
         ),
     ],
 )
+ASSIGNMENT = Assignment(
+    id=302,
+    name="Essay 1",
+    course_id=202,
+    course_name="History 202",
+    section_name="Assessments",
+    due_pretty="Friday, 18 April 2026, 11:55 PM",
+    submission_status="No attempt",
+    grading_status="Not graded",
+    time_remaining="2 days 3 hours remaining",
+    grade="",
+    url="https://school.example.edu/mod/assign/view.php?id=302",
+)
+QUIZ = Quiz(
+    id=301,
+    name="Week 4 Workshop Quiz",
+    course_id=101,
+    course_name="Mathematics 101",
+    section_name="Week 4",
+    opens_pretty="Monday, 23 March 2026, 5:00 AM",
+    closes_pretty="Wednesday, 25 March 2026, 11:55 PM",
+    attempts_allowed="1",
+    availability="This quiz is currently not available.",
+    url="https://school.example.edu/mod/quiz/view.php?id=301",
+)
+RESOURCE = Resource(
+    id=401,
+    name="Week 4 Slides",
+    course_id=101,
+    course_name="Mathematics 101",
+    section_name="Week 4",
+    target_name="week4-slides.pdf",
+    target_url="https://school.example.edu/mod/resource/view.php?id=401&redirect=1",
+    url="https://school.example.edu/mod/resource/view.php?id=401",
+)
+LINK = Link(
+    id=501,
+    name="Unit Handbook",
+    course_id=101,
+    course_name="Mathematics 101",
+    section_name="Week 4",
+    target_url="https://example.edu/handbook",
+    url="https://school.example.edu/mod/url/view.php?id=501",
+)
+PAGE = Page(
+    id=601,
+    name="Week 4 Overview",
+    course_id=101,
+    course_name="Mathematics 101",
+    section_name="Week 4",
+    content_text="Welcome to week 4.\nRead chapter 3 before class.",
+    url="https://school.example.edu/mod/page/view.php?id=601",
+)
+FOLDER = Folder(
+    id=701,
+    name="Week 4 Files",
+    course_id=101,
+    course_name="Mathematics 101",
+    section_name="Week 4",
+    files=["slides.pdf", "worksheet.docx"],
+    url="https://school.example.edu/mod/folder/view.php?id=701",
+)
 ALERTS = AlertSummary(
     notifications=[
         AlertNotification(
@@ -278,11 +346,18 @@ class FakeClient:
         self.course_ids: list[int] = []
         self.todo_calls: list[tuple[int, int | None]] = []
         self.grade_course_ids: list[int] = []
+        self.assignment_ids: list[int] = []
+        self.quiz_ids: list[int] = []
+        self.resource_ids: list[int] = []
+        self.link_ids: list[int] = []
+        self.page_ids: list[int] = []
+        self.folder_ids: list[int] = []
         self.alert_limits: list[int] = []
         self.overview_calls: list[tuple[int, int | None, int]] = []
         self.forum_ref_ids: list[int] = []
         self.forum_discussion_ids: list[int] = []
         self.forum_search_calls: list[tuple[str, int, int | None, int | None, bool, bool, str, int | None, int | None]] = []
+        self.resolved_page_urls: list[str] = []
 
     def get_site_info(self) -> UserInfo:
         return USER
@@ -301,6 +376,30 @@ class FakeClient:
     def get_course_grades(self, course_id: int) -> CourseGrades:
         self.grade_course_ids.append(course_id)
         return GRADES
+
+    def get_assignment(self, assignment_id: int) -> Assignment:
+        self.assignment_ids.append(assignment_id)
+        return ASSIGNMENT
+
+    def get_quiz(self, quiz_id: int) -> Quiz:
+        self.quiz_ids.append(quiz_id)
+        return QUIZ
+
+    def get_resource(self, resource_id: int) -> Resource:
+        self.resource_ids.append(resource_id)
+        return RESOURCE
+
+    def get_link(self, link_id: int) -> Link:
+        self.link_ids.append(link_id)
+        return LINK
+
+    def get_page(self, page_id: int) -> Page:
+        self.page_ids.append(page_id)
+        return PAGE
+
+    def get_folder(self, folder_id: int) -> Folder:
+        self.folder_ids.append(folder_id)
+        return FOLDER
 
     def get_alerts(self, limit: int = 20) -> AlertSummary:
         self.alert_limits.append(limit)
@@ -325,6 +424,10 @@ class FakeClient:
 
     def get_forum_view_cmid(self, discussion_id: int) -> int | None:
         return 501 if discussion_id in FORUM_DISCUSSIONS else None
+
+    def resolve_course_id_for_url(self, url: str) -> int | None:
+        self.resolved_page_urls.append(url)
+        return 101
 
     def search_forum_content(
         self,
@@ -414,6 +517,43 @@ def expected_json(data):
     return output_module.optimize_json_data(data)
 
 
+def command_case(
+    args: list[str],
+    *,
+    loader=None,
+    expected=None,
+    texts: list[str] | None = None,
+    course_ids: list[int] | None = None,
+    todo_calls: list[tuple[int, int | None]] | None = None,
+    grade_ids: list[int] | None = None,
+    assignment_ids: list[int] | None = None,
+    quiz_ids: list[int] | None = None,
+    resource_ids: list[int] | None = None,
+    link_ids: list[int] | None = None,
+    page_ids: list[int] | None = None,
+    folder_ids: list[int] | None = None,
+    alert_limits: list[int] | None = None,
+    overview_calls: list[tuple[int, int | None, int]] | None = None,
+):
+    return (
+        args,
+        loader,
+        expected,
+        texts,
+        course_ids or [],
+        todo_calls or [],
+        grade_ids or [],
+        assignment_ids or [],
+        quiz_ids or [],
+        resource_ids or [],
+        link_ids or [],
+        page_ids or [],
+        folder_ids or [],
+        alert_limits or [],
+        overview_calls or [],
+    )
+
+
 @pytest.mark.parametrize("args", [["--help"], ["--version"]])
 def test_global_help_and_version_do_not_load_runtime(monkeypatch: pytest.MonkeyPatch, runner: CliRunner, args: list[str]) -> None:
     monkeypatch.setattr(cli_module, "load_config", lambda: pytest.fail("load_config should not run"))
@@ -427,9 +567,15 @@ def test_global_help_and_version_do_not_load_runtime(monkeypatch: pytest.MonkeyP
         assert "Terminal-first CLI for Moodle LMS." in result.stdout
         assert "activities" in result.stdout
         assert "alerts" in result.stdout
+        assert "assignment" in result.stdout
         assert "courses" in result.stdout
+        assert "folder" in result.stdout
         assert "grades" in result.stdout
+        assert "link" in result.stdout
         assert "overview" in result.stdout
+        assert "page" in result.stdout
+        assert "quiz" in result.stdout
+        assert "resource" in result.stdout
         assert "todo" in result.stdout
         assert "update" in result.stdout
     else:
@@ -473,34 +619,58 @@ def test_verbose_flag_sets_logging_level(
         "expected_course_ids",
         "expected_todo_calls",
         "expected_grade_course_ids",
+        "expected_assignment_ids",
+        "expected_quiz_ids",
+        "expected_resource_ids",
+        "expected_link_ids",
+        "expected_page_ids",
+        "expected_folder_ids",
         "expected_alert_limits",
         "expected_overview_calls",
     ),
     [
-        (["user"], None, None, ["Alice Example", "Campus", BASE_URL, "User ID"], [], [], [], [], []),
-        (["user", "--json"], json.loads, expected_json(USER.to_dict()), None, [], [], [], [], []),
-        (["user", "--yaml"], yaml.safe_load, USER.to_dict(), None, [], [], [], [], []),
-        (["courses"], None, None, ["Enrolled Courses", "MATH101", "History 202", "Yes", "No"], [], [], [], [], []),
-        (["courses", "--json"], json.loads, expected_json([course.to_dict() for course in COURSES]), None, [], [], [], [], []),
-        (["courses", "--yaml"], yaml.safe_load, [course.to_dict() for course in COURSES], None, [], [], [], [], []),
-        (["alerts"], None, None, ["Alerts", "Unread Notifications", "Overdue: Assignment 1", "Direct Messages", "Notifications"], [], [], [], [20], []),
-        (["alerts", "--limit", "5", "--json"], json.loads, expected_json(ALERTS.to_dict()), None, [], [], [], [5], []),
-        (["alerts", "--yaml"], yaml.safe_load, ALERTS.to_dict(), None, [], [], [], [20], []),
-        (["todo"], None, None, ["Todo", "Mathematics 101", "Quiz 1", "Attempt quiz", "History 202", "Essay"], [], [(20, None)], [], [], []),
-        (["todo", "--days", "7", "--limit", "5", "--json"], json.loads, expected_json([item.to_dict() for item in TODO_ITEMS]), None, [], [(5, 7)], [], [], []),
-        (["todo", "--yaml"], yaml.safe_load, [item.to_dict() for item in TODO_ITEMS], None, [], [(20, None)], [], [], []),
-        (["overview"], None, None, ["Overview", "Alice Example", "Courses", "Todo", "Alerts"], [], [], [], [], [(5, None, 5)]),
-        (["overview", "--todo-limit", "3", "--todo-days", "7", "--alerts-limit", "2", "--json"], json.loads, expected_json(OVERVIEW.to_dict()), None, [], [], [], [], [(3, 7, 2)]),
-        (["overview", "--yaml"], yaml.safe_load, OVERVIEW.to_dict(), None, [], [], [], [], [(5, None, 5)]),
-        (["grades", "101"], None, None, ["Grades: Mathematics 101", "Alice Example", "Course Total", "73.00", "Quiz 1", "Essay", "Pass"], [], [], [101], [], []),
-        (["grades", "101", "--json"], json.loads, expected_json(GRADES.to_dict()), None, [], [], [101], [], []),
-        (["grades", "101", "--yaml"], yaml.safe_load, GRADES.to_dict(), None, [], [], [101], [], []),
-        (["activities", "42"], None, None, ["Course 42", "Introduction", "Syllabus", "Quiz 1", "Week 2", "No activities"], [42], [], [], [], []),
-        (["activities", "42", "--json"], json.loads, expected_json([section.to_dict() for section in SECTIONS]), None, [42], [], [], [], []),
-        (["activities", "42", "--yaml"], yaml.safe_load, [section.to_dict() for section in SECTIONS], None, [42], [], [], [], []),
-        (["course", "42"], None, None, ["Course 42", "Introduction", "Syllabus", "Quiz 1", "Week 2", "No activities"], [42], [], [], [], []),
-        (["course", "42", "--json"], json.loads, expected_json([section.to_dict() for section in SECTIONS]), None, [42], [], [], [], []),
-        (["course", "42", "--yaml"], yaml.safe_load, [section.to_dict() for section in SECTIONS], None, [42], [], [], [], []),
+        command_case(["user"], texts=["Alice Example", "Campus", BASE_URL, "User ID"]),
+        command_case(["user", "--json"], loader=json.loads, expected=expected_json(USER.to_dict())),
+        command_case(["user", "--yaml"], loader=yaml.safe_load, expected=USER.to_dict()),
+        command_case(["courses"], texts=["Enrolled Courses", "MATH101", "History 202", "Yes", "No"]),
+        command_case(["courses", "--json"], loader=json.loads, expected=expected_json([course.to_dict() for course in COURSES])),
+        command_case(["courses", "--yaml"], loader=yaml.safe_load, expected=[course.to_dict() for course in COURSES]),
+        command_case(["alerts"], texts=["Alerts", "Unread Notifications", "Overdue: Assignment 1", "Direct Messages", "Notifications"], alert_limits=[20]),
+        command_case(["alerts", "--limit", "5", "--json"], loader=json.loads, expected=expected_json(ALERTS.to_dict()), alert_limits=[5]),
+        command_case(["alerts", "--yaml"], loader=yaml.safe_load, expected=ALERTS.to_dict(), alert_limits=[20]),
+        command_case(["todo"], texts=["Todo", "Mathematics 101", "Quiz 1", "Attempt quiz", "History 202", "Essay"], todo_calls=[(20, None)]),
+        command_case(["todo", "--days", "7", "--limit", "5", "--json"], loader=json.loads, expected=expected_json([item.to_dict() for item in TODO_ITEMS]), todo_calls=[(5, 7)]),
+        command_case(["todo", "--yaml"], loader=yaml.safe_load, expected=[item.to_dict() for item in TODO_ITEMS], todo_calls=[(20, None)]),
+        command_case(["overview"], texts=["Overview", "Alice Example", "Courses", "Todo", "Alerts"], overview_calls=[(5, None, 5)]),
+        command_case(["overview", "--todo-limit", "3", "--todo-days", "7", "--alerts-limit", "2", "--json"], loader=json.loads, expected=expected_json(OVERVIEW.to_dict()), overview_calls=[(3, 7, 2)]),
+        command_case(["overview", "--yaml"], loader=yaml.safe_load, expected=OVERVIEW.to_dict(), overview_calls=[(5, None, 5)]),
+        command_case(["grades", "101"], texts=["Grades: Mathematics 101", "Alice Example", "Course Total", "73.00", "Quiz 1", "Essay", "Pass"], grade_ids=[101]),
+        command_case(["grades", "101", "--json"], loader=json.loads, expected=expected_json(GRADES.to_dict()), grade_ids=[101]),
+        command_case(["grades", "101", "--yaml"], loader=yaml.safe_load, expected=GRADES.to_dict(), grade_ids=[101]),
+        command_case(["assignment", "302"], texts=["Assignment: Essay 1", "History 202", "Assessments", "No attempt", "Not graded"], assignment_ids=[302]),
+        command_case(["assignment", "302", "--json"], loader=json.loads, expected=expected_json(ASSIGNMENT.to_dict()), assignment_ids=[302]),
+        command_case(["assignment", "302", "--yaml"], loader=yaml.safe_load, expected=ASSIGNMENT.to_dict(), assignment_ids=[302]),
+        command_case(["quiz", "301"], texts=["Quiz: Week 4 Workshop Quiz", "Mathematics 101", "Week 4", "Monday, 23 March 2026, 5:00 AM", "This quiz is currently not available."], quiz_ids=[301]),
+        command_case(["quiz", "301", "--json"], loader=json.loads, expected=expected_json(QUIZ.to_dict()), quiz_ids=[301]),
+        command_case(["quiz", "301", "--yaml"], loader=yaml.safe_load, expected=QUIZ.to_dict(), quiz_ids=[301]),
+        command_case(["resource", "401"], texts=["Resource: Week 4 Slides", "Mathematics 101", "Week 4", "week4-slides.pdf"], resource_ids=[401]),
+        command_case(["resource", "401", "--json"], loader=json.loads, expected=expected_json(RESOURCE.to_dict()), resource_ids=[401]),
+        command_case(["resource", "401", "--yaml"], loader=yaml.safe_load, expected=RESOURCE.to_dict(), resource_ids=[401]),
+        command_case(["link", "501"], texts=["Link: Unit Handbook", "Mathematics 101", "Week 4", "https://example.edu/handbook"], link_ids=[501]),
+        command_case(["link", "501", "--json"], loader=json.loads, expected=expected_json(LINK.to_dict()), link_ids=[501]),
+        command_case(["link", "501", "--yaml"], loader=yaml.safe_load, expected=LINK.to_dict(), link_ids=[501]),
+        command_case(["page", "601"], texts=["Page: Week 4 Overview", "Mathematics 101", "Week 4", "Welcome to week 4."], page_ids=[601]),
+        command_case(["page", "601", "--json"], loader=json.loads, expected=expected_json(PAGE.to_dict()), page_ids=[601]),
+        command_case(["page", "601", "--yaml"], loader=yaml.safe_load, expected=PAGE.to_dict(), page_ids=[601]),
+        command_case(["folder", "701"], texts=["Folder: Week 4 Files", "Mathematics 101", "Week 4", "slides.pdf", "worksheet.docx"], folder_ids=[701]),
+        command_case(["folder", "701", "--json"], loader=json.loads, expected=expected_json(FOLDER.to_dict()), folder_ids=[701]),
+        command_case(["folder", "701", "--yaml"], loader=yaml.safe_load, expected=FOLDER.to_dict(), folder_ids=[701]),
+        command_case(["activities", "42"], texts=["Course 42", "Introduction", "Syllabus", "Quiz 1", "Week 2", "No activities"], course_ids=[42]),
+        command_case(["activities", "42", "--json"], loader=json.loads, expected=expected_json([section.to_dict() for section in SECTIONS]), course_ids=[42]),
+        command_case(["activities", "42", "--yaml"], loader=yaml.safe_load, expected=[section.to_dict() for section in SECTIONS], course_ids=[42]),
+        command_case(["course", "42"], texts=["Course 42", "Introduction", "Syllabus", "Quiz 1", "Week 2", "No activities"], course_ids=[42]),
+        command_case(["course", "42", "--json"], loader=json.loads, expected=expected_json([section.to_dict() for section in SECTIONS]), course_ids=[42]),
+        command_case(["course", "42", "--yaml"], loader=yaml.safe_load, expected=[section.to_dict() for section in SECTIONS], course_ids=[42]),
     ],
 )
 def test_commands_cover_all_output_modes(
@@ -513,6 +683,12 @@ def test_commands_cover_all_output_modes(
     expected_course_ids: list[int],
     expected_todo_calls: list[tuple[int, int | None]],
     expected_grade_course_ids: list[int],
+    expected_assignment_ids: list[int],
+    expected_quiz_ids: list[int],
+    expected_resource_ids: list[int],
+    expected_link_ids: list[int],
+    expected_page_ids: list[int],
+    expected_folder_ids: list[int],
     expected_alert_limits: list[int],
     expected_overview_calls: list[tuple[int, int | None, int]],
 ) -> None:
@@ -526,6 +702,12 @@ def test_commands_cover_all_output_modes(
     assert client.course_ids == expected_course_ids
     assert client.todo_calls == expected_todo_calls
     assert client.grade_course_ids == expected_grade_course_ids
+    assert client.assignment_ids == expected_assignment_ids
+    assert client.quiz_ids == expected_quiz_ids
+    assert client.resource_ids == expected_resource_ids
+    assert client.link_ids == expected_link_ids
+    assert client.page_ids == expected_page_ids
+    assert client.folder_ids == expected_folder_ids
     assert client.alert_limits == expected_alert_limits
     assert client.overview_calls == expected_overview_calls
 
@@ -647,6 +829,17 @@ def test_top_level_url_routes_forum_discussion_with_fragment(monkeypatch: pytest
     assert "9102" not in text
 
 
+def test_top_level_url_routes_forum_discussion_json(monkeypatch: pytest.MonkeyPatch, runner: CliRunner) -> None:
+    _, _ = patch_runtime(monkeypatch)
+
+    result = runner.invoke(cli_module.cli, [f"{BASE_URL}/mod/forum/discuss.php?d=9001#p9101", "--json"])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert payload["id"] == 9001
+    assert payload["posts"][0]["id"] == 9101
+
+
 def test_top_level_url_routes_forum_view_to_discussions(monkeypatch: pytest.MonkeyPatch, runner: CliRunner) -> None:
     _, _ = patch_runtime(monkeypatch)
 
@@ -657,6 +850,19 @@ def test_top_level_url_routes_forum_view_to_discussions(monkeypatch: pytest.Monk
     assert "Forum 501: Discussions" in text
     assert "9001" in text
     assert "9002" in text
+
+
+def test_top_level_url_rejects_different_host(monkeypatch: pytest.MonkeyPatch, runner: CliRunner) -> None:
+    _, _ = patch_runtime(monkeypatch)
+
+    result = runner.invoke(
+        cli_module.cli,
+        ["https://monashuni.okta.com/app/example/sso/saml?RelayState=https%3A%2F%2Flearning.monash.edu%2Fcourse%2Fview.php%3Fid%3D101"],
+    )
+
+    assert result.exit_code == 2
+    assert "does not match configured Moodle site" in result.output
+    assert "Paste the Moodle page URL, not an external login redirect." in result.output
 
 
 def test_top_level_url_routes_course_view(monkeypatch: pytest.MonkeyPatch, runner: CliRunner) -> None:
@@ -679,10 +885,107 @@ def test_top_level_url_routes_grade_report(monkeypatch: pytest.MonkeyPatch, runn
     assert "Grades: Mathematics 101" in result.output
 
 
+def test_top_level_url_routes_course_user_grade_page(monkeypatch: pytest.MonkeyPatch, runner: CliRunner) -> None:
+    client, _ = patch_runtime(monkeypatch)
+
+    result = runner.invoke(cli_module.cli, [f"{BASE_URL}/course/user.php?mode=grade&id=101&user=7"])
+
+    assert result.exit_code == 0
+    assert client.grade_course_ids == [101]
+    assert "Grades: Mathematics 101" in result.output
+
+
+def test_top_level_url_routes_assignment_page(monkeypatch: pytest.MonkeyPatch, runner: CliRunner) -> None:
+    client, _ = patch_runtime(monkeypatch)
+
+    result = runner.invoke(cli_module.cli, [f"{BASE_URL}/mod/assign/view.php?id=302"])
+
+    assert result.exit_code == 0
+    assert client.assignment_ids == [302]
+    assert client.course_ids == []
+    assert "Assignment: Essay 1" in result.output
+
+
+def test_top_level_url_routes_quiz_page(monkeypatch: pytest.MonkeyPatch, runner: CliRunner) -> None:
+    client, _ = patch_runtime(monkeypatch)
+
+    result = runner.invoke(cli_module.cli, [f"{BASE_URL}/mod/quiz/view.php?id=301"])
+
+    assert result.exit_code == 0
+    assert client.quiz_ids == [301]
+    assert client.course_ids == []
+    assert "Quiz: Week 4 Workshop Quiz" in result.output
+
+
+def test_top_level_url_routes_resource_page(monkeypatch: pytest.MonkeyPatch, runner: CliRunner) -> None:
+    client, _ = patch_runtime(monkeypatch)
+
+    result = runner.invoke(cli_module.cli, [f"{BASE_URL}/mod/resource/view.php?id=401"])
+
+    assert result.exit_code == 0
+    assert client.resource_ids == [401]
+    assert client.course_ids == []
+    assert "Resource: Week 4 Slides" in result.output
+
+
+def test_top_level_url_routes_link_page(monkeypatch: pytest.MonkeyPatch, runner: CliRunner) -> None:
+    client, _ = patch_runtime(monkeypatch)
+
+    result = runner.invoke(cli_module.cli, [f"{BASE_URL}/mod/url/view.php?id=501"])
+
+    assert result.exit_code == 0
+    assert client.link_ids == [501]
+    assert client.course_ids == []
+    assert "Link: Unit Handbook" in result.output
+
+
+def test_top_level_url_routes_page_page(monkeypatch: pytest.MonkeyPatch, runner: CliRunner) -> None:
+    client, _ = patch_runtime(monkeypatch)
+
+    result = runner.invoke(cli_module.cli, [f"{BASE_URL}/mod/page/view.php?id=601"])
+
+    assert result.exit_code == 0
+    assert client.page_ids == [601]
+    assert client.course_ids == []
+    assert "Page: Week 4 Overview" in result.output
+
+
+def test_top_level_url_routes_folder_page(monkeypatch: pytest.MonkeyPatch, runner: CliRunner) -> None:
+    client, _ = patch_runtime(monkeypatch)
+
+    result = runner.invoke(cli_module.cli, [f"{BASE_URL}/mod/folder/view.php?id=701"])
+
+    assert result.exit_code == 0
+    assert client.folder_ids == [701]
+    assert client.course_ids == []
+    assert "Folder: Week 4 Files" in result.output
+
+
+def test_top_level_url_routes_generic_activity_page_to_course(monkeypatch: pytest.MonkeyPatch, runner: CliRunner) -> None:
+    client, _ = patch_runtime(monkeypatch)
+
+    result = runner.invoke(cli_module.cli, [f"{BASE_URL}/mod/glossary/view.php?id=301"])
+
+    assert result.exit_code == 0
+    assert client.resolved_page_urls == [f"{BASE_URL}/mod/glossary/view.php?id=301"]
+    assert client.course_ids == [101]
+    assert "Course 101" in result.output
+
+
+def test_top_level_url_rejects_unresolved_generic_activity_page(monkeypatch: pytest.MonkeyPatch, runner: CliRunner) -> None:
+    client, _ = patch_runtime(monkeypatch)
+    monkeypatch.setattr(client, "resolve_course_id_for_url", lambda _url: None)
+
+    result = runner.invoke(cli_module.cli, [f"{BASE_URL}/mod/glossary/view.php?id=301"])
+
+    assert result.exit_code == 1
+    assert "Could not resolve course ID from the activity page." in result.output
+
+
 def test_top_level_url_rejects_unsupported_path(monkeypatch: pytest.MonkeyPatch, runner: CliRunner) -> None:
     _, _ = patch_runtime(monkeypatch)
 
-    result = runner.invoke(cli_module.cli, [f"{BASE_URL}/mod/assign/view.php?id=301"])
+    result = runner.invoke(cli_module.cli, [f"{BASE_URL}/calendar/view.php?view=month"])
 
     assert result.exit_code == 2
     assert "Unsupported Moodle URL" in result.output
@@ -841,6 +1144,12 @@ def test_unknown_command_shows_click_error(monkeypatch: pytest.MonkeyPatch, runn
         (["todo"], "Loading todo items..."),
         (["overview"], "Loading overview..."),
         (["grades", "101"], "Loading grades for course 101..."),
+        (["assignment", "302"], "Loading assignment 302..."),
+        (["quiz", "301"], "Loading quiz 301..."),
+        (["resource", "401"], "Loading resource 401..."),
+        (["link", "501"], "Loading link 501..."),
+        (["page", "601"], "Loading page 601..."),
+        (["folder", "701"], "Loading folder 701..."),
         (["activities", "42"], "Loading activities for course 42..."),
         (["course", "42"], "Loading course 42..."),
     ],
@@ -1049,6 +1358,261 @@ def test_parse_course_grades_url_finds_course_nav_link() -> None:
     """
 
     assert scraper_module.parse_course_grades_url(html, BASE_URL) == f"{BASE_URL}/grade/report/index.php?id=101"
+
+
+def test_parse_course_id_from_page_html_finds_course_home_link() -> None:
+    html = """
+    <html>
+      <body>
+        <li data-key="coursehome">
+          <a href="/course/view.php?id=101">Course home</a>
+        </li>
+      </body>
+    </html>
+    """
+
+    assert scraper_module.parse_course_id_from_page_html(html) == 101
+
+
+def test_parse_course_id_from_page_html_prefers_breadcrumb_course_link() -> None:
+    html = """
+    <html>
+      <body>
+        <div id="page-navbar">
+          <nav aria-label="Breadcrumb">
+            <ol class="breadcrumb">
+              <li class="breadcrumb-item"><a href="/course/view.php?id=41031">Course</a></li>
+              <li class="breadcrumb-item"><a href="/course/view.php?id=41031&amp;section=4">Week 4</a></li>
+            </ol>
+          </nav>
+        </div>
+        <div class="footer-links">
+          <a href="/course/view.php?id=101">Fallback course</a>
+        </div>
+      </body>
+    </html>
+    """
+
+    assert scraper_module.parse_course_id_from_page_html(html) == 41031
+
+
+def test_parse_assignment_html_extracts_summary() -> None:
+    html = """
+    <html>
+      <body>
+        <header><h1>Essay 1</h1></header>
+        <div id="page-navbar">
+          <nav aria-label="Breadcrumb">
+            <ol class="breadcrumb">
+              <li class="breadcrumb-item">
+                <a href="https://school.example.edu/course/view.php?id=202" title="History 202">HIST202</a>
+              </li>
+              <li class="breadcrumb-item">
+                <a href="https://school.example.edu/course/view.php?id=202&amp;section=3">Assessments</a>
+              </li>
+            </ol>
+          </nav>
+        </div>
+        <div>
+          <strong>Due:</strong>
+          Friday, 18 April 2026, 11:55 PM
+        </div>
+        <table>
+          <tr><th>Submission status</th><td>No attempt</td></tr>
+          <tr><th>Grading status</th><td>Not graded</td></tr>
+          <tr><th>Time remaining</th><td>2 days 3 hours remaining</td></tr>
+          <tr><th>Grade</th><td>72 / 100</td></tr>
+        </table>
+      </body>
+    </html>
+    """
+
+    parsed = scraper_module.parse_assignment_html(html, 302, BASE_URL)
+
+    assert parsed.id == 302
+    assert parsed.name == "Essay 1"
+    assert parsed.course_id == 202
+    assert parsed.course_name == "History 202"
+    assert parsed.section_name == "Assessments"
+    assert parsed.due_pretty == "Friday, 18 April 2026, 11:55 PM"
+    assert parsed.submission_status == "No attempt"
+    assert parsed.grading_status == "Not graded"
+    assert parsed.time_remaining == "2 days 3 hours remaining"
+    assert parsed.grade == "72 / 100"
+
+
+def test_parse_quiz_html_extracts_summary() -> None:
+    html = """
+    <html>
+      <body>
+        <header>
+          <h1>Week 4 Workshop Quiz</h1>
+        </header>
+        <div id="page-navbar">
+          <nav aria-label="Breadcrumb">
+            <ol class="breadcrumb">
+              <li class="breadcrumb-item">
+                <a href="https://school.example.edu/course/view.php?id=101" title="Mathematics 101">MATH101</a>
+              </li>
+              <li class="breadcrumb-item">
+                <a href="https://school.example.edu/course/view.php?id=101&amp;section=4">Week 4</a>
+              </li>
+            </ol>
+          </nav>
+        </div>
+        <div>
+          <strong>Opens:</strong>
+          Monday, 23 March 2026, 5:00 AM
+        </div>
+        <div>
+          <strong>Closes:</strong>
+          Wednesday, 25 March 2026, 11:55 PM
+        </div>
+        <p>Attempts allowed: 1</p>
+        <div>
+          <p>This quiz is currently not available.</p>
+        </div>
+      </body>
+    </html>
+    """
+
+    parsed = scraper_module.parse_quiz_html(html, 301, BASE_URL)
+
+    assert parsed.id == 301
+    assert parsed.name == "Week 4 Workshop Quiz"
+    assert parsed.course_id == 101
+    assert parsed.course_name == "Mathematics 101"
+    assert parsed.section_name == "Week 4"
+    assert parsed.opens_pretty == "Monday, 23 March 2026, 5:00 AM"
+    assert parsed.closes_pretty == "Wednesday, 25 March 2026, 11:55 PM"
+    assert parsed.attempts_allowed == "1"
+    assert parsed.availability == "This quiz is currently not available."
+
+
+def test_parse_resource_html_extracts_summary() -> None:
+    html = """
+    <html>
+      <body>
+        <header><h1>Week 4 Slides</h1></header>
+        <div id="page-navbar">
+          <nav aria-label="Breadcrumb">
+            <ol class="breadcrumb">
+              <li class="breadcrumb-item"><a href="https://school.example.edu/course/view.php?id=101" title="Mathematics 101">MATH101</a></li>
+              <li class="breadcrumb-item"><a href="https://school.example.edu/course/view.php?id=101&amp;section=4">Week 4</a></li>
+            </ol>
+          </nav>
+        </div>
+        <div class="resourceworkaround">
+          <a href="https://school.example.edu/mod/resource/view.php?id=401&amp;redirect=1">week4-slides.pdf</a>
+        </div>
+      </body>
+    </html>
+    """
+
+    parsed = scraper_module.parse_resource_html(html, 401, BASE_URL)
+
+    assert parsed.id == 401
+    assert parsed.name == "Week 4 Slides"
+    assert parsed.course_id == 101
+    assert parsed.course_name == "Mathematics 101"
+    assert parsed.section_name == "Week 4"
+    assert parsed.target_name == "week4-slides.pdf"
+    assert parsed.target_url == "https://school.example.edu/mod/resource/view.php?id=401&redirect=1"
+
+
+def test_parse_link_html_extracts_summary() -> None:
+    html = """
+    <html>
+      <body>
+        <header><h1>Unit Handbook</h1></header>
+        <div id="page-navbar">
+          <nav aria-label="Breadcrumb">
+            <ol class="breadcrumb">
+              <li class="breadcrumb-item"><a href="https://school.example.edu/course/view.php?id=101" title="Mathematics 101">MATH101</a></li>
+              <li class="breadcrumb-item"><a href="https://school.example.edu/course/view.php?id=101&amp;section=4">Week 4</a></li>
+            </ol>
+          </nav>
+        </div>
+        <div class="urlworkaround">
+          <a href="https://example.edu/handbook">Go to resource</a>
+        </div>
+      </body>
+    </html>
+    """
+
+    parsed = scraper_module.parse_link_html(html, 501, BASE_URL)
+
+    assert parsed.id == 501
+    assert parsed.name == "Unit Handbook"
+    assert parsed.course_id == 101
+    assert parsed.course_name == "Mathematics 101"
+    assert parsed.section_name == "Week 4"
+    assert parsed.target_url == "https://example.edu/handbook"
+
+
+def test_parse_page_html_extracts_summary() -> None:
+    html = """
+    <html>
+      <body>
+        <header><h1>Week 4 Overview</h1></header>
+        <div id="page-navbar">
+          <nav aria-label="Breadcrumb">
+            <ol class="breadcrumb">
+              <li class="breadcrumb-item"><a href="https://school.example.edu/course/view.php?id=101" title="Mathematics 101">MATH101</a></li>
+              <li class="breadcrumb-item"><a href="https://school.example.edu/course/view.php?id=101&amp;section=4">Week 4</a></li>
+            </ol>
+          </nav>
+        </div>
+        <div class="box generalbox">
+          <p>Welcome to week 4.</p>
+          <p>Read chapter 3 before class.</p>
+        </div>
+      </body>
+    </html>
+    """
+
+    parsed = scraper_module.parse_page_html(html, 601, BASE_URL)
+
+    assert parsed.id == 601
+    assert parsed.name == "Week 4 Overview"
+    assert parsed.course_id == 101
+    assert parsed.course_name == "Mathematics 101"
+    assert parsed.section_name == "Week 4"
+    assert "Welcome to week 4." in parsed.content_text
+    assert "Read chapter 3 before class." in parsed.content_text
+
+
+def test_parse_folder_html_extracts_files() -> None:
+    html = """
+    <html>
+      <body>
+        <header><h1>Week 4 Files</h1></header>
+        <div id="page-navbar">
+          <nav aria-label="Breadcrumb">
+            <ol class="breadcrumb">
+              <li class="breadcrumb-item"><a href="https://school.example.edu/course/view.php?id=101" title="Mathematics 101">MATH101</a></li>
+              <li class="breadcrumb-item"><a href="https://school.example.edu/course/view.php?id=101&amp;section=4">Week 4</a></li>
+            </ol>
+          </nav>
+        </div>
+        <div class="foldertree">
+          <ul>
+            <li><a href="https://school.example.edu/pluginfile.php/1/slides.pdf">slides.pdf</a></li>
+            <li><a href="https://school.example.edu/pluginfile.php/1/worksheet.docx">worksheet.docx</a></li>
+          </ul>
+        </div>
+      </body>
+    </html>
+    """
+
+    parsed = scraper_module.parse_folder_html(html, 701, BASE_URL)
+
+    assert parsed.id == 701
+    assert parsed.name == "Week 4 Files"
+    assert parsed.course_id == 101
+    assert parsed.course_name == "Mathematics 101"
+    assert parsed.section_name == "Week 4"
+    assert parsed.files == ["slides.pdf", "worksheet.docx"]
 
 
 def test_parse_alert_summary_extracts_notifications_and_counts() -> None:
