@@ -21,18 +21,25 @@ from moodle_cli.constants import (
 from moodle_cli.exceptions import AuthError, MoodleAPIError, MoodleCLIError
 from moodle_cli.formatter import (
     print_alerts,
+    print_assignment,
     print_course_grades,
     print_courses,
     print_course_contents,
+    print_folder,
     print_forum_activities,
     print_forum_discussion,
     print_forum_search_hits,
+    print_link,
     print_overview,
+    print_page,
+    print_quiz,
+    print_resource,
     print_todo_items,
     print_user_info,
 )
 from moodle_cli.output import output_json, output_yaml
 from moodle_cli.update_check import check_for_updates
+from moodle_cli.url_resolver import resolve_top_level_url
 
 stdout_console = Console()
 stderr_console = Console(stderr=True)
@@ -133,6 +140,28 @@ def _parse_forum_reference(ctx: click.Context, client: MoodleClient, value: str)
     raise click.UsageError("Unsupported forum URL. Use a view.php?id=... or discuss.php?d=... URL.", ctx=ctx)
 
 
+def _parse_activity_reference(ctx: click.Context, value: str, *, label: str, path: str) -> int:
+    """Parse an activity reference (course-module ID or URL) into a course-module ID."""
+    raw = value.strip()
+    if raw.isdigit():
+        return int(raw)
+
+    parsed = urlparse(raw)
+    if not parsed.scheme or not parsed.netloc:
+        raise click.UsageError(f"{label} must be a numeric ID or a full {label.lower()} URL.", ctx=ctx)
+    if not parsed.path.endswith(path):
+        raise click.UsageError(f"Unsupported {label.lower()} URL. Use a view.php?id=... URL.", ctx=ctx)
+
+    query = parse_qs(parsed.query)
+    values = query.get("id") or []
+    if not values or not values[0].isdigit():
+        raise click.UsageError(
+            f"Could not find {label.lower()} module ID in view.php URL (expected ?id=...).",
+            ctx=ctx,
+        )
+    return int(values[0])
+
+
 def _parse_course_reference(ctx: click.Context, client: MoodleClient, value: str) -> int:
     """Parse a course reference (ID or unique name match) into a course ID."""
     raw = value.strip()
@@ -183,68 +212,44 @@ def _filter_discussion_to_post(discussion, post_id: int | None):
         subject=discussion.subject,
         course_id=discussion.course_id,
         forum_id=discussion.forum_id,
+        group_id=discussion.group_id,
+        group_name=discussion.group_name,
         url=discussion.url,
         posts=filtered,
     )
 
 
-def _parse_query_int(query: dict[str, list[str]], key: str, label: str) -> int:
-    values = query.get(key) or []
-    if not values or not values[0].isdigit():
-        raise click.UsageError(f"Could not find {label} in URL query (expected ?{key}=...).")
-    return int(values[0])
-
-
-def _dispatch_top_level_url(ctx: click.Context, target: str) -> None:
-    parsed = urlparse(target.strip())
-    if not parsed.scheme or not parsed.netloc:
-        raise click.UsageError(f"No such command '{target}'.", ctx=ctx)
-
-    path = parsed.path.rstrip("/")
-    query = parse_qs(parsed.query)
-
-    if path.endswith("/mod/forum/discuss.php"):
-        discussion_id = _parse_query_int(query, "d", "discussion ID")
-        post_id: int | None = None
-        fragment = (parsed.fragment or "").strip()
-        if fragment.startswith("p") and fragment[1:].isdigit():
-            post_id = int(fragment[1:])
-        ctx.invoke(
-            forum_discussion,
-            discussion=str(discussion_id),
-            post_id=post_id,
-            show_body=False,
-            as_json=False,
-            as_yaml=False,
-        )
-        return
-
-    if path.endswith("/mod/forum/view.php"):
-        forum_id = _parse_query_int(query, "id", "forum module ID")
-        ctx.invoke(
-            forum_discussions,
-            forum=str(forum_id),
-            limit=50,
-            query=None,
-            as_json=False,
-            as_yaml=False,
-        )
-        return
-
-    if path.endswith("/course/view.php"):
-        course_id = _parse_query_int(query, "id", "course ID")
-        ctx.invoke(course, course_id=course_id, as_json=False, as_yaml=False)
-        return
-
-    if "/grade/report/" in path:
-        course_id = _parse_query_int(query, "id", "course ID")
-        ctx.invoke(grades, course_id=course_id, as_json=False, as_yaml=False)
-        return
-
-    raise click.UsageError(
-        "Unsupported Moodle URL. Supported paths: /mod/forum/discuss.php, /mod/forum/view.php, /course/view.php, /grade/report/*.",
-        ctx=ctx,
+def _dispatch_top_level_url(
+    ctx: click.Context,
+    target: str,
+    *,
+    show_body: bool = False,
+    as_json: bool = False,
+    as_yaml: bool = False,
+) -> None:
+    resolved = resolve_top_level_url(
+        base_url=ctx.obj["get_config"]()["base_url"],
+        target=target,
+        resolve_course_id_for_url=lambda url: ctx.obj["get_client"]().resolve_course_id_for_url(url),
     )
+    command_map = {
+        "assignment": assignment,
+        "course": course,
+        "folder": folder,
+        "forum_discussion": forum_discussion,
+        "forum_discussions": forum_discussions,
+        "grades": grades,
+        "link": link,
+        "page": page,
+        "quiz": quiz,
+        "resource": resource,
+    }
+    kwargs = dict(resolved.kwargs)
+    kwargs["as_json"] = as_json
+    kwargs["as_yaml"] = as_yaml
+    if resolved.command_name == "forum_discussion":
+        kwargs["show_body"] = show_body
+    ctx.invoke(command_map[resolved.command_name], **kwargs)
 
 
 def _looks_like_url(value: str) -> bool:
@@ -301,11 +306,14 @@ def cli(ctx: click.Context, verbose: bool) -> None:
 
 
 @cli.command(name="__url_target__", hidden=True)
+@click.option("--body", "show_body", is_flag=True, help="Show full forum post body when routing a discussion URL.")
+@click.option("--json", "as_json", is_flag=True, help="Output as JSON.")
+@click.option("--yaml", "as_yaml", is_flag=True, help="Output as YAML.")
 @click.argument("target", type=str, required=True)
 @click.pass_context
-def cli_url_target(ctx: click.Context, target: str) -> None:
+def cli_url_target(ctx: click.Context, show_body: bool, as_json: bool, as_yaml: bool, target: str) -> None:
     """Route a supported Moodle URL to the shortest existing command path."""
-    _dispatch_top_level_url(ctx, target)
+    _dispatch_top_level_url(ctx, target, show_body=show_body, as_json=as_json, as_yaml=as_yaml)
 
 
 @cli.group()
@@ -751,6 +759,132 @@ def grades(ctx: click.Context, course_id: int | None, as_json: bool, as_yaml: bo
         output_yaml(course_grades.to_dict())
     else:
         print_course_grades(course_grades)
+
+
+@cli.command()
+@click.argument("assignment", type=str, required=True)
+@click.option("--json", "as_json", is_flag=True, help="Output as JSON.")
+@click.option("--yaml", "as_yaml", is_flag=True, help="Output as YAML.")
+@click.pass_context
+def assignment(ctx: click.Context, assignment: str, as_json: bool, as_yaml: bool) -> None:
+    """Show assignment details (ASSIGNMENT_ID or URL)."""
+    client = ctx.obj["get_client"]()
+    assignment_id = _parse_activity_reference(ctx, assignment, label="Assignment", path="/mod/assign/view.php")
+
+    _print_loading(f"Loading assignment {assignment_id}...")
+    item = client.get_assignment(assignment_id)
+
+    if as_json:
+        output_json(item.to_dict())
+    elif as_yaml:
+        output_yaml(item.to_dict())
+    else:
+        print_assignment(item)
+
+
+@cli.command()
+@click.argument("quiz", type=str, required=True)
+@click.option("--json", "as_json", is_flag=True, help="Output as JSON.")
+@click.option("--yaml", "as_yaml", is_flag=True, help="Output as YAML.")
+@click.pass_context
+def quiz(ctx: click.Context, quiz: str, as_json: bool, as_yaml: bool) -> None:
+    """Show quiz details (QUIZ_ID or URL)."""
+    client = ctx.obj["get_client"]()
+    quiz_id = _parse_activity_reference(ctx, quiz, label="Quiz", path="/mod/quiz/view.php")
+
+    _print_loading(f"Loading quiz {quiz_id}...")
+    item = client.get_quiz(quiz_id)
+
+    if as_json:
+        output_json(item.to_dict())
+    elif as_yaml:
+        output_yaml(item.to_dict())
+    else:
+        print_quiz(item)
+
+
+@cli.command()
+@click.argument("resource", type=str, required=True)
+@click.option("--json", "as_json", is_flag=True, help="Output as JSON.")
+@click.option("--yaml", "as_yaml", is_flag=True, help="Output as YAML.")
+@click.pass_context
+def resource(ctx: click.Context, resource: str, as_json: bool, as_yaml: bool) -> None:
+    """Show resource details (RESOURCE_ID or URL)."""
+    client = ctx.obj["get_client"]()
+    resource_id = _parse_activity_reference(ctx, resource, label="Resource", path="/mod/resource/view.php")
+
+    _print_loading(f"Loading resource {resource_id}...")
+    item = client.get_resource(resource_id)
+
+    if as_json:
+        output_json(item.to_dict())
+    elif as_yaml:
+        output_yaml(item.to_dict())
+    else:
+        print_resource(item)
+
+
+@cli.command()
+@click.argument("link", type=str, required=True)
+@click.option("--json", "as_json", is_flag=True, help="Output as JSON.")
+@click.option("--yaml", "as_yaml", is_flag=True, help="Output as YAML.")
+@click.pass_context
+def link(ctx: click.Context, link: str, as_json: bool, as_yaml: bool) -> None:
+    """Show external-link details (LINK_ID or URL)."""
+    client = ctx.obj["get_client"]()
+    link_id = _parse_activity_reference(ctx, link, label="Link", path="/mod/url/view.php")
+
+    _print_loading(f"Loading link {link_id}...")
+    item = client.get_link(link_id)
+
+    if as_json:
+        output_json(item.to_dict())
+    elif as_yaml:
+        output_yaml(item.to_dict())
+    else:
+        print_link(item)
+
+
+@cli.command()
+@click.argument("page_id", type=str, required=True)
+@click.option("--json", "as_json", is_flag=True, help="Output as JSON.")
+@click.option("--yaml", "as_yaml", is_flag=True, help="Output as YAML.")
+@click.pass_context
+def page(ctx: click.Context, page_id: str, as_json: bool, as_yaml: bool) -> None:
+    """Show page details (PAGE_ID or URL)."""
+    client = ctx.obj["get_client"]()
+    resolved_page_id = _parse_activity_reference(ctx, page_id, label="Page", path="/mod/page/view.php")
+
+    _print_loading(f"Loading page {resolved_page_id}...")
+    item = client.get_page(resolved_page_id)
+
+    if as_json:
+        output_json(item.to_dict())
+    elif as_yaml:
+        output_yaml(item.to_dict())
+    else:
+        print_page(item)
+
+
+@cli.command()
+@click.argument("folder", type=str, required=True)
+@click.option("--json", "as_json", is_flag=True, help="Output as JSON.")
+@click.option("--yaml", "as_yaml", is_flag=True, help="Output as YAML.")
+@click.pass_context
+def folder(ctx: click.Context, folder: str, as_json: bool, as_yaml: bool) -> None:
+    """Show folder details (FOLDER_ID or URL)."""
+    client = ctx.obj["get_client"]()
+    folder_id = _parse_activity_reference(ctx, folder, label="Folder", path="/mod/folder/view.php")
+
+    _print_loading(f"Loading folder {folder_id}...")
+    item = client.get_folder(folder_id)
+
+    if as_json:
+        output_json(item.to_dict())
+    elif as_yaml:
+        output_yaml(item.to_dict())
+    else:
+        print_folder(item)
 
 
 @cli.command(name="update")
