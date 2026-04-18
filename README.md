@@ -52,8 +52,12 @@ moodle overview
 moodle courses
 moodle grades 34637
 moodle activities 34637
+moodle https://school.example.edu/course/view.php?id=34637
+moodle https://school.example.edu/mod/forum/discuss.php?d=9001#p9101 --json
 moodle update
 ```
+
+You can also paste supported Moodle page URLs directly as the first argument. The CLI routes forum discussion, forum view, assignment, quiz, resource, link, page, folder, course, and grade report URLs to the shortest matching command.
 
 To upgrade after an update is available:
 
