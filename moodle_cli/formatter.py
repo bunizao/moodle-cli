@@ -9,13 +9,19 @@ from rich.tree import Tree
 
 from moodle_cli.models import (
     AlertSummary,
+    Assignment,
     Course,
     CourseGrades,
+    Folder,
     ForumActivityRef,
     ForumDiscussion,
     ForumPost,
     ForumSearchHit,
+    Link,
     Overview,
+    Page,
+    Quiz,
+    Resource,
     Section,
     TodoItem,
     UserInfo,
@@ -189,6 +195,132 @@ def print_course_grades(course_grades: CourseGrades) -> None:
         if show_status:
             row.append(item.status)
         table.add_row(*row)
+
+    console.print(table)
+
+
+def print_assignment(assignment: Assignment) -> None:
+    """Display a Moodle assignment summary."""
+    table = Table(title=f"Assignment: {assignment.name}", show_header=False, box=None, padding=(0, 2))
+    table.add_column(style="bold cyan")
+    table.add_column()
+
+    if assignment.course_name:
+        table.add_row("Course", assignment.course_name)
+    if assignment.section_name:
+        table.add_row("Section", assignment.section_name)
+    if assignment.due_pretty:
+        table.add_row("Due", assignment.due_pretty)
+    if assignment.submission_status:
+        table.add_row("Submission", assignment.submission_status)
+    if assignment.grading_status:
+        table.add_row("Grading", assignment.grading_status)
+    if assignment.time_remaining:
+        table.add_row("Time Remaining", assignment.time_remaining)
+    if assignment.grade:
+        table.add_row("Grade", assignment.grade)
+    if assignment.url:
+        table.add_row("URL", assignment.url)
+
+    console.print(table)
+
+
+def print_quiz(quiz: Quiz) -> None:
+    """Display a Moodle quiz summary."""
+    table = Table(title=f"Quiz: {quiz.name}", show_header=False, box=None, padding=(0, 2))
+    table.add_column(style="bold cyan")
+    table.add_column()
+
+    if quiz.course_name:
+        table.add_row("Course", quiz.course_name)
+    if quiz.section_name:
+        table.add_row("Section", quiz.section_name)
+    if quiz.opens_pretty:
+        table.add_row("Opens", quiz.opens_pretty)
+    if quiz.closes_pretty:
+        table.add_row("Closes", quiz.closes_pretty)
+    if quiz.attempts_allowed:
+        table.add_row("Attempts", quiz.attempts_allowed)
+    if quiz.availability:
+        table.add_row("Availability", quiz.availability)
+    if quiz.grade:
+        table.add_row("Grade", quiz.grade)
+    if quiz.url:
+        table.add_row("URL", quiz.url)
+
+    console.print(table)
+
+
+def print_resource(resource: Resource) -> None:
+    """Display a Moodle file/resource summary."""
+    table = Table(title=f"Resource: {resource.name}", show_header=False, box=None, padding=(0, 2))
+    table.add_column(style="bold cyan")
+    table.add_column()
+
+    if resource.course_name:
+        table.add_row("Course", resource.course_name)
+    if resource.section_name:
+        table.add_row("Section", resource.section_name)
+    if resource.target_name:
+        table.add_row("Target", resource.target_name)
+    if resource.target_url:
+        table.add_row("URL", resource.target_url)
+    elif resource.url:
+        table.add_row("URL", resource.url)
+
+    console.print(table)
+
+
+def print_link(link: Link) -> None:
+    """Display a Moodle external-link summary."""
+    table = Table(title=f"Link: {link.name}", show_header=False, box=None, padding=(0, 2))
+    table.add_column(style="bold cyan")
+    table.add_column()
+
+    if link.course_name:
+        table.add_row("Course", link.course_name)
+    if link.section_name:
+        table.add_row("Section", link.section_name)
+    if link.target_url:
+        table.add_row("Target", link.target_url)
+    if link.url:
+        table.add_row("URL", link.url)
+
+    console.print(table)
+
+
+def print_page(page: Page) -> None:
+    """Display a Moodle page summary."""
+    table = Table(title=f"Page: {page.name}", show_header=False, box=None, padding=(0, 2))
+    table.add_column(style="bold cyan")
+    table.add_column()
+
+    if page.course_name:
+        table.add_row("Course", page.course_name)
+    if page.section_name:
+        table.add_row("Section", page.section_name)
+    if page.content_text:
+        table.add_row("Content", page.content_text)
+    if page.url:
+        table.add_row("URL", page.url)
+
+    console.print(table)
+
+
+def print_folder(folder: Folder) -> None:
+    """Display a Moodle folder summary."""
+    table = Table(title=f"Folder: {folder.name}", show_header=False, box=None, padding=(0, 2))
+    table.add_column(style="bold cyan")
+    table.add_column()
+
+    if folder.course_name:
+        table.add_row("Course", folder.course_name)
+    if folder.section_name:
+        table.add_row("Section", folder.section_name)
+    if folder.files:
+        table.add_row("Files", "\n".join(folder.files))
+    if folder.url:
+        table.add_row("URL", folder.url)
 
     console.print(table)
 

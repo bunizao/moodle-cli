@@ -8,8 +8,10 @@ import requests
 
 from moodle_cli.constants import (
     AJAX_SERVICE_PATH,
+    ASSIGN_VIEW_PATH,
     COURSE_PATH,
     DASHBOARD_PATH,
+    FOLDER_VIEW_PATH,
     FUNC_GET_ACTION_EVENTS,
     FUNC_GET_CONVERSATION_COUNTS,
     FUNC_GET_COURSES,
@@ -24,17 +26,27 @@ from moodle_cli.constants import (
     GRADE_REPORT_INDEX_PATH,
     GRADE_REPORT_OVERVIEW_PATH,
     GRADE_REPORT_PATH,
+    PAGE_VIEW_PATH,
+    QUIZ_VIEW_PATH,
+    RESOURCE_VIEW_PATH,
+    URL_VIEW_PATH,
 )
 from moodle_cli.exceptions import AuthError, MoodleAPIError, MoodleRequestError
 from moodle_cli.models import (
     AlertSummary,
+    Assignment,
     Course,
     CourseGrades,
+    Folder,
     ForumActivityRef,
     ForumDiscussion,
     ForumDiscussionRef,
     ForumSearchHit,
+    Link,
     Overview,
+    Page,
+    Quiz,
+    Resource,
     Section,
     TodoItem,
     UserInfo,
@@ -42,9 +54,12 @@ from moodle_cli.models import (
 from moodle_cli.parser import parse_alert_summary, parse_courses, parse_forum_discussion, parse_todo_items, parse_user_info
 from moodle_cli.scraper import (
     has_course_grades_html,
+    parse_assignment_html,
     parse_course_contents_html,
+    parse_course_id_from_page_html,
     parse_course_grades_html,
     parse_course_grades_url,
+    parse_folder_html,
     parse_forum_discussion_html,
     parse_forum_discussion_group_html,
     parse_forum_discussion_refs_html,
@@ -52,8 +67,12 @@ from moodle_cli.scraper import (
     parse_forum_group_ids_html,
     parse_forum_view_cmid_from_discussion_html,
     parse_grade_overview_rows,
+    parse_link_html,
+    parse_page_html,
     parse_course_section_numbers,
     parse_page_context,
+    parse_quiz_html,
+    parse_resource_html,
 )
 
 log = logging.getLogger(__name__)
@@ -333,6 +352,60 @@ class MoodleClient:
             "This Moodle site may use a different grade report configuration."
         )
 
+    def get_assignment(self, assignment_id: int) -> Assignment:
+        """Get a compact summary for an assignment activity."""
+        self._ensure_session()
+        try:
+            response = self._get(ASSIGN_VIEW_PATH, {"id": assignment_id})
+        except requests.RequestException as exc:
+            raise MoodleRequestError(f"Could not load assignment {assignment_id}: {exc}") from exc
+        return parse_assignment_html(response.text, assignment_id, self.base_url)
+
+    def get_quiz(self, quiz_id: int) -> Quiz:
+        """Get a compact summary for a quiz activity."""
+        self._ensure_session()
+        try:
+            response = self._get(QUIZ_VIEW_PATH, {"id": quiz_id})
+        except requests.RequestException as exc:
+            raise MoodleRequestError(f"Could not load quiz {quiz_id}: {exc}") from exc
+        return parse_quiz_html(response.text, quiz_id, self.base_url)
+
+    def get_resource(self, resource_id: int) -> Resource:
+        """Get a compact summary for a file resource activity."""
+        self._ensure_session()
+        try:
+            response = self._get(RESOURCE_VIEW_PATH, {"id": resource_id})
+        except requests.RequestException as exc:
+            raise MoodleRequestError(f"Could not load resource {resource_id}: {exc}") from exc
+        return parse_resource_html(response.text, resource_id, self.base_url)
+
+    def get_link(self, link_id: int) -> Link:
+        """Get a compact summary for an external-link activity."""
+        self._ensure_session()
+        try:
+            response = self._get(URL_VIEW_PATH, {"id": link_id})
+        except requests.RequestException as exc:
+            raise MoodleRequestError(f"Could not load link {link_id}: {exc}") from exc
+        return parse_link_html(response.text, link_id, self.base_url)
+
+    def get_page(self, page_id: int) -> Page:
+        """Get a compact summary for a page activity."""
+        self._ensure_session()
+        try:
+            response = self._get(PAGE_VIEW_PATH, {"id": page_id})
+        except requests.RequestException as exc:
+            raise MoodleRequestError(f"Could not load page {page_id}: {exc}") from exc
+        return parse_page_html(response.text, page_id, self.base_url)
+
+    def get_folder(self, folder_id: int) -> Folder:
+        """Get a compact summary for a folder activity."""
+        self._ensure_session()
+        try:
+            response = self._get(FOLDER_VIEW_PATH, {"id": folder_id})
+        except requests.RequestException as exc:
+            raise MoodleRequestError(f"Could not load folder {folder_id}: {exc}") from exc
+        return parse_folder_html(response.text, folder_id, self.base_url)
+
     def get_forum_discussion(self, discussion_id: int) -> ForumDiscussion:
         """Get posts in a forum discussion, using AJAX when available."""
         cached = self._forum_discussions_cache.get(discussion_id)
@@ -381,6 +454,15 @@ class MoodleClient:
         except requests.RequestException as exc:
             raise MoodleRequestError(f"Could not load forum discussion {discussion_id}: {exc}") from exc
         return parse_forum_view_cmid_from_discussion_html(response.text)
+
+    def resolve_course_id_for_url(self, url: str) -> int | None:
+        """Resolve the owning course ID for an authenticated Moodle page URL."""
+        self._ensure_session()
+        try:
+            response = self._get_absolute(url)
+        except requests.RequestException as exc:
+            raise MoodleRequestError(f"Could not load page: {exc}") from exc
+        return parse_course_id_from_page_html(response.text)
 
     def get_forum_discussion_refs(self, forum_cmid: int) -> list[ForumDiscussionRef]:
         """List discussions from a forum view page."""
