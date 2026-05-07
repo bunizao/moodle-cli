@@ -402,3 +402,13 @@ def test_search_forum_content_carries_group_metadata_into_hits(monkeypatch: pyte
     hits = client.search_forum_content("deadline", include_post_text=False)
 
     assert [(hit.group_id, hit.group_name) for hit in hits] == [(10, "Tutorial A")]
+
+
+def test_client_preserves_custom_moodle_session_cookie_name() -> None:
+    session_cookie = type("SessionCookie", (str,), {})("session-cookie")
+    session_cookie.name = "MoodleSessionmoodle"
+
+    client = MoodleClient(BASE_URL, session_cookie)
+
+    assert client.session.cookies.get("MoodleSessionmoodle") == "session-cookie"
+    assert client.session.cookies.get("MoodleSession") is None

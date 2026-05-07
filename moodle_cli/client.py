@@ -84,7 +84,8 @@ class MoodleClient:
     def __init__(self, base_url: str, moodle_session: str):
         self.base_url = base_url
         self.session = requests.Session()
-        self.session.cookies.set("MoodleSession", moodle_session)
+        cookie_name = getattr(moodle_session, "name", "MoodleSession")
+        self.session.cookies.set(cookie_name, moodle_session)
 
         self._sesskey: str | None = None
         self._userid: int | None = None

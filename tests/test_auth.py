@@ -14,10 +14,10 @@ BASE_URL = "https://school.example.edu"
 DOMAIN = "school.example.edu"
 
 
-def make_cookie(value: str, domain: str = DOMAIN) -> Cookie:
+def make_cookie(value: str, domain: str = DOMAIN, name: str = "MoodleSession") -> Cookie:
     return Cookie(
         version=0,
-        name="MoodleSession",
+        name=name,
         value=value,
         port=None,
         port_specified=False,
@@ -41,6 +41,16 @@ def make_cookie_jar(*values: str) -> CookieJar:
     for value in values:
         jar.set_cookie(make_cookie(value))
     return jar
+
+
+def test_iter_cookie_values_accepts_suffixed_moodle_session_cookie() -> None:
+    jar = CookieJar()
+    jar.set_cookie(make_cookie("suffixed-session", name="MoodleSessionmoodle"))
+
+    cookies = list(auth_module._iter_cookie_values(jar, DOMAIN))
+
+    assert cookies == ["suffixed-session"]
+    assert cookies[0].name == "MoodleSessionmoodle"
 
 
 def test_get_session_checks_multiple_chrome_profiles_and_returns_valid_candidate(
@@ -139,7 +149,7 @@ def test_load_from_okta_cli_uses_stored_cookie(monkeypatch: pytest.MonkeyPatch) 
     payload = {
         "count": 1,
         "cookies": [
-            {"name": "MoodleSession", "value": "stored-session", "domain": f".{DOMAIN}"},
+            {"name": "MoodleSessionmoodle", "value": "stored-session", "domain": f".{DOMAIN}"},
         ],
         "url": BASE_URL,
     }
@@ -159,7 +169,10 @@ def test_load_from_okta_cli_uses_stored_cookie(monkeypatch: pytest.MonkeyPatch) 
 
     monkeypatch.setattr(auth_module.subprocess, "run", fake_run)
 
-    assert auth_module._load_from_okta_cli(BASE_URL) == "stored-session"
+    session = auth_module._load_from_okta_cli(BASE_URL)
+
+    assert session == "stored-session"
+    assert session.name == "MoodleSessionmoodle"
     assert calls == [["/usr/bin/okta", "cookies", BASE_URL, "--json"]]
 
 
@@ -188,7 +201,7 @@ def test_load_from_okta_cli_triggers_login_when_cookie_is_missing(
             payload = {
                 "count": 1,
                 "cookies": [
-                    {"name": "MoodleSession", "value": "fresh-session", "domain": DOMAIN},
+                    {"name": "MoodleSessionmoodle", "value": "fresh-session", "domain": DOMAIN},
                 ],
                 "url": BASE_URL,
             }
@@ -199,7 +212,10 @@ def test_load_from_okta_cli_triggers_login_when_cookie_is_missing(
 
     monkeypatch.setattr(auth_module.subprocess, "run", fake_run)
 
-    assert auth_module._load_from_okta_cli(BASE_URL) == "fresh-session"
+    session = auth_module._load_from_okta_cli(BASE_URL)
+
+    assert session == "fresh-session"
+    assert session.name == "MoodleSessionmoodle"
     assert calls == [
         ["/usr/bin/okta", "cookies", BASE_URL, "--json"],
         ["/usr/bin/okta", "login", BASE_URL, "--json"],
