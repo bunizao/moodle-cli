@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import io
 import json
 import logging
 import re
 import sys
+import time
 import webbrowser
 from pathlib import Path
 
@@ -11,6 +13,7 @@ import click
 import pytest
 import yaml
 from click.testing import CliRunner
+from rich.console import Console
 
 import moodle_cli.cli as cli_module
 import moodle_cli.config as config_module
@@ -1212,6 +1215,7 @@ def test_unknown_command_shows_click_error(monkeypatch: pytest.MonkeyPatch, runn
     ("args", "expected_stderr"),
     [
         (["courses"], "Loading courses..."),
+        (["user"], "Loading user info..."),
         (["alerts"], "Loading alerts..."),
         (["todo"], "Loading todo items..."),
         (["overview"], "Loading overview..."),
@@ -1238,6 +1242,27 @@ def test_slow_commands_print_loading_hint(
 
     assert result.exit_code == 0
     assert expected_stderr in normalize_terminal_text(result.stderr)
+
+
+def test_loading_heartbeat_reports_long_wait(monkeypatch: pytest.MonkeyPatch) -> None:
+    stream = io.StringIO()
+    monkeypatch.setattr(
+        cli_module,
+        "stderr_console",
+        Console(file=stream, force_terminal=False, color_system=None),
+    )
+
+    result = cli_module._run_with_loading(
+        "Loading test data...",
+        lambda: time.sleep(0.04) or "done",
+        initial_delay=0.01,
+        interval=0.01,
+    )
+
+    assert result == "done"
+    normalized = normalize_terminal_text(stream.getvalue())
+    assert "Loading test data..." in normalized
+    assert "Still loading test data..." in normalized
 
 
 def test_env_base_url_overrides_config_file(monkeypatch: pytest.MonkeyPatch, runner: CliRunner, tmp_path: Path) -> None:

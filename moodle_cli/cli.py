@@ -1,7 +1,10 @@
 """CLI entry point using Click."""
 
+from contextlib import contextmanager
 import logging
 import sys
+import threading
+import time
 import webbrowser
 from urllib.parse import parse_qs, urljoin, urlparse
 
@@ -37,6 +40,7 @@ from moodle_cli.formatter import (
     print_todo_items,
     print_user_info,
 )
+from moodle_cli.models import ForumActivityRef, ForumSearchHit
 from moodle_cli.output import output_json, output_yaml
 from moodle_cli.self_update import apply_update
 from moodle_cli.skill_bundle import format_skill_summary, install_skill
@@ -45,6 +49,7 @@ from moodle_cli.url_resolver import resolve_top_level_url
 
 stdout_console = Console()
 stderr_console = Console(stderr=True)
+_loading_state = threading.local()
 
 
 def _require_course_id(ctx: click.Context, course_id: int | None) -> int:
@@ -63,6 +68,43 @@ def _require_course_id(ctx: click.Context, course_id: int | None) -> int:
 def _print_loading(message: str) -> None:
     """Print a short loading hint to stderr for slow network calls."""
     stderr_console.print(f"[dim]{message}[/]")
+    stderr_console.file.flush()
+
+
+def _loading_depth() -> int:
+    return int(getattr(_loading_state, "depth", 0))
+
+
+@contextmanager
+def _loading(message: str, *, initial_delay: float = 2.0, interval: float = 3.0):
+    """Print an initial loading hint and periodic heartbeats for long operations."""
+    _print_loading(message)
+    stop = threading.Event()
+    started_at = time.monotonic()
+
+    def heartbeat() -> None:
+        next_delay = initial_delay
+        while not stop.wait(next_delay):
+            elapsed = int(time.monotonic() - started_at)
+            stderr_console.print(f"[dim]Still {message[0].lower()}{message[1:]} ({elapsed}s elapsed)[/]")
+            stderr_console.file.flush()
+            next_delay = interval
+
+    _loading_state.depth = _loading_depth() + 1
+    thread = threading.Thread(target=heartbeat, daemon=True)
+    thread.start()
+    try:
+        yield
+    finally:
+        stop.set()
+        thread.join(timeout=0.2)
+        _loading_state.depth = max(_loading_depth() - 1, 0)
+
+
+def _run_with_loading(message: str, action, *, initial_delay: float = 2.0, interval: float = 3.0):
+    """Run an action while keeping stderr visibly alive for slow waits."""
+    with _loading(message, initial_delay=initial_delay, interval=interval):
+        return action()
 
 
 def _run_skill_action(action) -> None:
@@ -307,9 +349,15 @@ def cli(ctx: click.Context, verbose: bool) -> None:
 
     def get_client() -> MoodleClient:
         if ctx.obj["_client"] is None:
-            config = get_config()
-            session_cookie = get_session(config["base_url"])
-            ctx.obj["_client"] = MoodleClient(config["base_url"], session_cookie)
+            def create_client() -> MoodleClient:
+                config = get_config()
+                session_cookie = get_session(config["base_url"])
+                return MoodleClient(config["base_url"], session_cookie)
+
+            if _loading_depth():
+                ctx.obj["_client"] = create_client()
+            else:
+                ctx.obj["_client"] = _run_with_loading("Preparing Moodle session...", create_client)
         return ctx.obj["_client"]
 
     ctx.obj["get_client"] = get_client
@@ -394,9 +442,10 @@ def forum_discussion(
     if post_id is None:
         post_id = url_post_id
 
-    _print_loading(f"Loading forum discussion {discussion_id}...")
-    client = ctx.obj["get_client"]()
-    thread = client.get_forum_discussion(discussion_id)
+    thread = _run_with_loading(
+        f"Loading forum discussion {discussion_id}...",
+        lambda: ctx.obj["get_client"]().get_forum_discussion(discussion_id),
+    )
 
     if post_id is not None:
         filtered = [p for p in thread.posts if p.id == post_id]
@@ -433,8 +482,10 @@ def forum_discussions(ctx: click.Context, forum: str, limit: int, query: str | N
     client = ctx.obj["get_client"]()
     forum_cmid = _parse_forum_reference(ctx, client, forum)
 
-    _print_loading(f"Loading forum discussions for forum {forum_cmid}...")
-    refs = client.get_forum_discussion_refs(forum_cmid)
+    refs = _run_with_loading(
+        f"Loading forum discussions for forum {forum_cmid}...",
+        lambda: client.get_forum_discussion_refs(forum_cmid),
+    )
     if query:
         refs = [ref for ref in refs if _query_matches_text(ref.subject, query)]
     refs = refs[:limit]
@@ -475,11 +526,12 @@ def forum_forums(
     as_yaml: bool,
 ) -> None:
     """List forum activities, optionally filtered by course or query."""
-    client = ctx.obj["get_client"]()
-    course_id = _parse_course_reference(ctx, client, course_ref) if course_ref else None
+    def load_forums() -> list[ForumActivityRef]:
+        client = ctx.obj["get_client"]()
+        course_id = _parse_course_reference(ctx, client, course_ref) if course_ref else None
+        return client.get_forums(course_id=course_id)
 
-    _print_loading("Loading forum activities...")
-    forums = client.get_forums(course_id=course_id)
+    forums = _run_with_loading("Loading forum activities...", load_forums)
     if query:
         forums = [
             forum
@@ -524,22 +576,23 @@ def forum_search(
     as_yaml: bool,
 ) -> None:
     """Search forums by discussion title or post text and return direct jump URLs."""
-    client = ctx.obj["get_client"]()
-    course_id = _parse_course_reference(ctx, client, course_ref) if course_ref else None
-    forum_cmid = _parse_forum_reference(ctx, client, forum_ref) if forum_ref else None
+    def search_forums() -> list[ForumSearchHit]:
+        client = ctx.obj["get_client"]()
+        course_id = _parse_course_reference(ctx, client, course_ref) if course_ref else None
+        forum_cmid = _parse_forum_reference(ctx, client, forum_ref) if forum_ref else None
+        return client.search_forum_content(
+            query,
+            limit=limit,
+            course_id=course_id,
+            forum_cmid=forum_cmid,
+            include_post_text=not titles_only,
+            unread_only=unread_only,
+            sort_by="recent" if recent else "relevance",
+            max_forums=limit_forums,
+            max_discussions_per_forum=limit_discussions,
+        )
 
-    _print_loading(f"Searching forums for '{query}'...")
-    hits = client.search_forum_content(
-        query,
-        limit=limit,
-        course_id=course_id,
-        forum_cmid=forum_cmid,
-        include_post_text=not titles_only,
-        unread_only=unread_only,
-        sort_by="recent" if recent else "relevance",
-        max_forums=limit_forums,
-        max_discussions_per_forum=limit_discussions,
-    )
+    hits = _run_with_loading(f"Searching forums for '{query}'...", search_forums)
 
     if as_json:
         output_json([hit.to_dict() for hit in hits])
@@ -579,26 +632,31 @@ def forum_find(
     as_yaml: bool,
 ) -> None:
     """Find the best forum match with shortest-path defaults for agent workflows."""
-    client = ctx.obj["get_client"]()
-    course_id = _parse_course_reference(ctx, client, course_ref) if course_ref else None
-    forum_cmid = _parse_forum_reference(ctx, client, forum_ref) if forum_ref else None
+    def find_forum_hits() -> list[ForumSearchHit]:
+        client = ctx.obj["get_client"]()
+        course_id = _parse_course_reference(ctx, client, course_ref) if course_ref else None
+        forum_cmid = _parse_forum_reference(ctx, client, forum_ref) if forum_ref else None
+        return client.search_forum_content(
+            query,
+            limit=limit if list_mode else 1,
+            course_id=course_id,
+            forum_cmid=forum_cmid,
+            include_post_text=not titles_only,
+            unread_only=unread_only,
+            sort_by="recent",
+            max_forums=limit_forums,
+            max_discussions_per_forum=limit_discussions,
+        )
 
-    _print_loading(f"Finding best forum match for '{query}'...")
-    hits = client.search_forum_content(
-        query,
-        limit=limit if list_mode else 1,
-        course_id=course_id,
-        forum_cmid=forum_cmid,
-        include_post_text=not titles_only,
-        unread_only=unread_only,
-        sort_by="recent",
-        max_forums=limit_forums,
-        max_discussions_per_forum=limit_discussions,
-    )
+    hits = _run_with_loading(f"Finding best forum match for '{query}'...", find_forum_hits)
     hit = hits[0] if hits else None
 
     if show_body and hit is not None:
-        discussion = client.get_forum_discussion(hit.discussion_id)
+        client = ctx.obj["get_client"]()
+        discussion = _run_with_loading(
+            f"Loading forum discussion {hit.discussion_id}...",
+            lambda: client.get_forum_discussion(hit.discussion_id),
+        )
         discussion = _filter_discussion_to_post(discussion, hit.post_id or None)
         if as_json:
             output_json(discussion.to_dict())
@@ -636,32 +694,34 @@ def forum_check(ctx: click.Context, forum: str, limit: int, as_json: bool, as_ya
     client = ctx.obj["get_client"]()
     forum_cmid = _parse_forum_reference(ctx, client, forum)
 
-    _print_loading(f"Loading forum discussions for forum {forum_cmid}...")
-    refs = client.get_forum_discussion_refs(forum_cmid)[:limit]
+    def check_discussions() -> list[dict]:
+        refs = client.get_forum_discussion_refs(forum_cmid)[:limit]
+        results: list[dict] = []
+        for ref in refs:
+            try:
+                discussion = client.get_forum_discussion(ref.id)
+                image_count = sum(len(post.image_urls) for post in discussion.posts)
+                results.append(
+                    {
+                        "discussion_id": ref.id,
+                        "subject": ref.subject,
+                        "ok": True,
+                        "posts": len(discussion.posts),
+                        "images": image_count,
+                    }
+                )
+            except Exception as exc:  # noqa: BLE001
+                results.append(
+                    {
+                        "discussion_id": ref.id,
+                        "subject": ref.subject,
+                        "ok": False,
+                        "error": str(exc),
+                    }
+                )
+        return results
 
-    results: list[dict] = []
-    for ref in refs:
-        try:
-            discussion = client.get_forum_discussion(ref.id)
-            image_count = sum(len(post.image_urls) for post in discussion.posts)
-            results.append(
-                {
-                    "discussion_id": ref.id,
-                    "subject": ref.subject,
-                    "ok": True,
-                    "posts": len(discussion.posts),
-                    "images": image_count,
-                }
-            )
-        except Exception as exc:  # noqa: BLE001
-            results.append(
-                {
-                    "discussion_id": ref.id,
-                    "subject": ref.subject,
-                    "ok": False,
-                    "error": str(exc),
-                }
-            )
+    results = _run_with_loading(f"Loading forum discussions for forum {forum_cmid}...", check_discussions)
 
     if as_json:
         output_json(results)
@@ -698,8 +758,10 @@ def forum_check(ctx: click.Context, forum: str, limit: int, as_json: bool, as_ya
 @click.pass_context
 def user(ctx: click.Context, as_json: bool, as_yaml: bool) -> None:
     """Show authenticated user info."""
-    client = ctx.obj["get_client"]()
-    info = client.get_site_info()
+    info = _run_with_loading(
+        "Loading user info...",
+        lambda: ctx.obj["get_client"]().get_site_info(),
+    )
 
     if as_json:
         output_json(info.to_dict())
@@ -715,9 +777,10 @@ def user(ctx: click.Context, as_json: bool, as_yaml: bool) -> None:
 @click.pass_context
 def courses(ctx: click.Context, as_json: bool, as_yaml: bool) -> None:
     """List enrolled courses."""
-    _print_loading("Loading courses...")
-    client = ctx.obj["get_client"]()
-    course_list = client.get_courses()
+    course_list = _run_with_loading(
+        "Loading courses...",
+        lambda: ctx.obj["get_client"]().get_courses(),
+    )
 
     if as_json:
         output_json([c.to_dict() for c in course_list])
@@ -735,9 +798,10 @@ def courses(ctx: click.Context, as_json: bool, as_yaml: bool) -> None:
 @click.pass_context
 def todo(ctx: click.Context, limit: int, days: int | None, as_json: bool, as_yaml: bool) -> None:
     """List upcoming actionable timeline items."""
-    _print_loading("Loading todo items...")
-    client = ctx.obj["get_client"]()
-    items = client.get_todo(limit=limit, days=days)
+    items = _run_with_loading(
+        "Loading todo items...",
+        lambda: ctx.obj["get_client"]().get_todo(limit=limit, days=days),
+    )
 
     if as_json:
         output_json([item.to_dict() for item in items])
@@ -754,9 +818,10 @@ def todo(ctx: click.Context, limit: int, days: int | None, as_json: bool, as_yam
 @click.pass_context
 def alerts(ctx: click.Context, limit: int, as_json: bool, as_yaml: bool) -> None:
     """List notifications and message counts."""
-    _print_loading("Loading alerts...")
-    client = ctx.obj["get_client"]()
-    alerts_summary = client.get_alerts(limit=limit)
+    alerts_summary = _run_with_loading(
+        "Loading alerts...",
+        lambda: ctx.obj["get_client"]().get_alerts(limit=limit),
+    )
 
     if as_json:
         output_json(alerts_summary.to_dict())
@@ -782,9 +847,14 @@ def overview(
     as_yaml: bool,
 ) -> None:
     """Show a compact multi-source overview."""
-    _print_loading("Loading overview...")
-    client = ctx.obj["get_client"]()
-    overview_data = client.get_overview(todo_limit=todo_limit, todo_days=todo_days, alerts_limit=alerts_limit)
+    overview_data = _run_with_loading(
+        "Loading overview...",
+        lambda: ctx.obj["get_client"]().get_overview(
+            todo_limit=todo_limit,
+            todo_days=todo_days,
+            alerts_limit=alerts_limit,
+        ),
+    )
 
     if as_json:
         output_json(overview_data.to_dict())
@@ -802,9 +872,10 @@ def overview(
 def grades(ctx: click.Context, course_id: int | None, as_json: bool, as_yaml: bool) -> None:
     """Show grade details for a course."""
     course_id = _require_course_id(ctx, course_id)
-    _print_loading(f"Loading grades for course {course_id}...")
-    client = ctx.obj["get_client"]()
-    course_grades = client.get_course_grades(course_id)
+    course_grades = _run_with_loading(
+        f"Loading grades for course {course_id}...",
+        lambda: ctx.obj["get_client"]().get_course_grades(course_id),
+    )
 
     if as_json:
         output_json(course_grades.to_dict())
@@ -821,11 +892,12 @@ def grades(ctx: click.Context, course_id: int | None, as_json: bool, as_yaml: bo
 @click.pass_context
 def assignment(ctx: click.Context, assignment: str, as_json: bool, as_yaml: bool) -> None:
     """Show assignment details (ASSIGNMENT_ID or URL)."""
-    client = ctx.obj["get_client"]()
     assignment_id = _parse_activity_reference(ctx, assignment, label="Assignment", path="/mod/assign/view.php")
 
-    _print_loading(f"Loading assignment {assignment_id}...")
-    item = client.get_assignment(assignment_id)
+    item = _run_with_loading(
+        f"Loading assignment {assignment_id}...",
+        lambda: ctx.obj["get_client"]().get_assignment(assignment_id),
+    )
 
     if as_json:
         output_json(item.to_dict())
@@ -842,11 +914,12 @@ def assignment(ctx: click.Context, assignment: str, as_json: bool, as_yaml: bool
 @click.pass_context
 def quiz(ctx: click.Context, quiz: str, as_json: bool, as_yaml: bool) -> None:
     """Show quiz details (QUIZ_ID or URL)."""
-    client = ctx.obj["get_client"]()
     quiz_id = _parse_activity_reference(ctx, quiz, label="Quiz", path="/mod/quiz/view.php")
 
-    _print_loading(f"Loading quiz {quiz_id}...")
-    item = client.get_quiz(quiz_id)
+    item = _run_with_loading(
+        f"Loading quiz {quiz_id}...",
+        lambda: ctx.obj["get_client"]().get_quiz(quiz_id),
+    )
 
     if as_json:
         output_json(item.to_dict())
@@ -863,11 +936,12 @@ def quiz(ctx: click.Context, quiz: str, as_json: bool, as_yaml: bool) -> None:
 @click.pass_context
 def resource(ctx: click.Context, resource: str, as_json: bool, as_yaml: bool) -> None:
     """Show resource details (RESOURCE_ID or URL)."""
-    client = ctx.obj["get_client"]()
     resource_id = _parse_activity_reference(ctx, resource, label="Resource", path="/mod/resource/view.php")
 
-    _print_loading(f"Loading resource {resource_id}...")
-    item = client.get_resource(resource_id)
+    item = _run_with_loading(
+        f"Loading resource {resource_id}...",
+        lambda: ctx.obj["get_client"]().get_resource(resource_id),
+    )
 
     if as_json:
         output_json(item.to_dict())
@@ -884,11 +958,12 @@ def resource(ctx: click.Context, resource: str, as_json: bool, as_yaml: bool) ->
 @click.pass_context
 def link(ctx: click.Context, link: str, as_json: bool, as_yaml: bool) -> None:
     """Show external-link details (LINK_ID or URL)."""
-    client = ctx.obj["get_client"]()
     link_id = _parse_activity_reference(ctx, link, label="Link", path="/mod/url/view.php")
 
-    _print_loading(f"Loading link {link_id}...")
-    item = client.get_link(link_id)
+    item = _run_with_loading(
+        f"Loading link {link_id}...",
+        lambda: ctx.obj["get_client"]().get_link(link_id),
+    )
 
     if as_json:
         output_json(item.to_dict())
@@ -905,11 +980,12 @@ def link(ctx: click.Context, link: str, as_json: bool, as_yaml: bool) -> None:
 @click.pass_context
 def page(ctx: click.Context, page_id: str, as_json: bool, as_yaml: bool) -> None:
     """Show page details (PAGE_ID or URL)."""
-    client = ctx.obj["get_client"]()
     resolved_page_id = _parse_activity_reference(ctx, page_id, label="Page", path="/mod/page/view.php")
 
-    _print_loading(f"Loading page {resolved_page_id}...")
-    item = client.get_page(resolved_page_id)
+    item = _run_with_loading(
+        f"Loading page {resolved_page_id}...",
+        lambda: ctx.obj["get_client"]().get_page(resolved_page_id),
+    )
 
     if as_json:
         output_json(item.to_dict())
@@ -926,11 +1002,12 @@ def page(ctx: click.Context, page_id: str, as_json: bool, as_yaml: bool) -> None
 @click.pass_context
 def folder(ctx: click.Context, folder: str, as_json: bool, as_yaml: bool) -> None:
     """Show folder details (FOLDER_ID or URL)."""
-    client = ctx.obj["get_client"]()
     folder_id = _parse_activity_reference(ctx, folder, label="Folder", path="/mod/folder/view.php")
 
-    _print_loading(f"Loading folder {folder_id}...")
-    item = client.get_folder(folder_id)
+    item = _run_with_loading(
+        f"Loading folder {folder_id}...",
+        lambda: ctx.obj["get_client"]().get_folder(folder_id),
+    )
 
     if as_json:
         output_json(item.to_dict())
@@ -946,8 +1023,7 @@ def folder(ctx: click.Context, folder: str, as_json: bool, as_yaml: bool) -> Non
 @click.option("--yaml", "as_yaml", is_flag=True, help="Output as YAML.")
 def update(check_only: bool, as_json: bool, as_yaml: bool) -> None:
     """Check for updates and upgrade the installed CLI."""
-    _print_loading("Checking for updates...")
-    info = check_for_updates()
+    info = _run_with_loading("Checking for updates...", check_for_updates)
 
     if as_json:
         output_json(info.to_dict())
@@ -964,8 +1040,7 @@ def update(check_only: bool, as_json: bool, as_yaml: bool) -> None:
                 stdout_console.print(f"  {command}")
             return
 
-        _print_loading("Applying update...")
-        command = apply_update(info.package_name)
+        command = _run_with_loading("Applying update...", lambda: apply_update(info.package_name))
         stdout_console.print(f"[green]Updated with:[/] {command}")
         stdout_console.print("Run `moodle --version` in a fresh shell to confirm the installed version.")
     else:
@@ -980,9 +1055,10 @@ def update(check_only: bool, as_json: bool, as_yaml: bool) -> None:
 def activities(ctx: click.Context, course_id: int | None, as_json: bool, as_yaml: bool) -> None:
     """List activities in a course (sections and modules)."""
     course_id = _require_course_id(ctx, course_id)
-    _print_loading(f"Loading activities for course {course_id}...")
-    client = ctx.obj["get_client"]()
-    sections = client.get_course_contents(course_id)
+    sections = _run_with_loading(
+        f"Loading activities for course {course_id}...",
+        lambda: ctx.obj["get_client"]().get_course_contents(course_id),
+    )
 
     if as_json:
         output_json([s.to_dict() for s in sections])
@@ -1000,9 +1076,10 @@ def activities(ctx: click.Context, course_id: int | None, as_json: bool, as_yaml
 def course(ctx: click.Context, course_id: int | None, as_json: bool, as_yaml: bool) -> None:
     """Show course detail with sections."""
     course_id = _require_course_id(ctx, course_id)
-    _print_loading(f"Loading course {course_id}...")
-    client = ctx.obj["get_client"]()
-    sections = client.get_course_contents(course_id)
+    sections = _run_with_loading(
+        f"Loading course {course_id}...",
+        lambda: ctx.obj["get_client"]().get_course_contents(course_id),
+    )
 
     if as_json:
         output_json([s.to_dict() for s in sections])
