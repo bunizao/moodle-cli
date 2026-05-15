@@ -491,15 +491,15 @@ def patch_runtime(
     if patch_config:
         monkeypatch.setattr(cli_module, "load_config", lambda: {"base_url": base_url})
 
-    def fake_get_session(seen_base_url: str) -> str:
+    def fake_get_authenticated_session(seen_base_url: str):
         state["session_base_urls"].append(seen_base_url)
-        return "session-cookie"
+        return "session-cookie", scraper_module.PageContext(sesskey="sesskey", user_info=USER)
 
-    def fake_client_factory(seen_base_url: str, session_cookie: str) -> FakeClient:
+    def fake_client_factory(seen_base_url: str, session_cookie: str, **_kwargs) -> FakeClient:
         state["client_inits"].append((seen_base_url, session_cookie))
         return fake_client
 
-    monkeypatch.setattr(cli_module, "get_session", fake_get_session)
+    monkeypatch.setattr(cli_module, "get_authenticated_session", fake_get_authenticated_session)
     monkeypatch.setattr(cli_module, "MoodleClient", fake_client_factory)
     return fake_client, state
 
@@ -560,7 +560,7 @@ def command_case(
 @pytest.mark.parametrize("args", [["--help"], ["--version"]])
 def test_global_help_and_version_do_not_load_runtime(monkeypatch: pytest.MonkeyPatch, runner: CliRunner, args: list[str]) -> None:
     monkeypatch.setattr(cli_module, "load_config", lambda: pytest.fail("load_config should not run"))
-    monkeypatch.setattr(cli_module, "get_session", lambda _base_url: pytest.fail("get_session should not run"))
+    monkeypatch.setattr(cli_module, "get_authenticated_session", lambda _base_url: pytest.fail("get_session should not run"))
     monkeypatch.setattr(cli_module, "MoodleClient", lambda *_args: pytest.fail("MoodleClient should not run"))
 
     result = runner.invoke(cli_module.cli, args)
@@ -1079,7 +1079,7 @@ def test_update_outputs_without_loading_moodle_runtime(
     texts: list[str] | None,
 ) -> None:
     monkeypatch.setattr(cli_module, "load_config", lambda: pytest.fail("load_config should not run"))
-    monkeypatch.setattr(cli_module, "get_session", lambda _base_url: pytest.fail("get_session should not run"))
+    monkeypatch.setattr(cli_module, "get_authenticated_session", lambda _base_url: pytest.fail("get_session should not run"))
     monkeypatch.setattr(cli_module, "MoodleClient", lambda *_args: pytest.fail("MoodleClient should not run"))
     monkeypatch.setattr(cli_module, "check_for_updates", lambda: info)
 
@@ -1097,7 +1097,7 @@ def test_update_outputs_without_loading_moodle_runtime(
 
 def test_update_applies_available_upgrade(monkeypatch: pytest.MonkeyPatch, runner: CliRunner) -> None:
     monkeypatch.setattr(cli_module, "load_config", lambda: pytest.fail("load_config should not run"))
-    monkeypatch.setattr(cli_module, "get_session", lambda _base_url: pytest.fail("get_session should not run"))
+    monkeypatch.setattr(cli_module, "get_authenticated_session", lambda _base_url: pytest.fail("get_session should not run"))
     monkeypatch.setattr(cli_module, "MoodleClient", lambda *_args: pytest.fail("MoodleClient should not run"))
     monkeypatch.setattr(
         cli_module,
@@ -1828,7 +1828,7 @@ def test_main_renders_auth_error_from_real_command(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     monkeypatch.setattr(cli_module, "load_config", lambda: {"base_url": BASE_URL})
-    monkeypatch.setattr(cli_module, "get_session", lambda _base_url: (_ for _ in ()).throw(AuthError("missing session")))
+    monkeypatch.setattr(cli_module, "get_authenticated_session", lambda _base_url: (_ for _ in ()).throw(AuthError("missing session")))
     opened_urls: list[str] = []
 
     def fake_open(url: str) -> bool:
@@ -1855,7 +1855,7 @@ def test_main_prints_login_url_when_browser_cannot_open(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     monkeypatch.setattr(cli_module, "load_config", lambda: {"base_url": BASE_URL})
-    monkeypatch.setattr(cli_module, "get_session", lambda _base_url: (_ for _ in ()).throw(AuthError("missing session")))
+    monkeypatch.setattr(cli_module, "get_authenticated_session", lambda _base_url: (_ for _ in ()).throw(AuthError("missing session")))
     opened_urls: list[str] = []
 
     def fake_open(url: str) -> bool:
@@ -1885,8 +1885,12 @@ def test_main_renders_api_error_from_real_command(
             raise MoodleAPIError("timeline disabled", error_code="servicenotavailable")
 
     monkeypatch.setattr(cli_module, "load_config", lambda: {"base_url": BASE_URL})
-    monkeypatch.setattr(cli_module, "get_session", lambda _base_url: "session-cookie")
-    monkeypatch.setattr(cli_module, "MoodleClient", lambda *_args: BrokenClient())
+    monkeypatch.setattr(
+        cli_module,
+        "get_authenticated_session",
+        lambda _base_url: ("session-cookie", scraper_module.PageContext(sesskey="sesskey", user_info=USER)),
+    )
+    monkeypatch.setattr(cli_module, "MoodleClient", lambda *_args, **_kwargs: BrokenClient())
 
     exit_code, stdout, stderr = run_main(monkeypatch, capsys, ["courses"])
 
@@ -1905,8 +1909,12 @@ def test_main_renders_request_error_from_real_command(
             raise MoodleRequestError("grade report unavailable")
 
     monkeypatch.setattr(cli_module, "load_config", lambda: {"base_url": BASE_URL})
-    monkeypatch.setattr(cli_module, "get_session", lambda _base_url: "session-cookie")
-    monkeypatch.setattr(cli_module, "MoodleClient", lambda *_args: BrokenClient())
+    monkeypatch.setattr(
+        cli_module,
+        "get_authenticated_session",
+        lambda _base_url: ("session-cookie", scraper_module.PageContext(sesskey="sesskey", user_info=USER)),
+    )
+    monkeypatch.setattr(cli_module, "MoodleClient", lambda *_args, **_kwargs: BrokenClient())
 
     exit_code, stdout, stderr = run_main(monkeypatch, capsys, ["grades", "101"])
 

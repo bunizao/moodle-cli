@@ -54,6 +54,7 @@ from moodle_cli.models import (
 from moodle_cli.parser import parse_alert_summary, parse_courses, parse_forum_discussion, parse_todo_items, parse_user_info
 from moodle_cli.scraper import (
     has_course_grades_html,
+    PageContext,
     parse_assignment_html,
     parse_course_contents_html,
     parse_course_id_from_page_html,
@@ -81,14 +82,14 @@ log = logging.getLogger(__name__)
 class MoodleClient:
     """Client for Moodle's authenticated pages and internal AJAX API."""
 
-    def __init__(self, base_url: str, moodle_session: str):
+    def __init__(self, base_url: str, moodle_session: str, page_context: PageContext | None = None):
         self.base_url = base_url
         self.session = requests.Session()
         self.session.cookies.set("MoodleSession", moodle_session)
 
-        self._sesskey: str | None = None
-        self._userid: int | None = None
-        self._user_info: UserInfo | None = None
+        self._sesskey: str | None = page_context.sesskey if page_context is not None else None
+        self._userid: int | None = page_context.user_info.userid if page_context is not None else None
+        self._user_info: UserInfo | None = page_context.user_info if page_context is not None else None
         self._forum_discussions_cache: dict[int, ForumDiscussion] = {}
         self._forum_discussion_refs_cache: dict[int, list[ForumDiscussionRef]] = {}
 

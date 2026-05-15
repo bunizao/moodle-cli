@@ -13,7 +13,7 @@ import requests
 
 from moodle_cli.constants import DASHBOARD_PATH, ENV_MOODLE_SESSION
 from moodle_cli.exceptions import AuthError
-from moodle_cli.scraper import parse_page_context
+from moodle_cli.scraper import PageContext, parse_page_context
 
 
 log = logging.getLogger(__name__)
@@ -292,18 +292,123 @@ def _iter_browser_sessions(domain: str):
 
 def _is_valid_session(base_url: str, moodle_session: str) -> bool:
     """Check whether a MoodleSession reaches an authenticated Moodle page."""
+    return _validate_session(base_url, moodle_session) is not None
+
+
+def _validate_session(base_url: str, moodle_session: str) -> PageContext | None:
+    """Return authenticated page context when a MoodleSession is usable."""
     session = requests.Session()
     session.cookies.set("MoodleSession", moodle_session)
 
     try:
         response = session.get(f"{base_url}{DASHBOARD_PATH}", allow_redirects=True, timeout=15)
         response.raise_for_status()
-        parse_page_context(response.text, base_url)
+        return parse_page_context(response.text, base_url)
     except (requests.RequestException, AuthError) as exc:
         log.debug("Rejected MoodleSession candidate: %s", exc)
-        return False
+        return None
 
-    return True
+
+def _load_from_okta_cli_with_context(base_url: str) -> tuple[str, PageContext] | None:
+    """Read a MoodleSession and authenticated context from okta-auth CLI."""
+    if not _okta_cli_executable():
+        return None
+
+    session = _get_okta_cli_cookie_value(base_url, "MoodleSession")
+    if session:
+        context = _validate_session(base_url, session)
+        if context is not None:
+            log.debug("Using MoodleSession from okta-auth CLI")
+            return session, context
+
+        log.debug("Rejected stale MoodleSession from okta-auth CLI")
+
+    result = _run_okta_cli_json(["login", base_url])
+    if not result:
+        return None
+
+    session = _get_okta_cli_cookie_value(base_url, "MoodleSession")
+    if not session:
+        return None
+
+    context = _validate_session(base_url, session)
+    if context is None:
+        return None
+
+    log.debug("Using MoodleSession from okta-auth CLI after automatic login")
+    return session, context
+
+
+def _load_from_okta_with_context(base_url: str) -> tuple[str, PageContext] | None:
+    """Resolve a MoodleSession and authenticated context through okta-auth."""
+    try:
+        from okta_auth.adapter import OktaAdapterError, ensure_login, get_cookie_value
+    except ImportError:
+        return _load_from_okta_cli_with_context(base_url)
+
+    try:
+        session = get_cookie_value(base_url, "MoodleSession")
+    except OktaAdapterError as exc:
+        log.debug("Could not read okta-auth session for %s: %s", base_url, exc)
+        session = None
+
+    if session:
+        context = _validate_session(base_url, session)
+        if context is not None:
+            log.debug("Using MoodleSession from okta-auth")
+            return session, context
+
+    try:
+        result = ensure_login(base_url)
+    except OktaAdapterError as exc:
+        log.debug("okta-auth could not establish a Moodle session for %s: %s", base_url, exc)
+        return None
+
+    try:
+        session = get_cookie_value(base_url, "MoodleSession")
+    except OktaAdapterError as exc:
+        log.debug("okta-auth login succeeded but MoodleSession could not be read: %s", exc)
+        return None
+
+    if not session:
+        return None
+
+    context = _validate_session(base_url, session)
+    if context is None:
+        return None
+
+    if result.get("performed_login"):
+        log.debug("Using MoodleSession from okta-auth after automatic login")
+    else:
+        log.debug("Using existing MoodleSession from okta-auth")
+    return session, context
+
+
+def get_authenticated_session(base_url: str) -> tuple[str, PageContext]:
+    """Get a valid MoodleSession with the page context already fetched."""
+    session = load_from_env()
+    if session:
+        context = _validate_session(base_url, session)
+        if context is not None:
+            return session, context
+        log.debug("Ignored invalid MoodleSession from environment variable")
+
+    okta_session = _load_from_okta_with_context(base_url)
+    if okta_session is not None:
+        return okta_session
+
+    domain = urlparse(base_url).hostname or ""
+    for session in _iter_browser_sessions(domain):
+        context = _validate_session(base_url, session)
+        if context is not None:
+            return session, context
+
+    raise AuthError(
+        "No MoodleSession found. Either:\n"
+        f"  1. Configure okta-auth for {base_url}, or\n"
+        f"  2. Log in to {base_url} in your browser, or\n"
+        f"  3. Set the {ENV_MOODLE_SESSION} environment variable"
+    )
 
 
 def get_session(base_url: str) -> str:

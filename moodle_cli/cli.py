@@ -12,7 +12,7 @@ import click
 from rich.console import Console
 
 from moodle_cli import __version__
-from moodle_cli.auth import get_session
+from moodle_cli.auth import get_authenticated_session
 from moodle_cli.client import MoodleClient
 from moodle_cli.config import load_config
 from moodle_cli.constants import (
@@ -351,8 +351,8 @@ def cli(ctx: click.Context, verbose: bool) -> None:
         if ctx.obj["_client"] is None:
             def create_client() -> MoodleClient:
                 config = get_config()
-                session_cookie = get_session(config["base_url"])
-                return MoodleClient(config["base_url"], session_cookie)
+                session_cookie, page_context = get_authenticated_session(config["base_url"])
+                return MoodleClient(config["base_url"], session_cookie, page_context=page_context)
 
             if _loading_depth():
                 ctx.obj["_client"] = create_client()

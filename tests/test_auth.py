@@ -9,9 +9,25 @@ from http.cookiejar import Cookie, CookieJar
 import pytest
 
 import moodle_cli.auth as auth_module
+from moodle_cli.models import UserInfo
+from moodle_cli.scraper import PageContext
 
 BASE_URL = "https://school.example.edu"
 DOMAIN = "school.example.edu"
+
+
+def make_page_context() -> PageContext:
+    return PageContext(
+        sesskey="sesskey",
+        user_info=UserInfo(
+            userid=7,
+            username="",
+            fullname="Alice Example",
+            sitename="Campus",
+            siteurl=BASE_URL,
+            lang="en",
+        ),
+    )
 
 
 def make_cookie(value: str, domain: str = DOMAIN) -> Cookie:
@@ -100,6 +116,25 @@ def test_get_session_uses_okta_auth_before_browser(monkeypatch: pytest.MonkeyPat
     monkeypatch.setattr(auth_module, "_iter_browser_sessions", lambda _domain: pytest.fail("browser fallback should not run"))
 
     assert auth_module.get_session(BASE_URL) == "okta-session"
+
+
+def test_get_authenticated_session_returns_env_context_without_okta_or_browser(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    context = make_page_context()
+    calls: list[tuple[str, str]] = []
+
+    def fake_validate(base_url: str, value: str) -> PageContext | None:
+        calls.append((base_url, value))
+        return context
+
+    monkeypatch.setenv("MOODLE_SESSION", "env-session")
+    monkeypatch.setattr(auth_module, "_validate_session", fake_validate)
+    monkeypatch.setattr(auth_module, "_load_from_okta_with_context", lambda _base_url: pytest.fail("okta should not run"))
+    monkeypatch.setattr(auth_module, "_iter_browser_sessions", lambda _domain: pytest.fail("browser fallback should not run"))
+
+    assert auth_module.get_authenticated_session(BASE_URL) == ("env-session", context)
+    assert calls == [(BASE_URL, "env-session")]
 
 
 def test_load_from_okta_triggers_login_when_stored_cookie_is_missing(
