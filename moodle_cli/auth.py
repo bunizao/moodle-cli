@@ -17,6 +17,26 @@ from moodle_cli.scraper import PageContext, parse_page_context
 
 
 log = logging.getLogger(__name__)
+MOODLE_SESSION_COOKIE_PREFIX = "MoodleSession"
+
+
+class MoodleSessionCookie(str):
+    """Session cookie value that preserves the source cookie name."""
+
+    name: str
+
+    def __new__(cls, value: str, name: str = MOODLE_SESSION_COOKIE_PREFIX):
+        obj = str.__new__(cls, value)
+        obj.name = name
+        return obj
+
+
+def _is_moodle_session_cookie(name: object) -> bool:
+    return isinstance(name, str) and name.startswith(MOODLE_SESSION_COOKIE_PREFIX)
+
+
+def _cookie_name(moodle_session: str) -> str:
+    return getattr(moodle_session, "name", MOODLE_SESSION_COOKIE_PREFIX)
 
 
 def _okta_cli_executable() -> str | None:
@@ -69,57 +89,75 @@ def _run_okta_cli_json(args: list[str]) -> dict[str, object] | None:
     return payload
 
 
-def _get_okta_cli_cookie_value(base_url: str, cookie_name: str) -> str | None:
-    """Read a cookie value from a stored okta-auth CLI session."""
+def _iter_okta_cli_cookie_values(base_url: str, cookie_name: str):
+    """Yield matching cookie values from a stored okta-auth CLI session."""
     payload = _run_okta_cli_json(["cookies", base_url])
     if not payload:
-        return None
+        return
 
     cookies = payload.get("cookies")
     if not isinstance(cookies, list):
-        return None
+        return
 
     host = (urlparse(base_url).hostname or "").lower()
-    preferred: str | None = None
+    host_matches: list[str] = []
+    fallback_matches: list[str] = []
+    seen: set[tuple[str, str]] = set()
 
     for cookie in cookies:
-        if not isinstance(cookie, dict) or cookie.get("name") != cookie_name:
+        if not isinstance(cookie, dict):
+            continue
+
+        name = cookie.get("name")
+        if name != cookie_name and not _is_moodle_session_cookie(name):
             continue
 
         value = cookie.get("value")
         if not isinstance(value, str) or not value:
             continue
 
+        cookie_value = MoodleSessionCookie(value, name)
+        key = (name, value)
+        if key in seen:
+            continue
+        seen.add(key)
+
         cookie_domain = cookie.get("domain")
-        if preferred is None:
-            preferred = value
         if isinstance(cookie_domain, str) and cookie_domain.lstrip(".").lower() == host:
-            return value
+            host_matches.append(cookie_value)
+        else:
+            fallback_matches.append(cookie_value)
 
-    return preferred
+    yield from host_matches
+    yield from fallback_matches
 
 
-def _load_from_okta_cli(base_url: str) -> str | None:
+def _load_from_okta_cli(base_url: str, *, allow_login: bool = True) -> str | None:
     """Try to resolve MoodleSession through the okta-auth CLI."""
     if not _okta_cli_executable():
         return None
 
-    session = _get_okta_cli_cookie_value(base_url, "MoodleSession")
-    if session and _is_valid_session(base_url, session):
-        log.debug("Using MoodleSession from okta-auth CLI")
-        return session
+    found_candidate = False
+    for session in _iter_okta_cli_cookie_values(base_url, "MoodleSession"):
+        found_candidate = True
+        if _is_valid_session(base_url, session):
+            log.debug("Using MoodleSession from okta-auth CLI")
+            return session
 
-    if session:
+    if found_candidate:
         log.debug("Rejected stale MoodleSession from okta-auth CLI")
+
+    if not allow_login:
+        return None
 
     result = _run_okta_cli_json(["login", base_url])
     if not result:
         return None
 
-    session = _get_okta_cli_cookie_value(base_url, "MoodleSession")
-    if session and _is_valid_session(base_url, session):
-        log.debug("Using MoodleSession from okta-auth CLI after automatic login")
-        return session
+    for session in _iter_okta_cli_cookie_values(base_url, "MoodleSession"):
+        if _is_valid_session(base_url, session):
+            log.debug("Using MoodleSession from okta-auth CLI after automatic login")
+            return session
 
     return None
 
@@ -141,6 +179,10 @@ def _load_from_okta(base_url: str) -> str | None:
         log.debug("Using MoodleSession from okta-auth")
         return session
 
+    cli_session = _load_from_okta_cli(base_url, allow_login=False)
+    if cli_session:
+        return cli_session
+
     try:
         result = ensure_login(base_url)
     except OktaAdapterError as exc:
@@ -160,7 +202,7 @@ def _load_from_okta(base_url: str) -> str | None:
             log.debug("Using existing MoodleSession from okta-auth")
         return session
 
-    return None
+    return _load_from_okta_cli(base_url, allow_login=False)
 
 
 def load_from_env() -> str | None:
@@ -168,7 +210,7 @@ def load_from_env() -> str | None:
     value = os.environ.get(ENV_MOODLE_SESSION)
     if value:
         log.debug("Using MoodleSession from environment variable")
-    return value
+    return MoodleSessionCookie(value) if value else None
 
 
 def _glob_paths(patterns: list[str]) -> list[str]:
@@ -244,8 +286,8 @@ def _chromium_cookie_files(browser: str) -> list[str]:
 def _iter_cookie_values(cookie_jar, domain: str):
     """Yield matching MoodleSession values from a cookie jar."""
     for cookie in cookie_jar:
-        if cookie.name == "MoodleSession" and domain in (cookie.domain or "") and cookie.value:
-            yield cookie.value
+        if _is_moodle_session_cookie(cookie.name) and domain in (cookie.domain or "") and cookie.value:
+            yield MoodleSessionCookie(cookie.value, cookie.name)
 
 
 def _iter_browser_sessions(domain: str):
@@ -266,7 +308,7 @@ def _iter_browser_sessions(domain: str):
         ("Brave", browser_cookie3.brave, _chromium_cookie_files("Brave")),
         ("Edge", browser_cookie3.edge, _chromium_cookie_files("Edge")),
     ]
-    seen_values: set[str] = set()
+    seen_cookies: set[tuple[str, str]] = set()
 
     for name, loader, cookie_files in loaders:
         attempts = cookie_files or [None]
@@ -282,9 +324,10 @@ def _iter_browser_sessions(domain: str):
                 continue
 
             for value in _iter_cookie_values(cj, domain):
-                if value in seen_values:
+                key = (_cookie_name(value), value)
+                if key in seen_cookies:
                     continue
-                seen_values.add(value)
+                seen_cookies.add(key)
                 source = cookie_file or "default profile"
                 log.debug("Found MoodleSession in %s (%s)", name, source)
                 yield value
@@ -298,7 +341,7 @@ def _is_valid_session(base_url: str, moodle_session: str) -> bool:
 def _validate_session(base_url: str, moodle_session: str) -> PageContext | None:
     """Return authenticated page context when a MoodleSession is usable."""
     session = requests.Session()
-    session.cookies.set("MoodleSession", moodle_session)
+    session.cookies.set(_cookie_name(moodle_session), moodle_session)
 
     try:
         response = session.get(f"{base_url}{DASHBOARD_PATH}", allow_redirects=True, timeout=15)
@@ -309,34 +352,36 @@ def _validate_session(base_url: str, moodle_session: str) -> PageContext | None:
         return None
 
 
-def _load_from_okta_cli_with_context(base_url: str) -> tuple[str, PageContext] | None:
+def _load_from_okta_cli_with_context(base_url: str, *, allow_login: bool = True) -> tuple[str, PageContext] | None:
     """Read a MoodleSession and authenticated context from okta-auth CLI."""
     if not _okta_cli_executable():
         return None
 
-    session = _get_okta_cli_cookie_value(base_url, "MoodleSession")
-    if session:
+    found_candidate = False
+    for session in _iter_okta_cli_cookie_values(base_url, "MoodleSession"):
+        found_candidate = True
         context = _validate_session(base_url, session)
         if context is not None:
             log.debug("Using MoodleSession from okta-auth CLI")
             return session, context
 
+    if found_candidate:
         log.debug("Rejected stale MoodleSession from okta-auth CLI")
+
+    if not allow_login:
+        return None
 
     result = _run_okta_cli_json(["login", base_url])
     if not result:
         return None
 
-    session = _get_okta_cli_cookie_value(base_url, "MoodleSession")
-    if not session:
-        return None
+    for session in _iter_okta_cli_cookie_values(base_url, "MoodleSession"):
+        context = _validate_session(base_url, session)
+        if context is not None:
+            log.debug("Using MoodleSession from okta-auth CLI after automatic login")
+            return session, context
 
-    context = _validate_session(base_url, session)
-    if context is None:
-        return None
-
-    log.debug("Using MoodleSession from okta-auth CLI after automatic login")
-    return session, context
+    return None
 
 
 def _load_from_okta_with_context(base_url: str) -> tuple[str, PageContext] | None:
@@ -357,6 +402,10 @@ def _load_from_okta_with_context(base_url: str) -> tuple[str, PageContext] | Non
         if context is not None:
             log.debug("Using MoodleSession from okta-auth")
             return session, context
+
+    cli_session = _load_from_okta_cli_with_context(base_url, allow_login=False)
+    if cli_session is not None:
+        return cli_session
 
     try:
         result = ensure_login(base_url)

@@ -28,3 +28,13 @@ def test_preloaded_page_context_skips_dashboard_fetch(monkeypatch: pytest.Monkey
     client._ensure_session()
     assert client._sesskey == "sesskey"
     assert client._userid == 7
+
+
+def test_client_preserves_custom_moodle_session_cookie_name() -> None:
+    session_cookie = type("SessionCookie", (str,), {})("session-cookie")
+    session_cookie.name = "MoodleSessionmoodle"
+
+    client = MoodleClient(BASE_URL, session_cookie)
+
+    assert client.session.cookies.get("MoodleSessionmoodle") == "session-cookie"
+    assert client.session.cookies.get("MoodleSession") is None
