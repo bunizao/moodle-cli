@@ -3,7 +3,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import {
+  braveProfilePaths,
   getAuthenticatedSession,
+  getAuthenticatedSessionWithBrowserFallback,
   loadSessionFromEnv,
   matchingMoodleSessionCookies,
 } from "../src/auth.js";
@@ -46,6 +48,100 @@ describe("auth chain", () => {
 
     expect(loadSessionFromEnv({ [ENV_MOODLE_SESSION]: "env" })?.value).toBe("env");
     expect(matches.map((cookie) => [cookie.name, cookie.value])).toEqual([["MoodleSessionABC", "right"]]);
+  });
+
+  it("does not open a browser when automatic extraction succeeds", async () => {
+    const openBrowser = vi.fn(async () => undefined);
+
+    const session = await getAuthenticatedSessionWithBrowserFallback(BASE_URL, {
+      homeDir: await mkdtemp(join(tmpdir(), "moodle-cli-auth-auto-")),
+      browserCookieProvider: async () => [
+        { name: "MoodleSession", value: "browser-cookie", domain: "school.example.edu" },
+      ],
+      oktaCookieProvider: async () => [],
+      validateSession: async () => ({ sesskey: "sess", userid: 7 }),
+      openBrowser,
+    });
+
+    expect(session.cookie.value).toBe("browser-cookie");
+    expect(openBrowser).not.toHaveBeenCalled();
+  });
+
+  it("opens Moodle login and retries extraction when no session is available", async () => {
+    let reads = 0;
+    const openBrowser = vi.fn(async () => undefined);
+    const sleep = vi.fn(async () => undefined);
+
+    const session = await getAuthenticatedSessionWithBrowserFallback(BASE_URL, {
+      homeDir: await mkdtemp(join(tmpdir(), "moodle-cli-auth-browser-")),
+      browserCookieProvider: async () => {
+        reads += 1;
+        return reads === 1
+          ? []
+          : [{ name: "MoodleSessionSSO", value: "fresh-cookie", domain: ".school.example.edu" }];
+      },
+      oktaCookieProvider: async () => [],
+      validateSession: async (_baseUrl, cookie) =>
+        cookie.value === "fresh-cookie" ? { sesskey: "fresh-sess", userid: 9 } : null,
+      openBrowser,
+      sleep,
+      browserLoginTimeoutMs: 2_000,
+      browserLoginPollIntervalMs: 100,
+    });
+
+    expect(openBrowser).toHaveBeenCalledWith(`${BASE_URL}/login/index.php`);
+    expect(sleep).toHaveBeenCalledWith(100);
+    expect(session).toMatchObject({ userid: 9, sesskey: "fresh-sess" });
+  });
+
+  it("ignores a stale environment session during browser fallback", async () => {
+    let browserReads = 0;
+    const openBrowser = vi.fn(async () => undefined);
+
+    const session = await getAuthenticatedSessionWithBrowserFallback(BASE_URL, {
+      env: { [ENV_MOODLE_SESSION]: "stale-cookie" },
+      homeDir: await mkdtemp(join(tmpdir(), "moodle-cli-auth-stale-env-")),
+      browserCookieProvider: async () => {
+        browserReads += 1;
+        return browserReads === 1
+          ? []
+          : [{ name: "MoodleSession", value: "fresh-cookie", domain: "school.example.edu" }];
+      },
+      oktaCookieProvider: async () => [],
+      validateSession: async (_baseUrl, cookie) =>
+        cookie.value === "fresh-cookie" ? { sesskey: "fresh-sess", userid: 9 } : null,
+      openBrowser,
+      sleep: async () => undefined,
+      browserLoginTimeoutMs: 1_000,
+      browserLoginPollIntervalMs: 100,
+    });
+
+    expect(openBrowser).toHaveBeenCalledOnce();
+    expect(session.cookie.value).toBe("fresh-cookie");
+  });
+
+  it("discovers Brave profiles on Linux and Windows", async () => {
+    const homeDir = await mkdtemp(join(tmpdir(), "moodle-cli-brave-"));
+    const linuxRoot = join(homeDir, ".config/BraveSoftware/Brave-Browser");
+    const flatpakRoot = join(homeDir, ".var/app/com.brave.Browser/config/BraveSoftware/Brave-Browser");
+    const windowsRoot = join(homeDir, "AppData/Local/BraveSoftware/Brave-Browser/User Data");
+    await Promise.all([
+      mkdir(join(linuxRoot, "Default"), { recursive: true }),
+      mkdir(join(linuxRoot, "Profile 2"), { recursive: true }),
+      mkdir(join(linuxRoot, "Crashpad"), { recursive: true }),
+      mkdir(join(flatpakRoot, "Default"), { recursive: true }),
+      mkdir(join(windowsRoot, "Default"), { recursive: true }),
+    ]);
+
+    await expect(braveProfilePaths({ homeDir, platform: "linux" })).resolves.toEqual([
+      join(linuxRoot, "Default"),
+      join(linuxRoot, "Profile 2"),
+      join(flatpakRoot, "Default"),
+    ]);
+    await expect(braveProfilePaths({ homeDir, platform: "win32" })).resolves.toEqual([
+      join(windowsRoot, "Default"),
+    ]);
+    await expect(braveProfilePaths({ homeDir, platform: "darwin" })).resolves.toEqual([]);
   });
 });
 

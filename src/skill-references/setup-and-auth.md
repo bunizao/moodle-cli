@@ -60,10 +60,12 @@ moodle auth keepalive --json           # renew once (re-login from browser/okta 
 moodle auth keepalive install          # macOS launch agent, renews every 30 min
 moodle auth keepalive install --interval 15
 moodle auth keepalive uninstall
-moodle auth login --json               # force a fresh login and refresh the cache
+moodle auth login --json               # extract a session; open the browser if needed
 ```
 
 On Linux, schedule `moodle auth keepalive --json` with cron instead of `install`.
+
+`moodle auth login` first checks local session sources. If none is valid, it opens Moodle's login page in the system browser and waits up to two minutes for the completed SSO/OAuth login.
 
 ## Recover Failures
 

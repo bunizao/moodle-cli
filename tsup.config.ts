@@ -5,7 +5,7 @@ export default defineConfig({
     moodle: "src/cli.ts",
   },
   format: ["esm"],
-  target: "node20",
+  target: "node22",
   platform: "node",
   bundle: true,
   clean: true,

@@ -12,7 +12,7 @@ Read this file for exact arguments, flags, and defaults after selecting a branch
 | moodle auth keepalive install | Install a macOS launch agent that renews the session periodically. |  | --interval (value required)<br>--json<br>--yaml<br>--table<br>--fields (value required) |
 | moodle auth keepalive status | Show whether the keepalive launch agent is installed. |  | --json<br>--yaml<br>--table<br>--fields (value required) |
 | moodle auth keepalive uninstall | Remove the keepalive launch agent. |  | --json<br>--yaml<br>--table<br>--fields (value required) |
-| moodle auth login | Force a fresh login and refresh the session cache. |  | --json<br>--yaml<br>--table<br>--fields (value required) |
+| moodle auth login | Extract a fresh session, opening the browser when needed. |  | --json<br>--yaml<br>--table<br>--fields (value required) |
 | moodle auth status | Show cached session freshness and keepalive state. |  | --json<br>--yaml<br>--table<br>--fields (value required) |
 | moodle course | Show course detail with sections. | <course> | --json<br>--yaml<br>--table<br>--fields (value required) |
 | moodle courses | List enrolled courses. |  | --json<br>--yaml<br>--table<br>--fields (value required) |

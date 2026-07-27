@@ -1,7 +1,8 @@
+import { ALL_PROFILES, getCookies } from "@steipete/sweet-cookie";
 import { execFile as execFileCallback } from "node:child_process";
-import { copyFile, mkdtemp, readdir, rm, stat } from "node:fs/promises";
-import { homedir, tmpdir } from "node:os";
-import { basename, join } from "node:path";
+import { readdir } from "node:fs/promises";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import {
   DASHBOARD_PATH,
   ENV_MOODLE_SESSION,
@@ -63,12 +64,12 @@ export interface AuthOptions {
   nonInteractive?: boolean;
 }
 
-interface ChromeCookiesSecure {
-  getCookiesPromised(
-    url: string,
-    format: "puppeteer",
-    profileOrPath?: string,
-  ): Promise<Array<{ name: string; value: string; domain?: string; path?: string }>>;
+export interface BrowserLoginOptions extends AuthOptions {
+  openBrowser?: (url: string) => Promise<void>;
+  sleep?: (milliseconds: number) => Promise<void>;
+  browserLoginTimeoutMs?: number;
+  browserLoginPollIntervalMs?: number;
+  onBrowserOpened?: (url: string) => void;
 }
 
 export async function getAuthenticatedSession(
@@ -126,6 +127,60 @@ export async function getAuthenticatedSession(
   throw new AuthError(`No usable MoodleSession found for ${baseUrl}.`, authFailureHint(baseUrl));
 }
 
+export async function getAuthenticatedSessionWithBrowserFallback(
+  baseUrl: string,
+  options: BrowserLoginOptions = {},
+): Promise<AuthenticatedSession> {
+  const authOptions: AuthOptions = { ...options, noCache: true, nonInteractive: true };
+  const browserAuthOptions: AuthOptions = {
+    ...authOptions,
+    env: { ...(options.env ?? process.env), [ENV_MOODLE_SESSION]: undefined },
+  };
+  try {
+    return await getAuthenticatedSession(baseUrl, authOptions);
+  } catch (error) {
+    if (!(error instanceof AuthError)) {
+      throw error;
+    }
+  }
+
+  if (loadSessionFromEnv(options.env)) {
+    try {
+      return await getAuthenticatedSession(baseUrl, browserAuthOptions);
+    } catch (error) {
+      if (!(error instanceof AuthError)) {
+        throw error;
+      }
+    }
+  }
+
+  const url = loginUrl(baseUrl);
+  await (options.openBrowser ?? ((target) => openSystemBrowser(target, options)))(url);
+  options.onBrowserOpened?.(url);
+
+  const pollIntervalMs = options.browserLoginPollIntervalMs ?? 1_000;
+  const timeoutMs = options.browserLoginTimeoutMs ?? 120_000;
+  const attempts = Math.max(1, Math.ceil(timeoutMs / pollIntervalMs));
+  const sleep = options.sleep ?? ((milliseconds) => new Promise<void>((resolve) => setTimeout(resolve, milliseconds)));
+  const pollOptions: AuthOptions = { ...browserAuthOptions, oktaCookieProvider: async () => [] };
+
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    await sleep(pollIntervalMs);
+    try {
+      return await getAuthenticatedSession(baseUrl, pollOptions);
+    } catch (error) {
+      if (!(error instanceof AuthError)) {
+        throw error;
+      }
+    }
+  }
+
+  throw new AuthError(
+    `Timed out waiting for browser login at ${baseUrl}.`,
+    `Complete the login in your browser, then rerun: moodle auth login`,
+  );
+}
+
 export function loadSessionFromEnv(env: Record<string, string | undefined> = process.env): MoodleSessionCookie | null {
   const value = env[ENV_MOODLE_SESSION]?.trim();
   return value ? { name: MOODLE_SESSION_COOKIE_PREFIX, value, source: "env" } : null;
@@ -161,9 +216,56 @@ export async function defaultBrowserCookieProvider(
   baseUrl: string,
   options: AuthOptions = {},
 ): Promise<MoodleSessionCookie[]> {
-  const chromiumCookies = await loadChromiumCookies(baseUrl, options);
-  const firefoxCookies = await loadFirefoxCookies(options);
-  return [...chromiumCookies, ...firefoxCookies];
+  const primary = await getCookies({
+    url: baseUrl,
+    browsers: ["chrome", "edge", "firefox", "safari"],
+    chromeProfile: ALL_PROFILES,
+    edgeProfile: ALL_PROFILES,
+    firefoxProfile: ALL_PROFILES,
+    mode: "merge",
+  });
+  const braveProfiles = await braveProfilePaths(options);
+  const brave = braveProfiles.length
+    ? await getCookies({ url: baseUrl, browsers: ["chrome"], chromeProfile: braveProfiles, mode: "merge" })
+    : { cookies: [] };
+
+  return [...primary.cookies, ...brave.cookies].map((cookie) => ({
+    name: cookie.name,
+    value: cookie.value,
+    domain: cookie.domain,
+    path: cookie.path,
+    source: [cookie.source?.browser, cookie.source?.profile].filter(Boolean).join(":") || "browser",
+  }));
+}
+
+export async function braveProfilePaths(options: AuthOptions = {}): Promise<string[]> {
+  const home = options.homeDir ?? homedir();
+  const platform = options.platform ?? process.platform;
+  const roots = platform === "linux"
+    ? [
+        join(home, ".config/BraveSoftware/Brave-Browser"),
+        join(home, ".var/app/com.brave.Browser/config/BraveSoftware/Brave-Browser"),
+      ]
+    : platform === "win32"
+      ? [join(home, "AppData/Local/BraveSoftware/Brave-Browser/User Data")]
+      : [];
+
+  const profiles: string[] = [];
+  for (const root of roots) {
+    try {
+      profiles.push(
+        ...(await readdir(root, { withFileTypes: true }))
+          .filter((entry) => entry.isDirectory())
+          .map((entry) => entry.name)
+          .filter((name) => name === "Default" || name === "Guest Profile" || name.startsWith("Profile "))
+          .sort()
+          .map((name) => join(root, name)),
+      );
+    } catch {
+      continue;
+    }
+  }
+  return profiles;
 }
 
 export async function loadSessionsFromOktaCli(
@@ -250,174 +352,6 @@ function validateSessionWithFetch(options: AuthOptions): SessionValidator {
     }
     return parseSessionContext(html);
   };
-}
-
-async function loadChromiumCookies(baseUrl: string, options: AuthOptions): Promise<MoodleSessionCookie[]> {
-  const chrome = await importChromeCookiesSecure();
-  if (!chrome) {
-    return [];
-  }
-
-  const cookies: MoodleSessionCookie[] = [];
-  for (const browser of ["Chrome", "Brave", "Edge"] as const) {
-    for (const cookieFile of await chromiumCookieFiles(browser, options)) {
-      try {
-        const items = await chrome.getCookiesPromised(baseUrl, "puppeteer", cookieFile);
-        cookies.push(
-          ...items.map((cookie) => ({
-            name: cookie.name,
-            value: cookie.value,
-            domain: cookie.domain,
-            path: cookie.path,
-            source: `${browser}:${basename(cookieFile)}`,
-          })),
-        );
-      } catch {
-        continue;
-      }
-    }
-  }
-  return cookies;
-}
-
-async function loadFirefoxCookies(options: AuthOptions): Promise<MoodleSessionCookie[]> {
-  const execFile = options.execFile ?? defaultExecFile;
-  const sqlite = await findExecutable("sqlite3", execFile, options.platform);
-  if (!sqlite) {
-    return [];
-  }
-
-  const cookies: MoodleSessionCookie[] = [];
-  for (const cookieFile of await firefoxCookieFiles(options)) {
-    const tempDir = await mkdtemp(join(tmpdir(), "moodle-cli-firefox-"));
-    const tempDb = join(tempDir, "cookies.sqlite");
-    try {
-      await copyFile(cookieFile, tempDb);
-      const result = await execFile(sqlite, [
-        "-json",
-        tempDb,
-        "select name, value, host as domain, path from moz_cookies where name like 'MoodleSession%';",
-      ]);
-      if (result.exitCode !== 0 || !result.stdout.trim()) {
-        continue;
-      }
-      const rows = JSON.parse(result.stdout) as unknown;
-      if (!Array.isArray(rows)) {
-        continue;
-      }
-      cookies.push(
-        ...rows.filter(isRecord).map((row) => ({
-          name: String(row.name ?? ""),
-          value: String(row.value ?? ""),
-          domain: typeof row.domain === "string" ? row.domain : undefined,
-          path: typeof row.path === "string" ? row.path : undefined,
-          source: `Firefox:${basename(cookieFile)}`,
-        })),
-      );
-    } catch {
-      continue;
-    } finally {
-      await rm(tempDir, { recursive: true, force: true });
-    }
-  }
-  return cookies;
-}
-
-async function chromiumCookieFiles(
-  browser: "Chrome" | "Brave" | "Edge",
-  options: AuthOptions,
-): Promise<string[]> {
-  const files: string[] = [];
-  for (const root of chromiumUserDataDirs(browser, options)) {
-    const profiles = await profileDirs(root);
-    for (const profile of profiles) {
-      for (const relative of ["Cookies", "Network/Cookies"]) {
-        const file = join(root, profile, relative);
-        if (await isFile(file)) {
-          files.push(file);
-        }
-      }
-    }
-  }
-  return files;
-}
-
-function chromiumUserDataDirs(browser: "Chrome" | "Brave" | "Edge", options: AuthOptions): string[] {
-  const home = options.homeDir ?? homedir();
-  const platform = options.platform ?? process.platform;
-  const dirs = {
-    darwin: {
-      Chrome: ["Library/Application Support/Google/Chrome"],
-      Brave: ["Library/Application Support/BraveSoftware/Brave-Browser"],
-      Edge: ["Library/Application Support/Microsoft Edge"],
-    },
-    linux: {
-      Chrome: [".config/google-chrome", ".var/app/com.google.Chrome/config/google-chrome"],
-      Brave: [".config/BraveSoftware/Brave-Browser", ".var/app/com.brave.Browser/config/BraveSoftware/Brave-Browser"],
-      Edge: [".config/microsoft-edge"],
-    },
-    win32: {
-      Chrome: ["AppData/Local/Google/Chrome/User Data"],
-      Brave: ["AppData/Local/BraveSoftware/Brave-Browser/User Data"],
-      Edge: ["AppData/Local/Microsoft/Edge/User Data"],
-    },
-  } as const;
-
-  return [...(dirs[platform as keyof typeof dirs]?.[browser] ?? [])].map((part) => join(home, part));
-}
-
-async function firefoxCookieFiles(options: AuthOptions): Promise<string[]> {
-  const home = options.homeDir ?? homedir();
-  const platform = options.platform ?? process.platform;
-  const roots = {
-    darwin: ["Library/Application Support/Firefox/Profiles"],
-    linux: [".mozilla/firefox"],
-    win32: ["AppData/Roaming/Mozilla/Firefox/Profiles"],
-  } as const;
-
-  const files: string[] = [];
-  for (const rootPart of roots[platform as keyof typeof roots] ?? []) {
-    const root = join(home, rootPart);
-    for (const profile of await profileDirs(root, true)) {
-      const file = join(root, profile, "cookies.sqlite");
-      if (await isFile(file)) {
-        files.push(file);
-      }
-    }
-  }
-  return files;
-}
-
-async function profileDirs(root: string, allowAnyDirectory = false): Promise<string[]> {
-  let entries: Array<{ name: string; isDirectory(): boolean }>;
-  try {
-    entries = (await readdir(root, { withFileTypes: true })) as Array<{ name: string; isDirectory(): boolean }>;
-  } catch {
-    return [];
-  }
-
-  return entries
-    .filter((entry) => entry.isDirectory())
-    .map((entry) => entry.name)
-    .filter((name) => allowAnyDirectory || name === "Default" || name === "Guest Profile" || name.startsWith("Profile "));
-}
-
-async function isFile(path: string): Promise<boolean> {
-  try {
-    return (await stat(path)).isFile();
-  } catch {
-    return false;
-  }
-}
-
-async function importChromeCookiesSecure(): Promise<ChromeCookiesSecure | null> {
-  try {
-    const dynamicImport = new Function("specifier", "return import(specifier)") as (specifier: string) => Promise<unknown>;
-    const module = (await dynamicImport("chrome-cookies-secure")) as { default?: ChromeCookiesSecure } & ChromeCookiesSecure;
-    return (module.default ?? module) as ChromeCookiesSecure;
-  } catch {
-    return null;
-  }
 }
 
 async function readOktaCookies(
@@ -580,6 +514,22 @@ function decodeHtml(value: string): string {
     .replace(/&#39;/g, "'")
     .replace(/&lt;/g, "<")
     .replace(/&gt;/g, ">");
+}
+
+async function openSystemBrowser(url: string, options: AuthOptions): Promise<void> {
+  const platform = options.platform ?? process.platform;
+  const command = platform === "darwin"
+    ? { file: "open", args: [url] }
+    : platform === "win32"
+      ? { file: "cmd", args: ["/c", "start", "", url] }
+      : { file: "xdg-open", args: [url] };
+  const result = await (options.execFile ?? defaultExecFile)(command.file, command.args);
+  if (result.exitCode !== 0) {
+    throw new AuthError(
+      `Could not open the browser for Moodle login.`,
+      `Open ${url} manually, then rerun: moodle auth login`,
+    );
+  }
 }
 
 const defaultExecFile: ExecFile = (file: string, args: string[]) =>

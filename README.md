@@ -11,6 +11,8 @@ Terminal-first CLI for Moodle LMS that reuses an authenticated browser session. 
 
 ## Install
 
+Requires Node.js 22 or newer.
+
 ```bash
 npm i -g moodle-cli
 ```
@@ -65,8 +67,10 @@ Moodle expires idle sessions server-side, which normally forces a fresh SSO logi
 moodle auth status               # cache freshness + server session state
 moodle auth keepalive            # renew once; re-login from browser/okta cookies if expired
 moodle auth keepalive install    # macOS launch agent, renews every 30 min
-moodle auth login                # force a fresh login
+moodle auth login                # extract a fresh session; open the browser if needed
 ```
+
+`moodle auth login` first checks the configured environment, local browser profiles, and stored `okta-auth` cookies. If none contains a valid Moodle session, it opens Moodle's login page in the system browser and waits up to two minutes for the completed SSO/OAuth login.
 
 On Linux, add a cron entry: `*/30 * * * * moodle auth keepalive --json`.
 

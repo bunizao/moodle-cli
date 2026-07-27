@@ -31,7 +31,7 @@ import {
   keepaliveStatus,
   uninstallKeepalive,
 } from "./keepalive.js";
-import { getAuthenticatedSession, invalidateCachedSession } from "./auth.js";
+import { getAuthenticatedSessionWithBrowserFallback, invalidateCachedSession } from "./auth.js";
 import { VERSION } from "./version.js";
 import { ASSIGN_VIEW_PATH, FOLDER_VIEW_PATH, PAGE_VIEW_PATH, QUIZ_VIEW_PATH, RESOURCE_VIEW_PATH, URL_VIEW_PATH } from "./constants.js";
 import { filterDiscussionToPost, parseDiscussionReference, parseForumReference } from "./forum.js";
@@ -230,11 +230,19 @@ export function buildProgram(io: CliIO = {}): Command {
     },
   );
 
-  addOutputOptions(auth.command("login").description("Force a fresh login and refresh the session cache.")).action(
+  addOutputOptions(auth.command("login").description("Extract a fresh session, opening the browser when needed.")).action(
     async (options: OutputCommandOptions) => {
       const baseUrl = await runtime.baseUrl();
       await invalidateCachedSession(baseUrl, { homeDir: io.homeDir });
-      const session = await getAuthenticatedSession(baseUrl, { env: io.env, fetch: io.fetchImpl, homeDir: io.homeDir, noCache: true });
+      const humanOutput = outputFormat(options, stdout) === "table";
+      const session = await getAuthenticatedSessionWithBrowserFallback(baseUrl, {
+        env: io.env,
+        fetch: io.fetchImpl,
+        homeDir: io.homeDir,
+        onBrowserOpened: humanOutput
+          ? (url) => stderr.write(`No active Moodle session found. Complete login in your browser:\n${url}\n`)
+          : undefined,
+      });
       const result = { base_url: baseUrl, userid: session.userid, cookie_source: session.cookie.source ?? "unknown" };
       runtime.output(result, () => `Authenticated as userid ${result.userid} via ${result.cookie_source}`, options);
     },
