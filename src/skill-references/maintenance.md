@@ -1,16 +1,16 @@
 # Maintenance
 
-Read this file for update checks, upgrades, agent-skill installation, or repository skill regeneration.
+Read this file for upgrades, agent-skill installation, or repository skill regeneration.
 
 ## Update the CLI
 
-Check without changing the installation:
+Check the npm registry without changing the installation:
 
 ```bash
-moodle update --check-only --json
+npm view moodle-cli version
 ```
 
-Run `moodle update --table` when the user explicitly wants the installation upgraded. npm installations use `npm install -g moodle-cli@latest`; standalone binaries return the latest GitHub Release URL.
+Upgrade an npm installation with `npm install -g moodle-cli@latest`. Standalone binaries are available from GitHub Releases.
 
 If the registry check fails, verify network access and retry before proposing an upgrade command.
 

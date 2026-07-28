@@ -10,17 +10,18 @@ Read this file when choosing an output mode, filtering fields, consuming errors,
 - When stdout is not a TTY, commands default to JSON unless `--table` is set.
 - `--fields a,b,c` keeps only listed top-level fields. Arrays apply the field filter to each item.
 - Invalid `--fields` values are usage errors and list valid fields.
-- With JSON output enabled, errors are one JSON line on stderr: `{"error":true,"code":"auth_failed","message":"...","hint":"..."}`.
+- Structured errors use `{ok:false,error:{code,message,hint},exit_code}` on stderr.
 
 Exit codes:
 
 | Code | Meaning |
 | --- | --- |
 | 0 | Success |
-| 1 | Unexpected error |
-| 2 | Authentication or configuration error |
-| 3 | Usage error |
+| 1 | Network, configuration, or unexpected error |
+| 2 | Usage error |
+| 3 | Authentication error |
 | 4 | Requested course, activity, forum, or discussion was not found |
+| 5 | Moodle rejected a well-formed request |
 
 ## Agent Handling
 

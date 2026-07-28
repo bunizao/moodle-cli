@@ -12,7 +12,7 @@ Use `moodle` for read-only Moodle inspection.
 2. Run the narrowest command that answers the request. Prefer `--json`; add `--fields` when only a few top-level fields matter.
 3. Parse the result locally and answer with the requested facts, exact dates, and relevant Moodle links. The task is complete when the answer is supported by command output rather than inference.
 
-Resolve an unfamiliar course name with `moodle courses --json` before using a course-specific command. Use `moodle overview --json` only for an explicitly combined snapshot.
+Resolve an unfamiliar unit name with `moodle units --json` before using a unit-specific command. `courses` and `projects` are equivalent aliases. Use `moodle overview --json` only for an explicitly combined snapshot.
 
 ## Branch Map
 

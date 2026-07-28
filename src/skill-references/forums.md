@@ -7,7 +7,7 @@ Read this file for forum discovery, title or body search, discussion reading, gr
 Start with the narrowest high-level command:
 
 ```bash
-moodle forum find QUERY --json
+moodle forums search QUERY --json
 ```
 
 Refine it with:
@@ -20,12 +20,12 @@ Refine it with:
 - `--body` only when the winning snippet is insufficient.
 - `--limit-forums N` and `--limit-discussions N` to bound large-site scans.
 
-Use `moodle forum search QUERY --json` when a larger result set is the goal. `forum find` is the default for one best answer.
+Use `moodle forums search QUERY --json` and narrow with `--limit` when only a few matches are needed.
 
 When one request combines search with the full matching post, use one command:
 
 ```bash
-moodle forum find QUERY --course COURSE --body --json
+moodle forums search QUERY --course UNIT --limit 1 --json
 ```
 
 Reserve `forum discussion` for an existing discussion ID or URL, or for selecting a known post ID.
@@ -34,12 +34,11 @@ Reserve `forum discussion` for an existing discussion ID or URL, or for selectin
 
 | Need | Command |
 | --- | --- |
-| List forum activities | `moodle forum forums [QUERY] --json` |
-| List discussions in one forum | `moodle forum discussions FORUM_OR_URL --json` |
-| Read a discussion | `moodle forum discussion DISCUSSION_OR_URL --json` |
-| Read one post | `moodle forum discussion DISCUSSION_OR_URL --post POST_ID --json` |
-| Include full bodies in terminal format | `moodle forum discussion DISCUSSION_OR_URL --body --table` |
-| Validate discussion rendering | `moodle forum check FORUM_OR_URL --limit 20 --json` |
+| List forum activities | `moodle forums UNIT --json` |
+| List discussions in one forum | `moodle forums show FORUM_OR_URL --json` |
+| Read a discussion | `moodle threads show DISCUSSION_OR_URL --json` |
+| Read one post | `moodle threads show DISCUSSION_OR_URL --post POST_ID --json` |
+| Include full bodies in terminal format | `moodle threads show DISCUSSION_OR_URL --body --table` |
 
 Skip discovery when the user already supplied a discussion URL. Use `forum discussions` when they supplied a forum view URL and want nearby threads.
 

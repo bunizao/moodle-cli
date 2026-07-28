@@ -7,7 +7,7 @@ Read this file for grades or detail about assignments, quizzes, resources, links
 Use a course ID or unique course name:
 
 ```bash
-moodle grades COURSE --json
+moodle grades UNIT --json
 ```
 
 Report the course total and requested grade items. Preserve displayed values and percentages; Moodle gradebooks may expose text such as ranges, letters, or incomplete totals.
@@ -18,12 +18,13 @@ Each command accepts a numeric module ID or its full Moodle URL:
 
 | Activity | Command |
 | --- | --- |
-| Assignment | `moodle assign ASSIGNMENT --json` |
-| Quiz | `moodle quiz QUIZ --json` |
-| File/resource | `moodle resource RESOURCE --json` |
-| External link | `moodle link LINK --json` |
-| Moodle page | `moodle page PAGE --json` |
-| Folder | `moodle folder FOLDER --json` |
+All supported activity types share the course-module ID namespace and use one command:
+
+```bash
+moodle activities show ACTIVITY_ID --json
+```
+
+The result includes `type` (`assign`, `quiz`, `resource`, `link`, `page`, or `folder`).
 
 When the user supplies a supported Moodle URL without naming a command, route it directly:
 

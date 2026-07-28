@@ -4,7 +4,7 @@ Terminal-first CLI for Moodle LMS that reuses an authenticated browser session. 
 
 ## Features
 
-- Reuses `MoodleSession` from `okta-auth`, your browser, or `MOODLE_SESSION`
+- Reuses `MoodleSession` from `okta-auth`, your browser, or `MOODLE_TOKEN`
 - Uses Moodle AJAX APIs and falls back to authenticated page scraping when needed
 - Lists courses, deadlines, alerts, activities, grades, and forum discussions
 - Agent-friendly JSON/YAML output, field selection, and stable exit codes
@@ -34,7 +34,7 @@ uv tool uninstall moodle-cli
 npm i -g moodle-cli
 ```
 
-`~/.config/moodle-cli/config.yaml`, `MOODLE_BASE_URL`, and `MOODLE_SESSION` remain compatible.
+`~/.config/moodle-cli/config.yaml`, `MOODLE_BASE_URL`, and legacy `MOODLE_SESSION` remain compatible.
 
 ## Authentication
 
@@ -42,7 +42,7 @@ Use one of:
 
 - `okta-auth-cli` configured for your Moodle site
 - an active Moodle browser session
-- a `MOODLE_SESSION` environment variable
+- a `MOODLE_TOKEN` environment variable containing a `MoodleSession` cookie value
 
 Optional Okta setup:
 
@@ -58,6 +58,8 @@ base_url: https://school.example.edu
 ```
 
 Use a root URL only, not `/login/index.php` or `/my/`.
+
+Set `MOODLE_CONFIG` to use a different config file. `MOODLE_URL` remains a deprecated fallback for `MOODLE_BASE_URL` and prints a warning. `MOODLE_SESSION` remains a compatibility fallback for `MOODLE_TOKEN`.
 
 ### Session Keepalive
 
@@ -82,16 +84,18 @@ moodle user
 moodle alerts
 moodle todo
 moodle overview
-moodle courses
-moodle grades 34637
+moodle units
+moodle units show 34637
 moodle activities 34637
+moodle activities show 91234
+moodle grades 34637
+moodle forums 34637
+moodle threads show 9001
 moodle https://school.example.edu/course/view.php?id=34637
 moodle https://school.example.edu/mod/forum/discuss.php?d=9001#p9101 --json
 moodle skills
 moodle skills generate
 moodle skills add
-moodle update
-moodle update --check-only
 ```
 
 Supported Moodle URLs can be passed as the first argument. The CLI routes forum discussion, forum view, assignment, quiz, resource, link, page, folder, course, and grade report URLs to the shortest matching command.
@@ -112,7 +116,7 @@ Invalid `--fields` values fail as usage errors and list valid fields.
 With JSON output enabled, errors are one parseable JSON line on stderr:
 
 ```json
-{"error":true,"code":"auth_failed","message":"...","hint":"..."}
+{"ok":false,"error":{"code":"auth","message":"...","hint":"..."},"exit_code":3}
 ```
 
 Exit codes:
@@ -121,18 +125,14 @@ Exit codes:
 | --- | --- |
 | 0 | Success |
 | 1 | Unexpected error |
-| 2 | Authentication or configuration error |
-| 3 | Usage error |
+| 2 | Usage error |
+| 3 | Authentication error |
 | 4 | Requested course, activity, forum, or discussion was not found |
+| 5 | Moodle rejected a well-formed request |
 
 ## Updates
 
-```bash
-moodle update --check-only
-moodle update --json
-```
-
-`moodle update` checks `https://registry.npmjs.org/moodle-cli/latest`. npm installs update with:
+npm installs update with:
 
 ```bash
 npm install -g moodle-cli@latest
