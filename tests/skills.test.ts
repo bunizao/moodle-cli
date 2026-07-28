@@ -74,7 +74,7 @@ describe("skills install wrappers", () => {
 
 describe("skill generation", () => {
   it("summarizes the skill entrypoint", () => {
-    expect(formatSkillSummary()).toContain("Generate: moodle skills generate");
+    expect(formatSkillSummary()).toContain("Install: npx skills add https://github.com/bunizao/moodle-cli");
   });
 
   it("extracts public commands from a commander-like tree", () => {

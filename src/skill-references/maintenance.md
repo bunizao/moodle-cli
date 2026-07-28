@@ -1,6 +1,6 @@
 # Maintenance
 
-Read this file for upgrades, agent-skill installation, or repository skill regeneration.
+Read this file for CLI upgrades or agent-skill installation.
 
 ## Update the CLI
 
@@ -29,15 +29,3 @@ moodle skills add
 ```
 
 Extra arguments are passed to the shared `skills` CLI, for example `moodle skills add --agent codex`.
-
-## Regenerate the Skill Bundle
-
-Inside the `moodle-cli` source repository:
-
-```bash
-npm run build
-npm run skill:generate
-git diff -- SKILL.md references agents/openai.yaml
-```
-
-Regeneration is complete when the root skill, branch references, command reference, output contract, and agent metadata are all current.

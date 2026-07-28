@@ -19,14 +19,14 @@
     "build": "tsc --noEmit && tsup && rm -f dist/.gitignore",
     "check": "tsc --noEmit",
     "pack:check": "npm pack --dry-run --json | node -e \"let data = ''; process.stdin.on('data', chunk => data += chunk); process.stdin.on('end', () => { const files = JSON.parse(data)[0]?.files?.map(file => file.path) ?? []; for (const required of ['dist/moodle.js', 'SKILL.md', 'references/command-reference.md', 'agents/openai.yaml']) if (!files.includes(required)) throw new Error('npm package is missing ' + required); });\"",
-    "pack:smoke": "tmp=\"$(mktemp -d)\" && npm pack ../cli-kit --pack-destination \"$tmp\" >/dev/null && npm pack --pack-destination \"$tmp\" >/dev/null && npm install --prefix \"$tmp/install\" \"$tmp\"/bunizao-cli-kit-*.tgz \"$tmp\"/moodle-cli-*.tgz >/dev/null && test \"$(\"$tmp/install/node_modules/.bin/moodle\" --version)\" = \"$(node -p \"JSON.parse(require('node:fs').readFileSync('package.json', 'utf8')).version\")\"",
+    "pack:smoke": "tmp=\"$(mktemp -d)\" && npm pack --pack-destination \"$tmp\" >/dev/null && npm install --prefix \"$tmp/install\" \"$tmp\"/moodle-cli-*.tgz >/dev/null && test \"$(\"$tmp/install/node_modules/.bin/moodle\" --version)\" = \"$(node -p \"JSON.parse(require('node:fs').readFileSync('package.json', 'utf8')).version\")\"",
     "test": "vitest run",
     "test:watch": "vitest",
     "skill:generate": "node dist/moodle.js skills generate",
     "prepublishOnly": "npm run test && npm run build"
   },
   "dependencies": {
-    "@bunizao/cli-kit": "file:../cli-kit",
+    "@bunizao/cli-kit": "https://codeload.github.com/bunizao/cli-kit/tar.gz/refs/tags/v0.1.0",
     "@steipete/sweet-cookie": "^0.4.0",
     "commander": "^13.1.0",
     "node-html-parser": "^7.0.1",

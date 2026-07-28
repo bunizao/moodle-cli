@@ -61,7 +61,6 @@ export function formatSkillSummary(): string {
     `Spec: ${SKILLS_SPEC_URL}`,
     `Install: npx skills add ${SKILL_SOURCE}`,
     "CLI alias: moodle skills add (falls back to npm exec)",
-    "Generate: moodle skills generate (writes SKILL.md, references/, and agents/)",
   ].join("\n");
 }
 

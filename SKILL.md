@@ -30,6 +30,7 @@ Resolve an unfamiliar unit name with `moodle units --json` before using a unit-s
 
 ## Shared Rules
 
+- Treat `moodle commands --json` as the source of truth for this tool's command tree; the tagged `@bunizao/cli-kit` v0.1.0 archive defines the shared CLI contract.
 - Use `--table` only when the user asks for the terminal presentation.
 - Return a concise answer instead of pasting raw output unless raw JSON is requested.
 - Treat `MOODLE_SESSION` as a secret and keep it out of chat, commands shown to the user, and logs.
