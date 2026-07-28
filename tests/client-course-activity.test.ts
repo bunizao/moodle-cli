@@ -294,6 +294,7 @@ describe("MoodleClient course/activity modules", () => {
   it("scrapes six activity detail pages and parses activity references", async () => {
     installFetch([
       dashboardRoute,
+      ajaxRoute("core_course_get_course_module", { cm: { id: 31, modname: "assign" } }),
       (request) => (request.url === `${BASE_URL}/mod/assign/view.php?id=31` ? htmlResponse(fixture("assign.html")) : undefined),
       (request) => (request.url === `${BASE_URL}/mod/quiz/view.php?id=32` ? htmlResponse(fixture("quiz.html")) : undefined),
       (request) => (request.url === `${BASE_URL}/mod/resource/view.php?id=33` ? htmlResponse(fixture("resource.html")) : undefined),
@@ -309,6 +310,7 @@ describe("MoodleClient course/activity modules", () => {
     await expect(client.getLink(34)).resolves.toMatchObject({ target_url: "https://example.com/reading" });
     await expect(client.getPage(35)).resolves.toMatchObject({ content_text: "Remember the integration rules." });
     await expect(client.getFolder(36)).resolves.toMatchObject({ files: ["chapter-1.pdf", "chapter-2.pdf"] });
+    await expect(client.getActivity(31)).resolves.toMatchObject({ id: 31, name: "Essay 1", type: "assign" });
 
     expect(parseActivityReference(`${BASE_URL}/mod/assign/view.php?id=31`, { label: "Assignment", path: "/mod/assign/view.php" })).toBe(31);
     expect(parseActivityReference("32", { label: "Quiz", path: "/mod/quiz/view.php" })).toBe(32);
@@ -342,7 +344,7 @@ describe("MoodleClient course/activity modules", () => {
       { id: 202, shortname: "MATH102" },
     ]);
 
-    const course = await runJsonCommand(["course", "101", "--json"], fetchImpl);
+    const course = await runJsonCommand(["units", "show", "101", "--json"], fetchImpl);
     expect(course.code).toBe(0);
     const courseJson = JSON.parse(course.stdout);
     expect(courseJson[0].id).toBe(11);
@@ -353,7 +355,7 @@ describe("MoodleClient course/activity modules", () => {
     expect(activities.code).toBe(0);
     expect(JSON.parse(activities.stdout)).toEqual([
       { id: 21, name: "Syllabus", modname: "resource", url: `${BASE_URL}/mod/resource/view.php?id=21`, visible: true, description: "Read first" },
-      { id: 22, name: "Quiz 1", modname: "quiz", url: `${BASE_URL}/mod/quiz/view.php?id=22`, visible: false },
+      { id: 22, name: "Quiz 1", modname: "quiz", url: `${BASE_URL}/mod/quiz/view.php?id=22`, visible: false, description: "" },
     ]);
   });
 
@@ -408,6 +410,19 @@ describe("MoodleClient course/activity modules", () => {
     expect(JSON.parse(result.stdout)).toEqual({ id: 31, name: "Essay 1" });
   });
 
+  it("resolves the activity type for activities show", async () => {
+    const fetchImpl = cliFetch([
+      dashboardRoute,
+      ajaxRoute("core_course_get_course_module", { cm: { id: 31, modname: "assign" } }),
+      (request) => (request.url === `${BASE_URL}/mod/assign/view.php?id=31` ? htmlResponse(fixture("assign.html")) : undefined),
+    ]);
+
+    const result = await runJsonCommand(["activities", "show", "31", "--json"], fetchImpl);
+
+    expect(result).toMatchObject({ code: 0, stderr: "" });
+    expect(JSON.parse(result.stdout)).toMatchObject({ id: 31, name: "Essay 1", type: "assign" });
+  });
+
   it("returns usage errors for invalid URL --fields", async () => {
     const fetchImpl = cliFetch([
       dashboardRoute,
@@ -415,16 +430,16 @@ describe("MoodleClient course/activity modules", () => {
     ]);
 
     const invalid = await runJsonCommand([`${BASE_URL}/mod/assign/view.php?id=31`, "--json", "--fields", "missing"], fetchImpl);
-    expect(invalid.code).toBe(3);
-    expect(JSON.parse(invalid.stderr)).toMatchObject({ code: "usage_error" });
+    expect(invalid.code).toBe(2);
+    expect(JSON.parse(invalid.stderr)).toMatchObject({ error: { code: "usage" }, exit_code: 2 });
     expect(invalid.stderr).toContain("Valid fields");
 
     const missing = await runJsonCommand([`${BASE_URL}/mod/assign/view.php?id=31`, "--json", "--fields"], fetchImpl);
-    expect(missing.code).toBe(3);
-    expect(JSON.parse(missing.stderr)).toMatchObject({ code: "usage_error", message: "--fields requires a value." });
+    expect(missing.code).toBe(2);
+    expect(JSON.parse(missing.stderr)).toMatchObject({ error: { code: "usage", message: expect.stringContaining("fields") }, exit_code: 2 });
   });
 
-  it("applies --fields to forum find", async () => {
+  it("applies --fields to forum search", async () => {
     const fetchImpl = cliFetch([
       dashboardRoute,
       ajaxRoute("core_enrol_get_users_courses", jsonFixture("courses.json")),
@@ -463,19 +478,21 @@ describe("MoodleClient course/activity modules", () => {
     ]);
 
     const result = await runJsonCommand([
-      "forum",
-      "find",
+      "forums",
+      "search",
       "deadline",
       "--forum",
       "501",
       "--titles-only",
+      "--limit",
+      "1",
       "--json",
       "--fields",
       "discussion_id,discussion_subject",
     ], fetchImpl);
 
     expect(result).toMatchObject({ code: 0, stderr: "" });
-    expect(JSON.parse(result.stdout)).toEqual({ discussion_id: 9001, discussion_subject: "Exam deadline questions" });
+    expect(JSON.parse(result.stdout)).toEqual([{ discussion_id: 9001, discussion_subject: "Exam deadline questions" }]);
   });
 });
 

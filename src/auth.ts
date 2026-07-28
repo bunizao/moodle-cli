@@ -5,6 +5,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import {
   DASHBOARD_PATH,
+  ENV_MOODLE_TOKEN,
   ENV_MOODLE_SESSION,
   LOGIN_PATH,
   MOODLE_SESSION_COOKIE_PREFIX,
@@ -83,7 +84,7 @@ export async function getAuthenticatedSession(
     const context = await validate(baseUrl, envSession);
     if (!context) {
       throw new AuthError(
-        `${ENV_MOODLE_SESSION} is set but did not authenticate for ${baseUrl}.`,
+        `${envSession.source === ENV_MOODLE_TOKEN ? ENV_MOODLE_TOKEN : ENV_MOODLE_SESSION} is set but did not authenticate for ${baseUrl}.`,
         authFailureHint(baseUrl),
       );
     }
@@ -182,8 +183,9 @@ export async function getAuthenticatedSessionWithBrowserFallback(
 }
 
 export function loadSessionFromEnv(env: Record<string, string | undefined> = process.env): MoodleSessionCookie | null {
-  const value = env[ENV_MOODLE_SESSION]?.trim();
-  return value ? { name: MOODLE_SESSION_COOKIE_PREFIX, value, source: "env" } : null;
+  const source = env[ENV_MOODLE_TOKEN] ? ENV_MOODLE_TOKEN : ENV_MOODLE_SESSION;
+  const value = env[source]?.trim();
+  return value ? { name: MOODLE_SESSION_COOKIE_PREFIX, value, source } : null;
 }
 
 export function matchingMoodleSessionCookies(cookies: MoodleSessionCookie[], baseUrl: string): MoodleSessionCookie[] {

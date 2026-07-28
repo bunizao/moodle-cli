@@ -22,6 +22,7 @@ export const FUNC_GET_SITE_INFO = "core_webservice_get_site_info";
 export const FUNC_GET_COURSES = "core_enrol_get_users_courses";
 export const FUNC_GET_COURSES_BY_TIMELINE = "core_course_get_enrolled_courses_by_timeline_classification";
 export const FUNC_GET_COURSE_CONTENTS = "core_course_get_contents";
+export const FUNC_GET_COURSE_MODULE = "core_course_get_course_module";
 export const FUNC_GET_ACTION_EVENTS = "core_calendar_get_action_events_by_timesort";
 export const FUNC_GET_POPUP_NOTIFICATIONS = "message_popup_get_popup_notifications";
 export const FUNC_GET_CONVERSATION_COUNTS = "core_message_get_conversation_counts";
@@ -42,6 +43,9 @@ export const KEEPALIVE_LOG_FILENAME = "keepalive.log";
 
 export const ENV_MOODLE_SESSION = "MOODLE_SESSION";
 export const ENV_MOODLE_BASE_URL = "MOODLE_BASE_URL";
+export const ENV_MOODLE_URL = "MOODLE_URL";
+export const ENV_MOODLE_CONFIG = "MOODLE_CONFIG";
+export const ENV_MOODLE_TOKEN = "MOODLE_TOKEN";
 
 export const MOODLE_SESSION_COOKIE_PREFIX = "MoodleSession";
 export const OKTA_AUTH_URL = "https://github.com/bunizao/okta-auth";

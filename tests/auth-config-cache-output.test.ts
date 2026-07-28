@@ -10,9 +10,9 @@ import {
   matchingMoodleSessionCookies,
 } from "../src/auth.js";
 import { loadConfig, normalizeBaseUrl } from "../src/config.js";
-import { ENV_MOODLE_BASE_URL, ENV_MOODLE_SESSION } from "../src/constants.js";
+import { ENV_MOODLE_BASE_URL, ENV_MOODLE_CONFIG, ENV_MOODLE_SESSION, ENV_MOODLE_TOKEN, ENV_MOODLE_URL } from "../src/constants.js";
 import { readCachedSession, writeCachedSession } from "../src/session-cache.js";
-import { serializeStructured } from "../src/output.js";
+import { render, resolveFormat } from "@bunizao/cli-kit";
 import { runCli } from "../src/cli.js";
 import { createMoodleClient } from "../src/client.js";
 
@@ -160,6 +160,18 @@ describe("config and session cache", () => {
     await expect(loadConfig({ cwd: join(root, "empty"), homeDir, env: {} })).resolves.toMatchObject({ baseUrl: "https://home.example.edu" });
   });
 
+  it("supports canonical config and token variables with deprecated fallbacks", async () => {
+    const root = await mkdtemp(join(tmpdir(), "moodle-cli-env-contract-"));
+    const configPath = join(root, "custom.yaml");
+    await writeFile(configPath, `base_url: ${BASE_URL}\n`);
+    await expect(loadConfig({ env: { [ENV_MOODLE_CONFIG]: configPath } })).resolves.toMatchObject({ baseUrl: BASE_URL });
+
+    const stderr = buffer();
+    await expect(loadConfig({ env: { [ENV_MOODLE_URL]: BASE_URL }, stderr: stderr as unknown as NodeJS.WritableStream })).resolves.toMatchObject({ baseUrl: BASE_URL });
+    expect(stderr.text()).toContain(`${ENV_MOODLE_URL} is deprecated`);
+    expect(loadSessionFromEnv({ [ENV_MOODLE_TOKEN]: "canonical", [ENV_MOODLE_SESSION]: "legacy" })?.value).toBe("canonical");
+  });
+
   it("rejects non-root URLs and non-TTY missing config", async () => {
     expect(() => normalizeBaseUrl(`${BASE_URL}/login/index.php`)).toThrow(/site root/);
     await expect(loadConfig({ cwd: await mkdtemp(join(tmpdir(), "moodle-cli-empty-")), homeDir: await mkdtemp(join(tmpdir(), "moodle-cli-home-")), env: {}, stdin: { isTTY: false } })).rejects.toThrow(/MOODLE_BASE_URL/);
@@ -281,8 +293,9 @@ describe("config and session cache", () => {
 
 describe("agent output contract", () => {
   it("filters fields and rejects unknown fields", () => {
-    expect(serializeStructured([{ id: 1, name: "Course", empty: "" }], { format: "json", fields: "id,name" })).toBe('[{"id":1,"name":"Course"}]');
-    expect(() => serializeStructured([{ id: 1 }], { format: "json", fields: "missing" })).toThrow(/Valid fields: id/);
+    expect(render([{ id: 1, name: "Course" }], { format: "json", fields: ["id", "name"] })).toBe('[\n  {\n    "id": 1,\n    "name": "Course"\n  }\n]\n');
+    expect(resolveFormat({}, false)).toBe("json");
+    expect(resolveFormat({}, true)).toBe("table");
   });
 
   it("auto-emits JSON on a pipe and emits JSON errors", async () => {
@@ -313,7 +326,7 @@ describe("agent output contract", () => {
     });
 
     expect(code).toBe(0);
-    expect(stdout.text()).toBe('{"userid":7,"fullname":"Alice"}\n');
+    expect(stdout.text()).toBe('{\n  "userid": 7,\n  "fullname": "Alice"\n}\n');
     expect(stderr.text()).toBe("");
 
     const errorStdout = buffer();
@@ -324,13 +337,13 @@ describe("agent output contract", () => {
       stdin: { isTTY: false } as NodeJS.ReadStream,
       env: {},
     });
-    expect(errorCode).toBe(3);
-    expect(JSON.parse(errorStderr.text())).toMatchObject({ error: true, code: "usage_error" });
+    expect(errorCode).toBe(2);
+    expect(JSON.parse(errorStderr.text())).toMatchObject({ ok: false, error: { code: "usage" }, exit_code: 2 });
   });
 
   it("keeps exit codes stable across success, unexpected, auth/config, usage, and not-found cases", async () => {
     const homeDir = await mkdtemp(join(tmpdir(), "moodle-cli-exits-"));
-    await expect(runCli(["node", "moodle", "--version"], { homeDir, stdout: buffer(), stderr: buffer() })).resolves.toBe(0);
+    await expect(runCli(["node", "moodle", "-V"], { homeDir, stdout: buffer(), stderr: buffer() })).resolves.toBe(0);
 
     const configStderr = buffer();
     await expect(runCli(["node", "moodle", "user", "--json"], {
@@ -339,8 +352,8 @@ describe("agent output contract", () => {
       stdout: buffer(),
       stderr: configStderr,
       env: {},
-    })).resolves.toBe(2);
-    expect(JSON.parse(configStderr.text())).toMatchObject({ code: "config_error" });
+    })).resolves.toBe(1);
+    expect(JSON.parse(configStderr.text())).toMatchObject({ error: { code: "config" }, exit_code: 1 });
 
     const unexpectedStderr = buffer();
     await expect(runCli(["node", "moodle", "user", "--json"], {
@@ -353,10 +366,10 @@ describe("agent output contract", () => {
         ajax: () => jsonResponse({ unexpected: true }),
       }),
     })).resolves.toBe(1);
-    expect(JSON.parse(unexpectedStderr.text())).toMatchObject({ code: "unexpected_error" });
+    expect(JSON.parse(unexpectedStderr.text())).toMatchObject({ error: { code: "unexpected" }, exit_code: 1 });
 
     const notFoundStderr = buffer();
-    await expect(runCli(["node", "moodle", "course", "Physics", "--json"], {
+    await expect(runCli(["node", "moodle", "units", "Physics", "--json"], {
       homeDir: await mkdtemp(join(tmpdir(), "moodle-cli-not-found-")),
       stdin: { isTTY: false } as NodeJS.ReadStream,
       stdout: buffer(),
@@ -366,10 +379,10 @@ describe("agent output contract", () => {
         ajax: () => jsonResponse([{ error: false, data: [] }]),
       }),
     })).resolves.toBe(4);
-    expect(JSON.parse(notFoundStderr.text())).toMatchObject({ code: "not_found" });
+    expect(JSON.parse(notFoundStderr.text())).toMatchObject({ error: { code: "not_found" }, exit_code: 4 });
   });
 
-  it("prints auth failure hints with exit 2", async () => {
+  it("prints auth failure hints with exit 3", async () => {
     const stderr = buffer();
     const code = await runCli(["node", "moodle", "user", "--json"], {
       homeDir: await mkdtemp(join(tmpdir(), "moodle-cli-auth-fail-")),
@@ -383,11 +396,11 @@ describe("agent output contract", () => {
       stderr,
     });
 
-    expect(code).toBe(2);
+    expect(code).toBe(3);
     const error = JSON.parse(stderr.text());
-    expect(error).toMatchObject({ error: true, code: "auth_failed" });
-    expect(error.hint).toContain("MOODLE_SESSION");
-    expect(error.hint).toContain("okta-auth");
+    expect(error).toMatchObject({ ok: false, error: { code: "auth" }, exit_code: 3 });
+    expect(error.error.hint).toContain("MOODLE_SESSION");
+    expect(error.error.hint).toContain("okta-auth");
   });
 });
 

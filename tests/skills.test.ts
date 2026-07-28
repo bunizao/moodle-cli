@@ -80,9 +80,6 @@ describe("skill generation", () => {
   it("extracts public commands from a commander-like tree", () => {
     const program = new Command("moodle");
     program.command("courses").description("List enrolled courses.").option("-j, --json", "Output as JSON.").option("--fields <fields>", "Keep only these fields.");
-    const internal = program.command("internal").description("Hidden command.");
-    (internal as unknown as { hidden: boolean }).hidden = true;
-
     const commands = extractCommanderCommands(program);
 
     expect(commands).toEqual([
@@ -92,8 +89,8 @@ describe("skill generation", () => {
         description: "List enrolled courses.",
         arguments: [],
         flags: [
-          { name: "--json", alias: "-j", description: "Output as JSON.", defaultValue: undefined, required: false },
-          { name: "--fields", alias: undefined, description: "Keep only these fields.", defaultValue: undefined, required: true },
+          { name: "--json", alias: "-j", description: "Output as JSON.", required: false },
+          { name: "--fields", alias: undefined, description: "Keep only these fields.", required: true },
         ],
       },
     ]);

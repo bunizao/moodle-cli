@@ -3,7 +3,7 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { createInterface } from "node:readline/promises";
 import YAML from "yaml";
-import { CONFIG_DIR_NAME, CONFIG_FILENAME, ENV_MOODLE_BASE_URL } from "./constants.js";
+import { CONFIG_DIR_NAME, CONFIG_FILENAME, ENV_MOODLE_BASE_URL, ENV_MOODLE_CONFIG, ENV_MOODLE_URL } from "./constants.js";
 import { ConfigError } from "./errors.js";
 
 export interface MoodleConfig extends Record<string, unknown> {
@@ -81,6 +81,10 @@ export async function loadConfig(options: ConfigOptions = {}): Promise<MoodleCon
   const env = options.env ?? process.env;
   if (env[ENV_MOODLE_BASE_URL]) {
     return { baseUrl: normalizeBaseUrl(env[ENV_MOODLE_BASE_URL]) };
+  }
+  if (env[ENV_MOODLE_URL]) {
+    (options.stderr ?? process.stderr).write(`${ENV_MOODLE_URL} is deprecated; use ${ENV_MOODLE_BASE_URL}.\n`);
+    return { baseUrl: normalizeBaseUrl(env[ENV_MOODLE_URL]) };
   }
 
   const loaded = await loadExistingConfig(options);
@@ -168,13 +172,18 @@ export function missingBaseUrlMessage(configPath: string | null, options: Config
 }
 
 async function loadExistingConfig(options: ConfigOptions): Promise<{ config: Record<string, unknown>; path: string | null }> {
-  for (const path of [cwdConfigPath(options.cwd), userConfigPath(options.homeDir)]) {
+  const env = options.env ?? process.env;
+  const explicitPath = env[ENV_MOODLE_CONFIG];
+  const paths = [explicitPath, cwdConfigPath(options.cwd), userConfigPath(options.homeDir)].filter(
+    (value): value is string => Boolean(value),
+  );
+  for (const path of paths) {
     const config = await readConfigFile(path, options);
     if (config) {
       return { config, path };
     }
   }
-  return { config: {}, path: null };
+  return { config: {}, path: explicitPath ?? null };
 }
 
 async function readConfigFile(path: string, options: ConfigOptions): Promise<Record<string, unknown> | null> {

@@ -8,6 +8,7 @@ import {
   FUNC_GET_ACTION_EVENTS,
   FUNC_GET_CONVERSATION_COUNTS,
   FUNC_GET_COURSE_CONTENTS,
+  FUNC_GET_COURSE_MODULE,
   FUNC_GET_COURSES,
   FUNC_GET_COURSES_BY_TIMELINE,
   FUNC_GET_POPUP_NOTIFICATIONS,
@@ -27,6 +28,7 @@ import { ForumModule } from "./forum.js";
 import { searchForumContent as searchForumModule } from "./forum-search.js";
 import type {
   AlertSummary,
+  ActivityDetail,
   Assignment,
   Course,
   CourseGrades,
@@ -214,6 +216,26 @@ export class MoodleClient {
 
   async getActivities(courseId: number): Promise<Section["activities"]> {
     return (await this.getCourseContents(courseId)).flatMap((section) => section.activities);
+  }
+
+  async getActivity(id: number): Promise<ActivityDetail & { type: string }> {
+    await this.ensureSession();
+    const data = await this.call(FUNC_GET_COURSE_MODULE, { cmid: id });
+    const module = isRecord(data) && isRecord(data.cm) ? data.cm : data;
+    const type = isRecord(module) && typeof module.modname === "string" ? module.modname : "";
+    const loaders: Record<string, () => Promise<ActivityDetail>> = {
+      assign: () => this.getAssignment(id),
+      quiz: () => this.getQuiz(id),
+      resource: () => this.getResource(id),
+      url: () => this.getLink(id),
+      page: () => this.getPage(id),
+      folder: () => this.getFolder(id),
+    };
+    const load = loaders[type];
+    if (!load) {
+      throw new NotFoundError(`Activity ${id} is not a supported assignment, quiz, resource, link, page, or folder.`);
+    }
+    return { ...(await load()), type: type === "url" ? "link" : type };
   }
 
   async getTodo(limit = 20, days?: number): Promise<TodoItem[]> {
