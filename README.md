@@ -154,4 +154,4 @@ The CLI alias delegates to the same command:
 moodle skills add
 ```
 
-`SKILL.md` routes agents to focused guidance under `references/`; the exact command and output references remain generated from the CLI. The normalized command behavior comes from the tagged `@bunizao/cli-kit` v0.1.0 source archive and does not require a sibling checkout.
+`SKILL.md` routes agents to focused guidance under `references/`; the exact command and output references remain generated from the CLI. The normalized command behavior comes from the published `@bunizao/cli-kit` npm package (`^0.1.0`).

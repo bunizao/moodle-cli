@@ -26,7 +26,7 @@
     "prepublishOnly": "npm run test && npm run build"
   },
   "dependencies": {
-    "@bunizao/cli-kit": "https://codeload.github.com/bunizao/cli-kit/tar.gz/refs/tags/v0.1.0",
+    "@bunizao/cli-kit": "^0.1.0",
     "@steipete/sweet-cookie": "^0.4.0",
     "commander": "^13.1.0",
     "node-html-parser": "^7.0.1",
