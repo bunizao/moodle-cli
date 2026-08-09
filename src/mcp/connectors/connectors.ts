@@ -45,17 +45,24 @@ export interface ClientConnectorOptions {
   configPath: string;
   detectionPath?: string;
   command?: string;
+  mode?: "bridge" | "remote";
+  endpoint?: string;
+  accessToken?: string;
 }
 
 interface ConnectorCodec {
-  update(content: string, registration: string, command: string, profile: string): string;
-  contains(content: string, registration: string, command: string, profile: string): boolean;
+  update(content: string, registration: string, connection: ConnectorConnection): string;
+  contains(content: string, registration: string, connection: ConnectorConnection): boolean;
   remove(content: string, registration: string): string;
 }
 
+type ConnectorConnection =
+  | { mode: "bridge"; command: string; profile: string }
+  | { mode: "remote"; endpoint: string; accessToken: string };
+
 export class ConfigFileClientConnector implements ClientConnector {
   private readonly registration: string;
-  private readonly command: string;
+  private readonly connection: ConnectorConnection;
   private original: string | null | undefined;
   private lastReceipt: ClientReceipt | null = null;
 
@@ -67,7 +74,7 @@ export class ConfigFileClientConnector implements ClientConnector {
   ) {
     validateProfile(options.profile);
     this.registration = `moodle-${options.profile}`;
-    this.command = options.command ?? "moodle";
+    this.connection = resolveConnection(options);
   }
 
   async detect(): Promise<ClientDetection> {
@@ -81,7 +88,7 @@ export class ConfigFileClientConnector implements ClientConnector {
 
   async preview(): Promise<ClientChange> {
     const before = await this.readConfig();
-    const after = this.codec.update(before ?? "", this.registration, this.command, this.options.profile);
+    const after = this.codec.update(before ?? "", this.registration, this.connection);
     return {
       client: this.client,
       configPath: this.options.configPath,
@@ -92,22 +99,22 @@ export class ConfigFileClientConnector implements ClientConnector {
 
   async apply(): Promise<ClientReceipt> {
     const before = await this.readConfig();
-    const after = this.codec.update(before ?? "", this.registration, this.command, this.options.profile);
+    const after = this.codec.update(before ?? "", this.registration, this.connection);
     this.original = before;
     const changed = before !== after;
     const backupPath = before === null ? null : `${this.options.configPath}.moodle-mcp.backup`;
-    if (changed) {
-      if (backupPath && before !== null) {
-        await this.fileSystem.writePrivate(backupPath, before);
-      }
-      await this.fileSystem.writePrivate(this.options.configPath, after);
-    }
     this.lastReceipt = {
       client: this.client,
       configPath: this.options.configPath,
       backupPath,
       changed,
     };
+    if (changed) {
+      if (backupPath && before !== null) {
+        await this.fileSystem.writePrivate(backupPath, before);
+      }
+      await this.fileSystem.writePrivate(this.options.configPath, after);
+    }
     return this.lastReceipt;
   }
 
@@ -116,7 +123,7 @@ export class ConfigFileClientConnector implements ClientConnector {
     return {
       client: this.client,
       configured: content !== null
-        && this.codec.contains(content, this.registration, this.command, this.options.profile),
+        && this.codec.contains(content, this.registration, this.connection),
     };
   }
 
@@ -159,8 +166,9 @@ export class ClientConnectionError extends Error {
 }
 
 export async function connectClient(connector: ClientConnector): Promise<ClientReceipt> {
-  const receipt = await connector.apply();
+  const detection = await connector.detect();
   try {
+    const receipt = await connector.apply();
     const verification = await connector.verify();
     if (!verification.configured) {
       throw new Error("verification failed");
@@ -168,7 +176,7 @@ export async function connectClient(connector: ClientConnector): Promise<ClientR
     return receipt;
   } catch {
     await connector.rollback();
-    throw new ClientConnectionError(receipt.client);
+    throw new ClientConnectionError(detection.client);
   }
 }
 
@@ -208,31 +216,31 @@ export function createCursorConnector(
 }
 
 const tomlCodec: ConnectorCodec = {
-  update(content, registration, command, profile) {
+  update(content, registration, connection) {
     const without = removeTomlBlock(content, registration).trimEnd();
-    const block = tomlBlock(registration, command, profile);
+    const block = tomlBlock(registration, connection);
     return without ? `${without}\n\n${block}` : block;
   },
-  contains(content, registration, command, profile) {
-    return content.includes(tomlBlock(registration, command, profile));
+  contains(content, registration, connection) {
+    return content.includes(tomlBlock(registration, connection));
   },
   remove: removeTomlBlock,
 };
 
 function jsonCodec(container: "mcpServers" | "servers"): ConnectorCodec {
   return {
-    update(content, registration, command, profile) {
+    update(content, registration, connection) {
       const document = parseJsonObject(content);
       const registrations = objectAt(document, container);
-      registrations[registration] = bridgeRegistration(command, profile);
+      registrations[registration] = jsonRegistration(connection);
       document[container] = registrations;
       return `${JSON.stringify(document, null, 2)}\n`;
     },
-    contains(content, registration, command, profile) {
+    contains(content, registration, connection) {
       try {
         const document = parseJsonObject(content);
         return JSON.stringify(objectAt(document, container)[registration])
-          === JSON.stringify(bridgeRegistration(command, profile));
+          === JSON.stringify(jsonRegistration(connection));
       } catch {
         return false;
       }
@@ -250,19 +258,34 @@ function jsonCodec(container: "mcpServers" | "servers"): ConnectorCodec {
   };
 }
 
-function bridgeRegistration(command: string, profile: string): Record<string, unknown> {
-  return { command, args: ["mcp", "bridge", "--profile", profile] };
+function jsonRegistration(connection: ConnectorConnection): Record<string, unknown> {
+  return connection.mode === "bridge"
+    ? { command: connection.command, args: ["mcp", "bridge", "--profile", connection.profile] }
+    : {
+        type: "http",
+        url: connection.endpoint,
+        headers: { Authorization: `Bearer ${connection.accessToken}` },
+      };
 }
 
-function tomlBlock(registration: string, command: string, profile: string): string {
-  return [
+function tomlBlock(registration: string, connection: ConnectorConnection): string {
+  const lines = [
     `# >>> moodle-cli mcp:${registration}`,
     `[mcp_servers.${JSON.stringify(registration)}]`,
-    `command = ${JSON.stringify(command)}`,
-    `args = ${JSON.stringify(["mcp", "bridge", "--profile", profile])}`,
-    `# <<< moodle-cli mcp:${registration}`,
-    "",
-  ].join("\n");
+  ];
+  if (connection.mode === "bridge") {
+    lines.push(
+      `command = ${JSON.stringify(connection.command)}`,
+      `args = ${JSON.stringify(["mcp", "bridge", "--profile", connection.profile])}`,
+    );
+  } else {
+    lines.push(
+      `url = ${JSON.stringify(connection.endpoint)}`,
+      `http_headers = { Authorization = ${JSON.stringify(`Bearer ${connection.accessToken}`)} }`,
+    );
+  }
+  lines.push(`# <<< moodle-cli mcp:${registration}`, "");
+  return lines.join("\n");
 }
 
 function removeTomlBlock(content: string, registration: string): string {
@@ -306,4 +329,26 @@ function validateProfile(profile: string): void {
   if (!/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$/.test(profile)) {
     throw new Error("Invalid MCP connector profile name");
   }
+}
+
+function resolveConnection(options: ClientConnectorOptions): ConnectorConnection {
+  if (options.mode !== "remote") {
+    return { mode: "bridge", command: options.command ?? "moodle", profile: options.profile };
+  }
+  if (!options.endpoint || !options.accessToken) {
+    throw new Error("Remote MCP connection requires an endpoint and access token");
+  }
+  let endpoint: URL;
+  try {
+    endpoint = new URL(options.endpoint);
+  } catch {
+    throw new Error("Remote MCP endpoint is invalid");
+  }
+  if (endpoint.protocol !== "https:" || endpoint.username || endpoint.password || endpoint.search || endpoint.hash) {
+    throw new Error("Remote MCP endpoint must be an HTTPS URL without credentials, query, or fragment");
+  }
+  if (/\s/u.test(options.accessToken)) {
+    throw new Error("Remote MCP access token is invalid");
+  }
+  return { mode: "remote", endpoint: endpoint.toString(), accessToken: options.accessToken };
 }

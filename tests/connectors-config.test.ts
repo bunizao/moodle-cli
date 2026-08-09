@@ -86,6 +86,65 @@ describe("MCP config-file connectors", () => {
     expect(files.writes).toHaveLength(writes);
   });
 
+  it("writes an explicit native remote Codex registration without exposing the token in receipts", async () => {
+    const files = new MemoryFiles();
+    files.files.set("/codex.toml", "model = \"gpt-5\"\n");
+    const connector = createCodexConnector({
+      profile: "school",
+      configPath: "/codex.toml",
+      mode: "remote",
+      endpoint: "https://moodle-school.demo.workers.dev/mcp",
+      accessToken: "private-access-token",
+    }, files);
+
+    const preview = await connector.preview();
+    const receipt = await connectClient(connector);
+    expect(JSON.stringify({ preview, receipt })).not.toContain("private-access-token");
+    expect(files.files.get("/codex.toml")).toContain('url = "https://moodle-school.demo.workers.dev/mcp"');
+    expect(files.files.get("/codex.toml")).toContain('http_headers = { Authorization = "Bearer private-access-token" }');
+    await expect(connector.verify()).resolves.toMatchObject({ configured: true });
+  });
+
+  it("writes an explicit native remote JSON registration and keeps unrelated clients", async () => {
+    const files = new MemoryFiles();
+    files.files.set("/cursor.json", JSON.stringify({ mcpServers: { github: { command: "github-mcp" } } }));
+    const connector = createCursorConnector({
+      profile: "school",
+      configPath: "/cursor.json",
+      mode: "remote",
+      endpoint: "https://moodle-school.demo.workers.dev/mcp",
+      accessToken: "private-access-token",
+    }, files);
+    const receipt = await connectClient(connector);
+    const parsed = JSON.parse(files.files.get("/cursor.json") ?? "{}") as {
+      mcpServers: Record<string, unknown>;
+    };
+    expect(parsed.mcpServers.github).toBeDefined();
+    expect(parsed.mcpServers["moodle-school"]).toEqual({
+      type: "http",
+      url: "https://moodle-school.demo.workers.dev/mcp",
+      headers: { Authorization: "Bearer private-access-token" },
+    });
+    expect(JSON.stringify(receipt)).not.toContain("private-access-token");
+  });
+
+  it("requires a safe endpoint and token for native remote mode", () => {
+    const files = new MemoryFiles();
+    expect(() => createCodexConnector({
+      profile: "school",
+      configPath: "/codex.toml",
+      mode: "remote",
+      endpoint: "http://worker.example/mcp?token=leak",
+      accessToken: "token",
+    }, files)).toThrow("HTTPS URL without credentials, query, or fragment");
+    expect(() => createCodexConnector({
+      profile: "school",
+      configPath: "/codex.toml",
+      mode: "remote",
+      endpoint: "https://worker.example/mcp",
+    }, files)).toThrow("requires an endpoint and access token");
+  });
+
   it("restores the backup when verification fails", async () => {
     const files = new MemoryFiles();
     files.files.set("/client.json", '{"existing":true}\n');
@@ -95,6 +154,23 @@ describe("MCP config-file connectors", () => {
     await expect(connectClient(connector)).rejects.toBeInstanceOf(ClientConnectionError);
     expect(verify).toHaveBeenCalledOnce();
     expect(files.files.get("/client.json")).toBe('{"existing":true}\n');
+  });
+
+  it("restores the original when the config write itself fails", async () => {
+    const files = new MemoryFiles();
+    files.files.set("/client.json", '{"existing":true}\n');
+    const write = vi.spyOn(files, "writePrivate").mockImplementation(async (path, content) => {
+      if (path === "/client.json" && content.includes("moodle-school")) {
+        throw new Error("disk full at /client.json");
+      }
+      files.writes.push(path);
+      files.files.set(path, content);
+    });
+    const connector = createClaudeDesktopConnector({ profile: "school", configPath: "/client.json" }, files);
+
+    await expect(connectClient(connector)).rejects.toBeInstanceOf(ClientConnectionError);
+    expect(files.files.get("/client.json")).toBe('{"existing":true}\n');
+    expect(write).toHaveBeenCalledWith("/client.json.moodle-mcp.backup", '{"existing":true}\n');
   });
 
   it("removes only the selected Moodle profile registration", async () => {

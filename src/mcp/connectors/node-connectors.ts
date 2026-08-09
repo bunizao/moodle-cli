@@ -45,6 +45,9 @@ export interface DefaultConnectorOptions {
   platform?: NodeJS.Platform;
   command?: string;
   fileSystem?: ConnectorFileSystem;
+  mode?: "bridge" | "remote";
+  endpoint?: string;
+  accessToken?: string;
 }
 
 export function createDefaultClientConnectors(
@@ -54,7 +57,13 @@ export function createDefaultClientConnectors(
   const home = options.homeDirectory ?? homedir();
   const platform = options.platform ?? process.platform;
   const fileSystem = options.fileSystem ?? new NodeConnectorFileSystem();
-  const shared = { profile, command: options.command };
+  const shared = {
+    profile,
+    command: options.command,
+    mode: options.mode,
+    endpoint: options.endpoint,
+    accessToken: options.accessToken,
+  };
   const claudeDesktop = platform === "darwin"
     ? join(home, "Library", "Application Support", "Claude", "claude_desktop_config.json")
     : platform === "win32"
