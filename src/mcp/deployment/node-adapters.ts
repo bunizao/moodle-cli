@@ -37,13 +37,17 @@ export interface CommandResult {
 }
 
 export interface DeploymentCommandRunner {
-  run(command: string, args: string[]): Promise<CommandResult>;
+  run(command: string, args: string[], environment?: NodeJS.ProcessEnv): Promise<CommandResult>;
 }
 
 export class NodeDeploymentCommandRunner implements DeploymentCommandRunner {
-  async run(command: string, args: string[]): Promise<CommandResult> {
+  async run(command: string, args: string[], environment: NodeJS.ProcessEnv = {}): Promise<CommandResult> {
     return new Promise((resolve, reject) => {
-      const child = spawn(command, args, { stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
+      const child = spawn(command, args, {
+        env: { ...process.env, ...environment },
+        stdio: ["ignore", "pipe", "pipe"],
+        windowsHide: true,
+      });
       let stdout = "";
       let stderr = "";
       child.stdout.setEncoding("utf8").on("data", (chunk: string) => { stdout += chunk; });
@@ -118,10 +122,8 @@ export class NodeWranglerDeploymentAdapter implements WranglerDeploymentAdapter 
         "list",
         "--name",
         workerName,
-        "--account-id",
-        accountId,
         "--json",
-      ]);
+      ], accountId);
     } catch (error) {
       if (error instanceof WranglerCommandError && /not found|does not exist|no deployments/iu.test(`${error.stdout}\n${error.stderr}`)) {
         return null;
@@ -159,11 +161,9 @@ export class NodeWranglerDeploymentAdapter implements WranglerDeploymentAdapter 
       input.secretsFilePath,
       "--name",
       input.workerName,
-      "--account-id",
-      input.accountId,
       "--config",
       input.configPath,
-    ]);
+    ], input.accountId);
   }
 
   async uploadCandidate(input: {
@@ -172,33 +172,37 @@ export class NodeWranglerDeploymentAdapter implements WranglerDeploymentAdapter 
     configPath: string;
     releaseDigest: string;
   }): Promise<CandidateRelease> {
-    const result = await this.wrangler([
-      "versions",
-      "upload",
-      "--name",
-      input.workerName,
-      "--account-id",
-      input.accountId,
-      "--config",
-      input.configPath,
-      "--preview-alias",
-      "moodle-cli-candidate",
-      "--message",
-      `moodle-cli-release:${input.releaseDigest}`,
-      "--json",
-    ]);
-    const document = parseJsonOutput(result.stdout);
-    const versionId = firstStringForKeys(document, new Set(["id", "version_id", "versionId"]));
-    const previewEndpoint = firstWorkersDevUrl(document);
-    if (!versionId || !previewEndpoint) {
-      throw new DeploymentApplyError("CANDIDATE_UPLOAD_INVALID", "Wrangler did not return a candidate version and preview endpoint");
+    const outputFilePath = join(dirname(input.configPath), "wrangler-version-upload.jsonl");
+    await rm(outputFilePath, { force: true });
+    try {
+      await this.wrangler([
+        "versions",
+        "upload",
+        "--name",
+        input.workerName,
+        "--config",
+        input.configPath,
+        "--preview-alias",
+        "moodle-cli-candidate",
+        "--message",
+        `moodle-cli-release:${input.releaseDigest}`,
+      ], input.accountId, { WRANGLER_OUTPUT_FILE_PATH: outputFilePath });
+      const document = await readWranglerVersionUpload(outputFilePath, input.workerName);
+      const versionId = typeof document.version_id === "string" ? document.version_id : null;
+      const previewEndpoint = firstWorkersDevUrl(document.preview_alias_url)
+        ?? firstWorkersDevUrl(document.preview_url);
+      if (!versionId || !previewEndpoint) {
+        throw new DeploymentApplyError("CANDIDATE_UPLOAD_INVALID", "Wrangler did not return a candidate version and preview endpoint");
+      }
+      return {
+        versionId,
+        previewEndpoint,
+        productionEndpoint: productionEndpointFromPreview(previewEndpoint, input.workerName),
+        deploymentId: ownershipId(input.accountId, input.workerName),
+      };
+    } finally {
+      await rm(outputFilePath, { force: true });
     }
-    return {
-      versionId,
-      previewEndpoint,
-      productionEndpoint: productionEndpointFromPreview(previewEndpoint, input.workerName),
-      deploymentId: ownershipId(input.accountId, input.workerName),
-    };
   }
 
   async promote(input: { accountId: string; workerName: string; versionId: string }): Promise<void> {
@@ -208,10 +212,8 @@ export class NodeWranglerDeploymentAdapter implements WranglerDeploymentAdapter 
       `${input.versionId}@100`,
       "--name",
       input.workerName,
-      "--account-id",
-      input.accountId,
       "--yes",
-    ]);
+    ], input.accountId);
   }
 
   async restoreProduction(input: {
@@ -227,18 +229,30 @@ export class NodeWranglerDeploymentAdapter implements WranglerDeploymentAdapter 
       });
       return;
     }
-    await this.wrangler(["delete", "--name", input.workerName, "--account-id", input.accountId, "--force"]);
+    await this.wrangler(["delete", input.workerName, "--force"], input.accountId);
   }
 
   async removeWorker(input: { accountId: string; workerName: string; deploymentId: string }): Promise<void> {
     if (input.deploymentId !== ownershipId(input.accountId, input.workerName)) {
       throw new DeploymentApplyError("REMOVAL_SCOPE_MISMATCH", "The Worker removal receipt is invalid");
     }
-    await this.wrangler(["delete", "--name", input.workerName, "--account-id", input.accountId, "--force"]);
+    await this.wrangler(["delete", input.workerName, "--force"], input.accountId);
   }
 
-  private wrangler(args: string[]): Promise<CommandResult> {
-    return this.runner.run(process.execPath, [this.wranglerBinPath, ...args]);
+  private wrangler(
+    args: string[],
+    accountId?: string,
+    environmentOverrides: NodeJS.ProcessEnv = {},
+  ): Promise<CommandResult> {
+    const environment = { ...environmentOverrides };
+    if (accountId) {
+      environment.CLOUDFLARE_ACCOUNT_ID = accountId;
+    }
+    return this.runner.run(
+      process.execPath,
+      [this.wranglerBinPath, ...args],
+      Object.keys(environment).length ? environment : undefined,
+    );
   }
 }
 
@@ -263,6 +277,7 @@ export class NodeReleaseMaterializer implements ReleaseMaterializer {
     const config = {
       $schema: "node_modules/wrangler/config-schema.json",
       name: plan.intent.workerName,
+      account_id: plan.intent.accountId,
       main: `./${basename(workerFile)}`,
       compatibility_date: this.options.compatibilityDate,
       vars: { MOODLE_ORIGIN: plan.intent.moodleOrigin },
@@ -518,7 +533,7 @@ export function createDefaultManagedDeployment(options: DefaultManagedDeployment
 export function resolvePackagedWranglerBin(): string {
   const require = createRequire(import.meta.url);
   try {
-    return require.resolve("wrangler/bin/wrangler.js");
+    return join(dirname(require.resolve("wrangler/package.json")), "bin", "wrangler.js");
   } catch {
     throw new Error("The packaged Wrangler binary is unavailable. Reinstall moodle-cli.");
   }
@@ -554,6 +569,31 @@ function parseJsonOutput(output: string): unknown {
     }
   }
   throw new DeploymentApplyError("WRANGLER_OUTPUT_INVALID", "Wrangler returned an unsupported response");
+}
+
+async function readWranglerVersionUpload(outputFilePath: string, workerName: string): Promise<Record<string, unknown>> {
+  let output: string;
+  try {
+    output = await readFile(outputFilePath, "utf8");
+  } catch {
+    throw new DeploymentApplyError("CANDIDATE_UPLOAD_INVALID", "Wrangler did not write candidate metadata");
+  }
+  for (const line of output.trim().split(/\r?\n/u).reverse()) {
+    try {
+      const entry: unknown = JSON.parse(line);
+      if (
+        isRecord(entry)
+        && entry.type === "version-upload"
+        && entry.version === 1
+        && entry.worker_name === workerName
+      ) {
+        return entry;
+      }
+    } catch {
+      continue;
+    }
+  }
+  throw new DeploymentApplyError("CANDIDATE_UPLOAD_INVALID", "Wrangler wrote unsupported candidate metadata");
 }
 
 function collectStrings(value: unknown, keys: Set<string>): string[] {

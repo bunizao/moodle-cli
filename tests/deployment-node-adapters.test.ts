@@ -5,11 +5,13 @@ import { describe, expect, it, vi } from "vitest";
 import { createDefaultCredentialStore } from "../src/mcp/credentials/index.js";
 import {
   FetchManagedWorkerClient,
+  NodeDeploymentCommandRunner,
   NodeReleaseMaterializer,
   NodeWranglerDeploymentAdapter,
   PrivateDeploymentReceiptStore,
   createBackgroundMoodleSessionSource,
   createDefaultManagedDeployment,
+  resolvePackagedWranglerBin,
   type DeploymentCommandRunner,
   type DeploymentPlan,
   type DeploymentReceipt,
@@ -52,6 +54,7 @@ describe("NodeReleaseMaterializer", () => {
     const config = JSON.parse(await readFile(release.wranglerConfigPath, "utf8")) as Record<string, unknown>;
     expect(config).toMatchObject({
       name: PLAN.intent.workerName,
+      account_id: PLAN.intent.accountId,
       compatibility_date: "2026-08-09",
       vars: { MOODLE_ORIGIN: PLAN.intent.moodleOrigin },
     });
@@ -67,15 +70,45 @@ describe("NodeReleaseMaterializer", () => {
 });
 
 describe("NodeWranglerDeploymentAdapter", () => {
+  it("forwards environment overrides to the child process", async () => {
+    const runner = new NodeDeploymentCommandRunner();
+    const result = await runner.run(
+      process.execPath,
+      ["-e", "process.stdout.write(process.env.CLOUDFLARE_ACCOUNT_ID ?? '')"],
+      { CLOUDFLARE_ACCOUNT_ID: "account-test" },
+    );
+
+    expect(result).toEqual({ stdout: "account-test", stderr: "" });
+  });
+
+  it("resolves the executable from the installed Wrangler package", () => {
+    expect(resolvePackagedWranglerBin()).toMatch(/node_modules[/\\]wrangler[/\\]bin[/\\]wrangler\.js$/u);
+  });
+
   it("invokes only the packaged Wrangler script and parses candidate metadata", async () => {
+    const root = await mkdtemp(join(tmpdir(), "wrangler-candidate-test-"));
+    const configPath = join(root, "wrangler.json");
     const runner: DeploymentCommandRunner = {
-      run: vi.fn(async (_command, args) => {
+      run: vi.fn(async (_command, args, environment) => {
         if (args.includes("upload")) {
-          return {
-            stdout: JSON.stringify({
-              id: "version-next",
-              preview_url: "https://moodle-cli-candidate-moodle-school-mcp.demo.workers.dev",
+          const outputFilePath = environment?.WRANGLER_OUTPUT_FILE_PATH;
+          if (!outputFilePath) {
+            throw new Error("Missing Wrangler output path");
+          }
+          await writeFile(outputFilePath, [
+            "not-json",
+            JSON.stringify({ type: "build", version: 1 }),
+            JSON.stringify({
+              type: "version-upload",
+              version: 1,
+              worker_name: "moodle-school-mcp",
+              version_id: "version-next",
+              preview_url: "https://version-next-moodle-school-mcp.demo.workers.dev",
+              preview_alias_url: "https://moodle-cli-candidate-moodle-school-mcp.demo.workers.dev",
             }),
+          ].join("\n"));
+          return {
+            stdout: "Uploaded Worker Version version-next",
             stderr: "",
           };
         }
@@ -90,7 +123,7 @@ describe("NodeWranglerDeploymentAdapter", () => {
     const candidate = await adapter.uploadCandidate({
       accountId: "account-1",
       workerName: "moodle-school-mcp",
-      configPath: "/private/release/wrangler.json",
+      configPath,
       releaseDigest: "release-next",
     });
     expect(candidate).toEqual({
@@ -99,14 +132,85 @@ describe("NodeWranglerDeploymentAdapter", () => {
       productionEndpoint: "https://moodle-school-mcp.demo.workers.dev",
       deploymentId: "moodle-cli:account-1:moodle-school-mcp",
     });
-    expect(runner.run).toHaveBeenCalledWith(process.execPath, expect.arrayContaining([
-      "/package/node_modules/wrangler/bin/wrangler.js",
-      "versions",
-      "upload",
-      "--message",
-      "moodle-cli-release:release-next",
-    ]));
+    expect(runner.run).toHaveBeenCalledWith(
+      process.execPath,
+      expect.arrayContaining([
+        "/package/node_modules/wrangler/bin/wrangler.js",
+        "versions",
+        "upload",
+        "--message",
+        "moodle-cli-release:release-next",
+      ]),
+      {
+        CLOUDFLARE_ACCOUNT_ID: "account-1",
+        WRANGLER_OUTPUT_FILE_PATH: join(root, "wrangler-version-upload.jsonl"),
+      },
+    );
+    const uploadArgs = vi.mocked(runner.run).mock.calls[0]?.[1] ?? [];
+    expect(uploadArgs).not.toContain("--account-id");
+    expect(uploadArgs).not.toContain("--json");
+    await expect(stat(join(root, "wrangler-version-upload.jsonl"))).rejects.toMatchObject({ code: "ENOENT" });
     expect(JSON.stringify(vi.mocked(runner.run).mock.calls)).not.toMatch(/Bearer|mcp-raw-token/);
+  });
+
+  it("selects the account through the environment for every mutating command", async () => {
+    const root = await mkdtemp(join(tmpdir(), "wrangler-mutations-test-"));
+    const configPath = join(root, "wrangler.json");
+    const runner: DeploymentCommandRunner = {
+      run: vi.fn(async (_command, args, environment) => {
+        if (args.includes("upload")) {
+          const outputFilePath = environment?.WRANGLER_OUTPUT_FILE_PATH;
+          if (!outputFilePath) {
+            throw new Error("Missing Wrangler output path");
+          }
+          await writeFile(outputFilePath, `${JSON.stringify({
+            type: "version-upload",
+            version: 1,
+            worker_name: "moodle-school-mcp",
+            version_id: "version-next",
+            preview_url: "https://version-next-moodle-school-mcp.demo.workers.dev",
+          })}\n`);
+        }
+        return { stdout: "{}", stderr: "" };
+      }),
+    };
+    const adapter = new NodeWranglerDeploymentAdapter({ wranglerBinPath: "/package/wrangler.js", runner });
+
+    await adapter.uploadSecrets({
+      accountId: "account-1",
+      workerName: "moodle-school-mcp",
+      configPath: "/private/release/wrangler.json",
+      secretsFilePath: "/private/release/secrets.json",
+    });
+    await adapter.uploadCandidate({
+      accountId: "account-1",
+      workerName: "moodle-school-mcp",
+      configPath,
+      releaseDigest: "release-next",
+    });
+    await adapter.promote({ accountId: "account-1", workerName: "moodle-school-mcp", versionId: "version-next" });
+    await adapter.restoreProduction({ accountId: "account-1", workerName: "moodle-school-mcp", previousVersionId: null });
+    await adapter.removeWorker({
+      accountId: "account-1",
+      workerName: "moodle-school-mcp",
+      deploymentId: "moodle-cli:account-1:moodle-school-mcp",
+    });
+
+    for (const call of vi.mocked(runner.run).mock.calls) {
+      expect(call[1]).not.toContain("--account-id");
+      expect(call[2]).toMatchObject({ CLOUDFLARE_ACCOUNT_ID: "account-1" });
+    }
+    const uploadCall = vi.mocked(runner.run).mock.calls.find((call) => call[1].includes("upload"));
+    expect(uploadCall?.[1]).not.toContain("--json");
+    expect(uploadCall?.[2]).toMatchObject({
+      WRANGLER_OUTPUT_FILE_PATH: join(root, "wrangler-version-upload.jsonl"),
+    });
+    const deleteCalls = vi.mocked(runner.run).mock.calls.filter((call) => call[1].includes("delete"));
+    expect(deleteCalls).toHaveLength(2);
+    for (const call of deleteCalls) {
+      expect(call[1]).toEqual(["/package/wrangler.js", "delete", "moodle-school-mcp", "--force"]);
+      expect(call[1]).not.toContain("--name");
+    }
   });
 
   it("discovers named accounts and reads release metadata for repeated deployment planning", async () => {
@@ -142,12 +246,18 @@ describe("NodeWranglerDeploymentAdapter", () => {
       { id: "account-2", name: "TuuHub" },
     ]);
     await adapter.login();
-    expect(runner.run).toHaveBeenCalledWith(process.execPath, ["/package/wrangler.js", "login"]);
+    expect(runner.run).toHaveBeenCalledWith(process.execPath, ["/package/wrangler.js", "login"], undefined);
     await expect(adapter.inspect("account-1", "moodle-school-mcp")).resolves.toMatchObject({
       releaseDigest: "release-next",
       productionEndpoint: "https://moodle-school-mcp.demo.workers.dev",
       productionVersionId: "version-current",
     });
+    expect(runner.run).toHaveBeenLastCalledWith(
+      process.execPath,
+      ["/package/wrangler.js", "deployments", "list", "--name", "moodle-school-mcp", "--json"],
+      { CLOUDFLARE_ACCOUNT_ID: "account-1" },
+    );
+    expect(vi.mocked(runner.run).mock.calls.flatMap((call) => call[1])).not.toContain("--account-id");
   });
 });
 
