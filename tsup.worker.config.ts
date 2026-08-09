@@ -8,6 +8,7 @@ export default defineConfig({
   target: "es2022",
   platform: "browser",
   bundle: true,
+  noExternal: ["node-html-parser", "zod"],
   clean: false,
   sourcemap: false,
   dts: false,
