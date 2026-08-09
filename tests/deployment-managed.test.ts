@@ -147,7 +147,10 @@ describe("ManagedMcpDeployment planning", () => {
     const update = dependencies();
     expect((await new ManagedMcpDeployment(update).plan(INTENT)).operation).toBe("update");
 
-    const current = dependencies({ remote: { ...REMOTE, releaseDigest: INTENT.releaseDigest } });
+    const current = dependencies({
+      remote: { ...REMOTE, releaseDigest: INTENT.releaseDigest },
+      receipt: { ...RECEIPT, releaseDigest: INTENT.releaseDigest },
+    });
     const reconcile = await new ManagedMcpDeployment(current).plan(INTENT);
     expect(reconcile).toMatchObject({ operation: "reconcile", uploadCandidate: false });
 
@@ -210,6 +213,7 @@ describe("ManagedMcpDeployment transaction", () => {
     expect(deps.wrangler.restoreProduction).not.toHaveBeenCalled();
     expect(deps.materializer.cleanup).toHaveBeenCalledTimes(1);
     expect(result.events.at(-1)).toMatchObject({ stageId: "run_release_checks", status: "failed" });
+    expect(deps.receipts.write).toHaveBeenCalledWith({ ...RECEIPT, sessionRevision: 5 });
   });
 
   it("restores previous code with current credentials and session after production smoke failure", async () => {
@@ -238,10 +242,14 @@ describe("ManagedMcpDeployment transaction", () => {
     }));
     expect(deps.worker.runSmoke).toHaveBeenCalledTimes(3);
     expect(deps.materializer.cleanup).toHaveBeenCalledTimes(1);
+    expect(deps.receipts.write).toHaveBeenCalledWith({ ...RECEIPT, sessionRevision: 6 });
   });
 
   it("reconciles an unchanged deployment without uploading or promoting another version", async () => {
-    const deps = dependencies({ remote: { ...REMOTE, releaseDigest: INTENT.releaseDigest } });
+    const deps = dependencies({
+      remote: { ...REMOTE, releaseDigest: INTENT.releaseDigest },
+      receipt: { ...RECEIPT, releaseDigest: INTENT.releaseDigest },
+    });
     const manager = new ManagedMcpDeployment(deps);
     await consume(manager.apply(await manager.plan(INTENT)));
 
@@ -267,6 +275,36 @@ describe("ManagedMcpDeployment transaction", () => {
       previousSessionSyncToken: "sync-current",
     });
     expect(deps.worker.runSmoke).toHaveBeenCalledWith(expect.objectContaining({ mcpAccessToken: "mcp-next" }));
+  });
+
+  it("restores local credentials when secret rotation fails before Cloudflare accepts it", async () => {
+    const deps = dependencies();
+    vi.mocked(deps.createToken).mockReturnValueOnce("mcp-next").mockReturnValueOnce("sync-next");
+    vi.mocked(deps.wrangler.uploadSecrets).mockRejectedValueOnce(new Error("authorization expired"));
+    const manager = new ManagedMcpDeployment(deps);
+    const result = await consumeFailure(manager.apply(await manager.plan({ ...INTENT, rotateToken: true })));
+
+    expect(result.error).toMatchObject({ code: "DEPLOYMENT_FAILED" });
+    expect(deps.credentials.write).toHaveBeenLastCalledWith(INTENT.profile, {
+      mcpAccessToken: "mcp-current",
+      sessionSyncToken: "sync-current",
+      sessionEncryptionKey: "encryption-current",
+    });
+    expect(deps.wrangler.uploadCandidate).not.toHaveBeenCalled();
+  });
+
+  it("records the live release before a local integration reports failure", async () => {
+    const deps = dependencies();
+    vi.mocked(deps.renewal.install).mockRejectedValueOnce(new Error("scheduler unavailable"));
+    const manager = new ManagedMcpDeployment(deps);
+    const result = await consumeFailure(manager.apply(await manager.plan(INTENT)));
+
+    expect(result.error).toMatchObject({ code: "DEPLOYMENT_FAILED" });
+    expect(deps.receipts.write).toHaveBeenCalledWith(expect.objectContaining({
+      productionVersionId: "version-next",
+      sessionRevision: 5,
+    }));
+    expect(result.events.at(-1)).toMatchObject({ stageId: "install_local_integrations", status: "failed" });
   });
 });
 
@@ -298,6 +336,11 @@ describe("ManagedMcpDeployment lifecycle", () => {
     }));
     expect(deps.worker.putSession).toHaveBeenCalledTimes(2);
     expect(deps.renewal.install).toHaveBeenCalledWith(INTENT.profile);
+    expect(deps.worker.putSession).toHaveBeenNthCalledWith(1, expect.objectContaining({ expectedRevision: 4 }));
+    expect(deps.receipts.write).toHaveBeenCalledWith(expect.objectContaining({
+      productionVersionId: REMOTE.previousHealthyVersionId,
+      sessionRevision: 5,
+    }));
   });
 
   it("removes only the Worker recorded by the selected profile receipt", async () => {

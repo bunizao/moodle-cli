@@ -4,7 +4,11 @@ import { chmod, copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from "node:f
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { createRequire } from "node:module";
-import { getAuthenticatedSessionWithBrowserFallback, type BrowserLoginOptions } from "../../auth.js";
+import {
+  getAuthenticatedSession,
+  getAuthenticatedSessionWithBrowserFallback,
+  type BrowserLoginOptions,
+} from "../../auth.js";
 import { DefaultClientIntegration, type DefaultConnectorOptions } from "../connectors/index.js";
 import { createDefaultCredentialStore, type DeploymentCredentials } from "../credentials/index.js";
 import { DefaultRenewalIntegration, type DefaultRenewalOptions } from "../renewal/index.js";
@@ -72,6 +76,11 @@ export interface NodeWranglerOptions {
   runner?: DeploymentCommandRunner;
 }
 
+export interface WranglerAccount {
+  id: string;
+  name: string;
+}
+
 export class NodeWranglerDeploymentAdapter implements WranglerDeploymentAdapter {
   private readonly wranglerBinPath: string;
   private readonly runner: DeploymentCommandRunner;
@@ -81,11 +90,22 @@ export class NodeWranglerDeploymentAdapter implements WranglerDeploymentAdapter 
     this.runner = options.runner ?? new NodeDeploymentCommandRunner();
   }
 
-  async checkAccess(accountId: string): Promise<void> {
+  async listAccounts(): Promise<WranglerAccount[]> {
     const result = await this.wrangler(["whoami", "--json"]);
     const document = parseJsonOutput(result.stdout);
-    const accountIds = collectStrings(document, new Set(["id", "account_id", "accountId"]));
-    if (accountIds.length && !accountIds.includes(accountId)) {
+    return collectAccountObjects(document);
+  }
+
+  async login(): Promise<void> {
+    await this.wrangler(["login"]);
+  }
+
+  async checkAccess(accountId: string): Promise<void> {
+    const accountIds = (await this.listAccounts()).map((account) => account.id);
+    if (!accountIds.length) {
+      throw new DeploymentApplyError("CLOUDFLARE_AUTH_REQUIRED", "Wrangler requires Cloudflare authorization");
+    }
+    if (!accountIds.includes(accountId)) {
       throw new DeploymentApplyError("CLOUDFLARE_ACCOUNT_MISSING", "Wrangler is not authorized for the selected Cloudflare account");
     }
   }
@@ -123,7 +143,7 @@ export class NodeWranglerDeploymentAdapter implements WranglerDeploymentAdapter 
       productionEndpoint,
       productionVersionId: versionIds[0]!,
       previousHealthyVersionId: versionIds[1] ?? null,
-      releaseDigest: "",
+      releaseDigest: releaseDigestFromDocument(document) ?? "",
     };
   }
 
@@ -150,6 +170,7 @@ export class NodeWranglerDeploymentAdapter implements WranglerDeploymentAdapter 
     accountId: string;
     workerName: string;
     configPath: string;
+    releaseDigest: string;
   }): Promise<CandidateRelease> {
     const result = await this.wrangler([
       "versions",
@@ -162,6 +183,8 @@ export class NodeWranglerDeploymentAdapter implements WranglerDeploymentAdapter 
       input.configPath,
       "--preview-alias",
       "moodle-cli-candidate",
+      "--message",
+      `moodle-cli-release:${input.releaseDigest}`,
       "--json",
     ]);
     const document = parseJsonOutput(result.stdout);
@@ -271,11 +294,17 @@ export class NodeReleaseMaterializer implements ReleaseMaterializer {
   }
 }
 
+export interface DefaultMoodleSessionSourceOptions extends BrowserLoginOptions {
+  interactive?: boolean;
+}
+
 export class DefaultMoodleSessionSource implements MoodleSessionSource {
-  constructor(private readonly options: BrowserLoginOptions = {}) {}
+  constructor(private readonly options: DefaultMoodleSessionSourceOptions = {}) {}
 
   async loadValidated(_profile: string, moodleOrigin: string): Promise<MoodleSessionMaterial> {
-    const session = await getAuthenticatedSessionWithBrowserFallback(moodleOrigin, this.options);
+    const session = this.options.interactive === false
+      ? await getAuthenticatedSession(moodleOrigin, { ...this.options, nonInteractive: true })
+      : await getAuthenticatedSessionWithBrowserFallback(moodleOrigin, this.options);
     return {
       moodleOrigin,
       cookieName: session.cookie.name,
@@ -284,6 +313,18 @@ export class DefaultMoodleSessionSource implements MoodleSessionSource {
       remoteRevision: 0,
     };
   }
+}
+
+export function createInteractiveMoodleSessionSource(
+  options: BrowserLoginOptions = {},
+): DefaultMoodleSessionSource {
+  return new DefaultMoodleSessionSource({ ...options, interactive: true });
+}
+
+export function createBackgroundMoodleSessionSource(
+  options: BrowserLoginOptions = {},
+): DefaultMoodleSessionSource {
+  return new DefaultMoodleSessionSource({ ...options, interactive: false });
 }
 
 export class FetchManagedWorkerClient implements ManagedWorkerClient {
@@ -333,7 +374,8 @@ export class FetchManagedWorkerClient implements ManagedWorkerClient {
     sessionSyncToken: string;
   }): Promise<void> {
     const health = await this.fetchImpl(endpointUrl(input.endpoint, "/healthz"));
-    if (!health.ok) {
+    const healthBody = await safeJson(health);
+    if (!health.ok || !isRecord(healthBody) || healthBody.status !== "pass") {
       throw new DeploymentApplyError("HEALTH_CHECK_FAILED", "Worker liveness check failed");
     }
     const readiness = await this.getReadiness(input);
@@ -352,28 +394,41 @@ export class FetchManagedWorkerClient implements ManagedWorkerClient {
     params: Record<string, unknown>,
     id: number,
   ): Promise<void> {
-    const [methodGroup, name] = method.split("/", 2) as [string, string];
+    const headers: Record<string, string> = {
+      authorization: `Bearer ${token}`,
+      "content-type": "application/json",
+      "mcp-protocol-version": MODERN_MCP_VERSION,
+      "mcp-method": method,
+    };
+    if (typeof params.name === "string") {
+      headers["mcp-name"] = params.name;
+    }
     const response = await this.fetchImpl(endpointUrl(endpoint, "/mcp"), {
       method: "POST",
-      headers: {
-        authorization: `Bearer ${token}`,
-        "content-type": "application/json",
-        "mcp-protocol-version": MODERN_MCP_VERSION,
-        "mcp-method": methodGroup,
-        "mcp-name": name,
-      },
+      headers,
       body: JSON.stringify({
         jsonrpc: "2.0",
         id,
         method,
         params: {
           ...params,
-          _meta: { "io.modelcontextprotocol/protocolVersion": MODERN_MCP_VERSION },
+          _meta: {
+            "io.modelcontextprotocol/protocolVersion": MODERN_MCP_VERSION,
+            "io.modelcontextprotocol/clientCapabilities": {},
+            "io.modelcontextprotocol/clientInfo": { name: "moodle-cli-deployment-smoke", version: "0.7.0" },
+          },
         },
       }),
     });
     const body = await safeJson(response);
-    if (!response.ok || (isRecord(body) && "error" in body)) {
+    if (
+      !response.ok
+      || !isRecord(body)
+      || body.jsonrpc !== "2.0"
+      || body.id !== id
+      || "error" in body
+      || !("result" in body)
+    ) {
       throw new DeploymentApplyError("MCP_SMOKE_FAILED", `MCP ${method} check failed`);
     }
   }
@@ -439,7 +494,7 @@ export function createDefaultManagedDeployment(options: DefaultManagedDeployment
       compatibilityDate: options.compatibilityDate,
     }),
     credentials: createDefaultCredentialStore({ platform, homeDirectory }),
-    sessions: new DefaultMoodleSessionSource(options.auth),
+    sessions: createInteractiveMoodleSessionSource(options.auth),
     worker: new FetchManagedWorkerClient(options.fetch),
     renewal: new DefaultRenewalIntegration({
       ...options.renewal,
@@ -518,6 +573,38 @@ function firstStringForKeys(value: unknown, keys: Set<string>): string | null {
 function deploymentVersionIds(value: unknown): string[] {
   const ids = collectStrings(value, new Set(["version_id", "versionId"]));
   return [...new Set(ids)];
+}
+
+function releaseDigestFromDocument(value: unknown): string | null {
+  let digestValue: string | null = null;
+  visit(value, (_key, item) => {
+    if (!digestValue && typeof item === "string") {
+      const match = item.match(/moodle-cli-release:([a-zA-Z0-9._-]+)/u);
+      if (match?.[1]) {
+        digestValue = match[1];
+      }
+    }
+  });
+  return digestValue;
+}
+
+function collectAccountObjects(value: unknown): WranglerAccount[] {
+  const accounts: WranglerAccount[] = [];
+  visit(value, (_key, item) => {
+    if (!isRecord(item)) {
+      return;
+    }
+    const id = typeof item.id === "string"
+      ? item.id
+      : typeof item.account_id === "string"
+        ? item.account_id
+        : null;
+    const name = typeof item.name === "string" ? item.name : null;
+    if (id && name && !accounts.some((account) => account.id === id)) {
+      accounts.push({ id, name });
+    }
+  });
+  return accounts;
 }
 
 function firstWorkersDevUrl(value: unknown): string | null {

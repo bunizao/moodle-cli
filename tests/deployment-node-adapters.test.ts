@@ -8,6 +8,7 @@ import {
   NodeReleaseMaterializer,
   NodeWranglerDeploymentAdapter,
   PrivateDeploymentReceiptStore,
+  createBackgroundMoodleSessionSource,
   createDefaultManagedDeployment,
   type DeploymentCommandRunner,
   type DeploymentPlan,
@@ -90,6 +91,7 @@ describe("NodeWranglerDeploymentAdapter", () => {
       accountId: "account-1",
       workerName: "moodle-school-mcp",
       configPath: "/private/release/wrangler.json",
+      releaseDigest: "release-next",
     });
     expect(candidate).toEqual({
       versionId: "version-next",
@@ -101,8 +103,51 @@ describe("NodeWranglerDeploymentAdapter", () => {
       "/package/node_modules/wrangler/bin/wrangler.js",
       "versions",
       "upload",
+      "--message",
+      "moodle-cli-release:release-next",
     ]));
     expect(JSON.stringify(vi.mocked(runner.run).mock.calls)).not.toMatch(/Bearer|mcp-raw-token/);
+  });
+
+  it("discovers named accounts and reads release metadata for repeated deployment planning", async () => {
+    const runner: DeploymentCommandRunner = {
+      run: vi.fn(async (_command, args) => {
+        if (args.includes("whoami")) {
+          return {
+            stdout: JSON.stringify({ accounts: [
+              { id: "account-1", name: "Personal" },
+              { id: "account-2", name: "TuuHub" },
+            ] }),
+            stderr: "",
+          };
+        }
+        return {
+          stdout: JSON.stringify([{
+            id: "deployment-1",
+            url: "https://moodle-school-mcp.demo.workers.dev",
+            message: "moodle-cli-release:release-next",
+            versions: [
+              { version_id: "version-current", percentage: 100 },
+              { version_id: "version-previous", percentage: 0 },
+            ],
+          }]),
+          stderr: "",
+        };
+      }),
+    };
+    const adapter = new NodeWranglerDeploymentAdapter({ wranglerBinPath: "/package/wrangler.js", runner });
+
+    await expect(adapter.listAccounts()).resolves.toEqual([
+      { id: "account-1", name: "Personal" },
+      { id: "account-2", name: "TuuHub" },
+    ]);
+    await adapter.login();
+    expect(runner.run).toHaveBeenCalledWith(process.execPath, ["/package/wrangler.js", "login"]);
+    await expect(adapter.inspect("account-1", "moodle-school-mcp")).resolves.toMatchObject({
+      releaseDigest: "release-next",
+      productionEndpoint: "https://moodle-school-mcp.demo.workers.dev",
+      productionVersionId: "version-current",
+    });
   });
 });
 
@@ -121,7 +166,8 @@ describe("FetchManagedWorkerClient", () => {
       if (url.endsWith("/readyz")) {
         return Response.json({ status: "pass" });
       }
-      return Response.json({ jsonrpc: "2.0", id: 1, result: {} });
+      const request = JSON.parse(String(init?.body)) as { id: number };
+      return Response.json({ jsonrpc: "2.0", id: request.id, result: {} });
     });
     const client = new FetchManagedWorkerClient(fetchImpl as unknown as typeof fetch);
     await expect(client.putSession({
@@ -158,6 +204,32 @@ describe("FetchManagedWorkerClient", () => {
     });
     const methods = requests.slice(3).map((request) => JSON.parse(String(request.init?.body)).method);
     expect(methods).toEqual(["server/discover", "tools/list", "tools/call"]);
+    expect(new Headers(requests[3]?.init?.headers).get("mcp-method")).toBe("server/discover");
+    expect(new Headers(requests[3]?.init?.headers).get("mcp-name")).toBeNull();
+    expect(new Headers(requests[5]?.init?.headers).get("mcp-method")).toBe("tools/call");
+    expect(new Headers(requests[5]?.init?.headers).get("mcp-name")).toBe("get_user");
+    const metadata = JSON.parse(String(requests[3]?.init?.body)).params._meta as Record<string, unknown>;
+    expect(metadata).toMatchObject({
+      "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+      "io.modelcontextprotocol/clientCapabilities": {},
+      "io.modelcontextprotocol/clientInfo": { name: "moodle-cli-deployment-smoke", version: "0.7.0" },
+    });
+  });
+});
+
+describe("background Moodle session source", () => {
+  it("uses cache, browser cookies, and Okta without opening an interactive browser", async () => {
+    const openBrowser = vi.fn(async () => undefined);
+    const source = createBackgroundMoodleSessionSource({
+      noCache: true,
+      openBrowser,
+      browserCookieProvider: async () => [],
+      oktaCookieProvider: async () => [],
+    });
+
+    await expect(source.loadValidated("school", "https://moodle.example.edu"))
+      .rejects.toThrow("No usable MoodleSession");
+    expect(openBrowser).not.toHaveBeenCalled();
   });
 });
 

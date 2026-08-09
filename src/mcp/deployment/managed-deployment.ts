@@ -87,6 +87,7 @@ export interface WranglerDeploymentAdapter {
     accountId: string;
     workerName: string;
     configPath: string;
+    releaseDigest: string;
   }): Promise<CandidateRelease>;
   promote(input: { accountId: string; workerName: string; versionId: string }): Promise<void>;
   restoreProduction(input: {
@@ -203,18 +204,22 @@ export class ManagedMcpDeployment {
 
   async plan(intent: DeploymentIntent): Promise<DeploymentPlan> {
     validateIntent(intent);
-    const [existing, receipt, credentials] = await Promise.all([
+    const [remote, receipt, credentials] = await Promise.all([
       this.dependencies.wrangler.inspect(intent.accountId, intent.workerName),
       this.dependencies.receipts.read(intent.profile),
       this.dependencies.credentials.read(intent.profile),
     ]);
 
-    if (existing && !isOwnedByProfile(existing, receipt, intent.profile)) {
+    if (remote && !isOwnedByProfile(remote, receipt, intent.profile)) {
       throw new DeploymentPlanError(
         "WORKER_NAME_CONFLICT",
         `Worker ${intent.workerName} is not owned by Moodle MCP profile ${intent.profile}`,
       );
     }
+
+    const existing = remote && receipt
+      ? { ...remote, productionEndpoint: receipt.productionEndpoint, releaseDigest: receipt.releaseDigest }
+      : remote;
 
     const rotate = intent.rotateToken === true && credentials !== null;
     const releaseChanged = existing?.releaseDigest !== intent.releaseDigest;
@@ -239,7 +244,10 @@ export class ManagedMcpDeployment {
     let candidateRevision: number | null = null;
     let session: MoodleSessionMaterial | null = null;
     let credentials: DeploymentCredentials | null = null;
+    let credentialsBefore: DeploymentCredentials | null = null;
+    let secretsUploaded = false;
     let candidate: CandidateRelease | null = null;
+    let appliedReceipt: DeploymentReceipt | null = null;
 
     try {
       yield started(activeStage);
@@ -257,7 +265,8 @@ export class ManagedMcpDeployment {
 
       activeStage = "prepare_worker_release";
       yield started(activeStage);
-      credentials = await this.resolveCredentials(plan);
+      credentialsBefore = await this.dependencies.credentials.read(plan.intent.profile);
+      credentials = await this.resolveCredentials(plan, credentialsBefore);
       prepared = await this.dependencies.materializer.prepare(plan, credentials);
       yield completed(activeStage);
 
@@ -270,6 +279,7 @@ export class ManagedMcpDeployment {
           configPath: prepared.wranglerConfigPath,
           secretsFilePath: prepared.secretsFilePath,
         });
+        secretsUploaded = true;
       }
       yield completed(activeStage);
 
@@ -280,6 +290,7 @@ export class ManagedMcpDeployment {
           accountId: plan.intent.accountId,
           workerName: plan.intent.workerName,
           configPath: prepared.wranglerConfigPath,
+          releaseDigest: plan.intent.releaseDigest,
         });
       }
       yield completed(activeStage);
@@ -336,22 +347,34 @@ export class ManagedMcpDeployment {
         if (!promoted) {
           throw new DeploymentApplyError("PRODUCTION_VALIDATION_FAILED", "The existing Worker failed validation");
         }
-        await this.rollbackProduction(plan, credentials, session, productionEndpoint, candidateRevision);
+        candidateRevision = await this.rollbackProduction(
+          plan,
+          credentials,
+          session,
+          productionEndpoint,
+          candidateRevision,
+        );
         throw new DeploymentApplyError(
           "PRODUCTION_VALIDATION_FAILED_RESTORED",
           "The previous healthy release was restored with the current credentials and Moodle session",
         );
       }
+      appliedReceipt = makeReceipt(plan, candidate, candidateRevision);
+      await this.dependencies.receipts.write(appliedReceipt);
       yield completed(activeStage);
 
       activeStage = "install_local_integrations";
       yield started(activeStage);
       await this.dependencies.renewal.install(plan.intent.profile);
       await this.dependencies.clients.install(plan.intent.profile);
-      const receipt = makeReceipt(plan, candidate, candidateRevision);
-      await this.dependencies.receipts.write(receipt);
       yield completed(activeStage);
     } catch (error) {
+      if (plan.intent.rotateToken && credentialsBefore && !secretsUploaded) {
+        await this.dependencies.credentials.write(plan.intent.profile, credentialsBefore);
+      }
+      if (!appliedReceipt && plan.receipt && candidateRevision !== null) {
+        await this.dependencies.receipts.write({ ...plan.receipt, sessionRevision: candidateRevision });
+      }
       const safe = asDeploymentError(error);
       yield failed(activeStage, safe.code);
       throw safe;
@@ -384,11 +407,19 @@ export class ManagedMcpDeployment {
     let readiness: DeploymentStatus["readiness"] = "unknown";
     if (worker && credentials) {
       readiness = await this.dependencies.worker.getReadiness({
-        endpoint: worker.productionEndpoint,
+        endpoint: receipt.productionEndpoint,
         sessionSyncToken: credentials.sessionSyncToken,
       });
     }
-    return { profile, worker, credentialsStored: credentials !== null, renewalInstalled, clientsConnected, readiness };
+    const resolvedWorker = worker ? { ...worker, productionEndpoint: receipt.productionEndpoint } : null;
+    return {
+      profile,
+      worker: resolvedWorker,
+      credentialsStored: credentials !== null,
+      renewalInstalled,
+      clientsConnected,
+      readiness,
+    };
   }
 
   async recover(profile: string): Promise<RecoveryResult> {
@@ -406,17 +437,18 @@ export class ManagedMcpDeployment {
     }
 
     let upload = await this.dependencies.worker.putSession({
-      endpoint: worker.productionEndpoint,
+      endpoint: receipt.productionEndpoint,
       sessionSyncToken: credentials.sessionSyncToken,
       session,
-      expectedRevision: session.remoteRevision,
+      expectedRevision: receipt.sessionRevision,
     });
     try {
       await this.dependencies.worker.runSmoke({
-        endpoint: worker.productionEndpoint,
+        endpoint: receipt.productionEndpoint,
         mcpAccessToken: credentials.mcpAccessToken,
         sessionSyncToken: credentials.sessionSyncToken,
       });
+      await this.dependencies.receipts.write({ ...receipt, sessionRevision: upload.revision });
       await this.reconcileLocalIntegrations(profile);
       return { status: "ready", versionId: worker.productionVersionId };
     } catch {
@@ -429,15 +461,20 @@ export class ManagedMcpDeployment {
         previousVersionId: worker.previousHealthyVersionId,
       });
       upload = await this.dependencies.worker.putSession({
-        endpoint: worker.productionEndpoint,
+        endpoint: receipt.productionEndpoint,
         sessionSyncToken: credentials.sessionSyncToken,
         session,
         expectedRevision: upload.revision,
       });
       await this.dependencies.worker.runSmoke({
-        endpoint: worker.productionEndpoint,
+        endpoint: receipt.productionEndpoint,
         mcpAccessToken: credentials.mcpAccessToken,
         sessionSyncToken: credentials.sessionSyncToken,
+      });
+      await this.dependencies.receipts.write({
+        ...receipt,
+        productionVersionId: worker.previousHealthyVersionId,
+        sessionRevision: upload.revision,
       });
       await this.reconcileLocalIntegrations(profile);
       return { status: "restored", versionId: worker.previousHealthyVersionId };
@@ -472,8 +509,10 @@ export class ManagedMcpDeployment {
     return { profile, workerRemoved: worker !== null, localStateRemoved: true };
   }
 
-  private async resolveCredentials(plan: DeploymentPlan): Promise<DeploymentCredentials> {
-    const existing = await this.dependencies.credentials.read(plan.intent.profile);
+  private async resolveCredentials(
+    plan: DeploymentPlan,
+    existing: DeploymentCredentials | null,
+  ): Promise<DeploymentCredentials> {
     const credentials = plan.intent.rotateToken && existing
       ? rotateCredentials(existing, this.dependencies.createToken)
       : existing ?? createDeploymentCredentials(this.dependencies.createToken);
@@ -487,13 +526,13 @@ export class ManagedMcpDeployment {
     session: MoodleSessionMaterial,
     productionEndpoint: string,
     revision: number | null,
-  ): Promise<void> {
+  ): Promise<number> {
     await this.dependencies.wrangler.restoreProduction({
       accountId: plan.intent.accountId,
       workerName: plan.intent.workerName,
       previousVersionId: plan.existing?.productionVersionId ?? null,
     });
-    await this.dependencies.worker.putSession({
+    const upload = await this.dependencies.worker.putSession({
       endpoint: productionEndpoint,
       sessionSyncToken: credentials.sessionSyncToken,
       session,
@@ -504,6 +543,7 @@ export class ManagedMcpDeployment {
       mcpAccessToken: credentials.mcpAccessToken,
       sessionSyncToken: credentials.sessionSyncToken,
     });
+    return upload.revision;
   }
 
   private async reconcileLocalIntegrations(profile: string): Promise<void> {
