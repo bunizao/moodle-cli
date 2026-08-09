@@ -284,6 +284,7 @@ export class SessionBroker {
       encrypted_cookie: touched.rotatedCookie || needsKeyRotation
         ? await encryptValue(nextCookie, await this.keyring())
         : current.encrypted_cookie,
+      revision: touched.rotatedCookie ? current.revision + 1 : current.revision,
       last_verified_at: now,
       last_touch_at: now,
       last_error_code: null,

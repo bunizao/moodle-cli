@@ -120,7 +120,10 @@ export function createDurableObjectBrokerApi(namespace: DurableObjectNamespaceLi
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ request: body, context }),
       }));
-      if (!response.ok) throw new SessionBrokerMcpError(response.status);
+      if (!response.ok) {
+        const problem = await safeProblem(response);
+        throw new SessionBrokerMcpError(response.status, problem?.code);
+      }
       const envelope = await response.json() as { response?: unknown | null };
       return envelope.response ?? null;
     },
@@ -137,7 +140,7 @@ export function createDurableObjectBrokerApi(namespace: DurableObjectNamespaceLi
 }
 
 class SessionBrokerMcpError extends Error {
-  constructor(readonly status: number) {
+  constructor(readonly status: number, readonly code?: string) {
     super("The session broker could not complete the MCP request.");
     this.name = "SessionBrokerMcpError";
   }
@@ -213,10 +216,26 @@ async function handleMcpRequest(request: Request, server: MoodleMcpServerLike): 
     }
     return Response.json(response, { headers: { "cache-control": "private, no-store" } });
   } catch (error) {
+    if (error instanceof SessionBrokerMcpError) {
+      const status = error.status === 503 ? 503 : 500;
+      const code = error.code === "SESSION_MISSING" || error.code === "SESSION_EXPIRED"
+        ? error.code
+        : "SESSION_UNAVAILABLE";
+      return problemResponse(status, code, "Service Unavailable", "The Moodle session is not ready.");
+    }
     if (error instanceof Error && error.name === "UnsupportedProtocolVersionError") {
       return problemResponse(400, "UNSUPPORTED_PROTOCOL_VERSION", "Unsupported Protocol Version", "The requested MCP protocol version is not supported.");
     }
     return problemResponse(500, "MCP_REQUEST_FAILED", "Internal Server Error", "The MCP request could not be completed.");
+  }
+}
+
+async function safeProblem(response: Response): Promise<{ code?: string } | null> {
+  try {
+    const value = await response.json();
+    return isRecord(value) && (value.code === undefined || typeof value.code === "string") ? value : null;
+  } catch {
+    return null;
   }
 }
 

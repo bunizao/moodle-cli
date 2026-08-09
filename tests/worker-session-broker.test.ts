@@ -150,6 +150,9 @@ describe("SessionBroker Durable Object", () => {
     await initial.alarm();
     const afterCookieRotation = JSON.stringify(objectState.storage.values.get("session"));
     expect(afterCookieRotation).not.toContain(NEW_COOKIE);
+    const staleAfterRotation = await putSession(initial, candidate(OLD_COOKIE, 1));
+    expect(staleAfterRotation.status).toBe(409);
+    expect(await staleAfterRotation.json()).toMatchObject({ code: "SESSION_REVISION_CONFLICT" });
 
     const rotatedKeyUpstream = validUpstream();
     const withRotatedKey = new SessionBroker(

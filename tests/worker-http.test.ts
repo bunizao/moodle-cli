@@ -1,4 +1,5 @@
 import { createWorkerHandler, digestBearerToken, type SessionBrokerApi, type WorkerEnv } from "../src/worker/index.js";
+import workerEntrypoint from "../src/worker/entry.js";
 
 const ACCESS_TOKEN = "access-token";
 const SYNC_TOKEN = "sync-token";
@@ -213,5 +214,29 @@ describe("Cloudflare Worker HTTP transport", () => {
     expect(response.status).toBe(200);
     expect(response.headers.get("content-type")).toBe("text/event-stream; charset=utf-8");
     expect(await response.text()).toBe('event: message\ndata: {"jsonrpc":"2.0","id":1,"result":{"ok":true}}\n\n');
+  });
+
+  it("returns a safe RFC 9457 error when the Durable Object has no session", async () => {
+    const env = await workerEnv();
+    env.SESSION_BROKER = {
+      idFromName: vi.fn(() => "primary"),
+      get: vi.fn(() => ({
+        fetch: vi.fn(async () => Response.json({ code: "SESSION_MISSING" }, { status: 503 })),
+      })),
+    };
+
+    const response = await workerEntrypoint.fetch(request("/mcp", {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${ACCESS_TOKEN}`,
+        "content-type": "application/json",
+        "mcp-protocol-version": "2026-07-28",
+        "mcp-method": "server/discover",
+      },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "server/discover" }),
+    }), env);
+
+    expect(response.status).toBe(503);
+    expect(await response.json()).toMatchObject({ status: 503, code: "SESSION_MISSING" });
   });
 });
