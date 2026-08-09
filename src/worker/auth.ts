@@ -7,21 +7,28 @@ export async function verifyBearerToken(authorization: string | null, allowedDig
   if (!authorization?.startsWith("Bearer ")) return false;
   const token = authorization.slice("Bearer ".length);
   if (!token || token.trim() !== token) return false;
-  const candidate = await digestBearerToken(token);
-  let matches = 0;
+  const candidateKey = await importHmacKey(await digestBearerToken(token), ["sign"]);
+  if (!candidateKey) return false;
+  const challenge = new TextEncoder().encode("moodle-mcp-bearer-digest");
+  const signature = await crypto.subtle.sign("HMAC", candidateKey, challenge);
   for (const allowed of allowedDigests) {
-    if (!allowed || allowed.length !== candidate.length) continue;
-    let difference = 0;
-    for (let index = 0; index < candidate.length; index += 1) {
-      difference |= candidate.charCodeAt(index) ^ allowed.charCodeAt(index);
-    }
-    matches |= Number(difference === 0);
+    const allowedKey = allowed ? await importHmacKey(allowed, ["verify"]) : null;
+    if (allowedKey && await crypto.subtle.verify("HMAC", allowedKey, signature, challenge)) return true;
   }
-  return matches !== 0;
+  return false;
 }
 
 const QUERY_CREDENTIAL_NAMES = new Set(["access_token", "api_key", "apikey", "authorization", "bearer", "token"]);
 
 export function hasQueryCredential(url: URL): boolean {
   return Array.from(url.searchParams.keys()).some((name) => QUERY_CREDENTIAL_NAMES.has(name.toLowerCase()));
+}
+
+async function importHmacKey(digest: string, usages: KeyUsage[]): Promise<CryptoKey | null> {
+  if (!/^[0-9a-f]{64}$/i.test(digest)) return null;
+  const bytes = new Uint8Array(32);
+  for (let index = 0; index < bytes.length; index += 1) {
+    bytes[index] = Number.parseInt(digest.slice(index * 2, index * 2 + 2), 16);
+  }
+  return crypto.subtle.importKey("raw", bytes, { name: "HMAC", hash: "SHA-256" }, false, usages);
 }
