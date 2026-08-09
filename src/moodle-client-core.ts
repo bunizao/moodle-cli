@@ -8,6 +8,7 @@ import {
   FUNC_GET_ACTION_EVENTS,
   FUNC_GET_CONVERSATION_COUNTS,
   FUNC_GET_COURSE_CONTENTS,
+  FUNC_GET_COURSE_FORMAT_STATE,
   FUNC_GET_COURSE_MODULE,
   FUNC_GET_COURSES,
   FUNC_GET_COURSES_BY_TIMELINE,
@@ -25,6 +26,7 @@ import {
 import { ForumModule } from "./moodle-forum-core.js";
 import { searchForumContent as searchForumModule } from "./moodle-forum-search-core.js";
 import type {
+  Activity,
   AlertSummary,
   ActivityDetail,
   Assignment,
@@ -48,6 +50,7 @@ import type {
 import {
   parseAlertSummary,
   parseCourseContents,
+  parseCourseFormatState,
   parseCourses,
   parseTodoItems,
   parseUserInfo,
@@ -78,6 +81,8 @@ export type AjaxBatchResult =
   | { ok: true; data: unknown }
   | { ok: false; error: MoodleApiErrorLike };
 
+type OptionalAjaxBatchResult = AjaxBatchResult | undefined;
+
 export interface MoodleApiErrorLike extends Error {
   readonly code: string;
   readonly hint?: string;
@@ -90,6 +95,8 @@ export interface MoodleClientErrorAdapter {
   isApi(error: unknown): error is MoodleApiErrorLike;
   isLoginRequired(error: unknown): boolean;
 }
+
+const ACTIVITY_SEARCH_BATCH_SIZE = 20;
 
 export class MoodleClientCoreError extends Error {
   readonly code: string;
@@ -155,6 +162,7 @@ export interface MoodleClientCoreOptions {
 
 const AjaxEnvelopeSchema = z.array(
   z.object({
+    index: z.number().int().nonnegative().optional(),
     error: z.boolean().optional(),
     data: z.unknown().optional(),
     exception: z
@@ -278,6 +286,17 @@ export class MoodleClientCore {
         throw error;
       }
     }
+    try {
+      const sections = parseCourseFormatState(
+        await this.call(FUNC_GET_COURSE_FORMAT_STATE, { courseid: courseId }),
+        this.baseUrl,
+      );
+      if (sections.length) return sections;
+    } catch (error) {
+      if (!this.errors.isApi(error) || error.moodleErrorCode !== "servicenotavailable") {
+        throw error;
+      }
+    }
     const response = await this.get(COURSE_PATH, { id: courseId });
     return this.scrapeCourseContents(courseId, response);
   }
@@ -288,9 +307,21 @@ export class MoodleClientCore {
 
   async getActivity(id: number): Promise<ActivityDetail & { type: string }> {
     await this.ensureSession();
-    const data = await this.call(FUNC_GET_COURSE_MODULE, { cmid: id });
-    const module = isRecord(data) && isRecord(data.cm) ? data.cm : data;
-    const type = isRecord(module) && typeof module.modname === "string" ? module.modname : "";
+    let activity: Activity | null = null;
+    let courseId: number | undefined;
+    let type = "";
+    try {
+      const data = await this.call(FUNC_GET_COURSE_MODULE, { cmid: id });
+      const module = isRecord(data) && isRecord(data.cm) ? data.cm : data;
+      type = isRecord(module) && typeof module.modname === "string" ? module.modname : "";
+      courseId = isRecord(module) && typeof module.course === "number" ? module.course : undefined;
+    } catch (error) {
+      if (!this.errors.isApi(error) || error.moodleErrorCode !== "servicenotavailable") {
+        throw error;
+      }
+      activity = await this.findActivity(id);
+      type = activity.modname;
+    }
     const loaders: Record<string, () => Promise<ActivityDetail>> = {
       assign: () => this.getAssignment(id),
       quiz: () => this.getQuiz(id),
@@ -301,7 +332,8 @@ export class MoodleClientCore {
     };
     const load = loaders[type];
     if (!load) {
-      throw this.errors.notFound(`Activity ${id} is not a supported assignment, quiz, resource, link, page, or folder.`);
+      activity ??= await this.findActivity(id, courseId);
+      return { ...activity, type: type || activity.modname || "unknown" };
     }
     return { ...(await load()), type: type === "url" ? "link" : type };
   }
@@ -350,22 +382,43 @@ export class MoodleClientCore {
       { methodname: FUNC_GET_UNREAD_CONVERSATION_COUNTS, args: { userid: this.userid } },
     ]);
     const [coursesData, todoData, notifications, counts, unread] = results;
-    const errors = results.flatMap((result, index) => {
-      if (result.ok) {
-        return [];
-      }
-      const labels = ["courses", "todo", "notifications", "conversation counts", "unread conversation counts"];
-      return [`${labels[index]}: ${result.error.message}`];
-    });
-    const todoPayload = todoData?.ok ? todoData.data : {};
+    const userPromise = this.userInfo?.fullname ? Promise.resolve(this.userInfo) : this.getSiteInfo();
+    const coursesPromise = coursesData?.ok ? Promise.resolve(parseCourses(coursesData.data)) : this.getCourses();
+    const todoPromise = todoData?.ok
+      ? Promise.resolve(parseTodoPayload(todoData.data))
+      : todoData
+        ? Promise.reject(todoData.error)
+        : this.getTodo(todoLimit, todoDays);
+    const alertResults = [notifications, counts, unread];
+    const alertFailureIndex = alertResults.findIndex((result) => result !== undefined && !result.ok);
+    const alertFailure = alertFailureIndex >= 0 ? alertResults[alertFailureIndex] : undefined;
+    const alertsPromise = alertFailure && !alertFailure.ok
+      ? Promise.reject(alertFailure.error)
+      : alertResults.every((result) => result?.ok)
+        ? Promise.resolve(parseAlertSummary(
+            notifications && notifications.ok ? notifications.data : undefined,
+            counts && counts.ok ? counts.data : undefined,
+            unread && unread.ok ? unread.data : undefined,
+          ))
+        : this.getAlerts(alertsLimit);
+    const settled = await Promise.allSettled([userPromise, coursesPromise, todoPromise, alertsPromise] as const);
+    const labels = [
+      "user",
+      "courses",
+      "todo",
+      alertFailureIndex >= 0
+        ? ["notifications", "conversation counts", "unread conversation counts"][alertFailureIndex]!
+        : "alerts",
+    ];
+    const errors = settled.flatMap((result, index) => result.status === "rejected"
+      ? [`${labels[index]}: ${errorMessage(result.reason)}`]
+      : []);
+    const [userResult, coursesResult, todoResult, alertsResult] = settled;
     return {
-      user: this.userInfo!,
-      courses: coursesData?.ok ? parseCourses(coursesData.data) : [],
-      todo: parseTodoItems(isRecord(todoPayload) && Array.isArray(todoPayload.events) ? todoPayload.events : []),
-      alerts:
-        notifications?.ok && counts?.ok && unread?.ok
-          ? parseAlertSummary(notifications.data, counts.data, unread.data)
-          : undefined,
+      user: userResult.status === "fulfilled" ? userResult.value : this.userInfo!,
+      courses: coursesResult.status === "fulfilled" ? coursesResult.value : [],
+      todo: todoResult.status === "fulfilled" ? todoResult.value : [],
+      ...(alertsResult.status === "fulfilled" ? { alerts: alertsResult.value } : {}),
       errors,
     };
   }
@@ -488,7 +541,7 @@ export class MoodleClientCore {
     return searchForumModule(this.forum, query, { ...searchOptions, baseUrl: this.baseUrl });
   }
 
-  async callBatch(requests: AjaxCall[]): Promise<AjaxBatchResult[]> {
+  async callBatch(requests: AjaxCall[]): Promise<OptionalAjaxBatchResult[]> {
     await this.ensureSession();
     return this.callBatchInternal(requests, true);
   }
@@ -500,14 +553,19 @@ export class MoodleClientCore {
 
   private async callBatchValues(requests: AjaxCall[]): Promise<unknown[]> {
     const results = await this.callBatchInternal(requests, true);
-    const failed = results.find((result) => !result.ok);
+    const missing = results.findIndex((result) => result === undefined);
+    if (missing >= 0) {
+      throw this.errors.api(`Moodle returned an incomplete AJAX batch response at index ${missing}.`, "incompletebatch");
+    }
+    const completeResults = results as AjaxBatchResult[];
+    const failed = completeResults.find((result) => !result.ok);
     if (failed && !failed.ok) {
       throw failed.error;
     }
-    return results.map((result) => (result.ok ? result.data : undefined));
+    return completeResults.map((result) => (result.ok ? result.data : undefined));
   }
 
-  private async callBatchInternal(requests: AjaxCall[], allowRetry: boolean): Promise<AjaxBatchResult[]> {
+  private async callBatchInternal(requests: AjaxCall[], allowRetry: boolean): Promise<OptionalAjaxBatchResult[]> {
     const payload = requests.map((request, index) => ({ index, methodname: request.methodname, args: request.args ?? {} }));
     const response = await this.fetchImpl(`${this.baseUrl}${AJAX_SERVICE_PATH}?sesskey=${encodeURIComponent(this.sesskey ?? "")}&info=${requests.map((request) => request.methodname).join(",")}`, {
       method: "POST",
@@ -517,26 +575,31 @@ export class MoodleClientCore {
       },
       body: JSON.stringify(payload),
     });
-    if (response.url.includes("/login/") && this.onLoginRequired && allowRetry && !this.retryingLogin) {
-      await this.reauthenticate();
-      return this.callBatchInternal(requests, false);
+    if (response.url.includes("/login/")) {
+      if (this.onLoginRequired && allowRetry && !this.retryingLogin) {
+        await this.reauthenticate();
+        return this.callBatchInternal(requests, false);
+      }
+      throw this.errors.api("Session expired", "servicerequireslogin");
     }
     const body = await response.json();
     const envelope = AjaxEnvelopeSchema.parse(body);
-    const results: AjaxBatchResult[] = envelope.map((item) => {
-      if (item.error) {
-        return {
+    const results = Array<OptionalAjaxBatchResult>(requests.length).fill(undefined);
+    for (const [position, item] of envelope.entries()) {
+      const index = item.index ?? position;
+      if (index >= requests.length || results[index] !== undefined) continue;
+      results[index] = item.error
+        ? {
           ok: false,
           error: this.errors.api(item.exception?.message ?? "Unknown API error", item.exception?.errorcode),
-        };
-      }
-      return { ok: true, data: item.data ?? item };
-    });
+        }
+        : { ok: true, data: item.data ?? item };
+    }
     if (
       allowRetry &&
       !this.retryingLogin &&
       this.onLoginRequired &&
-      results.some((result) => !result.ok && this.errors.isLoginRequired(result.error))
+      results.some((result) => result !== undefined && !result.ok && this.errors.isLoginRequired(result.error))
     ) {
       await this.reauthenticate();
       return this.callBatchInternal(requests, false);
@@ -561,9 +624,12 @@ export class MoodleClientCore {
 
   private async getAbsolute(url: string): Promise<string> {
     const response = await this.fetchImpl(url, { headers: { cookie: `${this.cookie.name}=${this.cookie.value}` }, redirect: "follow" });
-    if (response.url.includes("/login/") && this.onLoginRequired && !this.retryingLogin) {
-      await this.reauthenticate();
-      return this.getAbsolute(url);
+    if (response.url.includes("/login/")) {
+      if (this.onLoginRequired && !this.retryingLogin) {
+        await this.reauthenticate();
+        return this.getAbsolute(url);
+      }
+      throw this.errors.api("Session expired", "servicerequireslogin");
     }
     if (!response.ok) {
       throw this.errors.api(`HTTP ${response.status} loading ${url}`);
@@ -587,6 +653,91 @@ export class MoodleClientCore {
       offset = nextOffset;
     }
     return parseCourses(courses);
+  }
+
+  private async findActivity(activityId: number, courseId?: number): Promise<Activity> {
+    if (courseId !== undefined) {
+      const activity = (await this.getActivities(courseId)).find((item) => item.id === activityId);
+      if (activity) return activity;
+      throw this.errors.notFound(`Activity ${activityId} was not found in course ${courseId}.`);
+    }
+
+    let unresolved = (await this.getCourses()).map((course) => course.id);
+    let lastError: unknown;
+    let searchedCourses = 0;
+
+    const stateFallbacks: number[] = [];
+    for (const courseIds of chunks(unresolved, ACTIVITY_SEARCH_BATCH_SIZE)) {
+      const results = await this.callBatch(
+        courseIds.map((id) => ({ methodname: FUNC_GET_COURSE_CONTENTS, args: { courseid: id } })),
+      );
+      for (const [index, id] of courseIds.entries()) {
+        const result = results[index];
+        if (!result?.ok) {
+          if (!result) {
+            stateFallbacks.push(id);
+          } else if (this.errors.isLoginRequired(result.error)) {
+            throw result.error;
+          } else {
+            lastError = result.error;
+            if (result.error.moodleErrorCode === "servicenotavailable") stateFallbacks.push(id);
+          }
+          continue;
+        }
+        searchedCourses += 1;
+        const activity = parseCourseContents(result.data)
+          .flatMap((section) => section.activities)
+          .find((item) => item.id === activityId);
+        if (activity) return activity;
+      }
+    }
+
+    const htmlFallbacks: number[] = [];
+    unresolved = stateFallbacks;
+    for (const courseIds of chunks(unresolved, ACTIVITY_SEARCH_BATCH_SIZE)) {
+      const results = await this.callBatch(
+        courseIds.map((id) => ({ methodname: FUNC_GET_COURSE_FORMAT_STATE, args: { courseid: id } })),
+      );
+      for (const [index, id] of courseIds.entries()) {
+        const result = results[index];
+        if (!result?.ok) {
+          if (!result) {
+            htmlFallbacks.push(id);
+          } else if (this.errors.isLoginRequired(result.error)) {
+            throw result.error;
+          } else {
+            lastError = result.error;
+            if (result.error.moodleErrorCode === "servicenotavailable") htmlFallbacks.push(id);
+          }
+          continue;
+        }
+        const sections = parseCourseFormatState(result.data, this.baseUrl);
+        if (!sections.length) {
+          htmlFallbacks.push(id);
+          continue;
+        }
+        searchedCourses += 1;
+        const activity = sections.flatMap((section) => section.activities)
+          .find((item) => item.id === activityId);
+        if (activity) return activity;
+      }
+    }
+
+    for (const id of htmlFallbacks) {
+      try {
+        const activity = (await this.scrapeCourseContents(
+          id,
+          await this.get(COURSE_PATH, { id }),
+        )).flatMap((section) => section.activities).find((item) => item.id === activityId);
+        searchedCourses += 1;
+        if (activity) return activity;
+      } catch (error) {
+        if (this.errors.isLoginRequired(error)) throw error;
+        lastError = error;
+      }
+    }
+    if (!searchedCourses && lastError) throw lastError;
+    throw this.errors.notFound(`Activity ${activityId} was not found in the authenticated user's courses.`);
   }
 
   private async scrapeCourseContents(courseId: number, rootHtml: string): Promise<Section[]> {
@@ -672,6 +823,22 @@ function queryMatches(text: string, query: string): boolean {
   const haystack = text.toLowerCase().split(/\s+/).join(" ");
   const needle = query.toLowerCase().split(/\s+/).join(" ");
   return needle ? haystack.includes(needle) || needle.split(" ").every((token) => haystack.includes(token)) : true;
+}
+
+function parseTodoPayload(value: unknown): TodoItem[] {
+  return parseTodoItems(isRecord(value) && Array.isArray(value.events) ? value.events : []);
+}
+
+function errorMessage(value: unknown): string {
+  return value instanceof Error ? value.message : "Unknown Moodle error";
+}
+
+function chunks<T>(values: T[], size: number): T[][] {
+  const result: T[][] = [];
+  for (let index = 0; index < values.length; index += size) {
+    result.push(values.slice(index, index + size));
+  }
+  return result;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

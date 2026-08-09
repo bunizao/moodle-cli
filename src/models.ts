@@ -184,7 +184,7 @@ export interface Folder {
   url: string;
 }
 
-export type ActivityDetail = Assignment | Quiz | Resource | Link | Page | Folder;
+export type ActivityDetail = Assignment | Quiz | Resource | Link | Page | Folder | Activity;
 
 export interface ForumPostAuthor {
   id: number;
