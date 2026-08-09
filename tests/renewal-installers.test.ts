@@ -54,6 +54,7 @@ describe("RenewalInstaller", () => {
     await installer.remove();
     expect(calls[0]).toContain("disable --now moodle-cli-mcp-renewal-school.timer");
     expect(calls.filter((call) => call.startsWith("remove:"))).toHaveLength(2);
+    expect(calls.at(-1)).toContain("daemon-reload");
     expect(calls.join("\n")).not.toContain("another-profile");
   });
 

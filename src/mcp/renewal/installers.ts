@@ -28,6 +28,7 @@ export interface RenewalInstallPlan {
   files: RenewalInstallFile[];
   installCommands: RenewalInstallCommand[];
   removeCommands: RenewalInstallCommand[];
+  cleanupCommands?: RenewalInstallCommand[];
 }
 
 export interface RenewalInstallerIO {
@@ -64,6 +65,9 @@ export class RenewalInstaller {
     for (const file of this.plan.files) {
       await this.io.removeFile(file.path);
     }
+    for (const command of this.plan.cleanupCommands ?? []) {
+      await this.io.run(command.command, command.args, { ignoreFailure: command.ignoreFailure });
+    }
   }
 }
 
@@ -84,9 +88,12 @@ export function buildRenewalInstallPlan(options: RenewalInstallOptions): Renewal
 }
 
 function macOSPlan(options: RenewalInstallOptions, intervalMinutes: number): RenewalInstallPlan {
+  if (options.uid === undefined) {
+    throw new Error("macOS renewal installation requires the current user ID");
+  }
   const label = `com.moodle-cli.mcp-renewal.${options.profile}`;
   const path = `${trimEnd(options.homeDirectory, "/")}/Library/LaunchAgents/${label}.plist`;
-  const target = `gui/${options.uid ?? 0}`;
+  const target = `gui/${options.uid}`;
   const args = renewalArgs(options.profile);
   const plist = [
     '<?xml version="1.0" encoding="UTF-8"?>',
@@ -156,8 +163,8 @@ function linuxPlan(options: RenewalInstallOptions, intervalMinutes: number): Ren
     ],
     removeCommands: [
       { command: "systemctl", args: ["--user", "disable", "--now", `${label}.timer`], ignoreFailure: true },
-      { command: "systemctl", args: ["--user", "daemon-reload"] },
     ],
+    cleanupCommands: [{ command: "systemctl", args: ["--user", "daemon-reload"] }],
   };
 }
 
@@ -166,7 +173,7 @@ function windowsPlan(options: RenewalInstallOptions, intervalMinutes: number): R
   const path = `${trimEnd(options.homeDirectory, "\\/")}\\AppData\\Local\\moodle-cli\\renewal\\${options.profile}.xml`;
   const argumentsText = renewalArgs(options.profile).map(windowsArgument).join(" ");
   const task = [
-    '<?xml version="1.0" encoding="UTF-16"?>',
+    '<?xml version="1.0" encoding="UTF-8"?>',
     '<Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">',
     "<Triggers><TimeTrigger>",
     "<StartBoundary>2000-01-01T00:00:00</StartBoundary>",

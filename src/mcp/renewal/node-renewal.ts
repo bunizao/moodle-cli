@@ -64,7 +64,7 @@ export function createDefaultRenewalInstaller(
     profile,
     executable: options.executable ?? process.argv[1] ?? process.execPath,
     homeDirectory: options.homeDirectory ?? homedir(),
-    uid: options.uid,
+    uid: options.uid ?? (typeof process.getuid === "function" ? process.getuid() : undefined),
     intervalMinutes: options.intervalMinutes,
   });
   return new RenewalInstaller(plan, options.io ?? new NodeRenewalInstallerIO());
