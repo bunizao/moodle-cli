@@ -38,6 +38,12 @@ describe("renewal decision state machine", () => {
       [{ type: "notify_sign_in" }],
     ],
     [
+      "MFA required while expiring",
+      { ...HEALTHY, remote: "expiring", replacement: { source: "mfa_required" } },
+      "SESSION_EXPIRING",
+      [{ type: "notify_sign_in" }],
+    ],
+    [
       "Moodle unreachable",
       { ...HEALTHY, remote: "unreachable" },
       "MOODLE_UNREACHABLE",

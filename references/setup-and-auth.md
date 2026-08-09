@@ -73,3 +73,19 @@ On Linux, schedule `moodle auth keepalive --json` with cron instead of `install`
 - **Configured site is wrong**: correct `MOODLE_BASE_URL` or the saved `base_url`, then rerun `moodle user --json`.
 - **Cached session expired**: run `moodle auth login`, or rerun with `--no-cache` once so the CLI reacquires a session.
 - **Non-interactive config error**: set `MOODLE_BASE_URL`; a pipe cannot answer the first-run prompt.
+
+## Manage the Private MCP Server
+
+Use the lifecycle commands instead of asking the user to copy cookies, tokens, Wrangler commands, or client configuration:
+
+```bash
+moodle mcp deploy
+moodle mcp status --json
+moodle mcp login
+moodle mcp connect
+moodle mcp remove
+```
+
+`moodle mcp deploy` validates the local Moodle session, deploys and verifies a private Cloudflare Worker, installs local renewal, and connects detected clients. The default bridge mode keeps the Bearer token out of client files. Use `moodle mcp login` when status reports `SESSION_EXPIRED`; use `moodle mcp deploy --repair` when Cloudflare authorization or managed deployment state needs repair.
+
+Never print or request the raw Moodle cookie, MCP access token, session sync token, or sesskey. An advanced operator may pipe a cookie directly to `moodle mcp session push --stdin`; do not place it in arguments or shell history.

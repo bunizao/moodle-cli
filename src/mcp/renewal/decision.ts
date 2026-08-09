@@ -79,6 +79,14 @@ export function decideRenewal(snapshot: RenewalSnapshot): RenewalDecision {
     };
   }
 
+  if (snapshot.replacement.source === "mfa_required") {
+    return {
+      state: "needs_sign_in",
+      reasonCode: snapshot.remote === "expired" ? "SESSION_EXPIRED" : "SESSION_EXPIRING",
+      actions: [...installAction, { type: "notify_sign_in" }],
+    };
+  }
+
   if (snapshot.remote === "expired") {
     return {
       state: "needs_sign_in",

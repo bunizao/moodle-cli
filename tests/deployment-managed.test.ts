@@ -94,7 +94,7 @@ function dependencies(options: {
     },
     worker: {
       putSession: vi.fn(async () => ({ revision: 5 })),
-      getReadiness: vi.fn(async () => "pass" as const),
+      getReadiness: vi.fn(async () => ({ status: "pass" as const, reasonCode: "SESSION_VALID", revision: 4 })),
       runSmoke: vi.fn(async () => undefined),
     },
     renewal: {
@@ -280,13 +280,14 @@ describe("ManagedMcpDeployment transaction", () => {
     const manager = new ManagedMcpDeployment(deps);
     await consume(manager.apply(await manager.plan({ ...INTENT, rotateToken: true })));
 
-    expect(deps.credentials.write).toHaveBeenCalledWith(INTENT.profile, {
+    expect(deps.credentials.write).toHaveBeenCalledWith(INTENT.profile, expect.objectContaining({
       mcpAccessToken: "mcp-next",
       sessionSyncToken: "sync-next",
       sessionEncryptionKey: "encryption-current",
       previousMcpAccessToken: "mcp-current",
       previousSessionSyncToken: "sync-current",
-    });
+      previousTokensExpireAt: expect.any(Number),
+    }));
     expect(deps.worker.runSmoke).toHaveBeenCalledWith(expect.objectContaining({ mcpAccessToken: "mcp-next" }));
   });
 
@@ -354,6 +355,41 @@ describe("ManagedMcpDeployment lifecycle", () => {
       productionVersionId: REMOTE.previousHealthyVersionId,
       sessionRevision: 5,
     }));
+  });
+
+  it("rolls back a healthy current release and restores it if the previous release fails validation", async () => {
+    const success = dependencies();
+    const manager = new ManagedMcpDeployment(success);
+
+    await expect(manager.rollback(INTENT.profile)).resolves.toEqual({
+      status: "restored",
+      versionId: REMOTE.previousHealthyVersionId,
+    });
+    expect(success.wrangler.restoreProduction).toHaveBeenCalledWith({
+      accountId: INTENT.accountId,
+      workerName: INTENT.workerName,
+      previousVersionId: REMOTE.previousHealthyVersionId,
+    });
+    expect(success.worker.runSmoke).toHaveBeenCalledWith(expect.objectContaining({
+      endpoint: REMOTE.productionEndpoint,
+      mcpAccessToken: "mcp-current",
+      sessionSyncToken: "sync-current",
+    }));
+    expect(success.receipts.write).toHaveBeenCalledWith(expect.objectContaining({
+      productionVersionId: REMOTE.previousHealthyVersionId,
+    }));
+
+    const failed = dependencies();
+    vi.mocked(failed.worker.runSmoke).mockRejectedValueOnce(new Error("previous release failed"));
+    await expect(new ManagedMcpDeployment(failed).rollback(INTENT.profile)).rejects.toMatchObject({
+      code: "ROLLBACK_VALIDATION_FAILED_RESTORED",
+    });
+    expect(failed.wrangler.restoreProduction).toHaveBeenNthCalledWith(2, {
+      accountId: INTENT.accountId,
+      workerName: INTENT.workerName,
+      previousVersionId: REMOTE.productionVersionId,
+    });
+    expect(failed.receipts.write).not.toHaveBeenCalled();
   });
 
   it("removes only the Worker recorded by the selected profile receipt", async () => {

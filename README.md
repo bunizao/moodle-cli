@@ -7,6 +7,7 @@ Terminal-first CLI for Moodle LMS that reuses an authenticated browser session. 
 - Reuses `MoodleSession` from `okta-auth`, your browser, or `MOODLE_TOKEN`
 - Uses Moodle AJAX APIs and falls back to authenticated page scraping when needed
 - Lists courses, deadlines, alerts, activities, grades, and forum discussions
+- Runs locally over stdio or deploys a private read-only MCP server to Cloudflare Workers
 - Agent-friendly JSON/YAML output, field selection, and stable exit codes
 
 ## Install
@@ -76,6 +77,29 @@ moodle auth login                # extract a fresh session; open the browser if 
 
 On Linux, add a cron entry: `*/30 * * * * moodle auth keepalive --json`.
 
+## Managed MCP
+
+Deploy a private Moodle MCP server with the active local Moodle and Wrangler sessions:
+
+```bash
+moodle mcp deploy
+```
+
+The command validates Moodle access, creates two private credentials, deploys a candidate Worker, uploads an encrypted Moodle session, verifies MCP and Moodle readiness, installs local renewal, and connects detected clients. Raw tokens and cookies are stored in the operating system credential store or a user-protected local fallback (`0600` on macOS/Linux and CurrentUser DPAPI on Windows); they are not printed or written into the project.
+
+Primary lifecycle commands:
+
+```bash
+moodle mcp status
+moodle mcp login
+moodle mcp connect
+moodle mcp remove
+```
+
+The default client connection uses `moodle mcp bridge`, so client configuration contains no Bearer token. Use `moodle mcp connect CLIENT --mode remote` only for clients that support authenticated remote MCP headers. `moodle mcp login` is the interactive recovery path when Moodle or the identity provider expires the remote session.
+
+The Worker exposes public liveness at `/healthz`; `/readyz`, session replacement, and Moodle MCP calls require their corresponding Bearer credentials. Version `0.7.0` supports MCP `2026-07-28` and stateless compatibility for `2025-11-25`.
+
 ## Usage
 
 ```bash
@@ -96,6 +120,7 @@ moodle https://school.example.edu/mod/forum/discuss.php?d=9001#p9101 --json
 moodle skills
 moodle skills generate
 moodle skills add
+moodle mcp status
 ```
 
 Supported Moodle URLs can be passed as the first argument. The CLI routes forum discussion, forum view, assignment, quiz, resource, link, page, folder, course, and grade report URLs to the shortest matching command.

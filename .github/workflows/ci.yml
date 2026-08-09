@@ -86,3 +86,23 @@ jobs:
         run: |
           bun run skill:generate
           git diff --exit-code -- SKILL.md references agents/openai.yaml
+
+  windows-credentials:
+    name: Windows protected credentials
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Test Windows credential stores
+        run: npx vitest run tests/deployment-credentials.test.ts

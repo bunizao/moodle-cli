@@ -2,13 +2,14 @@ import { spawnSync, type SpawnSyncReturns } from "node:child_process";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import type { Command } from "commander";
-import { commandsJson, type CommandDescription } from "@bunizao/cli-kit";
+import type { CommandDescription } from "@bunizao/cli-kit";
+import { describeProgram } from "./command-contract.js";
 
 export const SKILL_NAME = "moodle-cli";
 export const SKILL_SOURCE = "https://github.com/bunizao/moodle-cli";
 export const SKILLS_SPEC_URL = "https://github.com/vercel-labs/skills";
 export const SKILL_DESCRIPTION =
-  "Read Moodle data with the `moodle` CLI. Use for authenticated profile, unit discovery, deadlines, alerts, sections, activities, grades, assignment or quiz detail, resources, forum search and discussions, supported Moodle URLs, or authentication diagnostics.";
+  "Read Moodle data and manage a private Moodle MCP deployment with the `moodle` CLI. Use for authenticated profile, unit discovery, deadlines, alerts, sections, activities, grades, forum workflows, supported Moodle URLs, authentication diagnostics, or MCP deploy, status, login, connection, and removal.";
 
 export interface SkillFlag {
   name: string;
@@ -104,7 +105,7 @@ export function installSkill(extraArgs: string[] = [], options: Parameters<typeo
 }
 
 export function extractCommanderCommands(program: Command): SkillCommand[] {
-  return commandsJson(program).commands.flatMap((command) => commandDescriptionRows(command));
+  return describeProgram(program).commands.flatMap((command) => commandDescriptionRows(command));
 }
 
 function commandDescriptionRows(command: CommandDescription, parentPath: string[] = []): SkillCommand[] {
@@ -191,6 +192,11 @@ function renderIntentTable(): string {
       ["Open a forum discussion URL or ID", "moodle threads show DISCUSSION_OR_URL --json"],
       ["Check session freshness or authentication state", "moodle auth status --json"],
       ["Keep the session alive to avoid repeated logins", "moodle auth keepalive install"],
+      ["Deploy or update the private Moodle MCP server", "moodle mcp deploy"],
+      ["Check managed MCP and Moodle readiness", "moodle mcp status --json"],
+      ["Restore an expired remote Moodle session", "moodle mcp login"],
+      ["Connect a supported MCP client without embedding a token", "moodle mcp connect"],
+      ["Remove the selected managed MCP deployment", "moodle mcp remove"],
       ["Install this agent skill", "moodle skills add"],
     ],
   );

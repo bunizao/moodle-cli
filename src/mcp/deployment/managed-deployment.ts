@@ -61,6 +61,12 @@ export interface MoodleSessionMaterial {
   remoteRevision: number | null;
 }
 
+export interface WorkerReadiness {
+  status: "pass" | "warn" | "fail";
+  reasonCode: string | null;
+  revision: number | null;
+}
+
 export interface PreparedRelease {
   artifactDirectory: string;
   wranglerConfigPath: string;
@@ -124,7 +130,7 @@ export interface ManagedWorkerClient {
     session: MoodleSessionMaterial;
     expectedRevision: number | null;
   }): Promise<{ revision: number }>;
-  getReadiness(input: { endpoint: string; sessionSyncToken: string }): Promise<"pass" | "warn" | "fail">;
+  getReadiness(input: { endpoint: string; sessionSyncToken: string }): Promise<WorkerReadiness>;
   runSmoke(input: {
     endpoint: string;
     mcpAccessToken: string;
@@ -172,10 +178,17 @@ export interface DeploymentStatus {
   renewalInstalled: boolean;
   clientsConnected: boolean;
   readiness: "pass" | "warn" | "fail" | "unknown";
+  readinessReasonCode: string | null;
+  sessionRevision: number | null;
 }
 
 export interface RecoveryResult {
   status: "ready" | "restored";
+  versionId: string;
+}
+
+export interface RollbackResult {
+  status: "restored";
   versionId: string;
 }
 
@@ -395,6 +408,8 @@ export class ManagedMcpDeployment {
         renewalInstalled: await this.dependencies.renewal.inspect(profile),
         clientsConnected: await this.dependencies.clients.inspect(profile),
         readiness: "unknown",
+        readinessReasonCode: null,
+        sessionRevision: null,
       };
     }
 
@@ -405,11 +420,16 @@ export class ManagedMcpDeployment {
       this.dependencies.clients.inspect(profile),
     ]);
     let readiness: DeploymentStatus["readiness"] = "unknown";
+    let readinessReasonCode: string | null = null;
+    let sessionRevision: number | null = null;
     if (worker && credentials) {
-      readiness = await this.dependencies.worker.getReadiness({
+      const remoteReadiness = await this.dependencies.worker.getReadiness({
         endpoint: receipt.productionEndpoint,
         sessionSyncToken: credentials.sessionSyncToken,
       });
+      readiness = remoteReadiness.status;
+      readinessReasonCode = remoteReadiness.reasonCode;
+      sessionRevision = remoteReadiness.revision;
     }
     const resolvedWorker = worker ? { ...worker, productionEndpoint: receipt.productionEndpoint } : null;
     return {
@@ -419,6 +439,8 @@ export class ManagedMcpDeployment {
       renewalInstalled,
       clientsConnected,
       readiness,
+      readinessReasonCode,
+      sessionRevision,
     };
   }
 
@@ -479,6 +501,53 @@ export class ManagedMcpDeployment {
       await this.reconcileLocalIntegrations(profile);
       return { status: "restored", versionId: worker.previousHealthyVersionId };
     }
+  }
+
+  async rollback(profile: string): Promise<RollbackResult> {
+    const receipt = await this.dependencies.receipts.read(profile);
+    if (!receipt) {
+      throw new DeploymentApplyError("DEPLOYMENT_NOT_FOUND", `No Moodle MCP deployment exists for profile ${profile}`);
+    }
+    const [worker, credentials] = await Promise.all([
+      this.dependencies.wrangler.inspect(receipt.accountId, receipt.workerName),
+      this.dependencies.credentials.read(profile),
+    ]);
+    if (!worker || !credentials) {
+      throw new DeploymentApplyError("DEPLOYMENT_INCOMPLETE", `Deployment state for profile ${profile} is incomplete`);
+    }
+    const previousVersionId = worker.previousHealthyVersionId;
+    if (!previousVersionId) {
+      throw new DeploymentApplyError("ROLLBACK_VERSION_MISSING", "No previous healthy Worker release is available");
+    }
+
+    await this.dependencies.wrangler.restoreProduction({
+      accountId: receipt.accountId,
+      workerName: receipt.workerName,
+      previousVersionId,
+    });
+    try {
+      await this.dependencies.worker.runSmoke({
+        endpoint: receipt.productionEndpoint,
+        mcpAccessToken: credentials.mcpAccessToken,
+        sessionSyncToken: credentials.sessionSyncToken,
+      });
+    } catch {
+      await this.dependencies.wrangler.restoreProduction({
+        accountId: receipt.accountId,
+        workerName: receipt.workerName,
+        previousVersionId: worker.productionVersionId,
+      });
+      throw new DeploymentApplyError(
+        "ROLLBACK_VALIDATION_FAILED_RESTORED",
+        "The previous release failed validation; the current release was restored",
+      );
+    }
+
+    await this.dependencies.receipts.write({
+      ...receipt,
+      productionVersionId: previousVersionId,
+    });
+    return { status: "restored", versionId: previousVersionId };
   }
 
   async remove(profile: string): Promise<RemovalResult> {

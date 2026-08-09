@@ -46,6 +46,7 @@ describe("NodeReleaseMaterializer", () => {
       sessionEncryptionKey: "encryption-raw-key",
       previousMcpAccessToken: "mcp-previous",
       previousSessionSyncToken: "sync-previous",
+      previousTokensExpireAt: 1_800_000_000_000,
     });
 
     expect((await stat(release.artifactDirectory)).mode & 0o777).toBe(0o700);
@@ -61,6 +62,7 @@ describe("NodeReleaseMaterializer", () => {
     expect(secrets).not.toContain("mcp-raw-token");
     expect(secrets).not.toContain("sync-raw-token");
     expect(secrets).toContain("MCP_ACCESS_TOKEN_PREVIOUS_DIGEST");
+    expect(secrets).toContain('"TOKEN_OVERLAP_EXPIRES_AT":"1800000000000"');
     expect(secrets).toContain("encryption-raw-key");
 
     await materializer.cleanup(release);
@@ -261,6 +263,22 @@ describe("NodeWranglerDeploymentAdapter", () => {
 });
 
 describe("FetchManagedWorkerClient", () => {
+  it("retains readiness reason codes and remote revisions", async () => {
+    const structured = new FetchManagedWorkerClient(vi.fn(async () => Response.json({
+      status: "warn",
+      checks: {
+        "moodle:session": [{ status: "warn", code: "SESSION_EXPIRING", revision: 12 }],
+        "moodle:upstream": [{ status: "pass", code: "MOODLE_REACHABLE" }],
+      },
+    })) as unknown as typeof fetch);
+    const legacy = new FetchManagedWorkerClient(vi.fn(async () => Response.json({ status: "pass" })) as unknown as typeof fetch);
+
+    await expect(structured.getReadiness({ endpoint: "https://worker.example", sessionSyncToken: "sync-token" }))
+      .resolves.toEqual({ status: "warn", reasonCode: "SESSION_EXPIRING", revision: 12 });
+    await expect(legacy.getReadiness({ endpoint: "https://worker.example", sessionSyncToken: "sync-token" }))
+      .resolves.toEqual({ status: "pass", reasonCode: null, revision: null });
+  });
+
   it("uses the approved CAS session endpoint and full release smoke matrix", async () => {
     const requests: Array<{ url: string; init?: RequestInit }> = [];
     const fetchImpl = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {

@@ -16,6 +16,7 @@ export interface WorkerEnv {
   MCP_ACCESS_TOKEN_PREVIOUS_DIGEST?: string;
   SESSION_SYNC_TOKEN_DIGEST: string;
   SESSION_SYNC_TOKEN_PREVIOUS_DIGEST?: string;
+  TOKEN_OVERLAP_EXPIRES_AT?: string;
   SESSION_BROKER?: DurableObjectNamespaceLike;
 }
 
@@ -68,7 +69,7 @@ export function createWorkerHandler(dependencies: WorkerDependencies): WorkerHan
       if (url.pathname === MCP_PATH) {
         if (!await verifyBearerToken(request.headers.get("authorization"), [
           env.MCP_ACCESS_TOKEN_DIGEST,
-          env.MCP_ACCESS_TOKEN_PREVIOUS_DIGEST,
+          activePreviousDigest(env.MCP_ACCESS_TOKEN_PREVIOUS_DIGEST, env.TOKEN_OVERLAP_EXPIRES_AT),
         ])) {
           return unauthorized();
         }
@@ -266,8 +267,14 @@ function validateProtocolMetadata(headers: Headers, body: JsonRpcRequest, protoc
 function authorizeSessionSync(request: Request, env: WorkerEnv): Promise<boolean> {
   return verifyBearerToken(request.headers.get("authorization"), [
     env.SESSION_SYNC_TOKEN_DIGEST,
-    env.SESSION_SYNC_TOKEN_PREVIOUS_DIGEST,
+    activePreviousDigest(env.SESSION_SYNC_TOKEN_PREVIOUS_DIGEST, env.TOKEN_OVERLAP_EXPIRES_AT),
   ]);
+}
+
+function activePreviousDigest(digest: string | undefined, expiresAt: string | undefined): string | undefined {
+  if (!digest || !expiresAt) return undefined;
+  const expiration = Number(expiresAt);
+  return Number.isFinite(expiration) && Date.now() < expiration ? digest : undefined;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

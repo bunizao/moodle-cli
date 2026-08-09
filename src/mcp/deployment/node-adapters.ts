@@ -27,6 +27,7 @@ import {
   type ReleaseMaterializer,
   type RemoteWorker,
   type WranglerDeploymentAdapter,
+  type WorkerReadiness,
 } from "./managed-deployment.js";
 
 const MODERN_MCP_VERSION = "2026-07-28";
@@ -297,6 +298,12 @@ export class NodeReleaseMaterializer implements ReleaseMaterializer {
     if (credentials.previousSessionSyncToken) {
       secrets.SESSION_SYNC_TOKEN_PREVIOUS_DIGEST = digest(credentials.previousSessionSyncToken);
     }
+    if (
+      credentials.previousTokensExpireAt !== undefined
+      && Number.isFinite(credentials.previousTokensExpireAt)
+    ) {
+      secrets.TOKEN_OVERLAP_EXPIRES_AT = String(credentials.previousTokensExpireAt);
+    }
     await writeFile(wranglerConfigPath, `${JSON.stringify(config, null, 2)}\n`, { mode: 0o600 });
     await writeFile(secretsFilePath, `${JSON.stringify(secrets)}\n`, { mode: 0o600 });
     await chmod(wranglerConfigPath, 0o600);
@@ -372,15 +379,25 @@ export class FetchManagedWorkerClient implements ManagedWorkerClient {
     return { revision: body.revision };
   }
 
-  async getReadiness(input: { endpoint: string; sessionSyncToken: string }): Promise<"pass" | "warn" | "fail"> {
+  async getReadiness(input: { endpoint: string; sessionSyncToken: string }): Promise<WorkerReadiness> {
     const response = await this.fetchImpl(endpointUrl(input.endpoint, "/readyz"), {
       headers: { authorization: `Bearer ${input.sessionSyncToken}` },
     });
     const body = await safeJson(response);
     if (isRecord(body) && (body.status === "pass" || body.status === "warn" || body.status === "fail")) {
-      return body.status;
+      const session = firstHealthCheck(body, "moodle:session");
+      const upstream = firstHealthCheck(body, "moodle:upstream");
+      return {
+        status: body.status,
+        reasonCode: upstream?.code === "MOODLE_UNREACHABLE"
+          ? "MOODLE_UNREACHABLE"
+          : typeof session?.code === "string"
+            ? session.code
+            : null,
+        revision: typeof session?.revision === "number" ? session.revision : null,
+      };
     }
-    return "fail";
+    return { status: "fail", reasonCode: null, revision: null };
   }
 
   async runSmoke(input: {
@@ -394,7 +411,7 @@ export class FetchManagedWorkerClient implements ManagedWorkerClient {
       throw new DeploymentApplyError("HEALTH_CHECK_FAILED", "Worker liveness check failed");
     }
     const readiness = await this.getReadiness(input);
-    if (readiness === "fail") {
+    if (readiness.status === "fail") {
       throw new DeploymentApplyError("READINESS_CHECK_FAILED", "Moodle session readiness check failed");
     }
     await this.mcpCall(input.endpoint, input.mcpAccessToken, "server/discover", {}, 1);
@@ -557,6 +574,15 @@ async function safeJson(response: Response): Promise<unknown> {
   } catch {
     return null;
   }
+}
+
+function firstHealthCheck(body: Record<string, unknown>, name: string): Record<string, unknown> | null {
+  const checks = body.checks;
+  if (!isRecord(checks) || !Array.isArray(checks[name])) {
+    return null;
+  }
+  const check = checks[name][0];
+  return isRecord(check) ? check : null;
 }
 
 function parseJsonOutput(output: string): unknown {

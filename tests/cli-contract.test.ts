@@ -1,7 +1,9 @@
-import { commandsJson, insertDefaultVerb, VERBS, type CommandDescription, type NounSpec } from "@bunizao/cli-kit";
+import { insertDefaultVerb, VERBS, type CommandDescription, type NounSpec } from "@bunizao/cli-kit";
 import { describe, expect, it } from "vitest";
 
 import { buildProgram, runCli } from "../src/cli.js";
+import { describeProgram } from "../src/command-contract.js";
+import type { McpCommandService } from "../src/mcp/cli.js";
 
 const NOUNS: readonly NounSpec[] = [
   { name: "units", aliases: ["courses", "projects"], verbs: ["list", "show"], defaultByArity: { 0: "list", 1: "show" } },
@@ -25,7 +27,7 @@ describe("shared CLI contract", () => {
   });
 
   it("describes the full tree and only registers approved verbs", async () => {
-    const tree = commandsJson(buildProgram({ stdout: buffer(false), stderr: buffer(false) }));
+    const tree = describeProgram(buildProgram({ stdout: buffer(false), stderr: buffer(false) }));
     const commands = flatten(tree.commands);
 
     expect(commands.find((command) => command.name === "units")).toMatchObject({ aliases: ["courses", "projects"] });
@@ -43,9 +45,31 @@ describe("shared CLI contract", () => {
     expect(insertDefaultVerb(["projects", "show", "FIT1045"], NOUNS)).toEqual(["units", "show", "FIT1045"]);
   });
 
+  it("exposes the managed MCP command contract", () => {
+    const tree = describeProgram(buildProgram({ stdout: buffer(false), stderr: buffer(false) }));
+    const mcp = tree.commands.find((command) => command.name === "mcp");
+
+    expect(mcp?.commands.map((command) => command.name)).toEqual([
+      "deploy",
+      "status",
+      "login",
+      "connect",
+      "remove",
+      "serve",
+      "bridge",
+      "renewal",
+      "session",
+    ]);
+    const deployFlags = mcp?.commands.find((command) => command.name === "deploy")?.options.map((option) => option.flags) ?? [];
+    const statusFlags = mcp?.commands.find((command) => command.name === "status")?.options.map((option) => option.flags) ?? [];
+    expect(deployFlags).toEqual(expect.arrayContaining(["--dry-run", "--repair", "--rotate-token", "--rollback"]));
+    expect(statusFlags).toEqual(expect.arrayContaining(["--verbose", "--logs"]));
+  });
+
   it.each([
     ["auth", "keepalive", "install"],
     ["auth", "keepalive", "uninstall"],
+    ["mcp", "deploy"],
   ])("requires --yes for non-interactive mutation %s %s %s", async (...args: string[]) => {
     const stderr = buffer(false);
     await expect(runCli(["node", "moodle", ...args, "--json"], {
@@ -55,7 +79,60 @@ describe("shared CLI contract", () => {
     })).resolves.toBe(2);
     expect(JSON.parse(stderr.text())).toMatchObject({ error: { code: "usage" }, exit_code: 2 });
   });
+
+  it("passes managed deployment flags through the CLI boundary", async () => {
+    let received: unknown;
+    const stdout = buffer(false);
+    const service = mcpService({
+      deploy: async (input) => {
+        received = input;
+        return { data: { status: "planned" }, text: "Deployment planned" };
+      },
+    });
+
+    await expect(runCli([
+      "node",
+      "moodle",
+      "mcp",
+      "deploy",
+      "--dry-run",
+      "--repair",
+      "--rotate-token",
+      "--rollback",
+      "--yes",
+      "--json",
+    ], { stdout, stderr: buffer(false), mcpService: service })).resolves.toBe(0);
+
+    expect(received).toEqual({ dryRun: true, repair: true, rotateToken: true, rollback: true, yes: true });
+    expect(JSON.parse(stdout.text())).toEqual({ status: "planned" });
+  });
+
+  it("rejects unsupported managed MCP connection modes", async () => {
+    const stderr = buffer(false);
+    await expect(runCli(["node", "moodle", "mcp", "connect", "codex", "--mode", "tunnel", "--json"], {
+      stdout: buffer(false),
+      stderr,
+      mcpService: mcpService(),
+    })).resolves.toBe(2);
+    expect(JSON.parse(stderr.text())).toMatchObject({ error: { code: "usage" }, exit_code: 2 });
+  });
 });
+
+function mcpService(overrides: Partial<McpCommandService> = {}): McpCommandService {
+  const output = async () => ({ data: {}, text: "ok" });
+  return {
+    deploy: output,
+    status: output,
+    login: output,
+    connect: output,
+    remove: output,
+    serveStdio: async () => undefined,
+    bridge: async () => undefined,
+    renew: output,
+    pushSessionFromStdin: output,
+    ...overrides,
+  } as McpCommandService;
+}
 
 function flatten(commands: readonly CommandDescription[]): CommandDescription[] {
   return commands.flatMap((command) => [command, ...flatten(command.commands)]);

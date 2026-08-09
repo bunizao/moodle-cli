@@ -81,6 +81,7 @@ describe("Cloudflare Worker HTTP transport", () => {
     const env = await workerEnv();
     env.MCP_ACCESS_TOKEN_DIGEST = await digestBearerToken("next-token");
     env.MCP_ACCESS_TOKEN_PREVIOUS_DIGEST = await digestBearerToken(ACCESS_TOKEN);
+    env.TOKEN_OVERLAP_EXPIRES_AT = String(Date.now() + 60_000);
 
     const response = await worker.fetch(
       request("/mcp", {
@@ -103,6 +104,35 @@ describe("Cloudflare Worker HTTP transport", () => {
 
     expect(response.status).toBe(200);
     expect(mcpServer.handle).toHaveBeenCalledOnce();
+  });
+
+  it("rejects previous credentials after the rotation overlap expires", async () => {
+    const mcpServer = { handle: vi.fn() };
+    const broker = createBroker();
+    const worker = createWorkerHandler({ mcpServer, broker: () => broker });
+    const env = await workerEnv();
+    env.MCP_ACCESS_TOKEN_DIGEST = await digestBearerToken("next-access-token");
+    env.MCP_ACCESS_TOKEN_PREVIOUS_DIGEST = await digestBearerToken(ACCESS_TOKEN);
+    env.SESSION_SYNC_TOKEN_DIGEST = await digestBearerToken("next-sync-token");
+    env.SESSION_SYNC_TOKEN_PREVIOUS_DIGEST = await digestBearerToken(SYNC_TOKEN);
+    env.TOKEN_OVERLAP_EXPIRES_AT = String(Date.now() - 1);
+
+    const mcpResponse = await worker.fetch(request("/mcp", {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${ACCESS_TOKEN}`,
+        "content-type": "application/json",
+      },
+      body: "{}",
+    }), env);
+    const readinessResponse = await worker.fetch(request("/readyz", {
+      headers: { authorization: `Bearer ${SYNC_TOKEN}` },
+    }), env);
+
+    expect(mcpResponse.status).toBe(401);
+    expect(readinessResponse.status).toBe(401);
+    expect(mcpServer.handle).not.toHaveBeenCalled();
+    expect(broker.ready).not.toHaveBeenCalled();
   });
 
   it("rejects query credentials and invalid Origin or Host values", async () => {

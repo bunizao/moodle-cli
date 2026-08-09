@@ -20,6 +20,9 @@ describe("managed deployment onboarding copy", () => {
 
       Your Moodle password and session cookie will not be printed or stored in this project."
     `);
+    expect(ONBOARDING_COPY.credentials).toContain("MCP access token");
+    expect(ONBOARDING_COPY.credentials).toContain("Session sync token");
+    expect(ONBOARDING_COPY.credentials).toContain("They will not appear in Wrangler arguments, logs, or project files.");
     expect(ONBOARDING_COPY.nonInteractiveSignIn).toContain("moodle mcp deploy --yes");
     expect(ONBOARDING_COPY.cloudflareSignIn).toContain("Wrangler will open Cloudflare's authorization page");
     expect(formatOnboardingStage("deploy_candidate_version", "pending")).toBe("[5/8] Deploying candidate version");
