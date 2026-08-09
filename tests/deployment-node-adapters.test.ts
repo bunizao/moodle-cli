@@ -293,8 +293,14 @@ describe("FetchManagedWorkerClient", () => {
       if (url.endsWith("/readyz")) {
         return Response.json({ status: "pass" });
       }
-      const request = JSON.parse(String(init?.body)) as { id: number };
-      return Response.json({ jsonrpc: "2.0", id: request.id, result: {} });
+      const request = JSON.parse(String(init?.body)) as { id: number; method: string };
+      return Response.json({
+        jsonrpc: "2.0",
+        id: request.id,
+        result: request.method === "tools/call"
+          ? { structuredContent: { user: { fullname: "Alice Example" } } }
+          : {},
+      });
     });
     const client = new FetchManagedWorkerClient(fetchImpl as unknown as typeof fetch);
     await expect(client.putSession({
@@ -309,11 +315,11 @@ describe("FetchManagedWorkerClient", () => {
         remoteRevision: null,
       },
     })).resolves.toEqual({ revision: 8 });
-    await client.runSmoke({
+    await expect(client.runSmoke({
       endpoint: "https://worker.example",
       mcpAccessToken: "mcp-token",
       sessionSyncToken: "sync-token",
-    });
+    })).resolves.toEqual({ moodleUser: "Alice Example" });
 
     expect(requests.map((request) => new URL(request.url).pathname)).toEqual([
       "/session",

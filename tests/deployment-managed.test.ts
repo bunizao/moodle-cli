@@ -95,7 +95,7 @@ function dependencies(options: {
     worker: {
       putSession: vi.fn(async () => ({ revision: 5 })),
       getReadiness: vi.fn(async () => ({ status: "pass" as const, reasonCode: "SESSION_VALID", revision: 4 })),
-      runSmoke: vi.fn(async () => undefined),
+      runSmoke: vi.fn(async () => ({ moodleUser: "Alice Example" })),
     },
     renewal: {
       install: vi.fn(async () => undefined),
@@ -170,6 +170,32 @@ describe("ManagedMcpDeployment planning", () => {
     await expect(conflict.plan(INTENT)).rejects.toBeInstanceOf(DeploymentPlanError);
     await expect(conflict.plan(INTENT)).rejects.toMatchObject({ code: "WORKER_NAME_CONFLICT" });
   });
+
+  it("replaces a conflicting Moodle MCP Worker only after explicit approval", async () => {
+    const deps = dependencies({
+      remote: { ...REMOTE, ownershipTag: "another-deployment", releaseDigest: INTENT.releaseDigest },
+    });
+    const manager = new ManagedMcpDeployment(deps);
+    const plan = await manager.plan({ ...INTENT, replaceExisting: true });
+
+    expect(plan).toMatchObject({ operation: "update", uploadCandidate: true, receipt: null });
+    await consume(manager.apply(plan));
+    expect(deps.worker.getReadiness).toHaveBeenCalledWith({
+      endpoint: "https://version-next.preview.example",
+      sessionSyncToken: "sync-current",
+    });
+    expect(deps.worker.putSession).toHaveBeenCalledWith(expect.objectContaining({ expectedRevision: 4 }));
+  });
+
+  it("drops a stale receipt when deployment is renamed to a new Worker", async () => {
+    const deps = dependencies({ remote: null });
+    const manager = new ManagedMcpDeployment(deps);
+    const plan = await manager.plan({ ...INTENT, workerName: "moodle-school-alt-mcp" });
+
+    expect(plan).toMatchObject({ operation: "create", receipt: null });
+    await consume(manager.apply(plan));
+    expect(deps.worker.putSession).toHaveBeenCalledWith(expect.objectContaining({ expectedRevision: null }));
+  });
 });
 
 describe("ManagedMcpDeployment transaction", () => {
@@ -192,6 +218,11 @@ describe("ManagedMcpDeployment transaction", () => {
     expect(deps.wrangler.promote).toHaveBeenCalledWith(expect.objectContaining({ versionId: "version-next" }));
     expect(deps.worker.runSmoke).toHaveBeenNthCalledWith(2, expect.objectContaining({
       endpoint: REMOTE.productionEndpoint,
+    }));
+    expect(events).toContainEqual(expect.objectContaining({
+      stageId: "run_release_checks",
+      status: "completed",
+      moodleUser: "Alice Example",
     }));
     expect(deps.materializer.cleanup).toHaveBeenCalledTimes(1);
     expect(deps.receipts.write).toHaveBeenCalledWith(expect.objectContaining({
@@ -231,9 +262,9 @@ describe("ManagedMcpDeployment transaction", () => {
   it("restores previous code with current credentials and session after production smoke failure", async () => {
     const deps = dependencies();
     vi.mocked(deps.worker.runSmoke)
-      .mockResolvedValueOnce(undefined)
+      .mockResolvedValueOnce({ moodleUser: "Alice Example" })
       .mockRejectedValueOnce(new Error("production failed"))
-      .mockResolvedValueOnce(undefined);
+      .mockResolvedValueOnce({ moodleUser: "Alice Example" });
     vi.mocked(deps.worker.putSession)
       .mockResolvedValueOnce({ revision: 5 })
       .mockResolvedValueOnce({ revision: 6 });
@@ -341,7 +372,9 @@ describe("ManagedMcpDeployment lifecycle", () => {
 
   it("recovers by uploading the current session before falling back to a previous healthy release", async () => {
     const deps = dependencies();
-    vi.mocked(deps.worker.runSmoke).mockRejectedValueOnce(new Error("bad code")).mockResolvedValueOnce(undefined);
+    vi.mocked(deps.worker.runSmoke)
+      .mockRejectedValueOnce(new Error("bad code"))
+      .mockResolvedValueOnce({ moodleUser: "Alice Example" });
     const result = await new ManagedMcpDeployment(deps).recover(INTENT.profile);
 
     expect(result).toEqual({ status: "restored", versionId: REMOTE.previousHealthyVersionId });

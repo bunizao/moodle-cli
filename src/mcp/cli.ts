@@ -18,6 +18,7 @@ import { createDefaultClientConnectors } from "./connectors/node-connectors.js";
 import { createDefaultCredentialStore } from "./credentials/index.js";
 import {
   DeploymentApplyError,
+  DeploymentPlanError,
   FetchManagedWorkerClient,
   ManagedMcpDeployment,
   NodeWranglerDeploymentAdapter,
@@ -25,8 +26,11 @@ import {
   WranglerCommandError,
   createBackgroundMoodleSessionSource,
   createDefaultManagedDeployment,
+  successfulDeploymentCopy,
   type DeploymentCredentialRepository,
   type DeploymentEvent,
+  type DeploymentIntent,
+  type DeploymentPlan,
   type DeploymentReceipt,
   type DeploymentReceiptStore,
   type LocalDeploymentIntegration,
@@ -157,7 +161,7 @@ class DefaultMcpCommandService implements McpCommandService {
       };
     }
 
-    const plan = await deployment.plan({
+    const plan = await this.planDeployment(deployment, {
       ...identity,
       releaseDigest: await this.releaseDigest(),
       repair: input.repair,
@@ -185,10 +189,62 @@ class DefaultMcpCommandService implements McpCommandService {
     const events: DeploymentEvent[] = [];
     for await (const event of deployment.apply(plan)) events.push(event);
     const status = await deployment.inspect(identity.profile);
+    const receipt = await this.receipts.read(identity.profile);
+    const endpoint = status.worker?.productionEndpoint ?? receipt?.productionEndpoint;
+    if (!endpoint) {
+      throw new DeploymentApplyError("MISSING_ENDPOINT", "The deployed Worker endpoint is unavailable");
+    }
     return {
       data: { events, status },
-      text: renderDeploymentSuccess(events, status.worker?.productionEndpoint),
+      text: renderDeploymentSuccess(events, {
+        endpoint: `${endpoint.replace(/\/$/u, "")}/mcp`,
+        moodleSite: identity.moodleOrigin,
+        moodleUser: events.find((event) => event.moodleUser)?.moodleUser ?? "Unknown Moodle user",
+        clients: await this.connectedClientNames(identity.profile),
+      }),
     };
+  }
+
+  private async planDeployment(
+    deployment: ManagedMcpDeployment,
+    initialIntent: DeploymentIntent,
+  ): Promise<DeploymentPlan> {
+    let intent = initialIntent;
+    while (true) {
+      try {
+        return await deployment.plan(intent);
+      } catch (error) {
+        if (!(error instanceof DeploymentPlanError) || error.code !== "WORKER_NAME_CONFLICT") {
+          throw error;
+        }
+        if (!this.isInteractive()) {
+          throw new UsageError(
+            `A Worker named ${intent.workerName} already exists. Run \`moodle mcp deploy\` interactively to update it or choose another name.`,
+          );
+        }
+        const selection = (await this.prompt([
+          `A Worker named ${intent.workerName} already exists.`,
+          "",
+          "  1. Update the existing Moodle MCP deployment",
+          "  2. Choose another Worker name",
+          "  3. Cancel",
+          "",
+          "Selection: ",
+        ].join("\n"))).trim();
+        if (selection === "1") {
+          intent = { ...intent, replaceExisting: true };
+          continue;
+        }
+        if (selection === "2") {
+          const workerName = (await this.prompt("Worker name: ")).trim();
+          if (!workerName) throw new UsageError("Worker name cannot be empty.");
+          intent = { ...intent, workerName, replaceExisting: false };
+          continue;
+        }
+        if (selection === "3") throw new UsageError("Moodle MCP deployment was cancelled.");
+        throw new UsageError("Worker conflict selection is invalid.");
+      }
+    }
   }
 
   async status(input: { verbose: boolean; logs: boolean }): Promise<McpCommandOutput> {
@@ -541,6 +597,22 @@ class DefaultMcpCommandService implements McpCommandService {
     return account;
   }
 
+  private async connectedClientNames(profile: string): Promise<string[]> {
+    const connectors = createDefaultClientConnectors(profile, {
+      homeDirectory: this.homeDirectory,
+      platform: process.platform,
+      command: process.argv[1] ?? "moodle",
+    });
+    const clients: string[] = [];
+    for (const connector of connectors) {
+      const detection = await connector.detect();
+      if (detection.detected && (await connector.verify()).configured) {
+        clients.push(displayClientName(detection.client));
+      }
+    }
+    return clients;
+  }
+
   private config(): Promise<MoodleConfig> {
     if (this.options.configLoader) return this.options.configLoader();
     return loadConfig({
@@ -672,17 +744,28 @@ function normalizeClientName(value?: string): SupportedMcpClient | undefined {
   return aliases[normalized] ?? (normalized as SupportedMcpClient);
 }
 
-function renderDeploymentSuccess(events: DeploymentEvent[], endpoint?: string): string {
+function displayClientName(client: SupportedMcpClient): string {
+  const names: Record<SupportedMcpClient, string> = {
+    codex: "Codex",
+    "claude-desktop": "Claude Desktop",
+    "claude-code": "Claude Code",
+    vscode: "VS Code",
+    cursor: "Cursor",
+  };
+  return names[client];
+}
+
+function renderDeploymentSuccess(
+  events: DeploymentEvent[],
+  summary: Parameters<typeof successfulDeploymentCopy>[0],
+): string {
   const completed = events
     .filter((event) => event.status === "completed")
     .map((event) => `[${event.stage}/${event.total}] ✓ ${event.label}`);
   return [
     ...completed,
     "",
-    "Moodle MCP is ready.",
-    ...(endpoint ? [`Endpoint: ${endpoint.replace(/\/$/u, "")}/mcp`] : []),
-    `Protocol: MCP ${MODERN_PROTOCOL_VERSION}`,
-    `Legacy compatibility: ${LEGACY_PROTOCOL_VERSION}`,
+    successfulDeploymentCopy(summary),
   ].join("\n");
 }
 

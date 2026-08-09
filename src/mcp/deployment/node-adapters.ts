@@ -28,6 +28,7 @@ import {
   type RemoteWorker,
   type WranglerDeploymentAdapter,
   type WorkerReadiness,
+  type WorkerSmokeResult,
 } from "./managed-deployment.js";
 
 const MODERN_MCP_VERSION = "2026-07-28";
@@ -404,7 +405,7 @@ export class FetchManagedWorkerClient implements ManagedWorkerClient {
     endpoint: string;
     mcpAccessToken: string;
     sessionSyncToken: string;
-  }): Promise<void> {
+  }): Promise<WorkerSmokeResult> {
     const health = await this.fetchImpl(endpointUrl(input.endpoint, "/healthz"));
     const healthBody = await safeJson(health);
     if (!health.ok || !isRecord(healthBody) || healthBody.status !== "pass") {
@@ -416,7 +417,18 @@ export class FetchManagedWorkerClient implements ManagedWorkerClient {
     }
     await this.mcpCall(input.endpoint, input.mcpAccessToken, "server/discover", {}, 1);
     await this.mcpCall(input.endpoint, input.mcpAccessToken, "tools/list", {}, 2);
-    await this.mcpCall(input.endpoint, input.mcpAccessToken, "tools/call", { name: "get_user", arguments: {} }, 3);
+    const userResult = await this.mcpCall(
+      input.endpoint,
+      input.mcpAccessToken,
+      "tools/call",
+      { name: "get_user", arguments: {} },
+      3,
+    );
+    const moodleUser = mcpUserFullname(userResult);
+    if (!moodleUser) {
+      throw new DeploymentApplyError("MCP_SMOKE_FAILED", "MCP get_user check returned no Moodle user");
+    }
+    return { moodleUser };
   }
 
   private async mcpCall(
@@ -425,7 +437,7 @@ export class FetchManagedWorkerClient implements ManagedWorkerClient {
     method: string,
     params: Record<string, unknown>,
     id: number,
-  ): Promise<void> {
+  ): Promise<unknown> {
     const headers: Record<string, string> = {
       authorization: `Bearer ${token}`,
       "content-type": "application/json",
@@ -463,6 +475,7 @@ export class FetchManagedWorkerClient implements ManagedWorkerClient {
     ) {
       throw new DeploymentApplyError("MCP_SMOKE_FAILED", `MCP ${method} check failed`);
     }
+    return body.result;
   }
 }
 
@@ -583,6 +596,16 @@ function firstHealthCheck(body: Record<string, unknown>, name: string): Record<s
   }
   const check = checks[name][0];
   return isRecord(check) ? check : null;
+}
+
+function mcpUserFullname(result: unknown): string | null {
+  if (!isRecord(result) || !isRecord(result.structuredContent)) {
+    return null;
+  }
+  const user = result.structuredContent.user;
+  return isRecord(user) && typeof user.fullname === "string" && user.fullname.trim()
+    ? user.fullname.trim()
+    : null;
 }
 
 function parseJsonOutput(output: string): unknown {

@@ -4,8 +4,13 @@ import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 
 import { AuthError } from "../src/errors.js";
-import type { ManagedMcpDeployment, WorkerReadiness } from "../src/mcp/deployment/index.js";
-import { DeploymentApplyError } from "../src/mcp/deployment/index.js";
+import type {
+  DeploymentIntent,
+  ManagedMcpDeployment,
+  NodeWranglerDeploymentAdapter,
+  WorkerReadiness,
+} from "../src/mcp/deployment/index.js";
+import { DeploymentApplyError, DeploymentPlanError } from "../src/mcp/deployment/index.js";
 import {
   createMcpCommandService,
   deriveMcpProfile,
@@ -84,6 +89,111 @@ describe("managed MCP CLI service", () => {
 
     expect(rollback).toHaveBeenCalledWith(receipt.profile);
     expect(result.data).toEqual({ status: "restored", versionId: "version-previous" });
+  });
+
+  it("renders the complete first-run success report from verified deployment data", async () => {
+    const root = await mkdtemp(join(tmpdir(), "moodle-cli-success-"));
+    const bundle = join(root, "worker.js");
+    await writeFile(bundle, "export default {};\n");
+    const receipt = deploymentReceipt();
+    const deployment = {
+      plan: vi.fn(async (intent: DeploymentIntent) => ({
+        intent,
+        operation: "create" as const,
+        uploadCandidate: true,
+        existing: null,
+        receipt: null,
+      })),
+      apply: async function* () {
+        yield {
+          stageId: "run_release_checks" as const,
+          stage: 7,
+          total: 8 as const,
+          label: "Running MCP and Moodle checks",
+          status: "completed" as const,
+          moodleUser: "Alice Example",
+        };
+      },
+      inspect: vi.fn(async () => ({
+        profile: receipt.profile,
+        worker: {
+          accountId: receipt.accountId,
+          workerName: receipt.workerName,
+          deploymentId: receipt.deploymentId,
+          ownershipTag: receipt.deploymentId,
+          productionEndpoint: receipt.productionEndpoint,
+          productionVersionId: receipt.productionVersionId,
+          previousHealthyVersionId: null,
+          releaseDigest: receipt.releaseDigest,
+        },
+        credentialsStored: true,
+        renewalInstalled: true,
+        clientsConnected: true,
+        readiness: "pass" as const,
+        readinessReasonCode: "SESSION_VALID",
+        sessionRevision: receipt.sessionRevision,
+      })),
+    } as unknown as ManagedMcpDeployment;
+    const service = createMcpCommandService({
+      homeDir: root,
+      workerBundlePath: bundle,
+      configLoader: async () => ({ baseUrl: receipt.moodleOrigin }),
+      receipts: receiptStore(receipt),
+      credentials: credentialStore(),
+      worker: workerClient(),
+      createDeployment: () => deployment,
+    });
+
+    try {
+      const result = await service.deploy({
+        dryRun: false,
+        repair: false,
+        rotateToken: false,
+        rollback: false,
+        yes: true,
+      });
+      expect(result.text).toContain("Moodle MCP is ready.");
+      expect(result.text).toContain(`  ${receipt.productionEndpoint}/mcp`);
+      expect(result.text).toContain(`  Site: ${receipt.moodleOrigin}`);
+      expect(result.text).toContain("  User: Alice Example");
+      expect(result.text).toContain("  Next check: within 30 minutes");
+      expect(result.text).toContain("Connected clients\n  No supported clients detected");
+      expect(result.text).not.toMatch(/Bearer|MoodleSession|private-token/iu);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("offers update, rename, and cancel for a conflicting Worker name", async () => {
+    const update = await collisionHarness(["1"]);
+    const rename = await collisionHarness(["2", "moodle-school-alt-mcp"]);
+    const cancel = await collisionHarness(["3"]);
+
+    try {
+      await update.service.deploy(deployDryRun());
+      expect(update.plan).toHaveBeenLastCalledWith(expect.objectContaining({ replaceExisting: true }));
+
+      await rename.service.deploy(deployDryRun());
+      expect(rename.plan).toHaveBeenLastCalledWith(expect.objectContaining({
+        workerName: "moodle-school-alt-mcp",
+        replaceExisting: false,
+      }));
+
+      await expect(cancel.service.deploy(deployDryRun())).rejects.toThrow("deployment was cancelled");
+    } finally {
+      await Promise.all([update.root, rename.root, cancel.root].map((root) => rm(root, { recursive: true, force: true })));
+    }
+  });
+
+  it("does not overwrite a conflicting Worker in non-interactive mode", async () => {
+    const harness = await collisionHarness([], false);
+    try {
+      await expect(harness.service.deploy(deployDryRun())).rejects.toThrow("Run `moodle mcp deploy` interactively");
+      expect(harness.plan).toHaveBeenCalledOnce();
+      expect(harness.prompt).not.toHaveBeenCalled();
+    } finally {
+      await rm(harness.root, { recursive: true, force: true });
+    }
   });
 
   it("runs the credential bridge from private receipt state", async () => {
@@ -313,6 +423,47 @@ function deploymentReceipt() {
   };
 }
 
+function deployDryRun() {
+  return { dryRun: true, repair: false, rotateToken: false, rollback: false, yes: true };
+}
+
+async function collisionHarness(answers: string[], interactive = true) {
+  const root = await mkdtemp(join(tmpdir(), "moodle-cli-conflict-"));
+  const bundle = join(root, "worker.js");
+  await writeFile(bundle, "export default {};\n");
+  const remainingAnswers = [...answers];
+  const prompt = vi.fn(async () => remainingAnswers.shift() ?? "");
+  const plan = vi.fn(async (intent: DeploymentIntent) => ({
+    intent,
+    operation: "update" as const,
+    uploadCandidate: true,
+    existing: null,
+    receipt: null,
+  }));
+  plan.mockRejectedValueOnce(new DeploymentPlanError("WORKER_NAME_CONFLICT", "conflict"));
+  const deployment = { plan } as unknown as ManagedMcpDeployment;
+  const wrangler = {
+    listAccounts: vi.fn(async () => [{ id: "account-1", name: "Personal" }]),
+  } as unknown as NodeWranglerDeploymentAdapter;
+  const service = createMcpCommandService({
+    homeDir: root,
+    workerBundlePath: bundle,
+    stdin: { isTTY: interactive } as NodeJS.ReadStream,
+    configLoader: async () => ({ baseUrl: "https://lms.example.edu" }),
+    receipts: {
+      read: vi.fn(async () => null),
+      write: vi.fn(async () => undefined),
+      delete: vi.fn(async () => undefined),
+    },
+    credentials: credentialStore(),
+    worker: workerClient(),
+    wrangler,
+    createDeployment: () => deployment,
+    prompt,
+  });
+  return { root, service, plan, prompt };
+}
+
 function receiptStore(receipt: ReturnType<typeof deploymentReceipt>) {
   return {
     read: vi.fn(async () => receipt),
@@ -339,7 +490,7 @@ function workerClient(
   return {
     putSession: vi.fn(async () => ({ revision: 5 })),
     getReadiness: vi.fn(async () => readiness),
-    runSmoke: vi.fn(async () => undefined),
+    runSmoke: vi.fn(async () => ({ moodleUser: "Alice Example" })),
   };
 }
 

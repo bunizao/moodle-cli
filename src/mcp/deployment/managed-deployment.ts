@@ -17,6 +17,7 @@ export interface DeploymentIntent {
   workerName: string;
   moodleOrigin: string;
   releaseDigest: string;
+  replaceExisting?: boolean;
   rotateToken?: boolean;
   repair?: boolean;
   dryRun?: boolean;
@@ -65,6 +66,10 @@ export interface WorkerReadiness {
   status: "pass" | "warn" | "fail";
   reasonCode: string | null;
   revision: number | null;
+}
+
+export interface WorkerSmokeResult {
+  moodleUser: string;
 }
 
 export interface PreparedRelease {
@@ -135,7 +140,7 @@ export interface ManagedWorkerClient {
     endpoint: string;
     mcpAccessToken: string;
     sessionSyncToken: string;
-  }): Promise<void>;
+  }): Promise<WorkerSmokeResult>;
 }
 
 export interface LocalDeploymentIntegration {
@@ -169,6 +174,7 @@ export interface DeploymentEvent {
   label: string;
   status: "started" | "completed" | "failed";
   code?: string;
+  moodleUser?: string;
 }
 
 export interface DeploymentStatus {
@@ -217,18 +223,21 @@ export class ManagedMcpDeployment {
 
   async plan(intent: DeploymentIntent): Promise<DeploymentPlan> {
     validateIntent(intent);
-    const [remote, receipt, credentials] = await Promise.all([
+    const [remote, storedReceipt, credentials] = await Promise.all([
       this.dependencies.wrangler.inspect(intent.accountId, intent.workerName),
       this.dependencies.receipts.read(intent.profile),
       this.dependencies.credentials.read(intent.profile),
     ]);
 
-    if (remote && !isOwnedByProfile(remote, receipt, intent.profile)) {
+    const matchingReceipt = receiptMatchesIntent(storedReceipt, intent) ? storedReceipt : null;
+    const replacingExisting = remote !== null && !isOwnedByProfile(remote, matchingReceipt, intent.profile);
+    if (replacingExisting && !intent.replaceExisting) {
       throw new DeploymentPlanError(
         "WORKER_NAME_CONFLICT",
         `Worker ${intent.workerName} is not owned by Moodle MCP profile ${intent.profile}`,
       );
     }
+    const receipt = replacingExisting ? null : matchingReceipt;
 
     const existing = remote && receipt
       ? { ...remote, productionEndpoint: receipt.productionEndpoint, releaseDigest: receipt.releaseDigest }
@@ -236,7 +245,7 @@ export class ManagedMcpDeployment {
 
     const rotate = intent.rotateToken === true && credentials !== null;
     const releaseChanged = existing?.releaseDigest !== intent.releaseDigest;
-    const uploadCandidate = !existing || releaseChanged || intent.repair === true || rotate;
+    const uploadCandidate = !existing || replacingExisting || releaseChanged || intent.repair === true || rotate;
     return {
       intent: { ...intent },
       operation: !existing ? "create" : rotate ? "rotate" : uploadCandidate ? "update" : "reconcile",
@@ -261,6 +270,7 @@ export class ManagedMcpDeployment {
     let secretsUploaded = false;
     let candidate: CandidateRelease | null = null;
     let appliedReceipt: DeploymentReceipt | null = null;
+    let moodleUser: string | null = null;
 
     try {
       yield started(activeStage);
@@ -314,11 +324,17 @@ export class ManagedMcpDeployment {
       if (!sessionEndpoint) {
         throw new DeploymentApplyError("MISSING_ENDPOINT", "The Worker did not provide a session endpoint");
       }
+      const expectedRevision = plan.intent.replaceExisting && !plan.receipt
+        ? (await this.dependencies.worker.getReadiness({
+            endpoint: sessionEndpoint,
+            sessionSyncToken: credentials.sessionSyncToken,
+          })).revision
+        : session.remoteRevision;
       const upload = await this.dependencies.worker.putSession({
         endpoint: sessionEndpoint,
         sessionSyncToken: credentials.sessionSyncToken,
         session,
-        expectedRevision: session.remoteRevision,
+        expectedRevision,
       });
       candidateRevision = upload.revision;
       yield completed(activeStage);
@@ -351,11 +367,12 @@ export class ManagedMcpDeployment {
         throw new DeploymentApplyError("MISSING_ENDPOINT", "The Worker did not provide a production endpoint");
       }
       try {
-        await this.dependencies.worker.runSmoke({
+        const smoke = await this.dependencies.worker.runSmoke({
           endpoint: productionEndpoint,
           mcpAccessToken: credentials.mcpAccessToken,
           sessionSyncToken: credentials.sessionSyncToken,
         });
+        moodleUser = smoke.moodleUser;
       } catch {
         if (!promoted) {
           throw new DeploymentApplyError("PRODUCTION_VALIDATION_FAILED", "The existing Worker failed validation");
@@ -374,7 +391,7 @@ export class ManagedMcpDeployment {
       }
       appliedReceipt = makeReceipt(plan, candidate, candidateRevision);
       await this.dependencies.receipts.write(appliedReceipt);
-      yield completed(activeStage);
+      yield completed(activeStage, moodleUser ? { moodleUser } : undefined);
 
       activeStage = "install_local_integrations";
       yield started(activeStage);
@@ -660,6 +677,17 @@ function isOwnedByProfile(
     : worker.ownershipTag === `moodle-cli:${profile}`;
 }
 
+function receiptMatchesIntent(
+  receipt: DeploymentReceipt | null,
+  intent: DeploymentIntent,
+): receipt is DeploymentReceipt {
+  return receipt !== null
+    && receipt.profile === intent.profile
+    && receipt.accountId === intent.accountId
+    && receipt.workerName === intent.workerName
+    && receipt.moodleOrigin === intent.moodleOrigin;
+}
+
 function makeReceipt(
   plan: DeploymentPlan,
   candidate: CandidateRelease | null,
@@ -701,8 +729,11 @@ function started(stageId: OnboardingStageId): DeploymentEvent {
   return event(stageId, "started");
 }
 
-function completed(stageId: OnboardingStageId): DeploymentEvent {
-  return event(stageId, "completed");
+function completed(
+  stageId: OnboardingStageId,
+  details?: Pick<DeploymentEvent, "moodleUser">,
+): DeploymentEvent {
+  return { ...event(stageId, "completed"), ...details };
 }
 
 function failed(stageId: OnboardingStageId, code: string): DeploymentEvent {
