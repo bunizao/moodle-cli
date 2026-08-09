@@ -310,7 +310,7 @@ export class DefaultMoodleSessionSource implements MoodleSessionSource {
       cookieName: session.cookie.name,
       cookieValue: session.cookie.value,
       fingerprint: digest(`${session.cookie.name}\0${session.cookie.value}`),
-      remoteRevision: 0,
+      remoteRevision: null,
     };
   }
 }
@@ -346,7 +346,7 @@ export class FetchManagedWorkerClient implements ManagedWorkerClient {
         moodleOrigin: input.session.moodleOrigin,
         cookieName: input.session.cookieName,
         cookieValue: input.session.cookieValue,
-        expectedRevision: input.expectedRevision ?? 0,
+        expectedRevision: input.expectedRevision,
       }),
     });
     const body = await safeJson(response);

@@ -173,13 +173,13 @@ describe("FetchManagedWorkerClient", () => {
     await expect(client.putSession({
       endpoint: "https://worker.example",
       sessionSyncToken: "sync-token",
-      expectedRevision: 7,
+      expectedRevision: null,
       session: {
         moodleOrigin: "https://moodle.example.edu",
         cookieName: "MoodleSession",
         cookieValue: "private-cookie",
         fingerprint: "fingerprint",
-        remoteRevision: 7,
+        remoteRevision: null,
       },
     })).resolves.toEqual({ revision: 8 });
     await client.runSmoke({
@@ -200,7 +200,7 @@ describe("FetchManagedWorkerClient", () => {
       moodleOrigin: "https://moodle.example.edu",
       cookieName: "MoodleSession",
       cookieValue: "private-cookie",
-      expectedRevision: 7,
+      expectedRevision: null,
     });
     const methods = requests.slice(3).map((request) => JSON.parse(String(request.init?.body)).method);
     expect(methods).toEqual(["server/discover", "tools/list", "tools/call"]);

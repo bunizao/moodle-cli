@@ -89,7 +89,7 @@ function dependencies(options: {
         cookieName: "MoodleSession",
         cookieValue: "private-cookie",
         fingerprint: "fingerprint-current",
-        remoteRevision: 4,
+        remoteRevision: null,
       })),
     },
     worker: {
@@ -200,6 +200,18 @@ describe("ManagedMcpDeployment transaction", () => {
     }));
   });
 
+  it("preserves a null CAS revision for the first session uploaded to a new deployment", async () => {
+    const deps = dependencies({ remote: null, receipt: null });
+    const manager = new ManagedMcpDeployment(deps);
+    await consume(manager.apply(await manager.plan(INTENT)));
+
+    expect(deps.worker.putSession).toHaveBeenCalledWith(expect.objectContaining({
+      endpoint: "https://version-next.preview.example",
+      expectedRevision: null,
+    }));
+    expect(deps.receipts.write).toHaveBeenCalledWith(expect.objectContaining({ sessionRevision: 5 }));
+  });
+
   it("blocks promotion after preview smoke failure and always cleans secret material", async () => {
     const deps = dependencies();
     vi.mocked(deps.worker.runSmoke).mockRejectedValueOnce(new Error("Authorization: Bearer mcp-current"));
@@ -257,6 +269,7 @@ describe("ManagedMcpDeployment transaction", () => {
     expect(deps.wrangler.uploadCandidate).not.toHaveBeenCalled();
     expect(deps.wrangler.promote).not.toHaveBeenCalled();
     expect(deps.worker.putSession).toHaveBeenCalledWith(expect.objectContaining({ endpoint: REMOTE.productionEndpoint }));
+    expect(deps.worker.putSession).toHaveBeenCalledWith(expect.objectContaining({ expectedRevision: 4 }));
     expect(deps.renewal.install).toHaveBeenCalledWith(INTENT.profile);
     expect(deps.clients.install).toHaveBeenCalledWith(INTENT.profile);
   });
