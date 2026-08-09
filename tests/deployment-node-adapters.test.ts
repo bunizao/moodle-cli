@@ -2,7 +2,6 @@ import { mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import { createDefaultCredentialStore } from "../src/mcp/credentials/index.js";
 import {
   FetchManagedWorkerClient,
   NodeDeploymentCommandRunner,
@@ -344,7 +343,7 @@ describe("background Moodle session source", () => {
 });
 
 describe("private Node state adapters", () => {
-  it("persists non-secret receipts and Windows fallback credentials with private modes", async () => {
+  it("persists non-secret receipts with private modes", async () => {
     const home = await mkdtemp(join(tmpdir(), "moodle-state-test-"));
     const receiptStore = new PrivateDeploymentReceiptStore(join(home, "receipts"));
     const receipt: DeploymentReceipt = {
@@ -361,16 +360,6 @@ describe("private Node state adapters", () => {
     await receiptStore.write(receipt);
     await expect(receiptStore.read("school")).resolves.toEqual(receipt);
     expect(JSON.stringify(await receiptStore.read("school"))).not.toMatch(/cookie|AccessToken|SyncToken/);
-
-    const credentials = createDefaultCredentialStore({ platform: "win32", homeDirectory: home });
-    await credentials.write("school", {
-      mcpAccessToken: "mcp-token",
-      sessionSyncToken: "sync-token",
-      sessionEncryptionKey: "encryption-key",
-    });
-    await expect(credentials.read("school")).resolves.toMatchObject({ mcpAccessToken: "mcp-token" });
-    const credentialPath = join(home, "AppData", "Local", "moodle-cli", "credentials", "school.json");
-    expect((await stat(credentialPath)).mode & 0o777).toBe(0o600);
   });
 
   it("exposes one default factory while allowing focused adapter replacement", () => {

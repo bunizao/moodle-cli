@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { chmod, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, win32 as windowsPath } from "node:path";
 import {
   CredentialBackendUnavailableError,
   SafeCredentialStore,
@@ -10,6 +10,73 @@ import {
 } from "./store.js";
 
 const SERVICE = "moodle-cli-mcp";
+const WINDOWS_CREDENTIAL_READ = `
+$ErrorActionPreference = "Stop"
+[Console]::InputEncoding = [Text.UTF8Encoding]::new($false)
+$payload = [Console]::In.ReadToEnd() | ConvertFrom-Json
+[void][Windows.Security.Credentials.PasswordVault,Windows.Security.Credentials,ContentType=WindowsRuntime]
+$vault = New-Object -TypeName Windows.Security.Credentials.PasswordVault
+$credential = $vault.RetrieveAll() | Where-Object { $_.Resource -eq $payload.service -and $_.UserName -eq $payload.profile } | Select-Object -First 1
+if ($null -eq $credential) { exit 0 }
+[void]$credential.RetrievePassword()
+[Console]::Out.Write($credential.Password)
+`;
+const WINDOWS_CREDENTIAL_WRITE = `
+$ErrorActionPreference = "Stop"
+[Console]::InputEncoding = [Text.UTF8Encoding]::new($false)
+$payload = [Console]::In.ReadToEnd() | ConvertFrom-Json
+[void][Windows.Security.Credentials.PasswordVault,Windows.Security.Credentials,ContentType=WindowsRuntime]
+[void][Windows.Security.Credentials.PasswordCredential,Windows.Security.Credentials,ContentType=WindowsRuntime]
+$vault = New-Object -TypeName Windows.Security.Credentials.PasswordVault
+$existing = $vault.RetrieveAll() | Where-Object { $_.Resource -eq $payload.service -and $_.UserName -eq $payload.profile } | Select-Object -First 1
+if ($null -ne $existing) { $vault.Remove($existing) }
+$credential = New-Object -TypeName Windows.Security.Credentials.PasswordCredential -ArgumentList @($payload.service, $payload.profile, $payload.credentials)
+$vault.Add($credential)
+`;
+const WINDOWS_CREDENTIAL_DELETE = `
+$ErrorActionPreference = "Stop"
+[Console]::InputEncoding = [Text.UTF8Encoding]::new($false)
+$payload = [Console]::In.ReadToEnd() | ConvertFrom-Json
+[void][Windows.Security.Credentials.PasswordVault,Windows.Security.Credentials,ContentType=WindowsRuntime]
+$vault = New-Object -TypeName Windows.Security.Credentials.PasswordVault
+$credential = $vault.RetrieveAll() | Where-Object { $_.Resource -eq $payload.service -and $_.UserName -eq $payload.profile } | Select-Object -First 1
+if ($null -ne $credential) { $vault.Remove($credential) }
+`;
+const WINDOWS_DPAPI_READ = `
+$ErrorActionPreference = "Stop"
+[Console]::InputEncoding = [Text.UTF8Encoding]::new($false)
+$payload = [Console]::In.ReadToEnd() | ConvertFrom-Json
+if (-not [IO.File]::Exists($payload.path)) { exit 0 }
+$protected = [Convert]::FromBase64String([IO.File]::ReadAllText($payload.path))
+$plaintext = [Security.Cryptography.ProtectedData]::Unprotect($protected, $null, [Security.Cryptography.DataProtectionScope]::CurrentUser)
+try {
+  [Console]::Out.Write([Text.Encoding]::UTF8.GetString($plaintext))
+} finally {
+  [Array]::Clear($plaintext, 0, $plaintext.Length)
+}
+`;
+const WINDOWS_DPAPI_WRITE = `
+$ErrorActionPreference = "Stop"
+[Console]::InputEncoding = [Text.UTF8Encoding]::new($false)
+$payload = [Console]::In.ReadToEnd() | ConvertFrom-Json
+$plaintext = [Text.Encoding]::UTF8.GetBytes($payload.credentials)
+$temporary = $payload.path + "." + $PID + ".tmp"
+try {
+  $protected = [Security.Cryptography.ProtectedData]::Protect($plaintext, $null, [Security.Cryptography.DataProtectionScope]::CurrentUser)
+  [IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($payload.path)) | Out-Null
+  [IO.File]::WriteAllText($temporary, [Convert]::ToBase64String($protected))
+  Move-Item -LiteralPath $temporary -Destination $payload.path -Force
+} finally {
+  [Array]::Clear($plaintext, 0, $plaintext.Length)
+  if ([IO.File]::Exists($temporary)) { Remove-Item -LiteralPath $temporary -Force }
+}
+`;
+const WINDOWS_DPAPI_DELETE = `
+$ErrorActionPreference = "Stop"
+[Console]::InputEncoding = [Text.UTF8Encoding]::new($false)
+$payload = [Console]::In.ReadToEnd() | ConvertFrom-Json
+if ([IO.File]::Exists($payload.path)) { Remove-Item -LiteralPath $payload.path -Force }
+`;
 
 export interface CredentialCommandRunner {
   run(command: string, args: string[], input?: string): Promise<{ stdout: string }>;
@@ -137,6 +204,105 @@ export class LinuxSecretServiceCredentialBackend implements CredentialBackend {
   }
 }
 
+export class WindowsCredentialManagerBackend implements CredentialBackend {
+  readonly name = "Windows Credential Manager";
+
+  constructor(private readonly runner: CredentialCommandRunner = new NodeCredentialCommandRunner()) {}
+
+  async read(profile: string): Promise<DeploymentCredentials | null> {
+    validateProfile(profile);
+    let result: { stdout: string };
+    try {
+      result = await this.runner.run(
+        "powershell.exe",
+        powershellArgs(WINDOWS_CREDENTIAL_READ),
+        windowsCredentialInput(profile),
+      );
+    } catch (error) {
+      throw new CredentialBackendUnavailableError(this.name, error);
+    }
+    return result.stdout.trim() ? parseCredentials(result.stdout.trim()) : null;
+  }
+
+  async write(profile: string, credentials: DeploymentCredentials): Promise<void> {
+    validateProfile(profile);
+    try {
+      await this.runner.run(
+        "powershell.exe",
+        powershellArgs(WINDOWS_CREDENTIAL_WRITE),
+        windowsCredentialInput(profile, credentials),
+      );
+    } catch (error) {
+      throw new CredentialBackendUnavailableError(this.name, error);
+    }
+  }
+
+  async delete(profile: string): Promise<void> {
+    validateProfile(profile);
+    try {
+      await this.runner.run(
+        "powershell.exe",
+        powershellArgs(WINDOWS_CREDENTIAL_DELETE),
+        windowsCredentialInput(profile),
+      );
+    } catch (error) {
+      throw new CredentialBackendUnavailableError(this.name, error);
+    }
+  }
+}
+
+export class WindowsDpapiFileCredentialBackend implements CredentialBackend {
+  readonly name = "Windows user-protected credential file";
+
+  constructor(
+    private readonly baseDirectory: string,
+    private readonly runner: CredentialCommandRunner = new NodeCredentialCommandRunner(),
+  ) {}
+
+  async read(profile: string): Promise<DeploymentCredentials | null> {
+    let result: { stdout: string };
+    try {
+      result = await this.runner.run(
+        "powershell.exe",
+        powershellArgs(WINDOWS_DPAPI_READ),
+        windowsDpapiInput(this.path(profile)),
+      );
+    } catch (error) {
+      throw new CredentialBackendUnavailableError(this.name, error);
+    }
+    return result.stdout.trim() ? parseCredentials(result.stdout.trim()) : null;
+  }
+
+  async write(profile: string, credentials: DeploymentCredentials): Promise<void> {
+    try {
+      await this.runner.run(
+        "powershell.exe",
+        powershellArgs(WINDOWS_DPAPI_WRITE),
+        windowsDpapiInput(this.path(profile), credentials),
+      );
+    } catch (error) {
+      throw new CredentialBackendUnavailableError(this.name, error);
+    }
+  }
+
+  async delete(profile: string): Promise<void> {
+    try {
+      await this.runner.run(
+        "powershell.exe",
+        powershellArgs(WINDOWS_DPAPI_DELETE),
+        windowsDpapiInput(this.path(profile)),
+      );
+    } catch (error) {
+      throw new CredentialBackendUnavailableError(this.name, error);
+    }
+  }
+
+  private path(profile: string): string {
+    validateProfile(profile);
+    return `${this.baseDirectory.replace(/[\\/]+$/u, "")}\\${profile}.bin`;
+  }
+}
+
 export class UnavailableCredentialBackend implements CredentialBackend {
   readonly name: string;
 
@@ -206,12 +372,17 @@ export function createDefaultCredentialStore(options: {
     ? new MacOSKeychainCredentialBackend(runner)
     : platform === "linux"
       ? new LinuxSecretServiceCredentialBackend(runner)
-      : new UnavailableCredentialBackend("Windows Credential Manager");
+      : platform === "win32"
+        ? new WindowsCredentialManagerBackend(runner)
+        : new UnavailableCredentialBackend(`${platform} credential store`);
   const home = options.homeDirectory ?? homedir();
   const fallbackDirectory = platform === "win32"
-    ? join(home, "AppData", "Local", "moodle-cli", "credentials")
+    ? windowsPath.join(home, "AppData", "Local", "moodle-cli", "credentials")
     : join(home, ".config", "moodle-cli", "mcp", "credentials");
-  return new SafeCredentialStore(preferred, new PrivateFileCredentialBackend(fallbackDirectory));
+  const fallback = platform === "win32"
+    ? new WindowsDpapiFileCredentialBackend(fallbackDirectory, runner)
+    : new PrivateFileCredentialBackend(fallbackDirectory);
+  return new SafeCredentialStore(preferred, fallback);
 }
 
 function parseCredentials(value: string): DeploymentCredentials {
@@ -237,7 +408,29 @@ function parseCredentials(value: string): DeploymentCredentials {
     ...(typeof credentials.previousSessionSyncToken === "string"
       ? { previousSessionSyncToken: credentials.previousSessionSyncToken }
       : {}),
+    ...(typeof credentials.previousTokensExpireAt === "number" && Number.isFinite(credentials.previousTokensExpireAt)
+      ? { previousTokensExpireAt: credentials.previousTokensExpireAt }
+      : {}),
   };
+}
+
+function powershellArgs(script: string): string[] {
+  return ["-NoProfile", "-NonInteractive", "-Command", script];
+}
+
+function windowsCredentialInput(profile: string, credentials?: DeploymentCredentials): string {
+  return JSON.stringify({
+    service: SERVICE,
+    profile,
+    ...(credentials ? { credentials: JSON.stringify(credentials) } : {}),
+  });
+}
+
+function windowsDpapiInput(path: string, credentials?: DeploymentCredentials): string {
+  return JSON.stringify({
+    path,
+    ...(credentials ? { credentials: JSON.stringify(credentials) } : {}),
+  });
 }
 
 function validateProfile(profile: string): void {

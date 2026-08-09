@@ -4,7 +4,10 @@ export interface DeploymentCredentials {
   sessionEncryptionKey: string;
   previousMcpAccessToken?: string;
   previousSessionSyncToken?: string;
+  previousTokensExpireAt?: number;
 }
+
+export const TOKEN_OVERLAP_MS = 10 * 60 * 1000;
 
 export interface CredentialBackend {
   readonly name: string;
@@ -80,6 +83,7 @@ export class SafeCredentialStore {
 export function rotateCredentials(
   current: DeploymentCredentials,
   createToken: () => string,
+  now: () => number = Date.now,
 ): DeploymentCredentials {
   return {
     mcpAccessToken: createToken(),
@@ -87,6 +91,7 @@ export function rotateCredentials(
     sessionEncryptionKey: current.sessionEncryptionKey,
     previousMcpAccessToken: current.mcpAccessToken,
     previousSessionSyncToken: current.sessionSyncToken,
+    previousTokensExpireAt: now() + TOKEN_OVERLAP_MS,
   };
 }
 
