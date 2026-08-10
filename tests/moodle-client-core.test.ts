@@ -8,6 +8,58 @@ import { createMoodleClientCore } from "../src/moodle-client-core.js";
 const BASE_URL = "https://moodle.example.edu";
 
 describe("runtime-neutral Moodle client core", () => {
+  it("returns authenticated responses and keeps Moodle cookies on the configured origin", async () => {
+    const fetchImpl = vi.fn<typeof fetch>(async (input, init) => {
+      const url = String(input);
+      const cookie = new Headers(init?.headers).get("cookie");
+      expect(cookie).toBe(url.startsWith(BASE_URL) ? "MoodleSession=secret-cookie" : null);
+      return new Response(url.endsWith("slides.pdf") ? "slides" : "public");
+    });
+    const client = createMoodleClientCore(BASE_URL, {
+      cookie: { name: "MoodleSession", value: "secret-cookie" },
+      sesskey: "session-key",
+      userid: 7,
+      fetchImpl,
+    });
+
+    await expect((await client.requestAbsolute(`${BASE_URL}/pluginfile.php/slides.pdf`)).text()).resolves.toBe("slides");
+    await expect((await client.requestAbsolute("https://cdn.example.edu/public.pdf")).text()).resolves.toBe("public");
+  });
+
+  it("retries an authenticated response once after login and then reports expiry", async () => {
+    const onLoginRequired = vi.fn(async () => ({
+      cookie: { name: "MoodleSession", value: "renewed-cookie" },
+      pageContext: {
+        sesskey: "renewed-key",
+        user_info: {
+          userid: 8,
+          username: "grace",
+          fullname: "Grace Hopper",
+          sitename: "Example Moodle",
+          siteurl: BASE_URL,
+        },
+      },
+    }));
+    const fetchImpl = vi.fn<typeof fetch>(async () => {
+      const response = new Response("login", { headers: { "content-type": "text/html" } });
+      Object.defineProperty(response, "url", { value: `${BASE_URL}/login/index.php` });
+      return response;
+    });
+    const client = createMoodleClientCore(BASE_URL, {
+      cookie: { name: "MoodleSession", value: "expired-cookie" },
+      sesskey: "expired-key",
+      userid: 7,
+      fetchImpl,
+      onLoginRequired,
+    });
+
+    await expect(client.requestAbsolute(`${BASE_URL}/pluginfile.php/slides.pdf`)).rejects.toMatchObject({
+      code: "auth",
+    });
+    expect(onLoginRequired).toHaveBeenCalledOnce();
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
   it("runs existing Moodle operations from an injected Worker session", async () => {
     const fetchImpl = vi.fn<typeof fetch>(async (input, init) => {
       const info = new URL(String(input)).searchParams.get("info");

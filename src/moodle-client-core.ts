@@ -506,6 +506,10 @@ export class MoodleClientCore {
     return parseFolderHtml(await this.get(FOLDER_VIEW_PATH, { id }), id, this.baseUrl);
   }
 
+  async requestAbsolute(url: string, init: RequestInit = {}): Promise<Response> {
+    return this.requestAbsoluteInternal(url, init, true);
+  }
+
   async getForumDiscussion(discussionId: number): Promise<ForumDiscussion> {
     return this.forum.getForumDiscussion(discussionId);
   }
@@ -623,18 +627,27 @@ export class MoodleClientCore {
   }
 
   private async getAbsolute(url: string): Promise<string> {
-    const response = await this.fetchImpl(url, { headers: { cookie: `${this.cookie.name}=${this.cookie.value}` }, redirect: "follow" });
+    return (await this.requestAbsolute(url)).text();
+  }
+
+  private async requestAbsoluteInternal(url: string, init: RequestInit, allowRetry: boolean): Promise<Response> {
+    const headers = new Headers(init.headers);
+    headers.delete("cookie");
+    if (new URL(url).origin === new URL(this.baseUrl).origin) {
+      headers.set("cookie", `${this.cookie.name}=${this.cookie.value}`);
+    }
+    const response = await this.fetchImpl(url, { ...init, headers, redirect: "follow" });
     if (response.url.includes("/login/")) {
-      if (this.onLoginRequired && !this.retryingLogin) {
+      if (this.onLoginRequired && allowRetry && !this.retryingLogin) {
         await this.reauthenticate();
-        return this.getAbsolute(url);
+        return this.requestAbsoluteInternal(url, init, false);
       }
       throw this.errors.api("Session expired", "servicerequireslogin");
     }
     if (!response.ok) {
-      throw this.errors.api(`HTTP ${response.status} loading ${url}`);
+      throw this.errors.api(`HTTP ${response.status} loading ${safeUrl(url)}`);
     }
-    return response.text();
+    return response;
   }
 
   private async getCoursesTimeline(): Promise<Course[]> {
@@ -847,4 +860,20 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function isLoginErrorCode(code: string | undefined): boolean {
   return ["servicerequireslogin", "sitepolicynotagreed"].includes(code ?? "");
+}
+
+function safeUrl(value: string): string {
+  try {
+    const url = new URL(value);
+    url.username = "";
+    url.password = "";
+    for (const key of [...url.searchParams.keys()]) {
+      if (/(?:auth|credential|key|secret|sess|signature|token)/iu.test(key)) {
+        url.searchParams.delete(key);
+      }
+    }
+    return url.toString();
+  } catch {
+    return "the requested Moodle URL";
+  }
 }
