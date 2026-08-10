@@ -20,7 +20,7 @@
     "build:worker": "tsup --config tsup.worker.config.ts && node scripts/check-worker-bundle.mjs",
     "check": "tsc --noEmit",
     "pack:check": "npm pack --dry-run --json | node -e \"let data = ''; process.stdin.on('data', chunk => data += chunk); process.stdin.on('end', () => { const files = JSON.parse(data)[0]?.files?.map(file => file.path) ?? []; for (const required of ['dist/moodle.js', 'dist/worker/worker.js', 'SKILL.md', 'references/command-reference.md', 'references/downloads.md', 'agents/openai.yaml']) if (!files.includes(required)) throw new Error('npm package is missing ' + required); });\"",
-    "pack:smoke": "tmp=\"$(mktemp -d)\" && npm pack --pack-destination \"$tmp\" >/dev/null && npm install --prefix \"$tmp/install\" \"$tmp\"/moodle-cli-*.tgz >/dev/null && test \"$(\"$tmp/install/node_modules/.bin/moodle\" --version)\" = \"$(node -p \"JSON.parse(require('node:fs').readFileSync('package.json', 'utf8')).version\")\" && \"$tmp/install/node_modules/.bin/moodle\" mcp --help >/dev/null",
+    "pack:smoke": "tmp=\"$(mktemp -d)\" && npm pack --pack-destination \"$tmp\" >/dev/null && npm install --prefix \"$tmp/install\" \"$tmp\"/moodle-cli-*.tgz >/dev/null && test \"$(\"$tmp/install/node_modules/.bin/moodle\" --version)\" = \"$(node -p \"JSON.parse(require('node:fs').readFileSync('package.json', 'utf8')).version\")\" && \"$tmp/install/node_modules/.bin/moodle\" download --help >/dev/null && \"$tmp/install/node_modules/.bin/moodle\" mcp --help >/dev/null",
     "test": "vitest run",
     "test:mcp": "vitest run tests/mcp-*.test.ts tests/deployment-*.test.ts tests/renewal-*.test.ts tests/connectors-*.test.ts",
     "test:worker": "vitest run tests/worker-*.test.ts",
