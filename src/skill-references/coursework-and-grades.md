@@ -26,6 +26,8 @@ moodle activities show ACTIVITY_ID --json
 
 The result includes `type` (`assign`, `quiz`, `resource`, `link`, `page`, or `folder`).
 
+Resource and folder details include `file_entries` with a filename, authenticated URL, and authentication requirement. When the user wants local files, continue with [downloads.md](downloads.md) instead of fetching those URLs outside the CLI.
+
 When the user supplies a supported Moodle URL without naming a command, route it directly:
 
 ```bash
@@ -38,6 +40,6 @@ The CLI recognizes course, grade report, forum, assignment, quiz, resource, link
 
 1. Use the activity-specific command when the activity type is known.
 2. Use direct URL routing when the user already supplied a URL and only wants its content.
-3. Return structured links and files from the result instead of scraping prose from the formatted table.
+3. Return structured links and `file_entries` from the result instead of scraping prose from the formatted table.
 
 The branch is complete when the answer identifies the course or module and quotes the grade or activity state returned by Moodle.

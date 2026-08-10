@@ -1,4 +1,4 @@
 interface:
   display_name: "Moodle CLI"
-  short_description: "Inspect courses, grades, deadlines, and forums"
-  default_prompt: "Use $moodle-cli to inspect my Moodle data and answer with the narrowest relevant command."
+  short_description: "Inspect Moodle and download local Moodle files"
+  default_prompt: "Use $moodle-cli to inspect my Moodle data or download selected local Moodle files with the narrowest relevant command."

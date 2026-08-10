@@ -16,6 +16,7 @@ Read this file for exact arguments, flags, and defaults after selecting a branch
 | moodle auth login | Extract a fresh session, opening the browser when needed. |  | --json<br>--yaml<br>--table<br>--fields (value required) |
 | moodle auth status | Show cached session freshness and keepalive state. |  | --json<br>--yaml<br>--table<br>--fields (value required) |
 | moodle commands | Describe the complete command tree. |  | --json<br>--yaml<br>--table<br>--fields (value required) |
+| moodle download | Download one authenticated Moodle file. | <source> | --dest (value required)<br>--force<br>--json<br>--yaml<br>--table<br>--fields (value required) |
 | moodle forums | Inspect forums. |  |  |
 | moodle forums list | List forum activities in a unit. | <unit> | --json<br>--yaml<br>--table<br>--fields (value required)<br>--limit (value required) |
 | moodle forums search | Search forum discussion titles and post text. | <query> | --json<br>--yaml<br>--table<br>--fields (value required)<br>--course (value required)<br>--forum (value required)<br>--titles-only<br>--unread-only<br>--recent<br>--limit-forums (value required)<br>--limit-discussions (value required)<br>--limit (value required) |

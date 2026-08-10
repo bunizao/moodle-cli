@@ -9,7 +9,7 @@ export const SKILL_NAME = "moodle-cli";
 export const SKILL_SOURCE = "https://github.com/bunizao/moodle-cli";
 export const SKILLS_SPEC_URL = "https://github.com/vercel-labs/skills";
 export const SKILL_DESCRIPTION =
-  "Read Moodle data and manage a private Moodle MCP deployment with the `moodle` CLI. Use for authenticated profile, unit discovery, deadlines, alerts, sections, activities, grades, forum workflows, supported Moodle URLs, authentication diagnostics, or MCP deploy, status, login, connection, and removal.";
+  "Read Moodle data, download local files, and manage a private Moodle MCP deployment with the `moodle` CLI. Use for authenticated profile, unit discovery, deadlines, alerts, sections, activities, grades, forum workflows, local file downloads, supported Moodle URLs, authentication diagnostics, or MCP deploy, status, login, connection, and removal.";
 
 export interface SkillFlag {
   name: string;
@@ -47,6 +47,7 @@ const SKILL_BUNDLE_TEMPLATES = [
   ["references/profile-and-courses.md", "skill-references/profile-and-courses.md"],
   ["references/deadlines-and-alerts.md", "skill-references/deadlines-and-alerts.md"],
   ["references/coursework-and-grades.md", "skill-references/coursework-and-grades.md"],
+  ["references/downloads.md", "skill-references/downloads.md"],
   ["references/forums.md", "skill-references/forums.md"],
   ["references/output-and-errors.md", "skill-references/output-and-errors.md"],
   ["references/maintenance.md", "skill-references/maintenance.md"],
@@ -186,6 +187,7 @@ function renderIntentTable(): string {
       ["Show a compact dashboard", "moodle overview --todo-limit 5 --alerts-limit 5 --json"],
       ["Show activities in a unit", "moodle activities UNIT_ID --json"],
       ["Show activity details", "moodle activities show ACTIVITY_ID --json"],
+      ["Download one Moodle file locally", "moodle download SOURCE --dest PATH --json"],
       ["Show unit sections", "moodle units show UNIT_ID --json"],
       ["Show grades for a unit", "moodle grades UNIT_ID --json"],
       ["Search forums", "moodle forums search QUERY --json"],
