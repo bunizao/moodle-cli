@@ -9,6 +9,7 @@ import {
   getAuthenticatedSessionWithBrowserFallback,
   type BrowserLoginOptions,
 } from "../../auth.js";
+import { VERSION } from "../../version.js";
 import { DefaultClientIntegration, type DefaultConnectorOptions } from "../connectors/index.js";
 import { createDefaultCredentialStore, type DeploymentCredentials } from "../credentials/index.js";
 import { DefaultRenewalIntegration, type DefaultRenewalOptions } from "../renewal/index.js";
@@ -459,7 +460,7 @@ export class FetchManagedWorkerClient implements ManagedWorkerClient {
           _meta: {
             "io.modelcontextprotocol/protocolVersion": MODERN_MCP_VERSION,
             "io.modelcontextprotocol/clientCapabilities": {},
-            "io.modelcontextprotocol/clientInfo": { name: "moodle-cli-deployment-smoke", version: "0.7.0" },
+            "io.modelcontextprotocol/clientInfo": { name: "moodle-cli-deployment-smoke", version: VERSION },
           },
         },
       }),

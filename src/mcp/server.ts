@@ -1,5 +1,6 @@
 import { z, ZodError } from "zod";
 
+import { VERSION } from "../version.js";
 import type { MoodleGateway } from "./gateway.js";
 import {
   jsonRpcFailure,
@@ -143,7 +144,7 @@ export function createMoodleMcpServer(
 ): MoodleMcpServer {
   const serverInfo = {
     name: options.name ?? "moodle",
-    version: options.version ?? "0.7.0",
+    version: options.version ?? VERSION,
   };
 
   return {

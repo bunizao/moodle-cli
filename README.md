@@ -99,7 +99,7 @@ moodle mcp remove
 
 The default client connection uses `moodle mcp bridge`, so client configuration contains no Bearer token. Use `moodle mcp connect CLIENT --mode remote` only for clients that support authenticated remote MCP headers. `moodle mcp login` is the interactive recovery path when Moodle or the identity provider expires the remote session.
 
-The Worker exposes public liveness at `/healthz`; `/readyz`, session replacement, and Moodle MCP calls require their corresponding Bearer credentials. Version `0.7.0` supports MCP `2026-07-28` and stateless compatibility for `2025-11-25`.
+The Worker exposes public liveness at `/healthz`; `/readyz`, session replacement, and Moodle MCP calls require their corresponding Bearer credentials. Alpha version `0.7.0-alpha.0` supports MCP `2026-07-28` and stateless compatibility for `2025-11-25`.
 
 ## Usage
 

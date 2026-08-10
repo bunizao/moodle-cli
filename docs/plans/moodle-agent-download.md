@@ -1,8 +1,8 @@
 # Moodle CLI: Agent-First File Download Plan
 
-**Status:** Approved design baseline
+**Status:** Implemented in `0.7.0-alpha.0`
 
-**Target release:** Next minor release after `0.7.0`
+**Target release:** `0.7.0-alpha.0`
 
 **Canonical command:** `moodle download`
 
