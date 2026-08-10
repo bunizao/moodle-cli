@@ -124,6 +124,8 @@ describe("WindowsDpapiFileCredentialBackend", () => {
     const [command, args, input] = vi.mocked(runner.run).mock.calls[0]!;
     expect(command).toBe("powershell.exe");
     expect(args.join(" ")).toContain("[Console]::InputEncoding = [Text.UTF8Encoding]::new($false)");
+    expect(args.join(" ")).toContain("Add-Type -AssemblyName System.Security");
+    expect(args.join(" ")).toContain("[System.Security.Cryptography.ProtectedData]::Protect");
     for (const secret of CREDENTIAL_SECRETS) expect(JSON.stringify(args)).not.toContain(secret);
     expect(JSON.parse(input ?? "")).toEqual({
       path: "C:\\Users\\张三\\moodle-cli\\school.bin",

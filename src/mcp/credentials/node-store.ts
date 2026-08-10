@@ -46,9 +46,10 @@ const WINDOWS_DPAPI_READ = `
 $ErrorActionPreference = "Stop"
 [Console]::InputEncoding = [Text.UTF8Encoding]::new($false)
 $payload = [Console]::In.ReadToEnd() | ConvertFrom-Json
+Add-Type -AssemblyName System.Security
 if (-not [IO.File]::Exists($payload.path)) { exit 0 }
 $protected = [Convert]::FromBase64String([IO.File]::ReadAllText($payload.path))
-$plaintext = [Security.Cryptography.ProtectedData]::Unprotect($protected, $null, [Security.Cryptography.DataProtectionScope]::CurrentUser)
+$plaintext = [System.Security.Cryptography.ProtectedData]::Unprotect($protected, $null, [System.Security.Cryptography.DataProtectionScope]::CurrentUser)
 try {
   [Console]::Out.Write([Text.Encoding]::UTF8.GetString($plaintext))
 } finally {
@@ -59,10 +60,11 @@ const WINDOWS_DPAPI_WRITE = `
 $ErrorActionPreference = "Stop"
 [Console]::InputEncoding = [Text.UTF8Encoding]::new($false)
 $payload = [Console]::In.ReadToEnd() | ConvertFrom-Json
+Add-Type -AssemblyName System.Security
 $plaintext = [Text.Encoding]::UTF8.GetBytes($payload.credentials)
 $temporary = $payload.path + "." + $PID + ".tmp"
 try {
-  $protected = [Security.Cryptography.ProtectedData]::Protect($plaintext, $null, [Security.Cryptography.DataProtectionScope]::CurrentUser)
+  $protected = [System.Security.Cryptography.ProtectedData]::Protect($plaintext, $null, [System.Security.Cryptography.DataProtectionScope]::CurrentUser)
   [IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($payload.path)) | Out-Null
   [IO.File]::WriteAllText($temporary, [Convert]::ToBase64String($protected))
   Move-Item -LiteralPath $temporary -Destination $payload.path -Force
