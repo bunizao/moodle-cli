@@ -18,6 +18,8 @@ Paste this into Codex, Claude Code, OpenClaw, Hermes agent, or other AI agents o
 Can you use https://github.com/bunizao/moodle-cli/raw/main/ONBOARDING.md to help me set up moodle-cli?
 ```
 
+Your agent asks for your Moodle URL and opens your university's sign-in page when needed. Finish SSO in the browser while the agent waits; it verifies your account and sets up session renewal before reading Moodle. After local setup, it can deploy a private remote MCP server for web AI clients through your Cloudflare account.
+
 ## Install Manually
 
 Use Node.js 22 or newer:
