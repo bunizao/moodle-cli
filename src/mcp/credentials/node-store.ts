@@ -10,6 +10,61 @@ import {
 } from "./store.js";
 
 const SERVICE = "moodle-cli-mcp";
+const MACOS_KEYCHAIN_SCRIPT = `
+ObjC.import("Foundation")
+ObjC.import("Security")
+
+function main() {
+  const input = $.NSFileHandle.fileHandleWithStandardInput.readDataToEndOfFile
+  const text = $.NSString.alloc.initWithDataEncoding(input, $.NSUTF8StringEncoding)
+  const payload = JSON.parse(ObjC.unwrap(text))
+  const keys = {
+    class: "class",
+    genericPassword: "genp",
+    service: "svce",
+    account: "acct",
+    valueData: "v_Data",
+    returnData: "r_Data",
+  }
+  const query = $.NSMutableDictionary.alloc.init
+  query.setObjectForKey(keys.genericPassword, keys.class)
+  query.setObjectForKey(payload.service, keys.service)
+  query.setObjectForKey(payload.profile, keys.account)
+
+  if (payload.operation === "read") {
+    query.setObjectForKey(true, keys.returnData)
+    const result = $()
+    const status = Number($.SecItemCopyMatching(query, result))
+    if (status === -25300) return
+    if (status !== 0) throw new Error("Keychain read failed: " + status)
+    $.NSFileHandle.fileHandleWithStandardOutput.writeData(result)
+    return
+  }
+
+  if (payload.operation === "write") {
+    const value = $(payload.credentials).dataUsingEncoding($.NSUTF8StringEncoding)
+    const attributes = $.NSMutableDictionary.alloc.init
+    attributes.setObjectForKey(value, keys.valueData)
+    let status = Number($.SecItemUpdate(query, attributes))
+    if (status === -25300) {
+      query.setObjectForKey(value, keys.valueData)
+      status = Number($.SecItemAdd(query, null))
+    }
+    if (status !== 0) throw new Error("Keychain write failed: " + status)
+    return
+  }
+
+  if (payload.operation === "delete") {
+    const status = Number($.SecItemDelete(query))
+    if (status !== 0 && status !== -25300) throw new Error("Keychain delete failed: " + status)
+    return
+  }
+
+  throw new Error("Unsupported Keychain operation")
+}
+
+main()
+`;
 const WINDOWS_CREDENTIAL_READ = `
 $ErrorActionPreference = "Stop"
 [Console]::InputEncoding = [Text.UTF8Encoding]::new($false)
@@ -115,14 +170,20 @@ export class MacOSKeychainCredentialBackend implements CredentialBackend {
 
   async read(profile: string): Promise<DeploymentCredentials | null> {
     try {
-      const result = await this.runner.run("security", ["find-generic-password", "-s", SERVICE, "-a", profile, "-w"]);
-      return parseCredentials(result.stdout.trim());
+      const result = await this.runner.run(
+        "osascript",
+        ["-l", "JavaScript", "-e", MACOS_KEYCHAIN_SCRIPT],
+        macosKeychainInput("read", profile),
+      );
+      const value = result.stdout.trim();
+      if (value) {
+        return parseCredentials(value);
+      }
+      await this.deleteEmptyLegacyEntry(profile);
+      return null;
     } catch (error) {
       if (commandNotFound(error)) {
         throw new CredentialBackendUnavailableError(this.name, error);
-      }
-      if (commandExitCode(error) === 44) {
-        return null;
       }
       throw error;
     }
@@ -131,9 +192,9 @@ export class MacOSKeychainCredentialBackend implements CredentialBackend {
   async write(profile: string, credentials: DeploymentCredentials): Promise<void> {
     try {
       await this.runner.run(
-        "security",
-        ["add-generic-password", "-s", SERVICE, "-a", profile, "-U", "-w"],
-        JSON.stringify(credentials),
+        "osascript",
+        ["-l", "JavaScript", "-e", MACOS_KEYCHAIN_SCRIPT],
+        macosKeychainInput("write", profile, credentials),
       );
     } catch (error) {
       if (commandNotFound(error)) {
@@ -145,14 +206,27 @@ export class MacOSKeychainCredentialBackend implements CredentialBackend {
 
   async delete(profile: string): Promise<void> {
     try {
-      await this.runner.run("security", ["delete-generic-password", "-s", SERVICE, "-a", profile]);
+      await this.runner.run(
+        "osascript",
+        ["-l", "JavaScript", "-e", MACOS_KEYCHAIN_SCRIPT],
+        macosKeychainInput("delete", profile),
+      );
     } catch (error) {
       if (commandNotFound(error)) {
         throw new CredentialBackendUnavailableError(this.name, error);
       }
-      if (commandExitCode(error) !== 44) {
-        throw error;
+      throw error;
+    }
+  }
+
+  private async deleteEmptyLegacyEntry(profile: string): Promise<void> {
+    try {
+      await this.runner.run("security", ["delete-generic-password", "-s", SERVICE, "-a", profile]);
+    } catch (error) {
+      if (commandNotFound(error) || commandExitCode(error) === 44) {
+        return;
       }
+      throw error;
     }
   }
 }
@@ -418,6 +492,19 @@ function parseCredentials(value: string): DeploymentCredentials {
 
 function powershellArgs(script: string): string[] {
   return ["-NoProfile", "-NonInteractive", "-Command", script];
+}
+
+function macosKeychainInput(
+  operation: "read" | "write" | "delete",
+  profile: string,
+  credentials?: DeploymentCredentials,
+): string {
+  return JSON.stringify({
+    operation,
+    service: SERVICE,
+    profile,
+    ...(credentials ? { credentials: JSON.stringify(credentials) } : {}),
+  });
 }
 
 function windowsCredentialInput(profile: string, credentials?: DeploymentCredentials): string {

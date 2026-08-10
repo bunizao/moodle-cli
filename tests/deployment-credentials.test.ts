@@ -5,6 +5,8 @@ import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import {
   CredentialBackendUnavailableError,
+  MacOSKeychainCredentialBackend,
+  NodeCredentialCommandRunner,
   SafeCredentialStore,
   WindowsCredentialManagerBackend,
   WindowsDpapiFileCredentialBackend,
@@ -85,6 +87,39 @@ describe("SafeCredentialStore", () => {
     const fallback = backend();
     await new SafeCredentialStore(preferred, fallback).delete("school");
     expect(fallback.delete).toHaveBeenCalledWith("school");
+  });
+});
+
+describe("MacOSKeychainCredentialBackend", () => {
+  it("writes credentials through Security.framework without command-line secrets", async () => {
+    const runner: CredentialCommandRunner = {
+      run: vi.fn(async () => ({ stdout: "" })),
+    };
+    const store = new MacOSKeychainCredentialBackend(runner);
+
+    await store.write("school", CREDENTIALS);
+
+    expect(runner.run).toHaveBeenCalledOnce();
+    const [command, args, input] = vi.mocked(runner.run).mock.calls[0]!;
+    expect(command).toBe("osascript");
+    expect(args.join(" ")).toContain("SecItemUpdate");
+    expect(args.join(" ")).toContain("SecItemAdd");
+    for (const secret of CREDENTIAL_SECRETS) expect(JSON.stringify(args)).not.toContain(secret);
+    expect(JSON.parse(input ?? "")).toEqual({
+      operation: "write",
+      service: "moodle-cli-mcp",
+      profile: "school",
+      credentials: JSON.stringify(CREDENTIALS),
+    });
+  });
+
+  it("treats the empty entries written by alpha.2 as missing", async () => {
+    const runner: CredentialCommandRunner = {
+      run: vi.fn(async () => ({ stdout: "\n" })),
+    };
+    const store = new MacOSKeychainCredentialBackend(runner);
+
+    await expect(store.read("school")).resolves.toBeNull();
   });
 });
 
@@ -171,6 +206,38 @@ it.runIf(process.platform === "win32")("round-trips credentials through Windows 
   } finally {
     await Promise.allSettled([credentialManager.delete(profile), dpapi.delete(profile)]);
     await rm(fallbackDirectory, { recursive: true, force: true });
+  }
+}, 30_000);
+
+it.runIf(process.platform === "darwin")("round-trips credentials through the macOS Keychain", async () => {
+  const profile = `test-${randomUUID()}`;
+  const keychain = new MacOSKeychainCredentialBackend();
+
+  try {
+    await keychain.write(profile, CREDENTIALS);
+    await expect(keychain.read(profile)).resolves.toEqual(CREDENTIALS);
+  } finally {
+    await keychain.delete(profile);
+  }
+}, 30_000);
+
+it.runIf(process.platform === "darwin")("recovers an empty macOS Keychain entry created by alpha.2", async () => {
+  const profile = `test-${randomUUID()}`;
+  const runner = new NodeCredentialCommandRunner();
+  const keychain = new MacOSKeychainCredentialBackend(runner);
+
+  try {
+    await runner.run(
+      "security",
+      ["add-generic-password", "-s", "moodle-cli-mcp", "-a", profile, "-U", "-w"],
+      "ignored",
+    );
+    await expect(keychain.read(profile)).resolves.toBeNull();
+    await keychain.write(profile, CREDENTIALS);
+    await keychain.delete(profile);
+    await expect(keychain.read(profile)).resolves.toBeNull();
+  } finally {
+    await runner.run("security", ["delete-generic-password", "-s", "moodle-cli-mcp", "-a", profile]).catch(() => undefined);
   }
 }, 30_000);
 
