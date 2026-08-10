@@ -1,6 +1,8 @@
 # moodle-cli
 
-Give your AI agent access to Moodle so it can track deadlines, check grades, download course files, and search forum discussions for you. `moodle-cli` finds your active browser session and renews it in the background, keeping Moodle's login wall out of your way.
+**Give your AI agent access to Moodle.**
+
+Let it keep up with deadlines and grades, fetch course files, and search forum discussions. `moodle-cli` finds your active browser session and keeps it alive in the background, so Moodle's login wall stays out of your way.
 
 [![npm version](https://img.shields.io/npm/v/moodle-cli?logo=npm)](https://www.npmjs.com/package/moodle-cli)
 [![CI](https://github.com/bunizao/moodle-cli/actions/workflows/ci.yml/badge.svg)](https://github.com/bunizao/moodle-cli/actions/workflows/ci.yml)
