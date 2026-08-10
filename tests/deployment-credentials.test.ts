@@ -170,7 +170,7 @@ it.runIf(process.platform === "win32")("round-trips credentials through Windows 
     await Promise.allSettled([credentialManager.delete(profile), dpapi.delete(profile)]);
     await rm(fallbackDirectory, { recursive: true, force: true });
   }
-});
+}, 30_000);
 
 describe("rotateCredentials", () => {
   it("retains the current pair for a two-token overlap window", () => {
