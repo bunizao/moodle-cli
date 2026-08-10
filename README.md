@@ -1,94 +1,153 @@
 # moodle-cli
 
-Terminal-first CLI for Moodle LMS that reuses an authenticated browser session. No Moodle API token required.
+Check Moodle deadlines, grades, course files, and forum discussions from your terminal or coding agent. `moodle-cli` signs in through your existing browser session, so setup needs no Moodle API token.
 
-## Features
+[![npm version](https://img.shields.io/npm/v/moodle-cli?logo=npm)](https://www.npmjs.com/package/moodle-cli)
+[![CI](https://github.com/bunizao/moodle-cli/actions/workflows/ci.yml/badge.svg)](https://github.com/bunizao/moodle-cli/actions/workflows/ci.yml)
+[![Node.js 22+](https://img.shields.io/badge/Node.js-22%2B-339933?logo=nodedotjs&logoColor=white)](https://nodejs.org/)
+[![Bun](https://img.shields.io/badge/Bun-supported-fbf0df?logo=bun&logoColor=black)](https://bun.sh/)
+[![MIT License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-- Reuses `MoodleSession` from `okta-auth`, your browser, or `MOODLE_TOKEN`
-- Uses Moodle AJAX APIs and falls back to authenticated page scraping when needed
-- Lists courses, deadlines, alerts, activities, grades, and forum discussions
-- Streams authenticated Moodle resources to explicit local file paths without implicit overwrite
-- Runs locally over stdio or deploys a private read-only MCP server to Cloudflare Workers
-- Agent-friendly JSON/YAML output, field selection, and stable exit codes
+## Start with a coding agent
+
+You do not need to learn terminal setup first. Paste the prompt below into Codex, Claude Code, or ChatGPT with terminal access. Replace one line with any Moodle URL from your browser, including a dashboard, course, activity, or login page.
+
+```text
+Set up moodle-cli for me on this computer and verify that it works.
+
+My university Moodle URL:
+<PASTE A MOODLE URL HERE>
+
+1. Check whether Node.js 22+ or Bun is available. Install moodle-cli with npm or Bun. If this computer only has Bun, use bunx --bun moodle-cli as the command prefix for the remaining steps.
+2. Resolve my URL to the final Moodle site origin in the form https://host. Remove paths, query parameters, and fragments, and follow redirects if the hostname changes. Verify that the result is a Moodle site, then save it as base_url in ~/.config/moodle-cli/config.yaml. Preserve any settings already in that file.
+3. Run moodle auth login. If Moodle opens a browser, wait while I sign in. Do not ask me to copy a cookie, sesskey, or Moodle API token.
+4. Verify the setup with moodle user --json and moodle overview --json. Fix configuration or authentication errors before finishing.
+5. Run moodle skills add to install the Moodle agent skill. If this computer only has Bun, run bunx --bun skills add https://github.com/bunizao/moodle-cli instead.
+6. Tell me what is due in the next 14 days and suggest three useful Moodle tasks I can ask you to do next.
+```
+
+The agent handles URL cleanup, configuration, sign-in checks, and the first useful query. Your Moodle session stays on your computer in browser storage and the CLI's local cache.
 
 ## Install
 
-Requires Node.js 22 or newer.
+Use Node.js 22 or newer:
 
 ```bash
-npm i -g moodle-cli
+npm install -g moodle-cli
+moodle --version
 ```
 
-Run without installing:
+Or install with Bun:
+
+```bash
+bun add --global moodle-cli
+moodle --version
+```
+
+Run one command without a global install:
 
 ```bash
 npx moodle-cli --help
+bunx --bun moodle-cli --help
 ```
 
-Standalone binaries are attached to GitHub Releases for macOS arm64 and Linux x64.
+GitHub Releases also provide standalone binaries for macOS arm64 and Linux x64.
 
-### Existing PyPI Users
+## Sign in
 
-The TypeScript CLI keeps the same config file and environment variables as the Python package. Migrate with:
+Run:
 
 ```bash
-uv tool uninstall moodle-cli
-npm i -g moodle-cli
+moodle auth login
+moodle user
+moodle overview
 ```
 
-`~/.config/moodle-cli/config.yaml`, `MOODLE_BASE_URL`, and legacy `MOODLE_SESSION` remain compatible.
-
-## Authentication
-
-Use one of:
-
-- `okta-auth-cli` configured for your Moodle site
-- an active Moodle browser session
-- a `MOODLE_TOKEN` environment variable containing a `MoodleSession` cookie value
-
-Optional Okta setup:
-
-```bash
-npm i -g okta-auth-cli
-okta config
-```
-
-On first run, if no `base_url` is configured, the CLI prompts for the Moodle root URL and saves it to `~/.config/moodle-cli/config.yaml`:
+On the first command, `moodle-cli` asks for your Moodle site root, validates it, and saves it to `~/.config/moodle-cli/config.yaml`:
 
 ```yaml
-base_url: https://school.example.edu
+base_url: https://moodle.example.edu
 ```
 
-Use a root URL only, not `/login/index.php` or `/my/`.
+Enter the site origin only. Leave out paths such as `/login/index.php`, `/my/`, or `/course/view.php?id=123`. If you only have a long Moodle link, give it to your coding agent with the setup prompt above.
 
-Set `MOODLE_CONFIG` to use a different config file. `MOODLE_URL` remains a deprecated fallback for `MOODLE_BASE_URL` and prints a warning. `MOODLE_SESSION` remains a compatibility fallback for `MOODLE_TOKEN`.
+`moodle auth login` checks your local session cache, supported browsers, and `okta-auth-cli`. It opens Moodle in your browser when you need to complete SSO or OAuth sign-in.
 
-### Session Keepalive
+## Use it for study
 
-Moodle expires idle sessions server-side, which normally forces a fresh SSO login. The CLI can renew the session in the background instead:
+Ask your agent in plain language, or run the matching command yourself:
+
+| Student request | CLI command |
+| --- | --- |
+| “Give me a quick Moodle dashboard.” | `moodle overview` |
+| “What is due in the next 14 days?” | `moodle todo --days 14` |
+| “Show my grades and feedback for FIT1045.” | `moodle grades FIT1045` |
+| “Find forum posts about the exam in FIT1045.” | `moodle forums search "exam" --course FIT1045` |
+| “Download the slides from this Moodle link.” | `moodle download '<Moodle URL>' --dest './slides.pdf'` |
+
+Agents receive JSON when they pipe command output, which makes it easy to turn Moodle data into a checklist, study plan, or concise summary.
+
+### Paste Moodle links directly
+
+The CLI recognizes course, forum, assignment, quiz, resource, page, folder, and grade-report URLs:
 
 ```bash
-moodle auth status               # cache freshness + server session state
-moodle auth keepalive            # renew once; re-login from browser/okta cookies if expired
-moodle auth keepalive install    # macOS launch agent, renews every 30 min
-moodle auth login                # extract a fresh session; open the browser if needed
+moodle 'https://moodle.example.edu/course/view.php?id=34637'
+moodle 'https://moodle.example.edu/mod/forum/discuss.php?d=9001#p9101'
+moodle download 'https://moodle.example.edu/mod/resource/view.php?id=91234' --dest './Week 03/slides.pdf'
 ```
 
-`moodle auth login` first checks the configured environment, local browser profiles, and stored `okta-auth` cookies. If none contains a valid Moodle session, it opens Moodle's login page in the system browser and waits up to two minutes for the completed SSO/OAuth login.
+This also works in conversation: paste a Moodle link into your agent and ask it to inspect the page, find related material, or download the file.
 
-On Linux, add a cron entry: `*/30 * * * * moodle auth keepalive --json`.
+## Common commands
 
-## Managed MCP
+```bash
+moodle overview
+moodle alerts
+moodle todo --days 7
+moodle units
+moodle units show FIT1045
+moodle activities FIT1045
+moodle activities show 91234
+moodle grades FIT1045
+moodle forums FIT1045
+moodle forums search 'assignment 2' --course FIT1045
+moodle threads show 9001
+moodle download 91234 --dest './slides.pdf'
+moodle auth status
+moodle --help
+```
 
-Deploy a private Moodle MCP server with the active local Moodle and Wrangler sessions:
+Unit arguments accept a Moodle course ID or a unique course name.
+
+## Use it with agents
+
+Install the bundled skill so Codex, Claude Code, and compatible agents know the command model and safe authentication flow:
+
+```bash
+moodle skills add
+```
+
+Direct install commands:
+
+```bash
+npx skills add https://github.com/bunizao/moodle-cli
+bunx --bun skills add https://github.com/bunizao/moodle-cli
+```
+
+Agents can inspect the full command tree with `moodle commands --json`. The generated [`SKILL.md`](SKILL.md) routes them to focused setup, coursework, forum, download, and maintenance guidance under [`references/`](references/).
+
+### Private remote MCP
+
+Deploy a private Moodle MCP server when your agent cannot run the local CLI:
 
 ```bash
 moodle mcp deploy
 ```
 
-The command validates Moodle access, creates two private credentials, deploys a candidate Worker, uploads an encrypted Moodle session, verifies MCP and Moodle readiness, installs local renewal, and connects detected clients. Raw tokens and cookies are stored in the operating system credential store or a user-protected local fallback (`0600` on macOS/Linux and CurrentUser DPAPI on Windows); they are not printed or written into the project.
+The command validates Moodle access, deploys a Cloudflare Worker, uploads an encrypted session, verifies readiness, installs local session renewal, and connects detected Codex, Claude, VS Code, and Cursor clients.
 
-Primary lifecycle commands:
+Manage it with:
 
 ```bash
 moodle mcp status
@@ -97,105 +156,84 @@ moodle mcp connect
 moodle mcp remove
 ```
 
-The default client connection uses `moodle mcp bridge`, so client configuration contains no Bearer token. Use `moodle mcp connect CLIENT --mode remote` only for clients that support authenticated remote MCP headers. `moodle mcp login` is the interactive recovery path when Moodle or the identity provider expires the remote session.
+The default connection uses `moodle mcp bridge`, which keeps the Bearer token out of client configuration. Use `moodle mcp connect CLIENT --mode remote` for clients that support authenticated remote MCP headers.
 
-The Worker exposes public liveness at `/healthz`; `/readyz`, session replacement, and Moodle MCP calls require their corresponding Bearer credentials. Alpha version `0.7.0-alpha.0` supports MCP `2026-07-28` and stateless compatibility for `2025-11-25`.
+Alpha version `0.7.0-alpha.0` supports MCP `2026-07-28` and a stateless compatibility lane for `2025-11-25` clients.
 
-## Usage
+## Keep your session active
+
+Moodle can expire idle sessions. Renew once or install background renewal:
 
 ```bash
-moodle --help
-moodle user
-moodle alerts
-moodle todo
-moodle overview
-moodle units
-moodle units show 34637
-moodle activities 34637
-moodle activities show 91234
-moodle download 91234 --dest './Course/Week 03/slides.pdf' --json
-moodle grades 34637
-moodle forums 34637
-moodle threads show 9001
-moodle https://school.example.edu/course/view.php?id=34637
-moodle https://school.example.edu/mod/forum/discuss.php?d=9001#p9101 --json
-moodle skills
-moodle skills generate
-moodle skills add
-moodle mcp status
+moodle auth status
+moodle auth keepalive
+moodle auth keepalive install   # macOS, every 30 minutes
 ```
 
-Supported Moodle URLs can be passed as the first argument. The CLI routes forum discussion, forum view, assignment, quiz, resource, link, page, folder, course, and grade report URLs to the shortest matching command.
+On Linux, schedule `moodle auth keepalive --json` with cron.
 
-### File Downloads
+## Download files
 
-Download one resource activity or authenticated Moodle file URL:
+Download by activity ID or authenticated Moodle URL:
 
 ```bash
 moodle download 91234
-moodle download 'https://school.example.edu/mod/resource/view.php?id=91234' --dest './Course/Week 03/slides.pdf'
-moodle dl 'https://school.example.edu/pluginfile.php/123/mod_resource/content/1/slides.pdf'
+moodle download 'https://moodle.example.edu/mod/resource/view.php?id=91234' --dest './Course/Week 03/slides.pdf'
+moodle dl 'https://moodle.example.edu/pluginfile.php/123/mod_resource/content/1/slides.pdf'
 ```
 
-`download` is the canonical command and `dl` is its alias. `--dest` is the exact local file path; when omitted, the CLI uses the upstream filename in the current directory. Existing destinations fail with a usage error. `--force` atomically replaces the exact destination after the complete response has been streamed to a same-directory temporary file.
+`--dest` sets the exact local path. The command refuses to overwrite an existing file unless you pass `--force`. Folder activities expose `file_entries`; choose an entry and download each file you need.
 
-Resource and folder activity details expose `file_entries`. Folders are not downloaded recursively: inspect the folder with `moodle activities show ID --json`, choose entries, and run one download command per file. The MCP server exposes the same file metadata through `get_activity`, but intentionally has no local-write tool because a remote Worker cannot write to the MCP client's filesystem.
+## Output for scripts and agents
 
-Successful downloads return `file_path`, `filename`, `bytes_written`, `content_type`, `source_url`, and `final_url`. Validate the receipt and saved file rather than treating exit code zero alone as proof of valid content.
+Commands support:
 
-## Agent Output Contract
+- `--json` or `--yaml` for structured output
+- `--table` for human-readable output
+- `--fields a,b,c` to select fields
+- `-o, --output FILE` to write command output or a download receipt
 
-JSON-capable commands support:
+The CLI prints tables in an interactive terminal and JSON when stdout goes to a pipe or file.
 
-- `--json`: write JSON to stdout
-- `--yaml`: write YAML to stdout
-- `--table`: force human output
-- `--fields a,b,c`: keep only listed top-level fields; arrays apply the filter per item
-- `-o, --output FILE`: write command output or a download receipt to a file; this never selects the downloaded file path
+Errors use stable exit codes:
 
-When stdout is not a TTY, the CLI defaults to JSON. `--table` overrides that.
+| Code | Meaning |
+| --- | --- |
+| 0 | Success |
+| 1 | Network, configuration, or unexpected error |
+| 2 | Usage error |
+| 3 | Authentication error |
+| 4 | Course, activity, forum, or discussion not found |
+| 5 | Moodle rejected the request |
 
-Invalid `--fields` values fail as usage errors and list valid fields.
-
-With JSON output enabled, errors are one parseable JSON line on stderr:
+With JSON output, stderr contains one parseable error object:
 
 ```json
 {"ok":false,"error":{"code":"auth","message":"...","hint":"..."},"exit_code":3}
 ```
 
-Exit codes:
+## Configuration
 
-| Code | Meaning |
+| Variable | Purpose |
 | --- | --- |
-| 0 | Success |
-| 1 | Unexpected error |
-| 2 | Usage error |
-| 3 | Authentication error |
-| 4 | Requested course, activity, forum, or discussion was not found |
-| 5 | Moodle rejected a well-formed request |
+| `MOODLE_BASE_URL` | Set the Moodle site origin without writing a config file. |
+| `MOODLE_CONFIG` | Use another YAML config file. |
+| `MOODLE_TOKEN` | Provide a `MoodleSession` cookie value for non-browser environments. |
+| `MOODLE_SESSION` | Compatibility alias for `MOODLE_TOKEN`. |
 
-## Updates
+For local use, the saved `base_url` usually works better than an environment variable. If you do not know your site origin, tell your agent: “Use this Moodle page URL, find and verify the Moodle site origin, then add it to my moodle-cli config.”
 
-npm installs update with:
+`MOODLE_URL` remains a deprecated fallback for `MOODLE_BASE_URL`.
+
+## Update
 
 ```bash
 npm install -g moodle-cli@latest
+bun add --global moodle-cli@latest
 ```
 
 Standalone binaries print the latest GitHub Release URL instead of modifying themselves.
 
-## Agent Skill
+## License
 
-Install the bundled agent skill:
-
-```bash
-npx skills add https://github.com/bunizao/moodle-cli
-```
-
-The CLI alias delegates to the same command:
-
-```bash
-moodle skills add
-```
-
-`SKILL.md` routes agents to focused guidance under `references/`; the exact command and output references remain generated from the CLI. The normalized command behavior comes from the published `@bunizao/cli-kit` npm package (`^0.1.0`).
+[MIT](LICENSE)
