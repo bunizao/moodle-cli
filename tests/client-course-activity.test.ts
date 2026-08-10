@@ -649,7 +649,14 @@ describe("MoodleClient course/activity modules", () => {
 
     await expect(client.getAssignment(31)).resolves.toMatchObject({ name: "Essay 1", due_pretty: "Friday, 10 May 2026, 5:00 PM" });
     await expect(client.getQuiz(32)).resolves.toMatchObject({ name: "Quiz 1", attempts_allowed: "2" });
-    await expect(client.getResource(33)).resolves.toMatchObject({ target_name: "slides.pdf" });
+    await expect(client.getResource(33)).resolves.toMatchObject({
+      target_name: "slides.pdf",
+      file_entries: [{
+        name: "slides.pdf",
+        url: `${BASE_URL}/pluginfile.php/1/slides.pdf`,
+        requires_authentication: true,
+      }],
+    });
     await expect(client.getLink(34)).resolves.toMatchObject({
       course_id: 101,
       course_name: "Mathematics 101",
@@ -657,7 +664,21 @@ describe("MoodleClient course/activity modules", () => {
       target_url: "https://example.com/reading",
     });
     await expect(client.getPage(35)).resolves.toMatchObject({ content_text: "Remember the integration rules." });
-    await expect(client.getFolder(36)).resolves.toMatchObject({ files: ["chapter-1.pdf", "chapter-2.pdf"] });
+    await expect(client.getFolder(36)).resolves.toMatchObject({
+      files: ["chapter-1.pdf", "chapter-2.pdf"],
+      file_entries: [
+        {
+          name: "chapter-1.pdf",
+          url: `${BASE_URL}/pluginfile.php/a.pdf`,
+          requires_authentication: true,
+        },
+        {
+          name: "chapter-2.pdf",
+          url: `${BASE_URL}/pluginfile.php/b.pdf`,
+          requires_authentication: true,
+        },
+      ],
+    });
     await expect(client.getActivity(31)).resolves.toMatchObject({ id: 31, name: "Essay 1", type: "assign" });
 
     expect(parseActivityReference(`${BASE_URL}/mod/assign/view.php?id=31`, { label: "Assignment", path: "/mod/assign/view.php" })).toBe(31);

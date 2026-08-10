@@ -3,6 +3,7 @@ import type {
   Activity,
   Assignment,
   CourseGrades,
+  FileEntry,
   Folder,
   ForumDiscussion,
   ForumDiscussionRef,
@@ -260,12 +261,15 @@ export function parseQuizHtml(html: string, quizId: number, baseUrl: string): Qu
 export function parseResourceHtml(html: string, resourceId: number, baseUrl: string): Resource {
   const root = parse(html);
   const link = root.querySelector(".resourceworkaround a[href], .resourcecontent a[href], a.resourceworkaround[href]");
+  const targetName = cleanNodeText(link);
+  const targetUrl = link ? resolveUrl(baseUrl, link.getAttribute("href") ?? "") : "";
   return {
     id: resourceId,
     name: pageTitle(html),
     ...activityContext(html),
-    target_name: cleanNodeText(link),
-    target_url: link ? resolveUrl(baseUrl, link.getAttribute("href") ?? "") : "",
+    target_name: targetName,
+    target_url: targetUrl,
+    file_entries: targetName && targetUrl ? [fileEntry(targetName, targetUrl, baseUrl)] : [],
     url: `${baseUrl.replace(/\/$/, "")}/mod/resource/view.php?id=${resourceId}`,
   };
 }
@@ -296,12 +300,20 @@ export function parsePageHtml(html: string, pageId: number, baseUrl: string): Pa
 
 export function parseFolderHtml(html: string, folderId: number, baseUrl: string): Folder {
   const root = parse(html);
-  const files = unique(root.querySelectorAll(".foldertree a[href], .fp-filename-icon a[href]").map((link) => cleanNodeText(link)).filter(Boolean));
+  const fileEntries = root.querySelectorAll(".foldertree a[href], .fp-filename-icon a[href]")
+    .map((link) => {
+      const name = cleanNodeText(link);
+      const url = resolveUrl(baseUrl, link.getAttribute("href") ?? "");
+      return name && url ? fileEntry(name, url, baseUrl) : null;
+    })
+    .filter((entry): entry is FileEntry => entry !== null)
+    .filter((entry, index, entries) => entries.findIndex((candidate) => candidate.url === entry.url) === index);
   return {
     id: folderId,
     name: pageTitle(html),
     ...activityContext(html),
-    files,
+    files: unique(fileEntries.map((entry) => entry.name)),
+    file_entries: fileEntries,
     url: `${baseUrl.replace(/\/$/, "")}/mod/folder/view.php?id=${folderId}`,
   };
 }
@@ -620,6 +632,14 @@ function numberValue(value: unknown): number {
 
 function stringValue(value: unknown): string {
   return typeof value === "string" ? value : value == null ? "" : String(value);
+}
+
+function fileEntry(name: string, url: string, baseUrl: string): FileEntry {
+  return {
+    name,
+    url,
+    requires_authentication: new URL(url).origin === new URL(baseUrl).origin,
+  };
 }
 
 function unique<T>(items: T[]): T[] {

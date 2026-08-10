@@ -12,6 +12,7 @@ import {
   type OutputFormat,
 } from "@bunizao/cli-kit";
 import { realpathSync } from "node:fs";
+import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createMoodleClient, type MoodleClient } from "./client.js";
 import { loadConfig } from "./config.js";
@@ -23,6 +24,7 @@ import {
   formatAuthStatus,
   formatCourseSections,
   formatCourses,
+  formatDownloadReceipt,
   formatForumDiscussion,
   formatForumDiscussionRefs,
   formatForumActivities,
@@ -32,6 +34,7 @@ import {
   formatTodo,
   formatUser,
 } from "./formatters.js";
+import { downloadMoodleFile } from "./download.js";
 import { formatSkillSummary, installSkill, writeGeneratedSkill } from "./skills.js";
 import {
   getAuthStatus,
@@ -215,6 +218,26 @@ export function buildProgram(io: CliIO = {}): Command {
       await runtime.output(item, () => formatActivityDetail(item), options);
     },
   );
+
+  addOutputOptions(
+    program
+      .command("download")
+      .alias("dl")
+      .description("Download one authenticated Moodle file.")
+      .argument("<source>", "Course-module ID or authenticated Moodle file URL")
+      .option("--dest <path>", "Exact downloaded file path")
+      .option("--force", "Atomically replace an existing destination"),
+  ).action(async (source: string, options: OutputCommandOptions & { dest?: string; force?: boolean }) => {
+    const destination = options.dest
+      ? path.resolve(io.cwd ?? process.cwd(), options.dest)
+      : undefined;
+    const receipt = await downloadMoodleFile(await runtime.getClient(), {
+      source,
+      destination,
+      force: options.force,
+    });
+    await runtime.output(receipt, () => formatDownloadReceipt(receipt), options);
+  });
 
   const grades = program.command("grades").description("Inspect grades.");
   addOutputOptions(grades.command("list").description("Show grade details for a unit.").argument("<unit>", "Unit ID or unique name")).action(

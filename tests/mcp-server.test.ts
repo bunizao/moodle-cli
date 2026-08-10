@@ -96,6 +96,33 @@ describe("Moodle MCP server", () => {
     expect(JSON.stringify((response as { result: { content: unknown } }).result.content)).not.toContain("Computing");
   });
 
+  it.each([
+    ["resource", [{ name: "slides.pdf", url: "https://moodle.example.edu/pluginfile.php/slides.pdf", requires_authentication: true }]],
+    ["folder", [
+      { name: "chapter-1.pdf", url: "https://moodle.example.edu/pluginfile.php/chapter-1.pdf", requires_authentication: true },
+      { name: "chapter-2.pdf", url: "https://moodle.example.edu/pluginfile.php/chapter-2.pdf", requires_authentication: true },
+    ]],
+  ])("returns %s file entries through the existing get_activity tool", async (type, fileEntries) => {
+    const server = createMoodleMcpServer({
+      ...fakeGateway(),
+      getActivity: async () => ({ id: 501, name: "Files", type, file_entries: fileEntries }) as never,
+    });
+    const response = await server.handle({
+      jsonrpc: "2.0",
+      id: type,
+      method: "tools/call",
+      params: modernParams({ name: "get_activity", arguments: { activityId: 501 } }),
+    });
+
+    expect(response).toMatchObject({
+      result: {
+        structuredContent: {
+          activity: { type, file_entries: fileEntries },
+        },
+      },
+    });
+  });
+
   it("rejects invalid tool input at the public call seam", async () => {
     const server = createMoodleMcpServer(fakeGateway());
     const response = await server.handle({
