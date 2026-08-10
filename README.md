@@ -1,6 +1,6 @@
 # moodle-cli
 
-Check Moodle deadlines, grades, course files, and forum discussions from your terminal or coding agent. `moodle-cli` signs in through your existing browser session, so setup needs no Moodle API token.
+Give your agent access to Moodle so it can track deadlines, check grades, download course files, and search forum discussions for you. `moodle-cli` reuses your browser session, so you do not need a Moodle API token.
 
 [![npm version](https://img.shields.io/npm/v/moodle-cli?logo=npm)](https://www.npmjs.com/package/moodle-cli)
 [![CI](https://github.com/bunizao/moodle-cli/actions/workflows/ci.yml/badge.svg)](https://github.com/bunizao/moodle-cli/actions/workflows/ci.yml)
@@ -10,15 +10,13 @@ Check Moodle deadlines, grades, course files, and forum discussions from your te
 
 ## Start with your agent
 
-Paste this into Codex, Claude Code, or ChatGPT with terminal access:
+Paste this into Codex, Claude Code, OpenClaw, Hermes agent, or other AI agents of yours:
 
 ```text
-Can you use https://github.com/bunizao/moodle-cli/blob/main/ONBOARDING.md to help me set up moodle-cli?
+Can you use https://github.com/bunizao/moodle-cli/raw/main/ONBOARDING.md to help me set up moodle-cli?
 ```
 
-The agent asks for your university's Moodle URL and handles the rest through conversation. You can paste a dashboard, course, activity, or login URL without cleaning it first. After local setup, the agent asks about Cloudflare and can deploy a private remote MCP server for web AI clients that support custom MCP connections. Your Moodle session stays on your computer in browser storage and the CLI's local cache.
-
-## Install
+## Install Manually
 
 Use Node.js 22 or newer:
 
@@ -34,7 +32,7 @@ bun add --global moodle-cli
 moodle --version
 ```
 
-Run one command without a global install:
+Or run one command without a global install:
 
 ```bash
 npx moodle-cli --help
