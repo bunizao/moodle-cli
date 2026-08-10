@@ -174,7 +174,7 @@ moodle mcp bridge
 
 The default client connection uses `moodle mcp bridge`, which keeps the Bearer token out of client configuration. Use `moodle mcp connect CLIENT --mode remote` for clients that support authenticated remote MCP headers.
 
-Alpha version `0.7.0-alpha.2` supports MCP `2026-07-28` and a stateless compatibility lane for `2025-11-25` clients.
+Alpha version `0.7.0-alpha.3` supports MCP `2026-07-28` and a stateless compatibility lane for `2025-11-25` clients.
 
 ### Configuration
 
