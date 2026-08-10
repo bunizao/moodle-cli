@@ -1,6 +1,6 @@
 {
   "name": "moodle-cli",
-  "version": "0.7.0-alpha.0",
+  "version": "0.7.0-alpha.1",
   "description": "Terminal-first CLI for Moodle LMS",
   "license": "MIT",
   "type": "module",
