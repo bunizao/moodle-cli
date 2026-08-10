@@ -11,5 +11,5 @@
     "skipLibCheck": true,
     "outDir": "dist"
   },
-  "include": ["src/**/*.ts", "tests/**/*.ts", "tsup.config.ts", "vitest.config.ts"]
+  "include": ["src/**/*.ts", "tests/**/*.ts", "tsup.config.ts", "tsup.worker.config.ts", "vitest.config.ts"]
 }

@@ -103,7 +103,9 @@ jobs:
 
       - name: Publish to npm
         if: steps.npm.outputs.published != 'true'
-        run: npm publish --access public
+        run: |
+          publish_tag="$(node -p "const version = require('./package.json').version; version.includes('-') ? version.split('-')[1].split('.')[0] : 'latest'")"
+          npm publish --access public --tag "${publish_tag}"
 
       - name: Build standalone binaries
         run: |
@@ -131,6 +133,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+          prerelease: ${{ contains(github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name, '-') }}
           body_path: ${{ steps.notes.outputs.notes_file }}
           files: |
             dist/bin/moodle-darwin-arm64
@@ -141,6 +144,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+          prerelease: ${{ contains(github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name, '-') }}
           generate_release_notes: true
           files: |
             dist/bin/moodle-darwin-arm64

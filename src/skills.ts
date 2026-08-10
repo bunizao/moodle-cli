@@ -2,13 +2,14 @@ import { spawnSync, type SpawnSyncReturns } from "node:child_process";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import type { Command } from "commander";
-import { commandsJson, type CommandDescription } from "@bunizao/cli-kit";
+import type { CommandDescription } from "@bunizao/cli-kit";
+import { describeProgram } from "./command-contract.js";
 
 export const SKILL_NAME = "moodle-cli";
 export const SKILL_SOURCE = "https://github.com/bunizao/moodle-cli";
 export const SKILLS_SPEC_URL = "https://github.com/vercel-labs/skills";
 export const SKILL_DESCRIPTION =
-  "Read Moodle data with the `moodle` CLI. Use for authenticated profile, unit discovery, deadlines, alerts, sections, activities, grades, assignment or quiz detail, resources, forum search and discussions, supported Moodle URLs, or authentication diagnostics.";
+  "Read Moodle data, download local files, and manage a private Moodle MCP deployment with the `moodle` CLI. Use for authenticated profile, unit discovery, deadlines, alerts, sections, activities, grades, forum workflows, local file downloads, supported Moodle URLs, authentication diagnostics, or MCP deploy, status, login, connection, and removal.";
 
 export interface SkillFlag {
   name: string;
@@ -46,6 +47,7 @@ const SKILL_BUNDLE_TEMPLATES = [
   ["references/profile-and-courses.md", "skill-references/profile-and-courses.md"],
   ["references/deadlines-and-alerts.md", "skill-references/deadlines-and-alerts.md"],
   ["references/coursework-and-grades.md", "skill-references/coursework-and-grades.md"],
+  ["references/downloads.md", "skill-references/downloads.md"],
   ["references/forums.md", "skill-references/forums.md"],
   ["references/output-and-errors.md", "skill-references/output-and-errors.md"],
   ["references/maintenance.md", "skill-references/maintenance.md"],
@@ -104,7 +106,7 @@ export function installSkill(extraArgs: string[] = [], options: Parameters<typeo
 }
 
 export function extractCommanderCommands(program: Command): SkillCommand[] {
-  return commandsJson(program).commands.flatMap((command) => commandDescriptionRows(command));
+  return describeProgram(program).commands.flatMap((command) => commandDescriptionRows(command));
 }
 
 function commandDescriptionRows(command: CommandDescription, parentPath: string[] = []): SkillCommand[] {
@@ -185,12 +187,18 @@ function renderIntentTable(): string {
       ["Show a compact dashboard", "moodle overview --todo-limit 5 --alerts-limit 5 --json"],
       ["Show activities in a unit", "moodle activities UNIT_ID --json"],
       ["Show activity details", "moodle activities show ACTIVITY_ID --json"],
+      ["Download one Moodle file locally", "moodle download SOURCE --dest PATH --json"],
       ["Show unit sections", "moodle units show UNIT_ID --json"],
       ["Show grades for a unit", "moodle grades UNIT_ID --json"],
       ["Search forums", "moodle forums search QUERY --json"],
       ["Open a forum discussion URL or ID", "moodle threads show DISCUSSION_OR_URL --json"],
       ["Check session freshness or authentication state", "moodle auth status --json"],
       ["Keep the session alive to avoid repeated logins", "moodle auth keepalive install"],
+      ["Deploy or update the private Moodle MCP server", "moodle mcp deploy"],
+      ["Check managed MCP and Moodle readiness", "moodle mcp status --json"],
+      ["Restore an expired remote Moodle session", "moodle mcp login"],
+      ["Connect a supported MCP client without embedding a token", "moodle mcp connect"],
+      ["Remove the selected managed MCP deployment", "moodle mcp remove"],
       ["Install this agent skill", "moodle skills add"],
     ],
   );

@@ -22,6 +22,7 @@ export const FUNC_GET_SITE_INFO = "core_webservice_get_site_info";
 export const FUNC_GET_COURSES = "core_enrol_get_users_courses";
 export const FUNC_GET_COURSES_BY_TIMELINE = "core_course_get_enrolled_courses_by_timeline_classification";
 export const FUNC_GET_COURSE_CONTENTS = "core_course_get_contents";
+export const FUNC_GET_COURSE_FORMAT_STATE = "core_courseformat_get_state";
 export const FUNC_GET_COURSE_MODULE = "core_course_get_course_module";
 export const FUNC_GET_ACTION_EVENTS = "core_calendar_get_action_events_by_timesort";
 export const FUNC_GET_POPUP_NOTIFICATIONS = "message_popup_get_popup_notifications";

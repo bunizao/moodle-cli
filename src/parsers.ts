@@ -10,7 +10,7 @@ import type {
   TodoItem,
   UserInfo,
 } from "./models.js";
-import { htmlToStructuredContent } from "./html-utils.js";
+import { htmlToStructuredContent, resolveUrl } from "./html-utils.js";
 
 type AnyRecord = Record<string, unknown>;
 
@@ -89,6 +89,51 @@ export function parseSection(value: unknown): Section {
 
 export function parseCourseContents(value: unknown): Section[] {
   return asArray(value).map((item) => parseSection(item));
+}
+
+export function parseCourseFormatState(value: unknown, baseUrl: string): Section[] {
+  const state = asRecord(parseJsonValue(value));
+  const activities = new Map<string, Activity>();
+  const activitiesBySection = new Map<string, Activity[]>();
+  for (const item of asArray(state.cm)) {
+    const data = asRecord(item);
+    const id = numberValue(data.id);
+    const sectionId = stringValue(data.sectionid);
+    const module = stringValue(data.module)
+      || stringValue(data.plugin).replace(/^mod_/u, "")
+      || stringValue(data.modname).toLowerCase();
+    const activity: Activity = {
+      id,
+      name: htmlText(data.name, baseUrl),
+      modname: module.toLowerCase(),
+      url: stringValue(data.url) ? resolveUrl(baseUrl, stringValue(data.url)) : "",
+      visible: booleanValue(data.visible, true)
+        && booleanValue(data.uservisible, true)
+        && !booleanValue(data.stealth),
+      description: htmlText(data.content ?? data.description, baseUrl),
+    };
+    activities.set(String(id), activity);
+    const sectionActivities = activitiesBySection.get(sectionId) ?? [];
+    sectionActivities.push(activity);
+    activitiesBySection.set(sectionId, sectionActivities);
+  }
+
+  return asArray(state.section).map((item) => {
+    const data = asRecord(item);
+    const id = numberValue(data.id);
+    const hasActivityList = Array.isArray(data.cmlist);
+    const listedActivities = asArray(data.cmlist)
+      .map((activityId) => activities.get(stringValue(activityId)))
+      .filter((activity): activity is Activity => activity !== undefined);
+    return {
+      id,
+      name: htmlText(data.title || data.rawtitle, baseUrl),
+      section: numberValue(data.section ?? data.number),
+      visible: booleanValue(data.visible, true),
+      summary: htmlText(data.summary, baseUrl),
+      activities: hasActivityList ? listedActivities : activitiesBySection.get(String(id)) ?? [],
+    };
+  });
 }
 
 export function flattenActivities(sections: Section[]): Activity[] {
@@ -245,4 +290,17 @@ export function booleanValue(value: unknown, defaultValue = false): boolean {
     return defaultValue;
   }
   return Boolean(value);
+}
+
+function parseJsonValue(value: unknown): unknown {
+  if (typeof value !== "string") return value;
+  try {
+    return JSON.parse(value) as unknown;
+  } catch {
+    return {};
+  }
+}
+
+function htmlText(value: unknown, baseUrl: string): string {
+  return htmlToStructuredContent(stringValue(value), baseUrl).text;
 }

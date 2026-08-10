@@ -143,6 +143,12 @@ export interface Quiz {
   url: string;
 }
 
+export interface FileEntry {
+  name: string;
+  url: string;
+  requires_authentication: boolean;
+}
+
 export interface Resource {
   id: number;
   name: string;
@@ -151,6 +157,7 @@ export interface Resource {
   section_name: string;
   target_name: string;
   target_url: string;
+  file_entries: FileEntry[];
   url: string;
 }
 
@@ -181,10 +188,11 @@ export interface Folder {
   course_name: string;
   section_name: string;
   files: string[];
+  file_entries: FileEntry[];
   url: string;
 }
 
-export type ActivityDetail = Assignment | Quiz | Resource | Link | Page | Folder;
+export type ActivityDetail = Assignment | Quiz | Resource | Link | Page | Folder | Activity;
 
 export interface ForumPostAuthor {
   id: number;

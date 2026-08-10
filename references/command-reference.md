@@ -16,12 +16,25 @@ Read this file for exact arguments, flags, and defaults after selecting a branch
 | moodle auth login | Extract a fresh session, opening the browser when needed. |  | --json<br>--yaml<br>--table<br>--fields (value required) |
 | moodle auth status | Show cached session freshness and keepalive state. |  | --json<br>--yaml<br>--table<br>--fields (value required) |
 | moodle commands | Describe the complete command tree. |  | --json<br>--yaml<br>--table<br>--fields (value required) |
+| moodle download | Download one authenticated Moodle file. | <source> | --dest (value required)<br>--force<br>--json<br>--yaml<br>--table<br>--fields (value required) |
 | moodle forums | Inspect forums. |  |  |
 | moodle forums list | List forum activities in a unit. | <unit> | --json<br>--yaml<br>--table<br>--fields (value required)<br>--limit (value required) |
 | moodle forums search | Search forum discussion titles and post text. | <query> | --json<br>--yaml<br>--table<br>--fields (value required)<br>--course (value required)<br>--forum (value required)<br>--titles-only<br>--unread-only<br>--recent<br>--limit-forums (value required)<br>--limit-discussions (value required)<br>--limit (value required) |
 | moodle forums show | List discussions from a forum. | <forum> | --json<br>--yaml<br>--table<br>--fields (value required)<br>--limit (value required)<br>--query (value required) |
 | moodle grades | Inspect grades. |  |  |
 | moodle grades list | Show grade details for a unit. | <unit> | --json<br>--yaml<br>--table<br>--fields (value required) |
+| moodle mcp | Deploy and manage a private Moodle MCP server. |  |  |
+| moodle mcp bridge | Bridge a stdio MCP client to the managed remote server. |  | --profile (value required) |
+| moodle mcp connect | Connect a supported MCP client. | [client] | --json<br>--yaml<br>--table<br>--fields (value required)<br>--mode (value required)<br>--show-token |
+| moodle mcp deploy | Deploy or update the managed Moodle MCP server. |  | --json<br>--yaml<br>--table<br>--fields (value required)<br>--dry-run<br>--repair<br>--rotate-token<br>--rollback |
+| moodle mcp login | Acquire and upload a fresh Moodle session. |  | --json<br>--yaml<br>--table<br>--fields (value required) |
+| moodle mcp remove | Remove one managed Moodle MCP deployment. |  | --json<br>--yaml<br>--table<br>--fields (value required) |
+| moodle mcp renewal | Run the installed managed-session renewal job. |  |  |
+| moodle mcp renewal run | Check and renew one managed Moodle session. |  | --json<br>--yaml<br>--table<br>--fields (value required)<br>--profile (value required) |
+| moodle mcp serve | Run the local Moodle MCP server. |  | --stdio |
+| moodle mcp session | Advanced managed-session operations. |  |  |
+| moodle mcp session push | Upload a Moodle cookie from standard input. |  | --stdin<br>--json<br>--yaml<br>--table<br>--fields (value required) |
+| moodle mcp status | Show local and remote Moodle MCP readiness. |  | --json<br>--yaml<br>--table<br>--fields (value required)<br>--verbose<br>--logs |
 | moodle overview | Show a compact multi-source overview. |  | --json<br>--yaml<br>--table<br>--fields (value required)<br>--todo-limit (value required)<br>--todo-days (value required)<br>--alerts-limit (value required) |
 | moodle skills | Show skill metadata or delegate to the shared skills CLI. |  |  |
 | moodle skills add | Install the published skill through npx skills add. |  |  |

@@ -3,6 +3,7 @@ import type {
   Activity,
   Assignment,
   CourseGrades,
+  FileEntry,
   Folder,
   ForumDiscussion,
   ForumDiscussionRef,
@@ -103,9 +104,11 @@ export function parseCourseContentsHtml(html: string, baseUrl: string): Section[
 
 export function parseCourseSectionNumbers(html: string, courseId: number): number[] {
   const sections: number[] = [];
-  const pattern = /href=["']([^"']*\/course\/view\.php\?[^"']*)["']/g;
-  for (const match of html.matchAll(pattern)) {
-    const url = parseMaybeUrl(match[1], "https://moodle.invalid");
+  const root = parse(html.replace(/&section=/gu, "&amp;section="));
+  const hrefs = root.querySelectorAll('a[href*="/course/view.php"]')
+    .map((link) => link.getAttribute("href") ?? "");
+  for (const href of hrefs) {
+    const url = parseMaybeUrl(href.replace(/&amp;/gu, "&"), "https://moodle.invalid");
     const id = url?.searchParams.get("id");
     const sectionValue = url?.searchParams.get("section");
     if (id === String(courseId) && sectionValue && /^\d+$/.test(sectionValue)) {
@@ -258,12 +261,15 @@ export function parseQuizHtml(html: string, quizId: number, baseUrl: string): Qu
 export function parseResourceHtml(html: string, resourceId: number, baseUrl: string): Resource {
   const root = parse(html);
   const link = root.querySelector(".resourceworkaround a[href], .resourcecontent a[href], a.resourceworkaround[href]");
+  const targetName = cleanNodeText(link);
+  const targetUrl = link ? resolveUrl(baseUrl, link.getAttribute("href") ?? "") : "";
   return {
     id: resourceId,
     name: pageTitle(html),
     ...activityContext(html),
-    target_name: cleanNodeText(link),
-    target_url: link ? resolveUrl(baseUrl, link.getAttribute("href") ?? "") : "",
+    target_name: targetName,
+    target_url: targetUrl,
+    file_entries: targetName && targetUrl ? [fileEntry(targetName, targetUrl, baseUrl)] : [],
     url: `${baseUrl.replace(/\/$/, "")}/mod/resource/view.php?id=${resourceId}`,
   };
 }
@@ -294,12 +300,20 @@ export function parsePageHtml(html: string, pageId: number, baseUrl: string): Pa
 
 export function parseFolderHtml(html: string, folderId: number, baseUrl: string): Folder {
   const root = parse(html);
-  const files = unique(root.querySelectorAll(".foldertree a[href], .fp-filename-icon a[href]").map((link) => cleanNodeText(link)).filter(Boolean));
+  const fileEntries = root.querySelectorAll(".foldertree a[href], .fp-filename-icon a[href]")
+    .map((link) => {
+      const name = cleanNodeText(link);
+      const url = resolveUrl(baseUrl, link.getAttribute("href") ?? "");
+      return name && url ? fileEntry(name, url, baseUrl) : null;
+    })
+    .filter((entry): entry is FileEntry => entry !== null)
+    .filter((entry, index, entries) => entries.findIndex((candidate) => candidate.url === entry.url) === index);
   return {
     id: folderId,
     name: pageTitle(html),
     ...activityContext(html),
-    files,
+    files: unique(fileEntries.map((entry) => entry.name)),
+    file_entries: fileEntries,
     url: `${baseUrl.replace(/\/$/, "")}/mod/folder/view.php?id=${folderId}`,
   };
 }
@@ -547,15 +561,18 @@ function pageTitle(html: string): string {
 function activityContext(html: string): { course_id: number; course_name: string; section_name: string } {
   const root = parse(html);
   const context = { course_id: parseCourseIdFromPageHtml(html) ?? 0, course_name: "", section_name: "" };
-  for (const link of root.querySelectorAll('nav[aria-label="Breadcrumb"] a[href], #page-navbar .breadcrumb a[href], a[href*="/course/view.php?id="]')) {
+  const breadcrumbs = root.querySelectorAll('nav[aria-label="Breadcrumb"] a[href], #page-navbar .breadcrumb a[href]');
+  const links = breadcrumbs.length ? breadcrumbs : root.querySelectorAll('a[href*="/course/view.php?id="]');
+  for (const link of links) {
     const href = link.getAttribute("href") ?? "";
     const courseId = numberQueryValue(href, "id");
     if (courseId !== null) {
       context.course_id = courseId;
-      context.course_name ||= cleanNodeText(link);
     }
-    if (numberQueryValue(href, "section") !== null) {
-      context.section_name ||= cleanNodeText(link);
+    if (numberQueryValue(href, "section") === null) {
+      context.course_name ||= cleanNodeText(link);
+    } else {
+      context.section_name = cleanNodeText(link);
     }
   }
   return context;
@@ -615,6 +632,14 @@ function numberValue(value: unknown): number {
 
 function stringValue(value: unknown): string {
   return typeof value === "string" ? value : value == null ? "" : String(value);
+}
+
+function fileEntry(name: string, url: string, baseUrl: string): FileEntry {
+  return {
+    name,
+    url,
+    requires_authentication: new URL(url).origin === new URL(baseUrl).origin,
+  };
 }
 
 function unique<T>(items: T[]): T[] {

@@ -75,6 +75,7 @@ describe("skills install wrappers", () => {
 describe("skill generation", () => {
   it("summarizes the skill entrypoint", () => {
     expect(formatSkillSummary()).toContain("Install: npx skills add https://github.com/bunizao/moodle-cli");
+    expect(formatSkillSummary()).toContain("local file downloads");
   });
 
   it("extracts public commands from a commander-like tree", () => {
@@ -136,18 +137,30 @@ describe("skill generation", () => {
     const program = new Command("moodle");
     program.command("todo").description("List upcoming actionable timeline items.").option("--limit <number>", "Maximum number of items.", "20");
     program.command("courses").description("List enrolled courses.").option("--json", "Output as JSON.");
+    program.command("download").alias("dl").description("Download one authenticated Moodle file.")
+      .argument("<source>")
+      .option("--dest <path>")
+      .option("--force");
 
     writeGeneratedSkill(program, join(targetDir, "SKILL.md"));
 
     const root = await readFile(join(targetDir, "SKILL.md"), "utf8");
     const commandReference = await readFile(join(targetDir, "references", "command-reference.md"), "utf8");
+    const downloadsReference = await readFile(join(targetDir, "references", "downloads.md"), "utf8");
     const outputReference = await readFile(join(targetDir, "references", "output-and-errors.md"), "utf8");
     const agentMetadata = await readFile(join(targetDir, "agents", "openai.yaml"), "utf8");
 
     expect(root).toContain("references/deadlines-and-alerts.md");
+    expect(root).toContain("references/downloads.md");
     expect(root).toContain("references/command-reference.md");
     expect(commandReference).toContain("| moodle todo | List upcoming actionable timeline items. |");
+    expect(commandReference).toContain("| moodle download | Download one authenticated Moodle file. | <source> | --dest (value required)<br>--force |");
+    expect(downloadsReference).toContain("moodle download");
+    expect(downloadsReference).toContain("file_entries");
+    expect(downloadsReference).toContain("--force");
+    expect(downloadsReference).toContain("Validate the receipt");
     expect(outputReference).toContain("`--fields a,b,c` keeps only listed top-level fields");
     expect(agentMetadata).toContain('display_name: "Moodle CLI"');
+    expect(agentMetadata).toContain("local Moodle files");
   });
 });

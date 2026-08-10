@@ -13,6 +13,7 @@ import type {
   TodoItem,
   UserInfo,
 } from "./models.js";
+import type { DownloadReceipt } from "./download.js";
 import type { AuthStatus, KeepaliveRunResult } from "./keepalive.js";
 
 export function formatUser(user: UserInfo): string {
@@ -93,6 +94,17 @@ export function formatActivityDetail(activity: ActivityDetail): string {
     .filter(([, value]) => value !== "" && value !== undefined && !(Array.isArray(value) && value.length === 0))
     .map(([key, value]) => [key, Array.isArray(value) ? value.join("\n") : String(value)] as [string, string]);
   return formatKeyValues(rows);
+}
+
+export function formatDownloadReceipt(receipt: DownloadReceipt): string {
+  return formatKeyValues([
+    ["File", receipt.file_path],
+    ["Filename", receipt.filename],
+    ["Bytes", String(receipt.bytes_written)],
+    ["Content type", receipt.content_type],
+    ["Source", receipt.source_url],
+    ["Final URL", receipt.final_url],
+  ]);
 }
 
 export function formatForumDiscussion(

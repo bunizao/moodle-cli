@@ -1,6 +1,5 @@
 import { Command } from "commander";
 import {
-  commandsJson,
   confirm,
   createProgram,
   insertDefaultVerb,
@@ -13,6 +12,7 @@ import {
   type OutputFormat,
 } from "@bunizao/cli-kit";
 import { realpathSync } from "node:fs";
+import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createMoodleClient, type MoodleClient } from "./client.js";
 import { loadConfig } from "./config.js";
@@ -24,6 +24,7 @@ import {
   formatAuthStatus,
   formatCourseSections,
   formatCourses,
+  formatDownloadReceipt,
   formatForumDiscussion,
   formatForumDiscussionRefs,
   formatForumActivities,
@@ -33,6 +34,7 @@ import {
   formatTodo,
   formatUser,
 } from "./formatters.js";
+import { downloadMoodleFile } from "./download.js";
 import { formatSkillSummary, installSkill, writeGeneratedSkill } from "./skills.js";
 import {
   getAuthStatus,
@@ -45,6 +47,9 @@ import { getAuthenticatedSessionWithBrowserFallback, invalidateCachedSession } f
 import { VERSION } from "./version.js";
 import { filterDiscussionToPost, parseDiscussionReference, parseForumReference } from "./forum.js";
 import { looksLikeUrl, resolveTopLevelUrl } from "./url-resolver.js";
+import { createMcpCommandService, type McpCommandOutput, type McpCommandService } from "./mcp/cli.js";
+import { describeProgram } from "./command-contract.js";
+import { ONBOARDING_COPY } from "./mcp/deployment/onboarding.js";
 
 interface CliIO {
   stdout?: NodeJS.WriteStream | { write(chunk: string): boolean };
@@ -55,6 +60,7 @@ interface CliIO {
   cwd?: string;
   homeDir?: string;
   rootArgs?: string[];
+  mcpService?: McpCommandService;
 }
 
 interface Runtime {
@@ -128,6 +134,19 @@ export function buildProgram(io: CliIO = {}): Command {
       }
     },
   };
+  let mcpService: McpCommandService | undefined = io.mcpService;
+  const getMcpService = (): McpCommandService => {
+    mcpService ??= createMcpCommandService({
+      env: io.env,
+      cwd: io.cwd,
+      homeDir: io.homeDir,
+      stdin: io.stdin,
+      stdout: stdout as NodeJS.WritableStream,
+      stderr: stderr as NodeJS.WritableStream,
+      fetchImpl: io.fetchImpl,
+    });
+    return mcpService;
+  };
 
   program.action(async (target: string | undefined, options: Record<string, unknown>, command: Command) => {
     if (!target) {
@@ -199,6 +218,26 @@ export function buildProgram(io: CliIO = {}): Command {
       await runtime.output(item, () => formatActivityDetail(item), options);
     },
   );
+
+  addOutputOptions(
+    program
+      .command("download")
+      .alias("dl")
+      .description("Download one authenticated Moodle file.")
+      .argument("<source>", "Course-module ID or authenticated Moodle file URL")
+      .option("--dest <path>", "Exact downloaded file path")
+      .option("--force", "Atomically replace an existing destination"),
+  ).action(async (source: string, options: OutputCommandOptions & { dest?: string; force?: boolean }) => {
+    const destination = options.dest
+      ? path.resolve(io.cwd ?? process.cwd(), options.dest)
+      : undefined;
+    const receipt = await downloadMoodleFile(await runtime.getClient(), {
+      source,
+      destination,
+      force: options.force,
+    });
+    await runtime.output(receipt, () => formatDownloadReceipt(receipt), options);
+  });
 
   const grades = program.command("grades").description("Inspect grades.");
   addOutputOptions(grades.command("list").description("Show grade details for a unit.").argument("<unit>", "Unit ID or unique name")).action(
@@ -322,9 +361,100 @@ export function buildProgram(io: CliIO = {}): Command {
     },
   );
 
+  const mcp = program.command("mcp").description("Deploy and manage a private Moodle MCP server.");
+  addOutputOptions(mutating(mcp.command("deploy").description("Deploy or update the managed Moodle MCP server.")))
+    .option("--dry-run", "Preview deployment changes without applying them.")
+    .option("--repair", "Repair authentication and managed deployment state.")
+    .option("--rotate-token", "Rotate the MCP access token with an overlap window.")
+    .option("--rollback", "Restore the previous healthy Worker release.")
+    .action(async (options: OutputCommandOptions & { dryRun?: boolean; repair?: boolean; rotateToken?: boolean; rollback?: boolean }) => {
+      const dryRun = Boolean(options.dryRun || program.opts().dryRun);
+      if (!dryRun && !await confirm(
+        { summary: [ONBOARDING_COPY.introduction, "", ONBOARDING_COPY.credentials].join("\n") },
+        {
+          yes: Boolean(program.opts().yes),
+          dryRun: false,
+          interactive: Boolean(io.stdin?.isTTY ?? process.stdin.isTTY),
+        },
+      )) return;
+      const result = await getMcpService().deploy({
+        dryRun,
+        repair: Boolean(options.repair),
+        rotateToken: Boolean(options.rotateToken),
+        rollback: Boolean(options.rollback),
+        yes: Boolean(program.opts().yes),
+      });
+      await outputMcpResult(runtime, result, options);
+    });
+
+  addOutputOptions(mcp.command("status").description("Show local and remote Moodle MCP readiness."))
+    .option("--verbose", "Include sanitized deployment diagnostics.")
+    .option("--logs", "Include sanitized recent Worker logs.")
+    .action(async (options: OutputCommandOptions & { verbose?: boolean; logs?: boolean }) => {
+      const result = await getMcpService().status({ verbose: Boolean(options.verbose), logs: Boolean(options.logs) });
+      await outputMcpResult(runtime, result, options);
+    });
+
+  addOutputOptions(mutating(mcp.command("login").description("Acquire and upload a fresh Moodle session."))).action(
+    async (options: OutputCommandOptions) => {
+      await outputMcpResult(runtime, await getMcpService().login(), options);
+    },
+  );
+
+  addOutputOptions(mutating(mcp.command("connect").description("Connect a supported MCP client.").argument("[client]", "Codex, Claude, VS Code, or Cursor")))
+    .option("--mode <mode>", "Use bridge or native remote mode.", parseMcpConnectionMode, "bridge")
+    .option("--show-token", "Reveal the MCP token once after confirmation.")
+    .action(async (client: string | undefined, options: OutputCommandOptions & { mode: "bridge" | "remote"; showToken?: boolean }) => {
+      if (options.showToken) {
+        const tty = Boolean(stdout && "isTTY" in stdout && stdout.isTTY);
+        if (!tty || outputFormat(options, stdout) !== "table") {
+          throw new UsageError("--show-token requires human output on an interactive TTY.");
+        }
+        if (!await confirm(
+          { summary: "Reveal the managed MCP access token once in this terminal." },
+          { yes: Boolean(program.opts().yes), dryRun: false, interactive: true },
+        )) return;
+      }
+      const result = await getMcpService().connect({ client, mode: options.mode, showToken: Boolean(options.showToken) });
+      await outputMcpResult(runtime, result, options);
+    });
+
+  addOutputOptions(mutating(mcp.command("remove").description("Remove one managed Moodle MCP deployment."))).action(
+    async (options: OutputCommandOptions) => {
+      await outputMcpResult(runtime, await getMcpService().remove({ yes: Boolean(program.opts().yes) }), options);
+    },
+  );
+
+  mcp.command("serve").description("Run the local Moodle MCP server.").option("--stdio", "Use JSON messages over stdio.").action(
+    async (options: { stdio?: boolean }) => {
+      if (!options.stdio) throw new UsageError("moodle mcp serve currently requires --stdio.");
+      await getMcpService().serveStdio();
+    },
+  );
+
+  mcp.command("bridge").description("Bridge a stdio MCP client to the managed remote server.")
+    .option("--profile <profile>", "Use a specific managed Moodle profile.")
+    .action(async (options: { profile?: string }) => {
+      await getMcpService().bridge(options.profile);
+    });
+
+  const renewal = mcp.command("renewal").description("Run the installed managed-session renewal job.");
+  addOutputOptions(renewal.command("run").description("Check and renew one managed Moodle session."))
+    .requiredOption("--profile <profile>", "Use a specific managed Moodle profile.")
+    .action(async (options: OutputCommandOptions & { profile: string }) => {
+      await outputMcpResult(runtime, await getMcpService().renew(options.profile), options);
+    });
+
+  const mcpSession = mcp.command("session").description("Advanced managed-session operations.");
+  addOutputOptions(mutating(mcpSession.command("push").description("Upload a Moodle cookie from standard input.").option("--stdin", "Read the cookie from standard input.")))
+    .action(async (options: OutputCommandOptions & { stdin?: boolean }) => {
+      if (!options.stdin) throw new UsageError("moodle mcp session push requires --stdin.");
+      await outputMcpResult(runtime, await getMcpService().pushSessionFromStdin(), options);
+    });
+
   addOutputOptions(program.command("commands").description("Describe the complete command tree.")).action(
     async (options: OutputCommandOptions) => {
-      const description = commandsJson(program);
+      const description = describeProgram(program);
       await runtime.output(description, () => JSON.stringify(description, null, 2), options);
     },
   );
@@ -475,6 +605,15 @@ function parsePositiveInt(value: string): number {
     throw new UsageError("Expected a positive integer.");
   }
   return parsed;
+}
+
+function parseMcpConnectionMode(value: string): "bridge" | "remote" {
+  if (value === "bridge" || value === "remote") return value;
+  throw new UsageError("MCP connection mode must be 'bridge' or 'remote'.");
+}
+
+async function outputMcpResult(runtime: Runtime, result: McpCommandOutput, options: OutputCommandOptions): Promise<void> {
+  await runtime.output(result.data, () => result.text, options);
 }
 
 function errorOutputFormat(args: string[], stdout: CliIO["stdout"]): OutputFormat {
