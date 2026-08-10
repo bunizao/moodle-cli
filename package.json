@@ -19,6 +19,7 @@
   "scripts": {
     "build": "tsc --noEmit && tsup && npm run build:worker && rm -f dist/.gitignore",
     "build:worker": "tsup --config tsup.worker.config.ts && node scripts/check-worker-bundle.mjs",
+    "bin:smoke": "bun scripts/smoke-standalone.mjs",
     "check": "tsc --noEmit",
     "pack:check": "npm pack --dry-run --json | node -e \"let data = ''; process.stdin.on('data', chunk => data += chunk); process.stdin.on('end', () => { const files = JSON.parse(data)[0]?.files?.map(file => file.path) ?? []; for (const required of ['dist/moodle.js', 'dist/worker/worker.js', 'README.md', 'ONBOARDING.md', 'SKILL.md', 'references/command-reference.md', 'references/downloads.md', 'agents/openai.yaml']) if (!files.includes(required)) throw new Error('npm package is missing ' + required); });\"",
     "pack:smoke": "tmp=\"$(mktemp -d)\" && npm pack --pack-destination \"$tmp\" >/dev/null && npm install --prefix \"$tmp/install\" \"$tmp\"/moodle-cli-*.tgz >/dev/null && test \"$(\"$tmp/install/node_modules/.bin/moodle\" --version)\" = \"$(node -p \"JSON.parse(require('node:fs').readFileSync('package.json', 'utf8')).version\")\" && \"$tmp/install/node_modules/.bin/moodle\" download --help >/dev/null && \"$tmp/install/node_modules/.bin/moodle\" mcp --help >/dev/null",
