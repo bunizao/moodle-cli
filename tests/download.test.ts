@@ -217,7 +217,7 @@ describe("Moodle file downloads", () => {
     const body = new ReadableStream<Uint8Array>({
       start(stream) {
         stream.enqueue(new TextEncoder().encode("partial"));
-        stream.error(new Error("socket reset with secret-cookie"));
+        stream.error(Object.assign(new Error("socket reset with secret-cookie"), { code: "ECONNRESET" }));
       },
     });
     const pending = downloadMoodleFile(client({

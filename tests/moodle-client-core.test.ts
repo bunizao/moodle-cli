@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import { createServer, type Server } from "node:http";
 import { dirname, resolve } from "node:path";
 
 import { describe, expect, it, vi } from "vitest";
@@ -58,6 +59,76 @@ describe("runtime-neutral Moodle client core", () => {
     });
     expect(onLoginRequired).toHaveBeenCalledOnce();
     expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  it("returns the requested response after one successful reauthentication", async () => {
+    const onLoginRequired = vi.fn(async () => ({
+      cookie: { name: "MoodleSession", value: "renewed-cookie" },
+      pageContext: {
+        sesskey: "renewed-key",
+        user_info: {
+          userid: 8,
+          username: "grace",
+          fullname: "Grace Hopper",
+          sitename: "Example Moodle",
+          siteurl: BASE_URL,
+        },
+      },
+    }));
+    let request = 0;
+    const fetchImpl = vi.fn<typeof fetch>(async (_input, init) => {
+      request += 1;
+      const cookie = new Headers(init?.headers).get("cookie");
+      if (request === 1) {
+        expect(cookie).toBe("MoodleSession=expired-cookie");
+        const login = new Response("login", { headers: { "content-type": "text/html" } });
+        Object.defineProperty(login, "url", { value: `${BASE_URL}/login/index.php` });
+        return login;
+      }
+      expect(cookie).toBe("MoodleSession=renewed-cookie");
+      return new Response("slides", { headers: { "content-type": "application/pdf" } });
+    });
+    const client = createMoodleClientCore(BASE_URL, {
+      cookie: { name: "MoodleSession", value: "expired-cookie" },
+      sesskey: "expired-key",
+      userid: 7,
+      fetchImpl,
+      onLoginRequired,
+    });
+
+    const response = await client.requestAbsolute(`${BASE_URL}/pluginfile.php/slides.pdf`);
+
+    await expect(response.text()).resolves.toBe("slides");
+    expect(onLoginRequired).toHaveBeenCalledOnce();
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not forward the Moodle cookie across an actual cross-origin redirect", async () => {
+    let redirectedCookie: string | undefined;
+    const target = createServer((request, response) => {
+      redirectedCookie = request.headers.cookie;
+      response.end("slides");
+    });
+    const targetUrl = await listen(target);
+    const source = createServer((request, response) => {
+      expect(request.headers.cookie).toBe("MoodleSession=secret-cookie");
+      response.writeHead(302, { location: `${targetUrl}/slides.pdf` });
+      response.end();
+    });
+    const sourceUrl = await listen(source);
+    const client = createMoodleClientCore(sourceUrl, {
+      cookie: { name: "MoodleSession", value: "secret-cookie" },
+      sesskey: "session-key",
+      userid: 7,
+    });
+
+    try {
+      const response = await client.requestAbsolute(`${sourceUrl}/resource`);
+      await expect(response.text()).resolves.toBe("slides");
+      expect(redirectedCookie).toBeUndefined();
+    } finally {
+      await Promise.all([close(source), close(target)]);
+    }
   });
 
   it("runs existing Moodle operations from an injected Worker session", async () => {
@@ -171,4 +242,18 @@ function localImportGraph(entry: string): string[] {
   };
   visit(entry);
   return [...visited];
+}
+
+async function listen(server: Server): Promise<string> {
+  await new Promise<void>((resolveListen, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolveListen);
+  });
+  const address = server.address();
+  if (!address || typeof address === "string") throw new Error("Expected a TCP test server");
+  return `http://127.0.0.1:${address.port}`;
+}
+
+async function close(server: Server): Promise<void> {
+  await new Promise<void>((resolveClose, reject) => server.close((error) => error ? reject(error) : resolveClose()));
 }

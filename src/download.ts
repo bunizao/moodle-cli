@@ -34,6 +34,22 @@ interface ResolvedDownload {
 }
 
 const ACCEPTED_SOURCE_HINT = "Use a positive resource activity ID, a same-site resource URL, or a same-site pluginfile URL.";
+const FILE_SYSTEM_ERROR_CODES = new Set([
+  "EACCES",
+  "EBUSY",
+  "EDQUOT",
+  "EEXIST",
+  "EISDIR",
+  "ELOOP",
+  "EMFILE",
+  "ENAMETOOLONG",
+  "ENFILE",
+  "ENOENT",
+  "ENOSPC",
+  "ENOTDIR",
+  "EPERM",
+  "EROFS",
+]);
 
 export async function downloadMoodleFile(
   client: MoodleClient,
@@ -320,5 +336,8 @@ function isNodeError(error: unknown, code: string): boolean {
 }
 
 function isFileSystemError(error: unknown): boolean {
-  return error instanceof Error && "code" in error && typeof error.code === "string";
+  return error instanceof Error
+    && "code" in error
+    && typeof error.code === "string"
+    && FILE_SYSTEM_ERROR_CODES.has(error.code);
 }
