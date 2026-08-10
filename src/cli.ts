@@ -391,7 +391,10 @@ export function buildProgram(io: CliIO = {}): Command {
     .option("--verbose", "Include sanitized deployment diagnostics.")
     .option("--logs", "Include sanitized recent Worker logs.")
     .action(async (options: OutputCommandOptions & { verbose?: boolean; logs?: boolean }) => {
-      const result = await getMcpService().status({ verbose: Boolean(options.verbose), logs: Boolean(options.logs) });
+      const result = await getMcpService().status({
+        verbose: Boolean(options.verbose || program.opts().verbose),
+        logs: Boolean(options.logs),
+      });
       await outputMcpResult(runtime, result, options);
     });
 

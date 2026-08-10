@@ -107,6 +107,28 @@ describe("shared CLI contract", () => {
     expect(JSON.parse(stdout.text())).toEqual({ status: "planned" });
   });
 
+  it("passes managed status diagnostics through the CLI boundary", async () => {
+    let received: unknown;
+    const service = mcpService({
+      status: async (input) => {
+        received = input;
+        return { data: { status: "pass" }, text: "Moodle MCP: pass" };
+      },
+    });
+
+    await expect(runCli([
+      "node",
+      "moodle",
+      "mcp",
+      "status",
+      "--verbose",
+      "--logs",
+      "--json",
+    ], { stdout: buffer(false), stderr: buffer(false), mcpService: service })).resolves.toBe(0);
+
+    expect(received).toEqual({ verbose: true, logs: true });
+  });
+
   it("rejects unsupported managed MCP connection modes", async () => {
     const stderr = buffer(false);
     await expect(runCli(["node", "moodle", "mcp", "connect", "codex", "--mode", "tunnel", "--json"], {

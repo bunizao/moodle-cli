@@ -80,7 +80,7 @@ export interface PreparedRelease {
 
 export interface CandidateRelease {
   versionId: string;
-  previewEndpoint: string;
+  previewEndpoint: string | null;
   productionEndpoint: string;
   deploymentId: string;
 }
@@ -88,6 +88,12 @@ export interface CandidateRelease {
 export interface WranglerDeploymentAdapter {
   checkAccess(accountId: string): Promise<void>;
   inspect(accountId: string, workerName: string): Promise<RemoteWorker | null>;
+  initializeWorker(input: {
+    accountId: string;
+    workerName: string;
+    configPath: string;
+    releaseDigest: string;
+  }): Promise<RemoteWorker>;
   uploadSecrets(input: {
     accountId: string;
     workerName: string;
@@ -99,6 +105,7 @@ export interface WranglerDeploymentAdapter {
     workerName: string;
     configPath: string;
     releaseDigest: string;
+    productionEndpoint: string;
   }): Promise<CandidateRelease>;
   promote(input: { accountId: string; workerName: string; versionId: string }): Promise<void>;
   restoreProduction(input: {
@@ -237,7 +244,7 @@ export class ManagedMcpDeployment {
         `Worker ${intent.workerName} is not owned by Moodle MCP profile ${intent.profile}`,
       );
     }
-    const receipt = replacingExisting ? null : matchingReceipt;
+    const receipt = replacingExisting || remote === null ? null : matchingReceipt;
 
     const existing = remote && receipt
       ? { ...remote, productionEndpoint: receipt.productionEndpoint, releaseDigest: receipt.releaseDigest }
@@ -268,8 +275,10 @@ export class ManagedMcpDeployment {
     let credentials: DeploymentCredentials | null = null;
     let credentialsBefore: DeploymentCredentials | null = null;
     let secretsUploaded = false;
+    let initializedWorker: RemoteWorker | null = null;
     let candidate: CandidateRelease | null = null;
     let appliedReceipt: DeploymentReceipt | null = null;
+    let productionRestored = false;
     let moodleUser: string | null = null;
 
     try {
@@ -296,6 +305,14 @@ export class ManagedMcpDeployment {
       activeStage = "upload_private_credentials";
       yield started(activeStage);
       if (plan.uploadCandidate) {
+        if (plan.operation === "create") {
+          initializedWorker = await this.dependencies.wrangler.initializeWorker({
+            accountId: plan.intent.accountId,
+            workerName: plan.intent.workerName,
+            configPath: prepared.wranglerConfigPath,
+            releaseDigest: plan.intent.releaseDigest,
+          });
+        }
         await this.dependencies.wrangler.uploadSecrets({
           accountId: plan.intent.accountId,
           workerName: plan.intent.workerName,
@@ -309,18 +326,31 @@ export class ManagedMcpDeployment {
       activeStage = "deploy_candidate_version";
       yield started(activeStage);
       if (plan.uploadCandidate) {
+        const productionEndpoint = initializedWorker?.productionEndpoint ?? plan.existing?.productionEndpoint;
+        if (!productionEndpoint) {
+          throw new DeploymentApplyError("MISSING_ENDPOINT", "The Worker production endpoint is unavailable");
+        }
         candidate = await this.dependencies.wrangler.uploadCandidate({
           accountId: plan.intent.accountId,
           workerName: plan.intent.workerName,
           configPath: prepared.wranglerConfigPath,
           releaseDigest: plan.intent.releaseDigest,
+          productionEndpoint,
         });
+        if (!candidate.previewEndpoint) {
+          await this.dependencies.wrangler.promote({
+            accountId: plan.intent.accountId,
+            workerName: plan.intent.workerName,
+            versionId: candidate.versionId,
+          });
+          promoted = true;
+        }
       }
       yield completed(activeStage);
 
       activeStage = "upload_moodle_session";
       yield started(activeStage);
-      const sessionEndpoint = candidate?.previewEndpoint ?? plan.existing?.productionEndpoint;
+      const sessionEndpoint = candidate?.previewEndpoint ?? candidate?.productionEndpoint ?? plan.existing?.productionEndpoint;
       if (!sessionEndpoint) {
         throw new DeploymentApplyError("MISSING_ENDPOINT", "The Worker did not provide a session endpoint");
       }
@@ -341,7 +371,7 @@ export class ManagedMcpDeployment {
 
       activeStage = "run_release_checks";
       yield started(activeStage);
-      if (candidate) {
+      if (candidate?.previewEndpoint) {
         try {
           await this.dependencies.worker.runSmoke({
             endpoint: candidate.previewEndpoint,
@@ -377,6 +407,9 @@ export class ManagedMcpDeployment {
         if (!promoted) {
           throw new DeploymentApplyError("PRODUCTION_VALIDATION_FAILED", "The existing Worker failed validation");
         }
+        if (plan.operation === "create") {
+          throw new DeploymentApplyError("PRODUCTION_VALIDATION_FAILED", "The new Worker failed production validation");
+        }
         candidateRevision = await this.rollbackProduction(
           plan,
           credentials,
@@ -384,6 +417,7 @@ export class ManagedMcpDeployment {
           productionEndpoint,
           candidateRevision,
         );
+        productionRestored = true;
         throw new DeploymentApplyError(
           "PRODUCTION_VALIDATION_FAILED_RESTORED",
           "The previous healthy release was restored with the current credentials and Moodle session",
@@ -402,7 +436,25 @@ export class ManagedMcpDeployment {
       if (plan.intent.rotateToken && credentialsBefore && !secretsUploaded) {
         await this.dependencies.credentials.write(plan.intent.profile, credentialsBefore);
       }
-      if (!appliedReceipt && plan.receipt && candidateRevision !== null) {
+      if (promoted && plan.existing && !productionRestored && !appliedReceipt) {
+        await this.dependencies.wrangler.restoreProduction({
+          accountId: plan.intent.accountId,
+          workerName: plan.intent.workerName,
+          previousVersionId: plan.existing.productionVersionId,
+        });
+        productionRestored = true;
+        if (plan.intent.rotateToken && credentialsBefore) {
+          await this.dependencies.credentials.write(plan.intent.profile, credentialsBefore);
+        }
+      }
+      if (initializedWorker && !appliedReceipt) {
+        await this.dependencies.wrangler.removeWorker({
+          accountId: plan.intent.accountId,
+          workerName: plan.intent.workerName,
+          deploymentId: deploymentId(plan.intent.accountId, plan.intent.workerName),
+        });
+        await this.removeLocalState(plan.intent.profile);
+      } else if (!appliedReceipt && plan.receipt && candidateRevision !== null) {
         await this.dependencies.receipts.write({ ...plan.receipt, sessionRevision: candidateRevision });
       }
       const safe = asDeploymentError(error);
@@ -663,6 +715,10 @@ function validateIntent(intent: DeploymentIntent): void {
   if (!intent.accountId || !intent.releaseDigest) {
     throw new DeploymentPlanError("INVALID_INTENT", "Cloudflare account and release digest are required");
   }
+}
+
+function deploymentId(accountId: string, workerName: string): string {
+  return `moodle-cli:${accountId}:${workerName}`;
 }
 
 function isOwnedByProfile(

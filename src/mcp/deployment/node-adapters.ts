@@ -33,6 +33,8 @@ import {
 } from "./managed-deployment.js";
 
 const MODERN_MCP_VERSION = "2026-07-28";
+const WORKER_PROPAGATION_ATTEMPTS = 10;
+const WORKER_PROPAGATION_MAX_DELAY_MS = 4_000;
 
 export interface CommandResult {
   stdout: string;
@@ -169,11 +171,48 @@ export class NodeWranglerDeploymentAdapter implements WranglerDeploymentAdapter 
     ], input.accountId);
   }
 
+  async initializeWorker(input: {
+    accountId: string;
+    workerName: string;
+    configPath: string;
+    releaseDigest: string;
+  }): Promise<RemoteWorker> {
+    let result: CommandResult | null = null;
+    try {
+      result = await this.wrangler([
+        "deploy",
+        "--name",
+        input.workerName,
+        "--config",
+        input.configPath,
+        "--message",
+        `moodle-cli-bootstrap:${input.releaseDigest}`,
+      ], input.accountId);
+      const worker = await this.inspect(input.accountId, input.workerName);
+      if (!worker) {
+        throw new DeploymentApplyError("INITIAL_WORKER_INVALID", "Wrangler did not return the initialized Worker");
+      }
+      const productionEndpoint = firstWorkersDevUrl([result.stdout, result.stderr]);
+      return productionEndpoint ? { ...worker, productionEndpoint } : worker;
+    } catch (error) {
+      const worker = await this.inspect(input.accountId, input.workerName).catch(() => null);
+      if (worker || result) {
+        await this.removeWorker({
+          accountId: input.accountId,
+          workerName: input.workerName,
+          deploymentId: ownershipId(input.accountId, input.workerName),
+        }).catch(() => undefined);
+      }
+      throw error;
+    }
+  }
+
   async uploadCandidate(input: {
     accountId: string;
     workerName: string;
     configPath: string;
     releaseDigest: string;
+    productionEndpoint: string;
   }): Promise<CandidateRelease> {
     const outputFilePath = join(dirname(input.configPath), "wrangler-version-upload.jsonl");
     await rm(outputFilePath, { force: true });
@@ -194,13 +233,13 @@ export class NodeWranglerDeploymentAdapter implements WranglerDeploymentAdapter 
       const versionId = typeof document.version_id === "string" ? document.version_id : null;
       const previewEndpoint = firstWorkersDevUrl(document.preview_alias_url)
         ?? firstWorkersDevUrl(document.preview_url);
-      if (!versionId || !previewEndpoint) {
-        throw new DeploymentApplyError("CANDIDATE_UPLOAD_INVALID", "Wrangler did not return a candidate version and preview endpoint");
+      if (!versionId) {
+        throw new DeploymentApplyError("CANDIDATE_UPLOAD_INVALID", "Wrangler did not return a candidate version");
       }
       return {
         versionId,
-        previewEndpoint,
-        productionEndpoint: productionEndpointFromPreview(previewEndpoint, input.workerName),
+        previewEndpoint: previewEndpoint ?? null,
+        productionEndpoint: input.productionEndpoint,
         deploymentId: ownershipId(input.accountId, input.workerName),
       };
     } finally {
@@ -283,6 +322,7 @@ export class NodeReleaseMaterializer implements ReleaseMaterializer {
       account_id: plan.intent.accountId,
       main: `./${basename(workerFile)}`,
       compatibility_date: this.options.compatibilityDate,
+      preview_urls: true,
       vars: { MOODLE_ORIGIN: plan.intent.moodleOrigin },
       durable_objects: {
         bindings: [{ name: "SESSION_BROKER", class_name: "SessionBroker" }],
@@ -352,7 +392,14 @@ export function createBackgroundMoodleSessionSource(
 }
 
 export class FetchManagedWorkerClient implements ManagedWorkerClient {
-  constructor(private readonly fetchImpl: typeof fetch = fetch) {}
+  private readonly fetchImpl: typeof fetch;
+
+  constructor(
+    fetchImpl?: typeof fetch,
+    private readonly sleep: (milliseconds: number) => Promise<void> = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)),
+  ) {
+    this.fetchImpl = fetchImpl ?? ((input, init) => fetch(input, init));
+  }
 
   async putSession(input: {
     endpoint: string;
@@ -360,7 +407,7 @@ export class FetchManagedWorkerClient implements ManagedWorkerClient {
     session: MoodleSessionMaterial;
     expectedRevision: number | null;
   }): Promise<{ revision: number }> {
-    const response = await this.fetchImpl(endpointUrl(input.endpoint, "/session"), {
+    const response = await this.fetchWithRetry(endpointUrl(input.endpoint, "/session"), {
       method: "PUT",
       headers: {
         authorization: `Bearer ${input.sessionSyncToken}`,
@@ -372,19 +419,19 @@ export class FetchManagedWorkerClient implements ManagedWorkerClient {
         cookieValue: input.session.cookieValue,
         expectedRevision: input.expectedRevision,
       }),
-    });
+    }, isRetryableSessionUpload);
     const body = await safeJson(response);
-    if (!response.ok || !isRecord(body) || typeof body.revision !== "number") {
-      const code = isRecord(body) && typeof body.code === "string" ? body.code : "SESSION_UPLOAD_FAILED";
-      throw new DeploymentApplyError(code, "The Worker rejected the Moodle session update");
+    if (response.ok && isRecord(body) && typeof body.revision === "number") {
+      return { revision: body.revision };
     }
-    return { revision: body.revision };
+    const code = isRecord(body) && typeof body.code === "string" ? body.code : "SESSION_UPLOAD_FAILED";
+    throw new DeploymentApplyError(code, "The Worker rejected the Moodle session update");
   }
 
   async getReadiness(input: { endpoint: string; sessionSyncToken: string }): Promise<WorkerReadiness> {
-    const response = await this.fetchImpl(endpointUrl(input.endpoint, "/readyz"), {
+    const response = await this.fetchWithRetry(endpointUrl(input.endpoint, "/readyz"), {
       headers: { authorization: `Bearer ${input.sessionSyncToken}` },
-    });
+    }, isRetryableWorkerPropagation);
     const body = await safeJson(response);
     if (isRecord(body) && (body.status === "pass" || body.status === "warn" || body.status === "fail")) {
       const session = firstHealthCheck(body, "moodle:session");
@@ -407,7 +454,11 @@ export class FetchManagedWorkerClient implements ManagedWorkerClient {
     mcpAccessToken: string;
     sessionSyncToken: string;
   }): Promise<WorkerSmokeResult> {
-    const health = await this.fetchImpl(endpointUrl(input.endpoint, "/healthz"));
+    const health = await this.fetchWithRetry(
+      endpointUrl(input.endpoint, "/healthz"),
+      undefined,
+      isRetryableWorkerPropagation,
+    );
     const healthBody = await safeJson(health);
     if (!health.ok || !isRecord(healthBody) || healthBody.status !== "pass") {
       throw new DeploymentApplyError("HEALTH_CHECK_FAILED", "Worker liveness check failed");
@@ -448,7 +499,7 @@ export class FetchManagedWorkerClient implements ManagedWorkerClient {
     if (typeof params.name === "string") {
       headers["mcp-name"] = params.name;
     }
-    const response = await this.fetchImpl(endpointUrl(endpoint, "/mcp"), {
+    const response = await this.fetchWithRetry(endpointUrl(endpoint, "/mcp"), {
       method: "POST",
       headers,
       body: JSON.stringify({
@@ -464,7 +515,7 @@ export class FetchManagedWorkerClient implements ManagedWorkerClient {
           },
         },
       }),
-    });
+    }, isRetryableWorkerPropagation);
     const body = await safeJson(response);
     if (
       !response.ok
@@ -477,6 +528,21 @@ export class FetchManagedWorkerClient implements ManagedWorkerClient {
       throw new DeploymentApplyError("MCP_SMOKE_FAILED", `MCP ${method} check failed`);
     }
     return body.result;
+  }
+
+  private async fetchWithRetry(
+    input: string,
+    init: RequestInit | undefined,
+    retryable: (status: number) => boolean,
+  ): Promise<Response> {
+    for (let attempt = 0; attempt < WORKER_PROPAGATION_ATTEMPTS; attempt += 1) {
+      const response = await this.fetchImpl(input, init);
+      if (!retryable(response.status) || attempt === WORKER_PROPAGATION_ATTEMPTS - 1) {
+        return response;
+      }
+      await this.sleep(Math.min(500 * 2 ** attempt, WORKER_PROPAGATION_MAX_DELAY_MS));
+    }
+    throw new Error("Worker propagation retry loop exhausted unexpectedly");
   }
 }
 
@@ -580,6 +646,14 @@ function ownershipId(accountId: string, workerName: string): string {
 
 function endpointUrl(endpoint: string, path: string): string {
   return `${endpoint.replace(/\/$/u, "")}${path}`;
+}
+
+function isRetryableSessionUpload(status: number): boolean {
+  return status === 401 || isRetryableWorkerPropagation(status);
+}
+
+function isRetryableWorkerPropagation(status: number): boolean {
+  return status === 404 || status === 429 || status >= 500;
 }
 
 async function safeJson(response: Response): Promise<unknown> {
@@ -708,19 +782,6 @@ function firstWorkersDevUrl(value: unknown): string | null {
     }
   });
   return found;
-}
-
-function productionEndpointFromPreview(preview: string, workerName: string): string {
-  const url = new URL(preview);
-  const labels = url.hostname.split(".");
-  if (labels[0] !== workerName && labels[0]?.endsWith(`-${workerName}`)) {
-    labels[0] = workerName;
-    url.hostname = labels.join(".");
-  }
-  url.pathname = "";
-  url.search = "";
-  url.hash = "";
-  return url.origin;
 }
 
 function visit(value: unknown, visitor: (key: string, value: unknown) => void, key = ""): void {

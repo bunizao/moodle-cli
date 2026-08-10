@@ -13,9 +13,11 @@ const SESSION_TIME_REMAINING = "core_session_time_remaining";
 
 export class FetchMoodleSessionUpstream implements MoodleSessionUpstream {
   private readonly origin: string;
+  private readonly fetchImpl: typeof fetch;
 
-  constructor(origin: string, private readonly fetchImpl: typeof fetch = fetch) {
+  constructor(origin: string, fetchImpl?: typeof fetch) {
     this.origin = new URL(origin).origin;
+    this.fetchImpl = fetchImpl ?? ((input, init) => fetch(input, init));
   }
 
   async validate(candidate: SessionCandidate): Promise<SessionValidationSuccess | SessionValidationFailure> {

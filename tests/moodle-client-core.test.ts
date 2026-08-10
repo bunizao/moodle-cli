@@ -9,6 +9,26 @@ import { createMoodleClientCore } from "../src/moodle-client-core.js";
 const BASE_URL = "https://moodle.example.edu";
 
 describe("runtime-neutral Moodle client core", () => {
+  it("calls the runtime global fetch without binding a receiver", async () => {
+    const originalFetch = globalThis.fetch;
+    const bindingSensitiveFetch = vi.fn(function (this: unknown) {
+      if (this !== undefined) throw new Error("Illegal invocation");
+      return Promise.resolve(new Response("ok"));
+    });
+    vi.stubGlobal("fetch", bindingSensitiveFetch);
+    try {
+      const client = createMoodleClientCore(BASE_URL, {
+        cookie: { name: "MoodleSession", value: "secret-cookie" },
+        sesskey: "session-key",
+        userid: 7,
+      });
+      await expect((await client.requestAbsolute(`${BASE_URL}/my/`)).text()).resolves.toBe("ok");
+      expect(bindingSensitiveFetch).toHaveBeenCalledOnce();
+    } finally {
+      vi.stubGlobal("fetch", originalFetch);
+    }
+  });
+
   it("returns authenticated responses and keeps Moodle cookies on the configured origin", async () => {
     const fetchImpl = vi.fn<typeof fetch>(async (input, init) => {
       const url = String(input);
