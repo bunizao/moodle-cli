@@ -14,7 +14,7 @@ Let it keep up with deadlines and grades, fetch course files, and search forum d
 
 - [Set up with your agent](#start-with-your-agent)
 - [Install and sign in manually](#install-and-sign-in-manually)
-- [Study with moodle-cli](#study-with-moodle-cli)
+- [Study Boooooooooost](#study-boooooooooost)
 - [Connect web AI through a private MCP server](#remote-mcp-for-web-ai)
 - [Developer and agent reference](#for-developers-and-agents)
 
@@ -64,7 +64,7 @@ Keep the session active on macOS with `moodle auth keepalive install`. On Linux,
 
 GitHub Releases also provide standalone binaries for macOS arm64 and Linux x64.
 
-### Study with moodle-cli
+### Study Boooooooooost
 
 Ask your agent in plain language or run the matching command:
 
