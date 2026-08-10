@@ -4,7 +4,7 @@
 
 **Target release:** `0.7.0`
 
-**Implementation preview:** `0.7.0-alpha.0`
+**Implementation preview:** `0.7.0-alpha.1`
 
 **Primary install path:** `npm install -g moodle-cli`
 

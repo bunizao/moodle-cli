@@ -672,7 +672,16 @@ function queryMatches(text: string, query: string): boolean {
   return needle ? haystack.includes(needle) || needle.split(" ").every((token) => haystack.includes(token)) : true;
 }
 
-const isMain = process.argv[1] ? realpathSync(fileURLToPath(import.meta.url)) === realpathSync(process.argv[1]) : false;
+function pathsReferToSameFile(moduleUrl: string, executable: string | undefined): boolean {
+  if (!executable) return false;
+  try {
+    return realpathSync(fileURLToPath(moduleUrl)) === realpathSync(executable);
+  } catch {
+    return false;
+  }
+}
+
+const isMain = (import.meta as ImportMeta & { main?: boolean }).main === true || pathsReferToSameFile(import.meta.url, process.argv[1]);
 if (isMain) {
   runCli().then((code) => {
     process.exitCode = code;
