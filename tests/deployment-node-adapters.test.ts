@@ -8,6 +8,7 @@ import {
   NodeReleaseMaterializer,
   NodeWranglerDeploymentAdapter,
   PrivateDeploymentReceiptStore,
+  WranglerCommandError,
   createBackgroundMoodleSessionSource,
   createDefaultManagedDeployment,
   resolvePackagedWranglerBin,
@@ -56,6 +57,7 @@ describe("NodeReleaseMaterializer", () => {
       name: PLAN.intent.workerName,
       account_id: PLAN.intent.accountId,
       compatibility_date: "2026-08-09",
+      preview_urls: true,
       vars: { MOODLE_ORIGIN: PLAN.intent.moodleOrigin },
     });
     const secrets = await readFile(release.secretsFilePath, "utf8");
@@ -126,6 +128,7 @@ describe("NodeWranglerDeploymentAdapter", () => {
       workerName: "moodle-school-mcp",
       configPath,
       releaseDigest: "release-next",
+      productionEndpoint: "https://moodle-school-mcp.demo.workers.dev",
     });
     expect(candidate).toEqual({
       versionId: "version-next",
@@ -154,11 +157,147 @@ describe("NodeWranglerDeploymentAdapter", () => {
     expect(JSON.stringify(vi.mocked(runner.run).mock.calls)).not.toMatch(/Bearer|mcp-raw-token/);
   });
 
+  it("accepts version uploads without preview URLs for Durable Object Workers", async () => {
+    const root = await mkdtemp(join(tmpdir(), "wrangler-no-preview-test-"));
+    const configPath = join(root, "wrangler.json");
+    const runner: DeploymentCommandRunner = {
+      run: vi.fn(async (_command, args, environment) => {
+        if (args.includes("upload")) {
+          const outputFilePath = environment?.WRANGLER_OUTPUT_FILE_PATH;
+          if (!outputFilePath) throw new Error("Missing Wrangler output path");
+          await writeFile(outputFilePath, `${JSON.stringify({
+            type: "version-upload",
+            version: 1,
+            worker_name: "moodle-school-mcp",
+            version_id: "version-next",
+          })}\n`);
+        }
+        return { stdout: "Uploaded Worker Version version-next", stderr: "" };
+      }),
+    };
+    const adapter = new NodeWranglerDeploymentAdapter({
+      wranglerBinPath: "/package/node_modules/wrangler/bin/wrangler.js",
+      runner,
+    });
+
+    await expect(adapter.uploadCandidate({
+      accountId: "account-1",
+      workerName: "moodle-school-mcp",
+      configPath,
+      releaseDigest: "release-next",
+      productionEndpoint: "https://moodle-school-mcp.demo.workers.dev",
+    })).resolves.toEqual({
+      versionId: "version-next",
+      previewEndpoint: null,
+      productionEndpoint: "https://moodle-school-mcp.demo.workers.dev",
+      deploymentId: "moodle-cli:account-1:moodle-school-mcp",
+    });
+  });
+
+  it("uses a non-versioned deploy to apply first-release migrations", async () => {
+    const runner: DeploymentCommandRunner = {
+      run: vi.fn(async (_command, args) => args.includes("deployments")
+        ? {
+            stdout: JSON.stringify([{
+              id: "deployment-1",
+              versions: [{ version_id: "version-bootstrap", percentage: 100 }],
+            }]),
+            stderr: "",
+          }
+        : {
+            stdout: "Deployed\nhttps://moodle-school-mcp.demo.workers.dev\n",
+            stderr: "",
+          }),
+    };
+    const adapter = new NodeWranglerDeploymentAdapter({
+      wranglerBinPath: "/package/node_modules/wrangler/bin/wrangler.js",
+      runner,
+    });
+
+    await expect(adapter.initializeWorker({
+      accountId: "account-1",
+      workerName: "moodle-school-mcp",
+      configPath: "/private/release/wrangler.json",
+      releaseDigest: "release-next",
+    })).resolves.toMatchObject({
+      productionEndpoint: "https://moodle-school-mcp.demo.workers.dev",
+    });
+
+    expect(runner.run).toHaveBeenCalledWith(
+      process.execPath,
+      [
+        "/package/node_modules/wrangler/bin/wrangler.js",
+        "deploy",
+        "--name",
+        "moodle-school-mcp",
+        "--config",
+        "/private/release/wrangler.json",
+        "--message",
+        "moodle-cli-bootstrap:release-next",
+      ],
+      { CLOUDFLARE_ACCOUNT_ID: "account-1" },
+    );
+  });
+
+  it("removes a partially created Worker when bootstrap deployment fails", async () => {
+    let workerExists = true;
+    const runner: DeploymentCommandRunner = {
+      run: vi.fn(async (_command, args) => {
+        if (args.includes("deploy")) {
+          throw new WranglerCommandError(1, "", "Authentication error");
+        }
+        if (args.includes("deployments")) {
+          return workerExists
+            ? {
+                stdout: JSON.stringify([{
+                  id: "deployment-1",
+                  versions: [{ version_id: "version-bootstrap", percentage: 100 }],
+                }]),
+                stderr: "",
+              }
+            : Promise.reject(new WranglerCommandError(1, "", "Worker not found"));
+        }
+        if (args.includes("delete")) {
+          workerExists = false;
+          return { stdout: "Deleted", stderr: "" };
+        }
+        throw new Error("Unexpected Wrangler command");
+      }),
+    };
+    const adapter = new NodeWranglerDeploymentAdapter({
+      wranglerBinPath: "/package/node_modules/wrangler/bin/wrangler.js",
+      runner,
+    });
+
+    await expect(adapter.initializeWorker({
+      accountId: "account-1",
+      workerName: "moodle-school-mcp",
+      configPath: "/private/release/wrangler.json",
+      releaseDigest: "release-next",
+    })).rejects.toBeInstanceOf(WranglerCommandError);
+    expect(workerExists).toBe(false);
+    expect(runner.run).toHaveBeenCalledWith(
+      process.execPath,
+      ["/package/node_modules/wrangler/bin/wrangler.js", "delete", "moodle-school-mcp", "--force"],
+      { CLOUDFLARE_ACCOUNT_ID: "account-1" },
+    );
+  });
+
   it("selects the account through the environment for every mutating command", async () => {
     const root = await mkdtemp(join(tmpdir(), "wrangler-mutations-test-"));
     const configPath = join(root, "wrangler.json");
     const runner: DeploymentCommandRunner = {
       run: vi.fn(async (_command, args, environment) => {
+        if (args.includes("deployments")) {
+          return {
+            stdout: JSON.stringify([{
+              id: "deployment-1",
+              url: "https://moodle-school-mcp.demo.workers.dev",
+              versions: [{ version_id: "version-bootstrap", percentage: 100 }],
+            }]),
+            stderr: "",
+          };
+        }
         if (args.includes("upload")) {
           const outputFilePath = environment?.WRANGLER_OUTPUT_FILE_PATH;
           if (!outputFilePath) {
@@ -183,11 +322,18 @@ describe("NodeWranglerDeploymentAdapter", () => {
       configPath: "/private/release/wrangler.json",
       secretsFilePath: "/private/release/secrets.json",
     });
+    await adapter.initializeWorker({
+      accountId: "account-1",
+      workerName: "moodle-school-mcp",
+      configPath: "/private/release/wrangler.json",
+      releaseDigest: "release-next",
+    });
     await adapter.uploadCandidate({
       accountId: "account-1",
       workerName: "moodle-school-mcp",
       configPath,
       releaseDigest: "release-next",
+      productionEndpoint: "https://moodle-school-mcp.demo.workers.dev",
     });
     await adapter.promote({ accountId: "account-1", workerName: "moodle-school-mcp", versionId: "version-next" });
     await adapter.restoreProduction({ accountId: "account-1", workerName: "moodle-school-mcp", previousVersionId: null });
@@ -263,6 +409,33 @@ describe("NodeWranglerDeploymentAdapter", () => {
 });
 
 describe("FetchManagedWorkerClient", () => {
+  it("retries transient Worker propagation failures before uploading the session", async () => {
+    const fetchImpl = vi.fn()
+      .mockResolvedValueOnce(new Response("not found", { status: 404 }))
+      .mockResolvedValueOnce(Response.json({ code: "INVALID_BEARER_TOKEN" }, { status: 401 }))
+      .mockResolvedValueOnce(Response.json({ code: "MOODLE_UNREACHABLE" }, { status: 503 }))
+      .mockResolvedValueOnce(Response.json({ revision: 1 }, { status: 201 }));
+    const sleep = vi.fn(async () => undefined);
+    const client = new FetchManagedWorkerClient(fetchImpl as unknown as typeof fetch, sleep);
+
+    await expect(client.putSession({
+      endpoint: "https://worker.example",
+      sessionSyncToken: "sync-token",
+      expectedRevision: null,
+      session: {
+        moodleOrigin: "https://moodle.example.edu",
+        cookieName: "MoodleSession",
+        cookieValue: "private-cookie",
+        fingerprint: "fingerprint",
+        remoteRevision: null,
+      },
+    })).resolves.toEqual({ revision: 1 });
+    expect(fetchImpl).toHaveBeenCalledTimes(4);
+    expect(sleep).toHaveBeenNthCalledWith(1, 500);
+    expect(sleep).toHaveBeenNthCalledWith(2, 1_000);
+    expect(sleep).toHaveBeenNthCalledWith(3, 2_000);
+  });
+
   it("retains readiness reason codes and remote revisions", async () => {
     const structured = new FetchManagedWorkerClient(vi.fn(async () => Response.json({
       status: "warn",
@@ -277,6 +450,30 @@ describe("FetchManagedWorkerClient", () => {
       .resolves.toEqual({ status: "warn", reasonCode: "SESSION_EXPIRING", revision: 12 });
     await expect(legacy.getReadiness({ endpoint: "https://worker.example", sessionSyncToken: "sync-token" }))
       .resolves.toEqual({ status: "pass", reasonCode: null, revision: null });
+  });
+
+  it("retries transient route propagation during release smoke checks", async () => {
+    const fetchImpl = vi.fn()
+      .mockResolvedValueOnce(new Response("not found", { status: 404 }))
+      .mockResolvedValueOnce(Response.json({ status: "pass" }))
+      .mockResolvedValueOnce(Response.json({ status: "pass" }))
+      .mockResolvedValueOnce(Response.json({ jsonrpc: "2.0", id: 1, result: {} }))
+      .mockResolvedValueOnce(Response.json({ jsonrpc: "2.0", id: 2, result: { tools: [] } }))
+      .mockResolvedValueOnce(Response.json({
+        jsonrpc: "2.0",
+        id: 3,
+        result: { structuredContent: { user: { fullname: "Alice Example" } } },
+      }));
+    const sleep = vi.fn(async () => undefined);
+    const client = new FetchManagedWorkerClient(fetchImpl as unknown as typeof fetch, sleep);
+
+    await expect(client.runSmoke({
+      endpoint: "https://worker.example",
+      mcpAccessToken: "mcp-token",
+      sessionSyncToken: "sync-token",
+    })).resolves.toEqual({ moodleUser: "Alice Example" });
+    expect(fetchImpl).toHaveBeenCalledTimes(6);
+    expect(sleep).toHaveBeenCalledWith(500);
   });
 
   it("uses the approved CAS session endpoint and full release smoke matrix", async () => {
@@ -345,7 +542,7 @@ describe("FetchManagedWorkerClient", () => {
     expect(metadata).toMatchObject({
       "io.modelcontextprotocol/protocolVersion": "2026-07-28",
       "io.modelcontextprotocol/clientCapabilities": {},
-      "io.modelcontextprotocol/clientInfo": { name: "moodle-cli-deployment-smoke", version: "0.7.0-alpha.1" },
+      "io.modelcontextprotocol/clientInfo": { name: "moodle-cli-deployment-smoke", version: "0.7.0-alpha.2" },
     });
   });
 });

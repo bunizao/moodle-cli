@@ -55,6 +55,7 @@ function dependencies(options: {
     wrangler: {
       checkAccess: vi.fn(async () => undefined),
       inspect: vi.fn(async () => remote),
+      initializeWorker: vi.fn(async () => REMOTE),
       uploadSecrets: vi.fn(async () => undefined),
       uploadCandidate: vi.fn(async () => ({
         versionId: "version-next",
@@ -196,9 +197,36 @@ describe("ManagedMcpDeployment planning", () => {
     await consume(manager.apply(plan));
     expect(deps.worker.putSession).toHaveBeenCalledWith(expect.objectContaining({ expectedRevision: null }));
   });
+
+  it("drops a stale receipt when its remote Worker no longer exists", async () => {
+    const deps = dependencies({ remote: null });
+    const manager = new ManagedMcpDeployment(deps);
+    const plan = await manager.plan(INTENT);
+
+    expect(plan).toMatchObject({ operation: "create", receipt: null });
+    await consume(manager.apply(plan));
+    expect(deps.worker.putSession).toHaveBeenCalledWith(expect.objectContaining({ expectedRevision: null }));
+  });
 });
 
 describe("ManagedMcpDeployment transaction", () => {
+  it("applies Durable Object migrations before the first versioned upload", async () => {
+    const deps = dependencies({ remote: null, receipt: null });
+    const manager = new ManagedMcpDeployment(deps);
+    await consume(manager.apply(await manager.plan(INTENT)));
+
+    expect(deps.wrangler.initializeWorker).toHaveBeenCalledWith({
+      accountId: INTENT.accountId,
+      workerName: INTENT.workerName,
+      configPath: "/private/tmp/release/wrangler.json",
+      releaseDigest: INTENT.releaseDigest,
+    });
+    expect(vi.mocked(deps.wrangler.initializeWorker).mock.invocationCallOrder[0])
+      .toBeLessThan(vi.mocked(deps.wrangler.uploadSecrets).mock.invocationCallOrder[0]!);
+    expect(vi.mocked(deps.wrangler.uploadSecrets).mock.invocationCallOrder[0])
+      .toBeLessThan(vi.mocked(deps.wrangler.uploadCandidate).mock.invocationCallOrder[0]!);
+  });
+
   it("uploads a candidate, validates it, promotes it, and records stable stage events", async () => {
     const deps = dependencies();
     const manager = new ManagedMcpDeployment(deps);
@@ -241,6 +269,26 @@ describe("ManagedMcpDeployment transaction", () => {
       expectedRevision: null,
     }));
     expect(deps.receipts.write).toHaveBeenCalledWith(expect.objectContaining({ sessionRevision: 5 }));
+  });
+
+  it("promotes a new Durable Object Worker before uploading its session when previews are unavailable", async () => {
+    const deps = dependencies({ remote: null, receipt: null });
+    vi.mocked(deps.wrangler.uploadCandidate).mockResolvedValueOnce({
+      versionId: "version-next",
+      previewEndpoint: null,
+      productionEndpoint: REMOTE.productionEndpoint,
+      deploymentId: REMOTE.deploymentId,
+    });
+    const manager = new ManagedMcpDeployment(deps);
+    await consume(manager.apply(await manager.plan(INTENT)));
+
+    expect(deps.wrangler.promote).toHaveBeenCalledWith(expect.objectContaining({ versionId: "version-next" }));
+    expect(vi.mocked(deps.wrangler.promote).mock.invocationCallOrder[0])
+      .toBeLessThan(vi.mocked(deps.worker.putSession).mock.invocationCallOrder[0]!);
+    expect(deps.worker.runSmoke).toHaveBeenCalledTimes(1);
+    expect(deps.worker.runSmoke).toHaveBeenCalledWith(expect.objectContaining({
+      endpoint: REMOTE.productionEndpoint,
+    }));
   });
 
   it("blocks promotion after preview smoke failure and always cleans secret material", async () => {
@@ -288,6 +336,60 @@ describe("ManagedMcpDeployment transaction", () => {
     expect(deps.receipts.write).toHaveBeenCalledWith({ ...RECEIPT, sessionRevision: 6 });
   });
 
+  it("promotes then rolls back an update when Durable Object preview URLs are unavailable", async () => {
+    const deps = dependencies();
+    vi.mocked(deps.wrangler.uploadCandidate).mockResolvedValueOnce({
+      versionId: "version-next",
+      previewEndpoint: null,
+      productionEndpoint: REMOTE.productionEndpoint,
+      deploymentId: REMOTE.deploymentId,
+    });
+    vi.mocked(deps.worker.runSmoke)
+      .mockRejectedValueOnce(new Error("production failed"))
+      .mockResolvedValueOnce({ moodleUser: "Alice Example" });
+    vi.mocked(deps.worker.putSession)
+      .mockResolvedValueOnce({ revision: 5 })
+      .mockResolvedValueOnce({ revision: 6 });
+    const manager = new ManagedMcpDeployment(deps);
+    const result = await consumeFailure(manager.apply(await manager.plan(INTENT)));
+
+    expect(result.error).toMatchObject({ code: "PRODUCTION_VALIDATION_FAILED_RESTORED" });
+    expect(deps.wrangler.promote).toHaveBeenCalledWith(expect.objectContaining({ versionId: "version-next" }));
+    expect(deps.wrangler.restoreProduction).toHaveBeenCalledWith({
+      accountId: INTENT.accountId,
+      workerName: INTENT.workerName,
+      previousVersionId: REMOTE.productionVersionId,
+    });
+    expect(deps.worker.runSmoke).toHaveBeenCalledTimes(2);
+  });
+
+  it("restores the previous version when post-promotion session upload fails", async () => {
+    const deps = dependencies();
+    vi.mocked(deps.createToken).mockReturnValueOnce("mcp-next").mockReturnValueOnce("sync-next");
+    vi.mocked(deps.wrangler.uploadCandidate).mockResolvedValueOnce({
+      versionId: "version-next",
+      previewEndpoint: null,
+      productionEndpoint: REMOTE.productionEndpoint,
+      deploymentId: REMOTE.deploymentId,
+    });
+    vi.mocked(deps.worker.putSession).mockRejectedValueOnce(new Error("session upload failed"));
+    const manager = new ManagedMcpDeployment(deps);
+    const result = await consumeFailure(manager.apply(await manager.plan({ ...INTENT, rotateToken: true })));
+
+    expect(result.error).toMatchObject({ code: "DEPLOYMENT_FAILED" });
+    expect(deps.wrangler.restoreProduction).toHaveBeenCalledWith({
+      accountId: INTENT.accountId,
+      workerName: INTENT.workerName,
+      previousVersionId: REMOTE.productionVersionId,
+    });
+    expect(deps.credentials.write).toHaveBeenLastCalledWith(INTENT.profile, {
+      mcpAccessToken: "mcp-current",
+      sessionSyncToken: "sync-current",
+      sessionEncryptionKey: "encryption-current",
+    });
+    expect(deps.worker.runSmoke).not.toHaveBeenCalled();
+  });
+
   it("reconciles an unchanged deployment without uploading or promoting another version", async () => {
     const deps = dependencies({
       remote: { ...REMOTE, releaseDigest: INTENT.releaseDigest },
@@ -297,6 +399,7 @@ describe("ManagedMcpDeployment transaction", () => {
     await consume(manager.apply(await manager.plan(INTENT)));
 
     expect(deps.wrangler.uploadSecrets).not.toHaveBeenCalled();
+    expect(deps.wrangler.initializeWorker).not.toHaveBeenCalled();
     expect(deps.wrangler.uploadCandidate).not.toHaveBeenCalled();
     expect(deps.wrangler.promote).not.toHaveBeenCalled();
     expect(deps.worker.putSession).toHaveBeenCalledWith(expect.objectContaining({ endpoint: REMOTE.productionEndpoint }));
@@ -336,6 +439,22 @@ describe("ManagedMcpDeployment transaction", () => {
       sessionEncryptionKey: "encryption-current",
     });
     expect(deps.wrangler.uploadCandidate).not.toHaveBeenCalled();
+  });
+
+  it("removes a newly initialized Worker when its first deployment fails", async () => {
+    const deps = dependencies({ remote: null, receipt: null });
+    vi.mocked(deps.wrangler.uploadCandidate).mockRejectedValueOnce(new Error("version upload failed"));
+    const manager = new ManagedMcpDeployment(deps);
+    const result = await consumeFailure(manager.apply(await manager.plan(INTENT)));
+
+    expect(result.error).toMatchObject({ code: "DEPLOYMENT_FAILED" });
+    expect(deps.wrangler.removeWorker).toHaveBeenCalledWith({
+      accountId: INTENT.accountId,
+      workerName: INTENT.workerName,
+      deploymentId: `moodle-cli:${INTENT.accountId}:${INTENT.workerName}`,
+    });
+    expect(deps.credentials.delete).toHaveBeenCalledWith(INTENT.profile);
+    expect(deps.receipts.delete).toHaveBeenCalledWith(INTENT.profile);
   });
 
   it("records the live release before a local integration reports failure", async () => {

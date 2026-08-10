@@ -194,7 +194,7 @@ export class MoodleClientCore {
     const resolvedOptions: MoodleClientCoreOptions = typeof options === "string"
       ? { cookie: { name: "MoodleSession", value: options } }
       : options;
-    this.fetchImpl = resolvedOptions.fetchImpl ?? fetch;
+    this.fetchImpl = resolvedOptions.fetchImpl ?? ((input, init) => fetch(input, init));
     this.cookie = resolvedOptions.cookie;
     this.sesskey = resolvedOptions.pageContext?.sesskey ?? resolvedOptions.sesskey ?? null;
     this.userid = resolvedOptions.pageContext?.user_info.userid ?? resolvedOptions.userid ?? null;

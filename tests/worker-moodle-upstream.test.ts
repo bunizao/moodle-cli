@@ -3,6 +3,27 @@ import { FetchMoodleSessionUpstream } from "../src/worker/index.js";
 const ORIGIN = "https://lms.example.edu";
 
 describe("Worker Moodle session upstream", () => {
+  it("calls the Cloudflare global fetch without binding a receiver", async () => {
+    const originalFetch = globalThis.fetch;
+    const bindingSensitiveFetch = vi.fn(function (this: unknown) {
+      if (this !== undefined) throw new Error("Illegal invocation");
+      return Promise.resolve(new Response('<script>window.M = {"sesskey":"sess-123","userid":42}</script>'));
+    });
+    vi.stubGlobal("fetch", bindingSensitiveFetch);
+    try {
+      const upstream = new FetchMoodleSessionUpstream(ORIGIN);
+      await expect(upstream.validate({
+        moodleOrigin: ORIGIN,
+        cookieName: "MoodleSession",
+        cookieValue: "candidate-cookie",
+        expectedRevision: 0,
+      })).resolves.toMatchObject({ valid: true, sesskey: "sess-123" });
+      expect(bindingSensitiveFetch).toHaveBeenCalledOnce();
+    } finally {
+      vi.stubGlobal("fetch", originalFetch);
+    }
+  });
+
   it("validates only against the configured Moodle origin and captures cookie rotation", async () => {
     const fetchImpl = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
       expect(String(url)).toBe(`${ORIGIN}/my/`);
