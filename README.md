@@ -8,25 +8,15 @@ Check Moodle deadlines, grades, course files, and forum discussions from your te
 [![Bun](https://img.shields.io/badge/Bun-supported-fbf0df?logo=bun&logoColor=black)](https://bun.sh/)
 [![MIT License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-## Start with a coding agent
+## Start with your agent
 
-You do not need to learn terminal setup first. Paste the prompt below into Codex, Claude Code, or ChatGPT with terminal access. Replace one line with any Moodle URL from your browser, including a dashboard, course, activity, or login page.
+Paste this into Codex, Claude Code, or ChatGPT with terminal access:
 
 ```text
-Set up moodle-cli for me on this computer and verify that it works.
-
-My university Moodle URL:
-<PASTE A MOODLE URL HERE>
-
-1. Check whether Node.js 22+ or Bun is available. Install moodle-cli with npm or Bun. If this computer only has Bun, use bunx --bun moodle-cli as the command prefix for the remaining steps.
-2. Resolve my URL to the final Moodle site origin in the form https://host. Remove paths, query parameters, and fragments, and follow redirects if the hostname changes. Verify that the result is a Moodle site, then save it as base_url in ~/.config/moodle-cli/config.yaml. Preserve any settings already in that file.
-3. Run moodle auth login. If Moodle opens a browser, wait while I sign in. Do not ask me to copy a cookie, sesskey, or Moodle API token.
-4. Verify the setup with moodle user --json and moodle overview --json. Fix configuration or authentication errors before finishing.
-5. Run moodle skills add to install the Moodle agent skill. If this computer only has Bun, run bunx --bun skills add https://github.com/bunizao/moodle-cli instead.
-6. Tell me what is due in the next 14 days and suggest three useful Moodle tasks I can ask you to do next.
+Can you use https://github.com/bunizao/moodle-cli/blob/main/ONBOARDING.md to help me set up moodle-cli?
 ```
 
-The agent handles URL cleanup, configuration, sign-in checks, and the first useful query. Your Moodle session stays on your computer in browser storage and the CLI's local cache.
+The agent asks for your university's Moodle URL and handles the rest through conversation. You can paste a dashboard, course, activity, or login URL without cleaning it first. After local setup, the agent asks about Cloudflare and can deploy a private remote MCP server for web AI clients that support custom MCP connections. Your Moodle session stays on your computer in browser storage and the CLI's local cache.
 
 ## Install
 
