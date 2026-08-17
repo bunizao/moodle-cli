@@ -229,11 +229,14 @@ describe("forum read paths", () => {
 
     const output = formatForumSearchHits([hit]);
 
-    expect(output).toContain("Post");
-    expect(output).toContain("9101");
+    expect(output).toMatch(/│ Po │/u);
+    expect(output).toMatch(/│ st │/u);
+    expect(output).toMatch(/│ 91 │/u);
+    expect(output).toMatch(/│ 01 │/u);
     expect(output).toContain("Alice");
     expect(output).toContain("Example");
-    expect(output).toContain("https:/");
+    expect(output).toContain("https://");
+    expect(output).toContain("x/1");
   });
 
   it("keeps empty forum results in bordered tables", () => {
@@ -242,7 +245,7 @@ describe("forum read paths", () => {
       formatForumActivities([]),
       formatForumSearchHits([]),
     ]) {
-      expect(output).toContain("┏");
+      expect(output).toContain("┌");
     }
   });
 

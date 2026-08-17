@@ -22,7 +22,7 @@ describe("terminal output", () => {
     }]);
 
     expect(output).toContain("Todo");
-    expect(output).toContain("┏");
+    expect(output).toContain("┌");
     expect(output).toContain("Assignment 1");
     expect(output).toMatch(/\d{4}-\d{2}-\d{2} \d{2}:\d{2}/u);
     expect(output).not.toContain("1787320500");
@@ -30,7 +30,7 @@ describe("terminal output", () => {
 
   it("wraps long cells to the requested terminal width", () => {
     const output = renderTerminalTable(
-      [{ label: "ID" }, { label: "Name", minWidth: 12 }],
+      [{ label: "ID" }, { label: "Name" }],
       [["1", "A deliberately long activity name that needs wrapping"]],
       { title: "Activities", width: 40 },
     );
@@ -43,7 +43,7 @@ describe("terminal output", () => {
     const output = formatTodo([]);
 
     expect(output).toContain("Todo");
-    expect(output).toContain("┏");
+    expect(output).toContain("┌");
     expect(output).toContain("No upcoming items");
   });
 

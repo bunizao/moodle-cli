@@ -31,9 +31,9 @@ export function formatUser(user: UserInfo): string {
 export function formatCourses(courses: Course[]): string {
   return renderTerminalTable(
     [
-      { label: "ID", maxWidth: 10 },
-      { label: "Short Name", maxWidth: 24 },
-      { label: "Full Name", minWidth: 24 },
+      { label: "ID" },
+      { label: "Short Name" },
+      { label: "Full Name" },
     ],
     courses.map((course) => [String(course.id), course.shortname, course.fullname]),
     { title: "Enrolled Units" },
@@ -63,9 +63,9 @@ export function formatActivityList(value: Section[] | Activity[]): string {
     : (value as Activity[]);
   return renderTerminalTable(
     [
-      { label: "ID", maxWidth: 10 },
-      { label: "Type", maxWidth: 16 },
-      { label: "Name", minWidth: 28 },
+      { label: "ID" },
+      { label: "Type" },
+      { label: "Name" },
     ],
     activities.map((activity) => [String(activity.id), activity.modname, activity.name]),
     { title: "Activities" },
@@ -74,11 +74,11 @@ export function formatActivityList(value: Section[] | Activity[]): string {
 
 export function formatTodo(items: TodoItem[]): string {
   const columns = [
-    { label: "Due", maxWidth: 20, minWidth: 16 },
-    { label: "Unit", maxWidth: 30, minWidth: 14 },
-    { label: "Activity", maxWidth: 52, minWidth: 20 },
-    { label: "Type", maxWidth: 12 },
-    { label: "Action", maxWidth: 20 },
+    { label: "Due" },
+    { label: "Unit" },
+    { label: "Activity" },
+    { label: "Type" },
+    { label: "Action" },
   ] as const;
   const rows = items.length ? items.map((item) => [
     `${item.overdue ? "Overdue · " : ""}${formatTimestamp(item.due_at)}`,
@@ -100,8 +100,8 @@ export function formatAlerts(alerts: AlertSummary): string {
   if (!alerts.notifications.length) return summary;
   const notifications = renderTerminalTable(
     [
-      { label: "When", maxWidth: 20 },
-      { label: "Subject", minWidth: 32 },
+      { label: "When" },
+      { label: "Subject" },
     ],
     alerts.notifications.map((notification) => [
       notification.created_pretty || formatTimestamp(notification.created_at),
@@ -115,11 +115,11 @@ export function formatAlerts(alerts: AlertSummary): string {
 export function formatGrades(grades: CourseGrades): string {
   return renderTerminalTable(
     [
-      { label: "Item", minWidth: 24 },
-      { label: "Grade", maxWidth: 12 },
-      { label: "Range", maxWidth: 14 },
-      { label: "Percent", maxWidth: 12 },
-      { label: "Feedback", maxWidth: 40 },
+      { label: "Item" },
+      { label: "Grade" },
+      { label: "Range" },
+      { label: "Percent" },
+      { label: "Feedback" },
     ],
     grades.items.map((item) => [item.name, item.grade, item.range, item.percentage, item.feedback]),
     { title: grades.course_name ? `Grades · ${grades.course_name}` : "Grades" },
@@ -197,10 +197,10 @@ export function formatForumDiscussion(
 export function formatForumDiscussionRefs(forumCmid: number, refs: ForumDiscussionRef[]): string {
   return renderTerminalTable(
     [
-      { label: "ID", maxWidth: 10 },
-      { label: "Subject", minWidth: 28 },
-      { label: "Group", maxWidth: 20 },
-      { label: "URL", maxWidth: 44 },
+      { label: "ID" },
+      { label: "Subject" },
+      { label: "Group" },
+      { label: "URL" },
     ],
     refs.length
       ? refs.map((ref) => [String(ref.id), ref.subject, ref.group_name, ref.url])
@@ -212,10 +212,10 @@ export function formatForumDiscussionRefs(forumCmid: number, refs: ForumDiscussi
 export function formatForumActivities(forums: ForumActivityRef[]): string {
   return renderTerminalTable(
     [
-      { label: "ID", maxWidth: 10 },
-      { label: "Forum", minWidth: 24 },
-      { label: "Unit", minWidth: 20 },
-      { label: "URL", maxWidth: 44 },
+      { label: "ID" },
+      { label: "Forum" },
+      { label: "Unit" },
+      { label: "URL" },
     ],
     forums.length
       ? forums.map((forum) => [String(forum.id), forum.name, forum.course_name, forum.url])
@@ -227,15 +227,15 @@ export function formatForumActivities(forums: ForumActivityRef[]): string {
 export function formatForumSearchHits(hits: ForumSearchHit[]): string {
   return renderTerminalTable(
     [
-      { label: "Discussion", maxWidth: 12 },
-      { label: "Post", maxWidth: 10 },
-      { label: "Unit", maxWidth: 22 },
-      { label: "Forum", maxWidth: 20 },
-      { label: "Subject", minWidth: 20 },
-      { label: "Author", maxWidth: 18 },
-      { label: "Match", maxWidth: 12 },
-      { label: "Snippet", maxWidth: 42 },
-      { label: "URL", maxWidth: 40 },
+      { label: "Discussion" },
+      { label: "Post" },
+      { label: "Unit" },
+      { label: "Forum" },
+      { label: "Subject" },
+      { label: "Author" },
+      { label: "Match" },
+      { label: "Snippet" },
+      { label: "URL" },
     ],
     hits.length ? hits.map((hit) => [
       String(hit.discussion_id),
@@ -255,12 +255,12 @@ export function formatForumSearchHits(hits: ForumSearchHit[]): string {
 export function formatForumCheckResults(forumCmid: number, rows: ForumCheckResult[]): string {
   return renderTerminalTable(
     [
-      { label: "Discussion", maxWidth: 12 },
-      { label: "OK", maxWidth: 5 },
-      { label: "Posts", maxWidth: 7 },
-      { label: "Images", maxWidth: 8 },
-      { label: "Subject", minWidth: 24 },
-      { label: "Error", maxWidth: 32 },
+      { label: "Discussion" },
+      { label: "OK" },
+      { label: "Posts" },
+      { label: "Images" },
+      { label: "Subject" },
+      { label: "Error" },
     ],
     rows.map((row) => [
       String(row.discussion_id),
