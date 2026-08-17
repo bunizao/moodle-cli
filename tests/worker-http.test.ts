@@ -41,7 +41,7 @@ describe("Cloudflare Worker HTTP transport", () => {
     expect(await response.json()).toEqual({
       status: "pass",
       serviceId: "moodle-mcp",
-      version: "0.7.0-alpha.3",
+      version: "0.7.0-alpha.4",
     });
     expect(mcpServer.handle).not.toHaveBeenCalled();
     expect(broker.ready).not.toHaveBeenCalled();
