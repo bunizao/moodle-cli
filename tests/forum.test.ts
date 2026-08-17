@@ -4,8 +4,13 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { MoodleAPIError } from "../src/errors.js";
 import { ForumModule, filterDiscussionToPost, parseDiscussionReference, parseForumReference } from "../src/forum.js";
-import { formatForumDiscussion } from "../src/formatters.js";
-import type { Course, ForumPost, Section } from "../src/models.js";
+import {
+  formatForumActivities,
+  formatForumDiscussion,
+  formatForumDiscussionRefs,
+  formatForumSearchHits,
+} from "../src/formatters.js";
+import type { Course, ForumPost, ForumSearchHit, Section } from "../src/models.js";
 import { parseForumDiscussionHtml, parseForumViewCmidFromDiscussionHtml } from "../src/scraper.js";
 
 const BASE_URL = "https://school.example.edu";
@@ -161,6 +166,84 @@ describe("forum read paths", () => {
 
     expect(formatForumDiscussion(discussion)).toContain("Preview: full body with deadline details");
     expect(formatForumDiscussion(discussion, { showBody: true })).toContain("full body with deadline details");
+  });
+
+  it("formats fallback discussion timestamps for terminal readers", () => {
+    const discussion = {
+      id: 7001,
+      subject: "Exam deadline questions",
+      course_id: 101,
+      forum_id: 501,
+      group_id: 0,
+      group_name: "",
+      url: `${BASE_URL}/mod/forum/discuss.php?d=7001`,
+      posts: [forumPost({ id: 9101, discussion_id: 7001, time_created: 1_787_320_500 })],
+    };
+
+    const output = formatForumDiscussion(discussion);
+
+    expect(output).toMatch(/When: \d{4}-\d{2}-\d{2} \d{2}:\d{2}/u);
+    expect(output).not.toContain("1787320500");
+  });
+
+  it("removes terminal control characters from discussion text", () => {
+    const discussion = {
+      id: 7001,
+      subject: "Exam\u001b[31m deadline",
+      course_id: 101,
+      forum_id: 501,
+      group_id: 0,
+      group_name: "",
+      url: `${BASE_URL}/mod/forum/discuss.php?d=7001`,
+      posts: [forumPost({
+        id: 9101,
+        discussion_id: 7001,
+        author: { id: 12, fullname: "Alice\u0000 Example", profile_url: "", profile_image_url: "" },
+      })],
+    };
+
+    const output = formatForumDiscussion(discussion);
+
+    expect(output).not.toContain("\u001b");
+    expect(output).not.toContain("\u0000");
+  });
+
+  it("includes post IDs and URLs in forum search tables", () => {
+    const hit: ForumSearchHit = {
+      course_id: 101,
+      course_name: "Mathematics 101",
+      forum_id: 501,
+      forum_name: "General Discussion",
+      group_id: 0,
+      group_name: "",
+      discussion_id: 7001,
+      discussion_subject: "Exam deadline questions",
+      post_id: 9101,
+      author_name: "Alice Example",
+      matched_in: "post",
+      snippet: "deadline details",
+      unread: true,
+      time_created: 1_787_320_500,
+      url: "https://x/1",
+    };
+
+    const output = formatForumSearchHits([hit]);
+
+    expect(output).toContain("Post");
+    expect(output).toContain("9101");
+    expect(output).toContain("Alice");
+    expect(output).toContain("Example");
+    expect(output).toContain("https:/");
+  });
+
+  it("keeps empty forum results in bordered tables", () => {
+    for (const output of [
+      formatForumDiscussionRefs(501, []),
+      formatForumActivities([]),
+      formatForumSearchHits([]),
+    ]) {
+      expect(output).toContain("┏");
+    }
   });
 
   it("resolves forum IDs from view and discussion URLs", async () => {

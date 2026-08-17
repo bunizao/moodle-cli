@@ -15,96 +15,133 @@ import type {
 } from "./models.js";
 import type { DownloadReceipt } from "./download.js";
 import type { AuthStatus, KeepaliveRunResult } from "./keepalive.js";
+import { renderKeyValueTable, renderTerminalTable, sanitizeTerminalText } from "./terminal-table.js";
 
 export function formatUser(user: UserInfo): string {
-  return formatKeyValues([
+  return renderKeyValueTable([
     ["User", user.fullname],
     ["Username", user.username],
     ["User ID", String(user.userid)],
     ["Site", user.sitename],
     ["URL", user.siteurl],
     ["Language", user.lang ?? ""],
-  ]);
+  ], { title: "User" });
 }
 
 export function formatCourses(courses: Course[]): string {
-  return formatColumns([["ID", "Short Name", "Full Name"], ...courses.map((course) => [String(course.id), course.shortname, course.fullname])]);
+  return renderTerminalTable(
+    [
+      { label: "ID", maxWidth: 10 },
+      { label: "Short Name", maxWidth: 24 },
+      { label: "Full Name", minWidth: 24 },
+    ],
+    courses.map((course) => [String(course.id), course.shortname, course.fullname]),
+    { title: "Enrolled Units" },
+  );
 }
 
 export function formatCourseSections(sections: Section[]): string {
   const lines = ["Course"];
-  for (const section of sections) {
-    lines.push(`  ${section.name || `Section ${section.section}`}${section.visible ? "" : " (hidden)"}`);
+  for (const [sectionIndex, section] of sections.entries()) {
+    const sectionLast = sectionIndex === sections.length - 1;
+    lines.push(`${sectionLast ? "└──" : "├──"} ${section.name || `Section ${section.section}`}${section.visible ? "" : " (hidden)"}`);
     if (!section.activities.length) {
-      lines.push("    No activities");
+      lines.push(`${sectionLast ? "    " : "│   "}└── No activities`);
       continue;
     }
-    for (const activity of section.activities) {
-      lines.push(`    ${activity.name}${activity.visible ? "" : " (hidden)"} (${activity.modname})`);
+    for (const [activityIndex, activity] of section.activities.entries()) {
+      const activityPrefix = activityIndex === section.activities.length - 1 ? "└──" : "├──";
+      lines.push(`${sectionLast ? "    " : "│   "}${activityPrefix} ${activity.name}${activity.visible ? "" : " (hidden)"} (${activity.modname})`);
     }
   }
-  return lines.join("\n");
+  return sanitizeTerminalText(lines.join("\n"));
 }
 
 export function formatActivityList(value: Section[] | Activity[]): string {
   const activities = Array.isArray(value) && value[0] && "activities" in value[0]
     ? (value as Section[]).flatMap((section) => section.activities)
     : (value as Activity[]);
-  return formatColumns([["ID", "Type", "Name"], ...activities.map((activity) => [String(activity.id), activity.modname, activity.name])]);
+  return renderTerminalTable(
+    [
+      { label: "ID", maxWidth: 10 },
+      { label: "Type", maxWidth: 16 },
+      { label: "Name", minWidth: 28 },
+    ],
+    activities.map((activity) => [String(activity.id), activity.modname, activity.name]),
+    { title: "Activities" },
+  );
 }
 
 export function formatTodo(items: TodoItem[]): string {
-  if (!items.length) {
-    return "No upcoming items";
-  }
-  return formatColumns([
-    ["Due", "Course", "Activity", "Type", "Action"],
-    ...items.map((item) => [
-      item.due_at ? String(item.due_at) : "-",
-      item.course_name,
-      item.activity_name || item.name,
-      item.modname || item.event_type,
-      item.actionable ? item.action_name : "",
-    ]),
-  ]);
+  const columns = [
+    { label: "Due", maxWidth: 20, minWidth: 16 },
+    { label: "Unit", maxWidth: 30, minWidth: 14 },
+    { label: "Activity", maxWidth: 52, minWidth: 20 },
+    { label: "Type", maxWidth: 12 },
+    { label: "Action", maxWidth: 20 },
+  ] as const;
+  const rows = items.length ? items.map((item) => [
+    `${item.overdue ? "Overdue · " : ""}${formatTimestamp(item.due_at)}`,
+    `${item.course_name}${item.course_progress === undefined ? "" : ` (${item.course_progress}%)`}`,
+    item.activity_name || item.name,
+    item.modname || item.event_type,
+    item.actionable ? item.action_name : "",
+  ]) : [["No upcoming items", "", "", "", ""]];
+  return renderTerminalTable(columns, rows, { title: "Todo" });
 }
 
 export function formatAlerts(alerts: AlertSummary): string {
-  const lines = [
-    `Notifications: ${alerts.notification_count}`,
-    `Unread notifications: ${alerts.unread_notification_count}`,
-    `Direct messages: ${alerts.direct_message_count}`,
-    `Unread direct messages: ${alerts.unread_direct_message_count}`,
-  ];
-  for (const notification of alerts.notifications) {
-    lines.push(`${notification.created_pretty || notification.created_at} ${notification.short_subject || notification.subject}`);
-  }
-  return lines.join("\n");
+  const summary = renderKeyValueTable([
+    ["Notifications", String(alerts.notification_count)],
+    ["Unread notifications", String(alerts.unread_notification_count)],
+    ["Direct messages", String(alerts.direct_message_count)],
+    ["Unread direct messages", String(alerts.unread_direct_message_count)],
+  ], { title: "Alerts" });
+  if (!alerts.notifications.length) return summary;
+  const notifications = renderTerminalTable(
+    [
+      { label: "When", maxWidth: 20 },
+      { label: "Subject", minWidth: 32 },
+    ],
+    alerts.notifications.map((notification) => [
+      notification.created_pretty || formatTimestamp(notification.created_at),
+      notification.short_subject || notification.subject,
+    ]),
+    { title: "Notifications" },
+  );
+  return `${summary}\n\n${notifications}`;
 }
 
 export function formatGrades(grades: CourseGrades): string {
-  return formatColumns([
-    ["Item", "Grade", "Range", "Percent", "Feedback"],
-    ...grades.items.map((item) => [item.name, item.grade, item.range, item.percentage, item.feedback]),
-  ]);
+  return renderTerminalTable(
+    [
+      { label: "Item", minWidth: 24 },
+      { label: "Grade", maxWidth: 12 },
+      { label: "Range", maxWidth: 14 },
+      { label: "Percent", maxWidth: 12 },
+      { label: "Feedback", maxWidth: 40 },
+    ],
+    grades.items.map((item) => [item.name, item.grade, item.range, item.percentage, item.feedback]),
+    { title: grades.course_name ? `Grades · ${grades.course_name}` : "Grades" },
+  );
 }
 
 export function formatActivityDetail(activity: ActivityDetail): string {
   const rows = Object.entries(activity)
     .filter(([, value]) => value !== "" && value !== undefined && !(Array.isArray(value) && value.length === 0))
     .map(([key, value]) => [key, Array.isArray(value) ? value.join("\n") : String(value)] as [string, string]);
-  return formatKeyValues(rows);
+  return renderKeyValueTable(rows, { title: "Activity" });
 }
 
 export function formatDownloadReceipt(receipt: DownloadReceipt): string {
-  return formatKeyValues([
+  return renderKeyValueTable([
     ["File", receipt.file_path],
     ["Filename", receipt.filename],
     ["Bytes", String(receipt.bytes_written)],
     ["Content type", receipt.content_type],
     ["Source", receipt.source_url],
     ["Final URL", receipt.final_url],
-  ]);
+  ], { title: "Download" });
 }
 
 export function formatForumDiscussion(
@@ -127,14 +164,14 @@ export function formatForumDiscussion(
 
   if (!discussion.posts.length) {
     lines.push("", "No posts");
-    return lines.join("\n");
+    return sanitizeTerminalText(lines.join("\n"));
   }
 
   for (const post of discussion.posts) {
     const marker = options.highlightPostId === post.id ? "*" : "-";
     lines.push("", `${marker} Post ${post.id}`);
     lines.push(`  Author: ${post.author.fullname || "-"}`);
-    lines.push(`  When: ${post.created_pretty || (post.time_created ? String(post.time_created) : "-")}`);
+    lines.push(`  When: ${post.created_pretty || formatTimestamp(post.time_created)}`);
     if (post.subject) {
       lines.push(`  Subject: ${post.subject}`);
     }
@@ -154,75 +191,98 @@ export function formatForumDiscussion(
     }
   }
 
-  return lines.join("\n");
+  return sanitizeTerminalText(lines.join("\n"));
 }
 
 export function formatForumDiscussionRefs(forumCmid: number, refs: ForumDiscussionRef[]): string {
-  const lines = [`Forum ${forumCmid}: Discussions`];
-  if (!refs.length) {
-    return `${lines[0]}\nNo discussions`;
-  }
-  for (const ref of refs) {
-    lines.push([ref.id, ref.subject, ref.group_name, ref.url].filter(Boolean).join(" | "));
-  }
-  return lines.join("\n");
+  return renderTerminalTable(
+    [
+      { label: "ID", maxWidth: 10 },
+      { label: "Subject", minWidth: 28 },
+      { label: "Group", maxWidth: 20 },
+      { label: "URL", maxWidth: 44 },
+    ],
+    refs.length
+      ? refs.map((ref) => [String(ref.id), ref.subject, ref.group_name, ref.url])
+      : [["No discussions", "", "", ""]],
+    { title: `Forum ${forumCmid} · Discussions` },
+  );
 }
 
 export function formatForumActivities(forums: ForumActivityRef[]): string {
-  if (!forums.length) {
-    return "Forums\nNo forums";
-  }
-  return [
-    "Forums",
-    ...forums.map((forum) => [forum.id, forum.name, forum.course_name, forum.course_id || "", forum.url].filter(Boolean).join(" | ")),
-  ].join("\n");
+  return renderTerminalTable(
+    [
+      { label: "ID", maxWidth: 10 },
+      { label: "Forum", minWidth: 24 },
+      { label: "Unit", minWidth: 20 },
+      { label: "URL", maxWidth: 44 },
+    ],
+    forums.length
+      ? forums.map((forum) => [String(forum.id), forum.name, forum.course_name, forum.url])
+      : [["No forums", "", "", ""]],
+    { title: "Forums" },
+  );
 }
 
 export function formatForumSearchHits(hits: ForumSearchHit[]): string {
-  if (!hits.length) {
-    return "Forum Search\nNo matches";
-  }
-  return [
-    "Forum Search",
-    ...hits.map((hit) =>
-      [
-        hit.course_name,
-        hit.forum_name,
-        hit.discussion_subject,
-        hit.discussion_id || "",
-        hit.post_id || "",
-        hit.matched_in,
-        hit.author_name,
-        hit.snippet || hit.discussion_subject,
-        hit.url,
-      ]
-        .filter(Boolean)
-        .join(" | "),
-    ),
-  ].join("\n");
+  return renderTerminalTable(
+    [
+      { label: "Discussion", maxWidth: 12 },
+      { label: "Post", maxWidth: 10 },
+      { label: "Unit", maxWidth: 22 },
+      { label: "Forum", maxWidth: 20 },
+      { label: "Subject", minWidth: 20 },
+      { label: "Author", maxWidth: 18 },
+      { label: "Match", maxWidth: 12 },
+      { label: "Snippet", maxWidth: 42 },
+      { label: "URL", maxWidth: 40 },
+    ],
+    hits.length ? hits.map((hit) => [
+      String(hit.discussion_id),
+      String(hit.post_id),
+      hit.course_name,
+      hit.forum_name,
+      hit.discussion_subject,
+      hit.author_name,
+      hit.matched_in,
+      hit.snippet || hit.discussion_subject,
+      hit.url,
+    ]) : [["No matches", "", "", "", "", "", "", "", ""]],
+    { title: "Forum Search" },
+  );
 }
 
 export function formatForumCheckResults(forumCmid: number, rows: ForumCheckResult[]): string {
-  const lines = [`Forum ${forumCmid}: Discussion Check (first ${rows.length})`];
-  for (const row of rows) {
-    lines.push(
-      row.ok
-        ? `${row.discussion_id} | Yes | ${row.posts ?? ""} | ${row.images ?? ""} | ${row.subject}`
-        : `${row.discussion_id} | No | ${row.subject} | ${row.error ?? ""}`,
-    );
-  }
-  return lines.join("\n");
+  return renderTerminalTable(
+    [
+      { label: "Discussion", maxWidth: 12 },
+      { label: "OK", maxWidth: 5 },
+      { label: "Posts", maxWidth: 7 },
+      { label: "Images", maxWidth: 8 },
+      { label: "Subject", minWidth: 24 },
+      { label: "Error", maxWidth: 32 },
+    ],
+    rows.map((row) => [
+      String(row.discussion_id),
+      row.ok ? "Yes" : "No",
+      row.posts === undefined ? "" : String(row.posts),
+      row.images === undefined ? "" : String(row.images),
+      row.subject,
+      row.error ?? "",
+    ]),
+    { title: `Forum ${forumCmid} · Discussion Check` },
+  );
 }
 
 export function formatAuthStatus(status: AuthStatus): string {
-  return formatKeyValues([
+  return renderKeyValueTable([
     ["Site", status.base_url],
     ["Cached session", status.session_cached ? "yes" : "no"],
     ["Cache age", status.cache_age_minutes === null ? "" : `${status.cache_age_minutes} min`],
     ["Session alive", status.session_alive === null ? (status.session_cached ? "unknown" : "") : status.session_alive ? "yes" : "no"],
     ["Server timeout in", formatDuration(status.session_time_remaining_seconds)],
     ["Keepalive agent", status.keepalive_installed ? `installed (${status.keepalive_plist_path})` : "not installed"],
-  ]);
+  ], { title: "Authentication" });
 }
 
 export function formatKeepaliveResult(result: KeepaliveRunResult): string {
@@ -259,16 +319,9 @@ function preview(value: string, maxLen = 100): string {
   return cleaned.length <= maxLen ? cleaned : `${cleaned.slice(0, maxLen - 1)}…`;
 }
 
-function formatKeyValues(rows: Array<[string, string]>): string {
-  const present = rows.filter(([, value]) => value);
-  const width = Math.max(0, ...present.map(([key]) => key.length));
-  return present.map(([key, value]) => `${key.padEnd(width)}  ${value}`).join("\n");
-}
-
-function formatColumns(rows: string[][]): string {
-  if (!rows.length) {
-    return "";
-  }
-  const widths = rows[0].map((_, index) => Math.max(...rows.map((row) => (row[index] ?? "").length)));
-  return rows.map((row) => row.map((cell, index) => cell.padEnd(widths[index])).join("  ").trimEnd()).join("\n");
+function formatTimestamp(value: number): string {
+  if (value <= 0) return "-";
+  const date = new Date(value * 1_000);
+  const pad = (part: number): string => String(part).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }
