@@ -18,6 +18,41 @@ import type {
 } from "./models.js";
 import { cleanText, htmlToStructuredContent, resolveUrl } from "./html-utils.js";
 
+export interface MoodlePageError {
+  message: string;
+  code?: string;
+}
+
+export function parseMoodleErrorHtml(html: string): MoodlePageError | null {
+  const root = parse(html);
+  const messageNode = first(root, [
+    ".errormessage",
+    ".alert-danger .alert-message",
+    "[data-region='error-message']",
+    ".alert-danger[role='alert']",
+    ".alert-danger",
+  ]);
+  if (!messageNode) {
+    return null;
+  }
+
+  const messageRoot = parse(messageNode.toString());
+  for (const unwanted of messageRoot.querySelectorAll(
+    "button, .close, .errorcode, .stacktrace, .debuginfo, .backtrace, a.alert-link, a[href*='/error/']",
+  )) {
+    unwanted.remove();
+  }
+  const message = cleanText(messageRoot.textContent);
+  if (!message) {
+    return null;
+  }
+
+  const errorCodeText = cleanNodeText(root.querySelector(".errorcode"));
+  const errorCode = errorCodeText.match(/^error\s+code\s*:\s*([a-z][a-z0-9_]*)\s*$/iu)?.[1]
+    ?? moodleDocsErrorCode(root);
+  return { message, ...(errorCode ? { code: errorCode } : {}) };
+}
+
 export function parsePageContext(html: string, baseUrl: string): PageContext {
   const root = parse(html);
   const config = parseMoodleConfig(html);
@@ -491,6 +526,17 @@ function selectedGroupName(root: HTMLElement, groupId: number): string {
     }
   }
   return "";
+}
+
+function moodleDocsErrorCode(root: HTMLElement): string | undefined {
+  for (const link of root.querySelectorAll("a[href*='/error/']")) {
+    const href = link.getAttribute("href") ?? "";
+    const code = href.match(/\/error\/[^/]+\/([a-z][a-z0-9_]*)/iu)?.[1];
+    if (code) {
+      return code;
+    }
+  }
+  return undefined;
 }
 
 function cleanNodeText(node: HTMLElement | null | undefined): string {

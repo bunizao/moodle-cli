@@ -66,6 +66,7 @@ import {
   parseFolderHtml,
   parseGradeOverviewRows,
   parseLinkHtml,
+  parseMoodleErrorHtml,
   parsePageContext,
   parsePageHtml,
   parseQuizHtml,
@@ -116,7 +117,7 @@ export class MoodleClientCoreApiError extends MoodleClientCoreError implements M
   constructor(message: string, moodleErrorCode?: string) {
     const auth = isLoginErrorCode(moodleErrorCode);
     const notFound = ["invalidrecord", "invalidcoursemodule"].includes(moodleErrorCode ?? "")
-      || /^HTTP 404\b/.test(message);
+      || /\bHTTP 404\b/.test(message);
     super(
       auth ? "auth" : notFound ? "not_found" : "upstream",
       message,
@@ -645,7 +646,15 @@ export class MoodleClientCore {
       throw this.errors.api("Session expired", "servicerequireslogin");
     }
     if (!response.ok) {
-      throw this.errors.api(`HTTP ${response.status} loading ${safeUrl(url)}`);
+      const context = `HTTP ${response.status} loading ${safeUrl(url)}`;
+      const contentType = response.headers.get("content-type")?.toLowerCase() ?? "";
+      if (contentType.includes("text/html") || contentType.includes("application/xhtml+xml")) {
+        const moodleError = await response.text().then(parseMoodleErrorHtml).catch(() => null);
+        if (moodleError) {
+          throw this.errors.api(`${moodleError.message} (${context})`, moodleError.code);
+        }
+      }
+      throw this.errors.api(context);
     }
     return response;
   }
