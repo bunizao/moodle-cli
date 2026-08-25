@@ -123,5 +123,6 @@ function gateway(): MoodleGateway {
     listForums: async () => [],
     searchForums: async () => [],
     getThread: async () => { throw new Error("not used"); },
+    getFile: async () => { throw new Error("not used"); },
   };
 }

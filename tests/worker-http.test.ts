@@ -156,6 +156,23 @@ describe("Cloudflare Worker HTTP transport", () => {
     expect(mcpServer.handle).not.toHaveBeenCalled();
   });
 
+  it("accepts the pinned candidate preview host", async () => {
+    const env = await workerEnv();
+    env.EXPECTED_HOSTS = [
+      "moodle-mcp.example.workers.dev",
+      "moodle-cli-candidate-moodle-mcp.example.workers.dev",
+    ].join(",");
+    const worker = createWorkerHandler({
+      mcpServer: { handle: vi.fn() },
+      broker: () => createBroker(),
+    });
+    const response = await worker.fetch(new Request(
+      "https://moodle-cli-candidate-moodle-mcp.example.workers.dev/healthz",
+    ), env);
+
+    expect(response.status).toBe(200);
+  });
+
   it("protects readiness with only the session-sync token", async () => {
     const broker = createBroker();
     vi.mocked(broker.ready).mockResolvedValue(
@@ -222,8 +239,103 @@ describe("Cloudflare Worker HTTP transport", () => {
     }), await workerEnv());
 
     expect(response.status).toBe(400);
-    expect(await response.json()).toMatchObject({ code: "MCP_PROTOCOL_METADATA_MISMATCH" });
+    expect(response.headers.get("content-type")).toContain("application/json");
+    expect(await response.json()).toMatchObject({
+      jsonrpc: "2.0",
+      id: 1,
+      error: { code: -32_020, message: "HeaderMismatch" },
+    });
     expect(mcpServer.handle).not.toHaveBeenCalled();
+  });
+
+  it("returns a HeaderMismatch error when the protocol header is missing", async () => {
+    const mcpServer = { handle: vi.fn() };
+    const worker = createWorkerHandler({ mcpServer, broker: () => createBroker() });
+    const response = await worker.fetch(request("/mcp", {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${ACCESS_TOKEN}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ jsonrpc: "2.0", id: "missing-version", method: "tools/list", params: {} }),
+    }), await workerEnv());
+
+    expect(response.status).toBe(400);
+    expect(await response.json()).toMatchObject({
+      id: "missing-version",
+      error: { code: -32_020 },
+    });
+    expect(mcpServer.handle).not.toHaveBeenCalled();
+  });
+
+  it("returns unsupported protocol negotiation as an HTTP 400 JSON-RPC error", async () => {
+    const mcpServer = { handle: vi.fn(async () => ({
+      jsonrpc: "2.0",
+      id: 7,
+      error: {
+        code: -32_022,
+        message: "Unsupported protocol version",
+        data: {
+          supported: ["2026-07-28", "2025-11-25"],
+          requested: "1900-01-01",
+        },
+      },
+    })) };
+    const worker = createWorkerHandler({ mcpServer, broker: () => createBroker() });
+    const response = await worker.fetch(request("/mcp", {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${ACCESS_TOKEN}`,
+        "content-type": "application/json",
+        "mcp-protocol-version": "1900-01-01",
+        "mcp-method": "tools/list",
+      },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 7, method: "tools/list", params: {} }),
+    }), await workerEnv());
+
+    expect(response.status).toBe(400);
+    expect(response.headers.get("content-type")).toContain("application/json");
+    expect(await response.json()).toMatchObject({
+      id: 7,
+      error: {
+        code: -32_022,
+        data: { requested: "1900-01-01", supported: ["2026-07-28", "2025-11-25"] },
+      },
+    });
+  });
+
+  it("accepts legacy remote requests without modern method headers", async () => {
+    const mcpServer = { handle: vi.fn(async () => ({
+      jsonrpc: "2.0",
+      id: 1,
+      result: { protocolVersion: "2025-11-25" },
+    })) };
+    const worker = createWorkerHandler({ mcpServer, broker: () => createBroker() });
+    const response = await worker.fetch(request("/mcp", {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${ACCESS_TOKEN}`,
+        "content-type": "application/json",
+        "mcp-protocol-version": "2025-11-25",
+      },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "initialize",
+        params: {
+          protocolVersion: "2025-11-25",
+          capabilities: {},
+          clientInfo: { name: "legacy-client", version: "1.0.0" },
+        },
+      }),
+    }), await workerEnv());
+
+    expect(response.status).toBe(200);
+    expect(mcpServer.handle).toHaveBeenCalledWith(expect.objectContaining({ method: "initialize" }), {
+      protocolVersion: "2025-11-25",
+      method: undefined,
+      toolName: undefined,
+    });
   });
 
   it("supports request-scoped SSE responses", async () => {

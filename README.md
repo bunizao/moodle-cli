@@ -105,6 +105,8 @@ moodle mcp status
 
 `moodle mcp deploy` validates Moodle access, deploys a Cloudflare Worker, uploads an encrypted Moodle session, verifies readiness, and installs session renewal. The guided [`ONBOARDING.md`](ONBOARDING.md) asks whether you want this after local setup and helps connect your web AI client.
 
+The MCP `get_file` tool accepts a resource activity ID, resource URL, or `pluginfile.php` URL and returns files up to 16 MiB directly as an embedded MCP resource. The Moodle session stays inside the local server or private Worker; clients do not need to fetch an authenticated Moodle URL themselves.
+
 ### Update
 
 ```bash

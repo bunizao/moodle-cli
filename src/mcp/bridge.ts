@@ -72,6 +72,7 @@ export async function bridgeRemoteMcp(options: RemoteMcpBridgeOptions): Promise<
 
     if (response.status === 202 || request.id === undefined) return;
     if (!response.ok) {
+      if (await forwardProtocolNegotiationError(options.output, response, request.id)) return;
       await writeRemoteError(options.output, request.id, response.status);
       return;
     }
@@ -161,6 +162,37 @@ async function writeRemoteError(output: RemoteMcpBridgeOutput, id: JsonRpcId | u
     message: "The remote Moodle MCP server could not complete the request.",
     data: { type: "REMOTE_MCP_ERROR", status },
   }));
+}
+
+async function forwardProtocolNegotiationError(
+  output: RemoteMcpBridgeOutput,
+  response: Response,
+  id: JsonRpcId,
+): Promise<boolean> {
+  if (response.status !== 400 || !response.headers.get("content-type")?.toLowerCase().includes("application/json")) {
+    return false;
+  }
+  try {
+    const payload: unknown = await response.json();
+    if (!isRecord(payload) || payload.jsonrpc !== "2.0" || payload.id !== id || !isRecord(payload.error)) {
+      return false;
+    }
+    const data = isRecord(payload.error.data) ? payload.error.data : undefined;
+    const supported = Array.isArray(data?.supported)
+      ? data.supported.filter((version): version is string => typeof version === "string")
+      : [];
+    if (payload.error.code !== -32_022 || typeof data?.requested !== "string" || supported.length === 0) {
+      return false;
+    }
+    await writeJson(output, jsonRpcFailure(id, {
+      code: -32_022,
+      message: "Unsupported protocol version",
+      data: { supported, requested: data.requested },
+    }));
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 async function writeJson(output: RemoteMcpBridgeOutput, value: unknown): Promise<void> {

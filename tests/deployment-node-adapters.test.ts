@@ -70,6 +70,43 @@ describe("NodeReleaseMaterializer", () => {
     await materializer.cleanup(release);
     await expect(stat(release.artifactDirectory)).rejects.toMatchObject({ code: "ENOENT" });
   });
+
+  it("pins an existing deployment to its production and candidate hosts", async () => {
+    const root = await mkdtemp(join(tmpdir(), "moodle-release-host-test-"));
+    const bundle = join(root, "worker.js");
+    await writeFile(bundle, "export default {};\n");
+    const materializer = new NodeReleaseMaterializer({
+      workerBundlePath: bundle,
+      compatibilityDate: "2026-08-09",
+      temporaryRoot: root,
+    });
+    const release = await materializer.prepare({
+      ...PLAN,
+      operation: "update",
+      existing: {
+        accountId: "account-1",
+        workerName: "moodle-school-mcp",
+        deploymentId: "moodle-cli:account-1:moodle-school-mcp",
+        ownershipTag: "moodle-cli:account-1:moodle-school-mcp",
+        productionEndpoint: "https://moodle-school-mcp.demo.workers.dev",
+        productionVersionId: "version-current",
+        previousHealthyVersionId: "version-previous",
+        releaseDigest: "release-current",
+      },
+    }, {
+      mcpAccessToken: "mcp-raw-token",
+      sessionSyncToken: "sync-raw-token",
+      sessionEncryptionKey: "encryption-raw-key",
+    });
+
+    const config = JSON.parse(await readFile(release.wranglerConfigPath, "utf8")) as {
+      vars: Record<string, string>;
+    };
+    expect(config.vars.EXPECTED_HOSTS).toBe(
+      "moodle-school-mcp.demo.workers.dev,moodle-cli-candidate-moodle-school-mcp.demo.workers.dev",
+    );
+    await materializer.cleanup(release);
+  });
 });
 
 describe("NodeWranglerDeploymentAdapter", () => {
@@ -195,6 +232,9 @@ describe("NodeWranglerDeploymentAdapter", () => {
   });
 
   it("uses a non-versioned deploy to apply first-release migrations", async () => {
+    const root = await mkdtemp(join(tmpdir(), "wrangler-bootstrap-test-"));
+    const configPath = join(root, "wrangler.json");
+    await writeFile(configPath, JSON.stringify({ vars: { MOODLE_ORIGIN: "https://moodle.example.edu" } }));
     const runner: DeploymentCommandRunner = {
       run: vi.fn(async (_command, args) => args.includes("deployments")
         ? {
@@ -217,7 +257,7 @@ describe("NodeWranglerDeploymentAdapter", () => {
     await expect(adapter.initializeWorker({
       accountId: "account-1",
       workerName: "moodle-school-mcp",
-      configPath: "/private/release/wrangler.json",
+      configPath,
       releaseDigest: "release-next",
     })).resolves.toMatchObject({
       productionEndpoint: "https://moodle-school-mcp.demo.workers.dev",
@@ -231,11 +271,15 @@ describe("NodeWranglerDeploymentAdapter", () => {
         "--name",
         "moodle-school-mcp",
         "--config",
-        "/private/release/wrangler.json",
+        configPath,
         "--message",
         "moodle-cli-bootstrap:release-next",
       ],
       { CLOUDFLARE_ACCOUNT_ID: "account-1" },
+    );
+    const config = JSON.parse(await readFile(configPath, "utf8")) as { vars: Record<string, string> };
+    expect(config.vars.EXPECTED_HOSTS).toBe(
+      "moodle-school-mcp.demo.workers.dev,moodle-cli-candidate-moodle-school-mcp.demo.workers.dev",
     );
   });
 
@@ -286,6 +330,7 @@ describe("NodeWranglerDeploymentAdapter", () => {
   it("selects the account through the environment for every mutating command", async () => {
     const root = await mkdtemp(join(tmpdir(), "wrangler-mutations-test-"));
     const configPath = join(root, "wrangler.json");
+    await writeFile(configPath, JSON.stringify({ vars: { MOODLE_ORIGIN: "https://moodle.example.edu" } }));
     const runner: DeploymentCommandRunner = {
       run: vi.fn(async (_command, args, environment) => {
         if (args.includes("deployments")) {
@@ -325,7 +370,7 @@ describe("NodeWranglerDeploymentAdapter", () => {
     await adapter.initializeWorker({
       accountId: "account-1",
       workerName: "moodle-school-mcp",
-      configPath: "/private/release/wrangler.json",
+      configPath,
       releaseDigest: "release-next",
     });
     await adapter.uploadCandidate({

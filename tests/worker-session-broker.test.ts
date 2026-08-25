@@ -277,4 +277,63 @@ describe("SessionBroker Durable Object", () => {
     });
     expect(JSON.stringify(body)).not.toContain(OLD_COOKIE);
   });
+
+  it("returns authenticated Moodle file bytes through the remote MCP path", async () => {
+    const fileUrl = `${MOODLE_ORIGIN}/pluginfile.php/1/slides.pdf`;
+    const fetchImpl = vi.fn<typeof fetch>(async (input, init) => {
+      expect(String(input)).toBe(fileUrl);
+      expect(new Headers(init?.headers).get("cookie")).toBe(`MoodleSession=${OLD_COOKIE}`);
+      const response = new Response("slides", {
+        headers: {
+          "content-disposition": 'attachment; filename="slides.pdf"',
+          "content-type": "application/pdf",
+        },
+      });
+      Object.defineProperty(response, "url", { value: fileUrl });
+      return response;
+    });
+    const broker = new SessionBroker(state(), env(), {
+      upstream: validUpstream(),
+      fetchImpl,
+      now: () => 800_000,
+    });
+    expect((await putSession(broker, candidate(OLD_COOKIE, null))).status).toBe(201);
+
+    const response = await broker.fetch(new Request("https://session-broker/mcp", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        request: {
+          jsonrpc: "2.0",
+          id: 2,
+          method: "tools/call",
+          params: {
+            name: "get_file",
+            arguments: { source: fileUrl },
+            _meta: {
+              "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+              "io.modelcontextprotocol/clientCapabilities": {},
+              "io.modelcontextprotocol/clientInfo": { name: "test-client", version: "1.0.0" },
+            },
+          },
+        },
+        context: { protocolVersion: "2026-07-28", method: "tools/call", toolName: "get_file" },
+      }),
+    }));
+
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body).toMatchObject({
+      response: {
+        result: {
+          content: [
+            { type: "text", text: "Loaded Moodle file slides.pdf (6 bytes)." },
+            { type: "resource", resource: { mimeType: "application/pdf", blob: "c2xpZGVz" } },
+          ],
+          structuredContent: { file: { name: "slides.pdf", bytes: 6 } },
+        },
+      },
+    });
+    expect(JSON.stringify(body)).not.toContain(OLD_COOKIE);
+  });
 });

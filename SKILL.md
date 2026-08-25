@@ -23,7 +23,7 @@ Resolve an unfamiliar unit name with `moodle units --json` before using a unit-s
 - **Profile, course discovery, sections, or activity lists**: read [references/profile-and-courses.md](references/profile-and-courses.md).
 - **Deadlines, todo items, alerts, or a combined snapshot**: read [references/deadlines-and-alerts.md](references/deadlines-and-alerts.md).
 - **Grades or assignment, quiz, resource, link, page, and folder detail**: read [references/coursework-and-grades.md](references/coursework-and-grades.md).
-- **Downloading a resource or selected folder files to local paths**: read [references/downloads.md](references/downloads.md).
+- **Retrieving a resource through MCP or downloading selected files to local paths**: read [references/downloads.md](references/downloads.md).
 - **Forum discovery, search, discussions, posts, groups, or rendering checks**: read [references/forums.md](references/forums.md).
 - **Output selection, field filtering, error handling, or exit codes**: read [references/output-and-errors.md](references/output-and-errors.md).
 - **Updates, skill installation, or skill regeneration**: read [references/maintenance.md](references/maintenance.md).

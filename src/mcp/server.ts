@@ -1,7 +1,7 @@
 import { z, ZodError } from "zod";
 
 import { VERSION } from "../version.js";
-import type { MoodleGateway } from "./gateway.js";
+import type { MoodleFile, MoodleGateway } from "./gateway.js";
 import {
   jsonRpcFailure,
   jsonRpcSuccess,
@@ -28,8 +28,116 @@ const READ_ONLY_ANNOTATIONS = {
 
 const emptyInput = z.object({}).strict();
 const positiveId = z.number().int().positive();
-const objectOutput = z.looseObject({});
-const listOutput = z.array(objectOutput);
+const integer = z.number().int();
+const userValue = z.looseObject({
+  userid: integer,
+  username: z.string(),
+  fullname: z.string(),
+  sitename: z.string(),
+  siteurl: z.string(),
+  lang: z.string().optional(),
+});
+const courseValue = z.looseObject({
+  id: integer,
+  shortname: z.string(),
+  fullname: z.string(),
+  category: z.number().int(),
+  visible: z.boolean(),
+  startdate: z.number(),
+  enddate: z.number().optional(),
+});
+const activityValue = z.looseObject({
+  id: integer,
+  name: z.string(),
+  modname: z.string(),
+  url: z.string(),
+  visible: z.boolean(),
+  description: z.string(),
+});
+const fileEntryValue = z.looseObject({
+  name: z.string(),
+  url: z.string(),
+  requires_authentication: z.boolean(),
+});
+const activityDetailValue = z.looseObject({
+  id: positiveId,
+  name: z.string(),
+  type: z.string(),
+  url: z.string().optional(),
+  target_name: z.string().optional(),
+  target_url: z.string().optional(),
+  file_entries: z.array(fileEntryValue).optional(),
+});
+const sectionValue = z.looseObject({
+  id: z.number().int(),
+  name: z.string(),
+  section: z.number().int(),
+  visible: z.boolean(),
+  summary: z.string(),
+  activities: z.array(activityValue),
+});
+const todoValue = z.looseObject({
+  id: z.number().int(),
+  name: z.string(),
+  course_id: z.number().int(),
+  course_name: z.string(),
+  due_at: z.number(),
+  url: z.string(),
+});
+const gradeItemValue = z.looseObject({
+  name: z.string(),
+  item_type: z.string(),
+  grade: z.string(),
+  range: z.string(),
+  percentage: z.string(),
+  feedback: z.string(),
+  url: z.string(),
+});
+const gradesValue = z.looseObject({
+  course_id: integer,
+  course_name: z.string(),
+  learner_name: z.string(),
+  total_grade: z.string(),
+  total_range: z.string(),
+  total_percentage: z.string(),
+  items: z.array(gradeItemValue),
+});
+const forumValue = z.looseObject({
+  id: integer,
+  name: z.string(),
+  course_id: integer,
+  course_name: z.string(),
+  url: z.string(),
+});
+const forumSearchValue = z.looseObject({
+  course_id: integer,
+  course_name: z.string(),
+  forum_id: integer,
+  forum_name: z.string(),
+  discussion_id: integer,
+  discussion_subject: z.string(),
+  post_id: integer,
+  snippet: z.string(),
+  url: z.string(),
+});
+const forumPostValue = z.looseObject({
+  id: integer,
+  discussion_id: integer,
+  subject: z.string(),
+  message_text: z.string(),
+  author: z.looseObject({ id: integer, fullname: z.string() }),
+  url: z.string(),
+});
+const threadValue = z.looseObject({
+  id: integer,
+  subject: z.string(),
+  course_id: integer,
+  forum_id: integer,
+  group_id: z.number().int(),
+  group_name: z.string(),
+  url: z.string(),
+  posts: z.array(forumPostValue),
+});
 
 interface ToolRegistration {
   name: string;
@@ -43,7 +151,7 @@ const TOOL_REGISTRATIONS = [
     name: "get_user",
     description: "Get the authenticated Moodle user and site.",
     input: emptyInput,
-    output: z.object({ user: objectOutput }),
+    output: z.object({ user: userValue }),
   },
   {
     name: "get_overview",
@@ -53,19 +161,31 @@ const TOOL_REGISTRATIONS = [
       todoDays: z.number().int().min(1).max(365).optional(),
       alertsLimit: z.number().int().min(1).max(100).optional().default(5),
     }).strict(),
-    output: z.object({ overview: objectOutput }),
+    output: z.object({
+      overview: z.looseObject({
+        user: userValue,
+        courses: z.array(courseValue),
+        todo: z.array(todoValue),
+        errors: z.array(z.string()),
+      }),
+    }),
   },
   {
     name: "list_courses",
     description: "List the authenticated user's Moodle courses.",
     input: z.object({ limit: z.number().int().min(1).max(200).optional().default(100) }).strict(),
-    output: z.object({ courses: listOutput }),
+    output: z.object({ courses: z.array(courseValue) }),
   },
   {
     name: "get_course",
     description: "Get one Moodle course and its sections.",
     input: z.object({ courseId: positiveId }).strict(),
-    output: z.object({ course: objectOutput }),
+    output: z.object({
+      course: z.looseObject({
+        course: courseValue,
+        sections: z.array(sectionValue),
+      }),
+    }),
   },
   {
     name: "list_activities",
@@ -74,19 +194,19 @@ const TOOL_REGISTRATIONS = [
       courseId: positiveId,
       limit: z.number().int().min(1).max(200).optional().default(100),
     }).strict(),
-    output: z.object({ activities: listOutput }),
+    output: z.object({ activities: z.array(activityValue) }),
   },
   {
     name: "get_activity",
     description: "Get the supported details for one Moodle activity.",
     input: z.object({ activityId: positiveId }).strict(),
-    output: z.object({ activity: objectOutput }),
+    output: z.object({ activity: activityDetailValue }),
   },
   {
     name: "get_grades",
     description: "Get the authenticated user's grades for one Moodle course.",
     input: z.object({ courseId: positiveId }).strict(),
-    output: z.object({ grades: objectOutput }),
+    output: z.object({ grades: gradesValue }),
   },
   {
     name: "list_forums",
@@ -95,7 +215,7 @@ const TOOL_REGISTRATIONS = [
       courseId: positiveId.optional(),
       limit: z.number().int().min(1).max(100).optional().default(50),
     }).strict(),
-    output: z.object({ forums: listOutput }),
+    output: z.object({ forums: z.array(forumValue) }),
   },
   {
     name: "search_forums",
@@ -111,13 +231,28 @@ const TOOL_REGISTRATIONS = [
       maxForums: z.number().int().min(1).max(50).optional(),
       maxDiscussionsPerForum: z.number().int().min(1).max(100).optional(),
     }).strict(),
-    output: z.object({ results: listOutput }),
+    output: z.object({ results: z.array(forumSearchValue) }),
   },
   {
     name: "get_thread",
     description: "Get one Moodle forum discussion and its posts.",
     input: z.object({ discussionId: positiveId }).strict(),
-    output: z.object({ thread: objectOutput }),
+    output: z.object({ thread: threadValue }),
+  },
+  {
+    name: "get_file",
+    description: "Fetch one authenticated Moodle file and return its content directly (maximum 16 MiB).",
+    input: z.object({
+      source: z.union([positiveId, z.string().trim().min(1).max(2_048)]),
+    }).strict(),
+    output: z.object({
+      file: z.object({
+        name: z.string(),
+        mime_type: z.string(),
+        bytes: z.number().int().nonnegative(),
+        uri: z.string(),
+      }),
+    }),
   },
 ] as const satisfies readonly ToolRegistration[];
 
@@ -200,12 +335,11 @@ export function createMoodleMcpServer(
         }
         if (error instanceof UnsupportedProtocolVersionError) {
           return jsonRpcFailure(id, {
-            code: -32602,
-            message: error.message,
+            code: -32_022,
+            message: "Unsupported protocol version",
             data: {
-              type: "UNSUPPORTED_PROTOCOL_VERSION",
-              protocolVersion: error.protocolVersion,
-              supportedVersions: [...error.supportedVersions],
+              supported: [...error.supportedVersions],
+              requested: error.protocolVersion,
             },
           });
         }
@@ -259,7 +393,7 @@ async function callTool(
     const payload = await runGatewayTool(gateway, name, input);
     const structuredContent = registration.output.parse(wrapToolOutput(name, payload));
     return {
-      content: [{ type: "text", text: summarizeToolOutput(name, payload) }],
+      content: toolContent(name, payload),
       structuredContent,
       resultType: "complete",
       _meta: RESULT_META,
@@ -325,6 +459,8 @@ async function runGatewayTool(
       });
     case "get_thread":
       return gateway.getThread({ discussionId: numberValue(input.discussionId) });
+    case "get_file":
+      return gateway.getFile({ source: fileSource(input.source) });
     default:
       throw new McpCallError("TOOL_NOT_FOUND", `Unknown Moodle tool: ${name}`);
   }
@@ -343,7 +479,33 @@ function wrapToolOutput(name: string, payload: unknown): Record<string, unknown>
     search_forums: "results",
     get_thread: "thread",
   };
+  if (name === "get_file" && isMoodleFile(payload)) {
+    return {
+      file: {
+        name: payload.name,
+        mime_type: payload.mimeType,
+        bytes: payload.bytes,
+        uri: payload.uri,
+      },
+    };
+  }
   return { [keys[name] ?? "result"]: payload };
+}
+
+function toolContent(name: string, payload: unknown): Array<Record<string, unknown>> {
+  const text = { type: "text", text: summarizeToolOutput(name, payload) };
+  if (name !== "get_file" || !isMoodleFile(payload)) return [text];
+  return [
+    text,
+    {
+      type: "resource",
+      resource: {
+        uri: payload.uri,
+        mimeType: payload.mimeType,
+        blob: payload.blob,
+      },
+    },
+  ];
 }
 
 function summarizeToolOutput(name: string, payload: unknown): string {
@@ -376,6 +538,9 @@ function summarizeToolOutput(name: string, payload: unknown): string {
   }
   if (name === "get_thread" && isRecord(payload)) {
     return `Loaded forum thread ${stringValue(payload.subject) || numberValue(payload.id)}.`;
+  }
+  if (name === "get_file" && isMoodleFile(payload)) {
+    return `Loaded Moodle file ${payload.name} (${payload.bytes} bytes).`;
   }
   return "Moodle request completed.";
 }
@@ -419,6 +584,10 @@ function stringValue(value: unknown): string {
   return typeof value === "string" ? value : "";
 }
 
+function fileSource(value: unknown): number | string {
+  return typeof value === "number" || typeof value === "string" ? value : "";
+}
+
 function booleanValue(value: unknown): boolean {
   return value === true;
 }
@@ -429,4 +598,13 @@ function enumValue<const T extends string>(value: unknown, values: readonly T[])
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isMoodleFile(value: unknown): value is MoodleFile {
+  return isRecord(value)
+    && typeof value.name === "string"
+    && typeof value.mimeType === "string"
+    && typeof value.bytes === "number"
+    && typeof value.uri === "string"
+    && typeof value.blob === "string";
 }

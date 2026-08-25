@@ -193,7 +193,9 @@ export class NodeWranglerDeploymentAdapter implements WranglerDeploymentAdapter 
         throw new DeploymentApplyError("INITIAL_WORKER_INVALID", "Wrangler did not return the initialized Worker");
       }
       const productionEndpoint = firstWorkersDevUrl([result.stdout, result.stderr]);
-      return productionEndpoint ? { ...worker, productionEndpoint } : worker;
+      const initialized = productionEndpoint ? { ...worker, productionEndpoint } : worker;
+      await pinExpectedHosts(input.configPath, input.workerName, initialized.productionEndpoint);
+      return initialized;
     } catch (error) {
       const worker = await this.inspect(input.accountId, input.workerName).catch(() => null);
       if (worker || result) {
@@ -316,6 +318,7 @@ export class NodeReleaseMaterializer implements ReleaseMaterializer {
     await copyFile(this.options.workerBundlePath, workerFile);
     const wranglerConfigPath = join(artifactDirectory, "wrangler.json");
     const secretsFilePath = join(artifactDirectory, "secrets.json");
+    const expectedHosts = endpointHosts(plan.intent.workerName, plan.existing?.productionEndpoint);
     const config = {
       $schema: "node_modules/wrangler/config-schema.json",
       name: plan.intent.workerName,
@@ -323,7 +326,10 @@ export class NodeReleaseMaterializer implements ReleaseMaterializer {
       main: `./${basename(workerFile)}`,
       compatibility_date: this.options.compatibilityDate,
       preview_urls: true,
-      vars: { MOODLE_ORIGIN: plan.intent.moodleOrigin },
+      vars: {
+        MOODLE_ORIGIN: plan.intent.moodleOrigin,
+        ...(expectedHosts.length ? { EXPECTED_HOSTS: expectedHosts.join(",") } : {}),
+      },
       durable_objects: {
         bindings: [{ name: "SESSION_BROKER", class_name: "SessionBroker" }],
       },
@@ -646,6 +652,42 @@ function ownershipId(accountId: string, workerName: string): string {
 
 function endpointUrl(endpoint: string, path: string): string {
   return `${endpoint.replace(/\/$/u, "")}${path}`;
+}
+
+async function pinExpectedHosts(
+  configPath: string,
+  workerName: string,
+  productionEndpoint: string,
+): Promise<void> {
+  let config: unknown;
+  try {
+    config = JSON.parse(await readFile(configPath, "utf8"));
+  } catch {
+    throw new DeploymentApplyError("RELEASE_CONFIG_INVALID", "The generated Wrangler configuration is invalid");
+  }
+  if (!isRecord(config) || !isRecord(config.vars)) {
+    throw new DeploymentApplyError("RELEASE_CONFIG_INVALID", "The generated Wrangler configuration is invalid");
+  }
+  const hosts = endpointHosts(workerName, productionEndpoint);
+  if (!hosts.length) {
+    throw new DeploymentApplyError("MISSING_ENDPOINT", "The Worker production endpoint is invalid");
+  }
+  config.vars.EXPECTED_HOSTS = hosts.join(",");
+  await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`, { mode: 0o600 });
+}
+
+function endpointHosts(workerName: string, endpoint: string | undefined): string[] {
+  if (!endpoint) return [];
+  try {
+    const productionHost = new URL(endpoint).host.toLowerCase();
+    const workerPrefix = `${workerName.toLowerCase()}.`;
+    const previewHost = productionHost.startsWith(workerPrefix)
+      ? `moodle-cli-candidate-${productionHost}`
+      : undefined;
+    return [productionHost, ...(previewHost ? [previewHost] : [])];
+  } catch {
+    return [];
+  }
 }
 
 function isRetryableSessionUpload(status: number): boolean {

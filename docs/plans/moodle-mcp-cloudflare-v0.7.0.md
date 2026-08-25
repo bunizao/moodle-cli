@@ -626,6 +626,7 @@ get_grades
 list_forums
 search_forums
 get_thread
+get_file
 ```
 
 Tool requirements:
@@ -638,7 +639,10 @@ Tool requirements:
 - `cacheScope: "private"`.
 - Read-only annotations.
 - Bounded list sizes.
+- Embedded file resources bounded to 16 MiB.
 - Stable Moodle error codes.
+
+`get_file` accepts a positive resource activity ID, a same-site resource URL, or a same-site `pluginfile.php` URL. It returns concise metadata in `structuredContent` and the authenticated file bytes in an MCP embedded resource. Moodle cookies, sesskeys, and credential-bearing URL parameters never appear in the result.
 
 Version `0.7.0` will not advertise prompts, resources, subscriptions, tasks, Roots, Sampling, or MCP Logging.
 

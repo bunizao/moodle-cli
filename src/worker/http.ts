@@ -1,5 +1,6 @@
 import { hasQueryCredential, verifyBearerToken } from "./auth.js";
 import { problemResponse } from "./problems.js";
+import { LEGACY_PROTOCOL_VERSION, SUPPORTED_PROTOCOL_VERSIONS } from "../mcp/protocol.js";
 import { VERSION } from "../version.js";
 
 export const HEALTH_PATH = "/healthz";
@@ -12,6 +13,7 @@ export const WORKER_SERVICE_VERSION = VERSION;
 
 export interface WorkerEnv {
   EXPECTED_HOST?: string;
+  EXPECTED_HOSTS?: string;
   MCP_ACCESS_TOKEN_DIGEST: string;
   MCP_ACCESS_TOKEN_PREVIOUS_DIGEST?: string;
   SESSION_SYNC_TOKEN_DIGEST: string;
@@ -49,7 +51,7 @@ export function createWorkerHandler(dependencies: WorkerDependencies): WorkerHan
   return {
     async fetch(request, env) {
       const url = new URL(request.url);
-      const authorityProblem = validateRequestAuthority(request, url, env.EXPECTED_HOST);
+      const authorityProblem = validateRequestAuthority(request, url, env.EXPECTED_HOSTS ?? env.EXPECTED_HOST);
       if (authorityProblem) return authorityProblem;
       if (hasQueryCredential(url)) return unauthorized("Bearer credentials are not accepted in the query string.");
 
@@ -153,10 +155,13 @@ function resolveBroker(dependencies: WorkerDependencies, env: WorkerEnv): Sessio
   return problemResponse(503, "SESSION_BROKER_UNAVAILABLE", "Service Unavailable", "The session broker is unavailable.");
 }
 
-function validateRequestAuthority(request: Request, url: URL, configuredHost: string | undefined): Response | null {
-  const expectedHost = (configuredHost ?? url.host).toLowerCase();
+function validateRequestAuthority(request: Request, url: URL, configuredHosts: string | undefined): Response | null {
+  const expectedHosts = (configuredHosts ?? url.host)
+    .split(",")
+    .map((host) => host.trim().toLowerCase())
+    .filter(Boolean);
   const requestHost = (request.headers.get("host") ?? url.host).toLowerCase();
-  if (requestHost !== expectedHost) {
+  if (requestHost !== url.host.toLowerCase() || !expectedHosts.includes(requestHost)) {
     return problemResponse(403, "INVALID_HOST", "Forbidden", "The request Host is not allowed.");
   }
 
@@ -164,7 +169,7 @@ function validateRequestAuthority(request: Request, url: URL, configuredHost: st
   if (!origin) return null;
   try {
     const parsed = new URL(origin);
-    if (parsed.origin !== url.origin || parsed.host.toLowerCase() !== expectedHost) {
+    if (parsed.origin !== url.origin || !expectedHosts.includes(parsed.host.toLowerCase())) {
       return problemResponse(403, "INVALID_ORIGIN", "Forbidden", "The request Origin is not allowed.");
     }
   } catch {
@@ -180,6 +185,7 @@ function unauthorized(detail = "A valid Bearer token is required."): Response {
 }
 
 interface JsonRpcRequest {
+  id?: unknown;
   method?: unknown;
   params?: unknown;
 }
@@ -207,6 +213,12 @@ async function handleMcpRequest(request: Request, server: MoodleMcpServerLike): 
       toolName: request.headers.get("mcp-name") ?? undefined,
     });
     if (response === null) return new Response(null, { status: 202 });
+    if (isUnsupportedProtocolVersionResponse(response)) {
+      return Response.json(response, {
+        status: 400,
+        headers: { "cache-control": "private, no-store" },
+      });
+    }
     if (request.headers.get("accept")?.toLowerCase().includes("text/event-stream")) {
       return new Response(`event: message\ndata: ${JSON.stringify(response)}\n\n`, {
         headers: {
@@ -225,7 +237,21 @@ async function handleMcpRequest(request: Request, server: MoodleMcpServerLike): 
       return problemResponse(status, code, "Service Unavailable", "The Moodle session is not ready.");
     }
     if (error instanceof Error && error.name === "UnsupportedProtocolVersionError") {
-      return problemResponse(400, "UNSUPPORTED_PROTOCOL_VERSION", "Unsupported Protocol Version", "The requested MCP protocol version is not supported.");
+      const requested = "protocolVersion" in error && typeof error.protocolVersion === "string"
+        ? error.protocolVersion
+        : protocolVersion ?? "unknown";
+      return Response.json({
+        jsonrpc: "2.0",
+        id: jsonRpcRequestId(body),
+        error: {
+          code: -32_022,
+          message: "Unsupported protocol version",
+          data: { supported: [...SUPPORTED_PROTOCOL_VERSIONS], requested },
+        },
+      }, {
+        status: 400,
+        headers: { "cache-control": "private, no-store" },
+      });
     }
     return problemResponse(500, "MCP_REQUEST_FAILED", "Internal Server Error", "The MCP request could not be completed.");
   }
@@ -242,14 +268,14 @@ async function safeProblem(response: Response): Promise<{ code?: string } | null
 
 function validateProtocolMetadata(headers: Headers, body: JsonRpcRequest, protocolVersion: string | null): Response | null {
   if (!protocolVersion) {
-    return problemResponse(400, "MCP_PROTOCOL_METADATA_INVALID", "Bad Request", "MCP-Protocol-Version is required.");
+    return headerMismatchResponse(body, "MCP-Protocol-Version is required.");
   }
 
   const params = isRecord(body.params) ? body.params : undefined;
   const metadata = params && isRecord(params._meta) ? params._meta : undefined;
   const bodyVersion = metadata?.["io.modelcontextprotocol/protocolVersion"];
   if (bodyVersion !== undefined && bodyVersion !== protocolVersion) {
-    return problemResponse(400, "MCP_PROTOCOL_METADATA_MISMATCH", "Bad Request", "MCP protocol metadata does not match the HTTP headers.");
+    return headerMismatchResponse(body, "MCP protocol metadata does not match the HTTP headers.");
   }
 
   if (typeof body.method !== "string") {
@@ -258,10 +284,38 @@ function validateProtocolMetadata(headers: Headers, body: JsonRpcRequest, protoc
   const headerMethod = headers.get("mcp-method");
   const headerName = headers.get("mcp-name") ?? undefined;
   const paramsName = params && typeof params.name === "string" ? params.name : undefined;
-  if (headerMethod !== body.method || headerName !== paramsName) {
-    return problemResponse(400, "MCP_PROTOCOL_METADATA_MISMATCH", "Bad Request", "MCP method metadata does not match the JSON-RPC request.");
+  const requiresModernHeaders = protocolVersion !== LEGACY_PROTOCOL_VERSION;
+  const hasModernHeaders = headerMethod !== null || headerName !== undefined;
+  if ((requiresModernHeaders || hasModernHeaders) && (headerMethod !== body.method || headerName !== paramsName)) {
+    return headerMismatchResponse(body, "MCP method metadata does not match the JSON-RPC request.");
   }
   return null;
+}
+
+function headerMismatchResponse(body: JsonRpcRequest, detail: string): Response {
+  return Response.json({
+    jsonrpc: "2.0",
+    id: jsonRpcRequestId(body),
+    error: {
+      code: -32_020,
+      message: "HeaderMismatch",
+      data: { detail },
+    },
+  }, {
+    status: 400,
+    headers: { "cache-control": "private, no-store" },
+  });
+}
+
+function jsonRpcRequestId(body: JsonRpcRequest): string | number | null {
+  return typeof body.id === "string" || typeof body.id === "number" || body.id === null
+    ? body.id
+    : null;
+}
+
+function isUnsupportedProtocolVersionResponse(value: unknown): boolean {
+  if (!isRecord(value) || !isRecord(value.error)) return false;
+  return value.jsonrpc === "2.0" && value.error.code === -32_022;
 }
 
 function authorizeSessionSync(request: Request, env: WorkerEnv): Promise<boolean> {
