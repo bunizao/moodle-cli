@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -63,6 +64,55 @@ describe("managed MCP CLI service", () => {
         dryRun: true,
       }));
       expect(JSON.stringify(result)).not.toMatch(/cookie|Bearer|access-token|sync-token/iu);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("flags status when the remote Worker is behind the installed CLI bundle", async () => {
+    const root = await mkdtemp(join(tmpdir(), "moodle-cli-service-"));
+    const bundle = join(root, "worker.js");
+    await writeFile(bundle, "export default { updated: true };\n");
+    const receipt = { ...deploymentReceipt(), releaseDigest: "stale-digest" };
+    const service = createMcpCommandService({
+      homeDir: root,
+      workerBundlePath: bundle,
+      configLoader: async () => ({ baseUrl: "https://lms.example.edu" }),
+      receipts: receiptStore(receipt),
+      credentials: credentialStore(),
+      worker: workerClient(),
+      createDeployment: () => managedInspect(receipt),
+    });
+
+    try {
+      const result = await service.status({ verbose: false, logs: false });
+      expect((result.data as { updateAvailable: boolean }).updateAvailable).toBe(true);
+      expect(result.text).toContain("remote Worker is behind this CLI");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("does not flag status when the remote Worker matches the installed CLI bundle", async () => {
+    const root = await mkdtemp(join(tmpdir(), "moodle-cli-service-"));
+    const bundle = join(root, "worker.js");
+    const contents = "export default { updated: true };\n";
+    await writeFile(bundle, contents);
+    const receipt = { ...deploymentReceipt(), releaseDigest: createHash("sha256").update(contents).digest("hex") };
+    const service = createMcpCommandService({
+      homeDir: root,
+      workerBundlePath: bundle,
+      configLoader: async () => ({ baseUrl: "https://lms.example.edu" }),
+      receipts: receiptStore(receipt),
+      credentials: credentialStore(),
+      worker: workerClient(),
+      createDeployment: () => managedInspect(receipt),
+    });
+
+    try {
+      const result = await service.status({ verbose: false, logs: false });
+      expect((result.data as { updateAvailable: boolean }).updateAvailable).toBe(false);
+      expect(result.text).not.toContain("remote Worker is behind this CLI");
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -542,6 +592,30 @@ function deploymentReceipt() {
     releaseDigest: "digest-1",
     sessionRevision: 4,
   };
+}
+
+function managedInspect(receipt: ReturnType<typeof deploymentReceipt>): ManagedMcpDeployment {
+  return {
+    inspect: vi.fn(async () => ({
+      profile: receipt.profile,
+      worker: {
+        accountId: receipt.accountId,
+        workerName: receipt.workerName,
+        deploymentId: receipt.deploymentId,
+        ownershipTag: receipt.deploymentId,
+        productionEndpoint: receipt.productionEndpoint,
+        productionVersionId: receipt.productionVersionId,
+        previousHealthyVersionId: null,
+        releaseDigest: receipt.releaseDigest,
+      },
+      credentialsStored: true,
+      renewalInstalled: true,
+      clientsConnected: true,
+      readiness: "pass" as const,
+      readinessReasonCode: "SESSION_VALID",
+      sessionRevision: receipt.sessionRevision,
+    })),
+  } as unknown as ManagedMcpDeployment;
 }
 
 function deployDryRun() {

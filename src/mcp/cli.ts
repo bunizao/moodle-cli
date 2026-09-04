@@ -298,11 +298,13 @@ class DefaultMcpCommandService implements McpCommandService {
     } catch {
       localAuthentication = { status: "unknown" };
     }
+    const updateAvailable = await this.remoteWorkerBehindLocal(profile);
     const data = {
       profile,
       localAuthentication,
       managed,
       protocols: [...SUPPORTED_PROTOCOL_VERSIONS],
+      updateAvailable,
       ...(input.verbose ? { serviceVersion: VERSION } : {}),
       ...(input.logs ? { logs: { available: false, reason: "live_tail_required" } } : {}),
     };
@@ -314,6 +316,7 @@ class DefaultMcpCommandService implements McpCommandService {
         `Credentials: ${managed.credentialsStored ? "stored" : "missing"}`,
         `Renewal: ${managed.renewalInstalled ? "installed" : "missing"}`,
         `Clients: ${managed.clientsConnected ? "connected" : "not connected"}`,
+        ...(updateAvailable ? ["Update: remote Worker is behind this CLI. Run `moodle mcp deploy` to update it."] : []),
         ...(input.logs ? ["Logs: use a live sanitized tail from an interactive terminal"] : []),
       ].join("\n"),
     };
@@ -734,6 +737,20 @@ class DefaultMcpCommandService implements McpCommandService {
 
   private releaseDigest(): Promise<string> {
     return readFile(this.workerBundlePath()).then((content) => sha256(content));
+  }
+
+  // True when a deployment receipt exists but its recorded release digest no
+  // longer matches the Worker bundle shipped with this CLI, i.e. the remote
+  // Worker is running older code than the locally installed package. Best
+  // effort: any failure to read the receipt or bundle reports "no update".
+  private async remoteWorkerBehindLocal(profile: string): Promise<boolean> {
+    try {
+      const receipt = await this.receipts.read(profile);
+      if (!receipt) return false;
+      return receipt.releaseDigest !== (await this.releaseDigest());
+    } catch {
+      return false;
+    }
   }
 
   private isInteractive(): boolean {
