@@ -237,6 +237,7 @@ describe("managed MCP CLI service", () => {
     expect(result.data).toMatchObject({
       profile: receipt.profile,
       endpoint: `${receipt.productionEndpoint}/mcp`,
+      code: "ABCD2345",
       authorizationServer: "https://moodle-school-mcp.demo.workers.dev",
     });
     expect(result.text).toContain(`${receipt.productionEndpoint}/mcp`);

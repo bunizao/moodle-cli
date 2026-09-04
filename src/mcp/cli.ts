@@ -340,7 +340,13 @@ class DefaultMcpCommandService implements McpCommandService {
     });
     const endpoint = `${receipt.productionEndpoint.replace(/\/$/u, "")}/mcp`;
     return {
-      data: { profile, endpoint, expiresAt: pairing.expiresAt, authorizationServer: pairing.authorizationServer },
+      data: {
+        profile,
+        endpoint,
+        code: pairing.code,
+        expiresAt: pairing.expiresAt,
+        authorizationServer: pairing.authorizationServer,
+      },
       text: [
         "Add this custom connector in Claude, then approve it with the pairing code.",
         "",
