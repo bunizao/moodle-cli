@@ -1,6 +1,6 @@
 import { hasQueryCredential, readBearerToken, verifyBearerToken } from "./auth.js";
 import { createAuthBrokerApi, isOAuthRoute, parseAllowedRedirectHosts, type AuthBrokerApi } from "./auth-broker.js";
-import { DEFAULT_CLIENT_HOSTS, PROTECTED_RESOURCE_METADATA_PATH } from "./oauth.js";
+import { DEFAULT_CLIENT_HOSTS, matchesAllowedHost, PROTECTED_RESOURCE_METADATA_PATH } from "./oauth.js";
 import { problemResponse } from "./problems.js";
 import { LEGACY_PROTOCOL_VERSION, SUPPORTED_PROTOCOL_VERSIONS } from "../mcp/protocol.js";
 import { VERSION } from "../version.js";
@@ -59,7 +59,12 @@ export function createWorkerHandler(dependencies: WorkerDependencies): WorkerHan
       const url = new URL(request.url);
       const authorityProblem = validateRequestAuthority(request, url, env);
       if (authorityProblem) return authorityProblem;
-      if (hasQueryCredential(url)) return unauthorized("Bearer credentials are not accepted in the query string.");
+      if (hasQueryCredential(url)) {
+        return unauthorized(
+          "Bearer credentials are not accepted in the query string.",
+          url.pathname === MCP_PATH ? resourceMetadataUrl(url, env) : undefined,
+        );
+      }
 
       if (url.pathname === HEALTH_PATH && request.method === "GET") {
         return Response.json(
@@ -233,9 +238,8 @@ function validateRequestAuthority(request: Request, url: URL, env: WorkerEnv): R
     // An OAuth client drives the authorization flow from its own origin, so the
     // registered client hosts are allowed alongside the Worker's own.
     const sameOrigin = parsed.origin === url.origin && expectedHosts.includes(parsed.host.toLowerCase());
-    const clientHost = parsed.hostname.toLowerCase();
     const allowedClient = parsed.protocol === "https:"
-      && allowedClientHosts(env).some((candidate) => clientHost === candidate || clientHost.endsWith(`.${candidate}`));
+      && matchesAllowedHost(parsed.hostname, allowedClientHosts(env));
     if (!sameOrigin && !allowedClient) {
       return problemResponse(403, "INVALID_ORIGIN", "Forbidden", "The request Origin is not allowed.");
     }

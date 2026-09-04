@@ -10,7 +10,7 @@ export const REVOKE_PATH = "/oauth/revoke";
 
 const ACCESS_TOKEN_TTL_MS = 60 * 60 * 1000;
 const REFRESH_TOKEN_TTL_MS = 30 * 24 * 60 * 60 * 1000;
-const CONSUMED_REFRESH_RETENTION_MS = 24 * 60 * 60 * 1000;
+const CONSUMED_REFRESH_RETENTION_MS = REFRESH_TOKEN_TTL_MS;
 const AUTHORIZATION_CODE_TTL_MS = 60 * 1000;
 const PAIRING_CODE_TTL_MS = 10 * 60 * 1000;
 const PAIRING_CODE_MAX_ATTEMPTS = 5;
@@ -131,7 +131,7 @@ export function createOAuthRouter(options: OAuthRouterOptions): OAuthRouter {
     if (parsed.hash) return false;
     if (LOOPBACK_HOSTS.has(parsed.hostname)) return parsed.protocol === "http:" || parsed.protocol === "https:";
     if (parsed.protocol !== "https:") return false;
-    return allowedRedirectHosts.some((host) => parsed.hostname === host || parsed.hostname.endsWith(`.${host}`));
+    return matchesAllowedHost(parsed.hostname, allowedRedirectHosts);
   }
 
   function matchesRegisteredRedirectUri(client: ClientRecord, value: string): boolean {
@@ -289,8 +289,7 @@ export function createOAuthRouter(options: OAuthRouterOptions): OAuthRouter {
 
     const clients = await storage.list<ClientRecord>({ prefix: CLIENT_PREFIX });
     if (clients.size >= MAX_REGISTERED_CLIENTS) {
-      const oldest = [...clients.entries()].sort((left, right) => left[1].createdAt - right[1].createdAt)[0];
-      if (oldest) await storage.delete(oldest[0]);
+      return oauthError(400, "invalid_client_metadata", "This server has reached its client registration limit.");
     }
 
     const clientId = createSecret();
@@ -547,6 +546,14 @@ export function randomSecret(): string {
 export function randomPairingCode(): string {
   const bytes = crypto.getRandomValues(new Uint8Array(PAIRING_CODE_LENGTH));
   return Array.from(bytes, (byte) => PAIRING_CODE_ALPHABET[byte % PAIRING_CODE_ALPHABET.length]).join("");
+}
+
+export function matchesAllowedHost(hostname: string, allowedHosts: readonly string[]): boolean {
+  const normalizedHostname = hostname.toLowerCase();
+  return allowedHosts.some((host) => {
+    const normalizedHost = host.toLowerCase();
+    return normalizedHostname === normalizedHost || normalizedHostname.endsWith(`.${normalizedHost}`);
+  });
 }
 
 async function pkceChallenge(verifier: string): Promise<string> {

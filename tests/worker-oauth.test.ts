@@ -46,14 +46,14 @@ function createBroker(): SessionBrokerApi {
   };
 }
 
-async function harness() {
+async function harness(options: { now?: () => number } = {}) {
   const env: WorkerEnv = {
     EXPECTED_HOST: HOST,
     MCP_ACCESS_TOKEN_DIGEST: await digestBearerToken(ACCESS_TOKEN),
     SESSION_SYNC_TOKEN_DIGEST: await digestBearerToken(SYNC_TOKEN),
   };
   const storage = new MemoryStorage();
-  const broker = new AuthBroker({ storage }, { EXPECTED_HOST: HOST });
+  const broker = new AuthBroker({ storage }, { EXPECTED_HOST: HOST }, options);
   const mcpServer = { handle: vi.fn(async () => ({ jsonrpc: "2.0", id: 1, result: { ok: true } })) };
   const worker = createWorkerHandler({
     mcpServer,
@@ -205,6 +205,26 @@ describe("Worker OAuth authorization server", () => {
     expect(confidential.status).toBe(400);
   });
 
+  it("rejects registrations at capacity without evicting existing clients", async () => {
+    const { worker, env } = await harness();
+    const first = await registerClient(worker, env);
+    for (let index = 1; index < 20; index += 1) await registerClient(worker, env);
+
+    const overflow = await registerClient(worker, env);
+    const existing = await worker.fetch(request(`/oauth/authorize?${new URLSearchParams({
+      response_type: "code",
+      client_id: first.body.client_id as string,
+      redirect_uri: REDIRECT_URI,
+      code_challenge: "A".repeat(43),
+      code_challenge_method: "S256",
+      resource: `${ORIGIN}/mcp`,
+    })}`), env);
+
+    expect(overflow.response.status).toBe(400);
+    expect(overflow.body).toMatchObject({ error: "invalid_client_metadata" });
+    expect(existing.status).toBe(200);
+  });
+
   it("refuses to approve access while no pairing window is open", async () => {
     const { worker, env } = await harness();
     const { body } = await registerClient(worker, env);
@@ -312,6 +332,38 @@ describe("Worker OAuth authorization server", () => {
       client_id: clientId,
     })), env);
     const afterReplay = await worker.fetch(request("/mcp", mcpRequest(rotated.access_token as string)), env);
+
+    expect(replayed.status).toBe(400);
+    expect(afterReplay.status).toBe(401);
+  });
+
+  it("retains refresh replay detection for the refresh-token lifetime", async () => {
+    let currentTime = 1_000_000;
+    const { worker, env } = await harness({ now: () => currentTime });
+    const { body } = await registerClient(worker, env);
+    const clientId = body.client_id as string;
+    const approved = await authorize(worker, env, clientId, await openPairing(worker, env));
+    const first = await exchangeCode(worker, env, clientId, new URL(approved.headers.get("location")!).searchParams.get("code")!);
+    const firstRefresh = await worker.fetch(request("/oauth/token", form({
+      grant_type: "refresh_token",
+      refresh_token: first.refresh_token as string,
+      client_id: clientId,
+    })), env);
+    const rotated = await firstRefresh.json() as Record<string, unknown>;
+
+    currentTime += 25 * 60 * 60 * 1000;
+    const secondRefresh = await worker.fetch(request("/oauth/token", form({
+      grant_type: "refresh_token",
+      refresh_token: rotated.refresh_token as string,
+      client_id: clientId,
+    })), env);
+    const latest = await secondRefresh.json() as Record<string, unknown>;
+    const replayed = await worker.fetch(request("/oauth/token", form({
+      grant_type: "refresh_token",
+      refresh_token: first.refresh_token as string,
+      client_id: clientId,
+    })), env);
+    const afterReplay = await worker.fetch(request("/mcp", mcpRequest(latest.access_token as string)), env);
 
     expect(replayed.status).toBe(400);
     expect(afterReplay.status).toBe(401);
