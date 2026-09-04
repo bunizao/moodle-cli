@@ -28,6 +28,7 @@ Read this file for exact arguments, flags, and defaults after selecting a branch
 | moodle mcp connect | Connect a supported MCP client. | [client] | --json<br>--yaml<br>--table<br>--fields (value required)<br>--mode (value required)<br>--show-token |
 | moodle mcp deploy | Deploy or update the managed Moodle MCP server. |  | --json<br>--yaml<br>--table<br>--fields (value required)<br>--dry-run<br>--repair<br>--rotate-token<br>--rollback |
 | moodle mcp login | Acquire and upload a fresh Moodle session. |  | --json<br>--yaml<br>--table<br>--fields (value required) |
+| moodle mcp pair | Open a pairing window so Claude can connect to the remote MCP server. |  | --json<br>--yaml<br>--table<br>--fields (value required) |
 | moodle mcp remove | Remove one managed Moodle MCP deployment. |  | --json<br>--yaml<br>--table<br>--fields (value required) |
 | moodle mcp renewal | Run the installed managed-session renewal job. |  |  |
 | moodle mcp renewal run | Check and renew one managed Moodle session. |  | --json<br>--yaml<br>--table<br>--fields (value required)<br>--profile (value required) |

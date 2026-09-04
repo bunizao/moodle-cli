@@ -83,9 +83,12 @@ moodle mcp deploy
 moodle mcp status --json
 moodle mcp login
 moodle mcp connect
+moodle mcp pair
 moodle mcp remove
 ```
 
 `moodle mcp deploy` validates the local Moodle session, deploys and verifies a private Cloudflare Worker, installs local renewal, and connects detected clients. The default bridge mode keeps the Bearer token out of client files. Use `moodle mcp login` when status reports `SESSION_EXPIRED`; use `moodle mcp deploy --repair` when Cloudflare authorization or managed deployment state needs repair.
+
+`moodle mcp connect` covers clients that read a configuration file. Use `moodle mcp pair` for claude.ai and other hosted clients that authenticate with OAuth: it prints the connector URL and a one-time pairing code that expires in ten minutes, and the Worker refuses every authorization attempt while no pairing window is open. Read the code back to the user; never paste it into a web form yourself.
 
 Never print or request the raw Moodle cookie, MCP access token, session sync token, or sesskey. An advanced operator may pipe a cookie directly to `moodle mcp session push --stdin`; do not place it in arguments or shell history.

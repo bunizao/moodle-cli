@@ -73,7 +73,9 @@ describe("Cloudflare Worker HTTP transport", () => {
       const response = await worker.fetch(request("/mcp", { method: "POST", headers, body: "{" }), env);
 
       expect(response.status).toBe(401);
-      expect(response.headers.get("www-authenticate")).toBe('Bearer realm="moodle-mcp"');
+      expect(response.headers.get("www-authenticate")).toBe(
+        'Bearer realm="moodle-mcp", resource_metadata="https://moodle-mcp.example.workers.dev/.well-known/oauth-protected-resource"',
+      );
       expect(await response.json()).toMatchObject({ status: 401, code: "INVALID_BEARER_TOKEN" });
     }
     expect(mcpServer.handle).not.toHaveBeenCalled();

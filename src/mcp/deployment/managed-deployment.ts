@@ -78,6 +78,12 @@ export interface WorkerSmokeResult {
   moodleUser: string;
 }
 
+export interface WorkerPairing {
+  code: string;
+  expiresAt: string;
+  authorizationServer: string;
+}
+
 export interface PreparedRelease {
   artifactDirectory: string;
   wranglerConfigPath: string;
@@ -153,6 +159,7 @@ export interface ManagedWorkerClient {
     mcpAccessToken: string;
     sessionSyncToken: string;
   }): Promise<WorkerSmokeResult>;
+  createPairing(input: { endpoint: string; sessionSyncToken: string }): Promise<WorkerPairing>;
 }
 
 export interface LocalDeploymentIntegration {
