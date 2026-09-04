@@ -1,6 +1,6 @@
 import { hasQueryCredential, readBearerToken, verifyBearerToken } from "./auth.js";
 import { createAuthBrokerApi, isOAuthRoute, parseAllowedRedirectHosts, type AuthBrokerApi } from "./auth-broker.js";
-import { DEFAULT_CLIENT_HOSTS, PROTECTED_RESOURCE_METADATA_PATH } from "./oauth.js";
+import { DEFAULT_CLIENT_HOSTS, matchesAllowedHost, PROTECTED_RESOURCE_METADATA_PATH } from "./oauth.js";
 import { problemResponse } from "./problems.js";
 import { MODERN_PROTOCOL_VERSION } from "../mcp/protocol.js";
 import { VERSION } from "../version.js";
@@ -58,7 +58,12 @@ export function createWorkerHandler(dependencies: WorkerDependencies): WorkerHan
       const url = new URL(request.url);
       const authorityProblem = validateRequestAuthority(request, url, env);
       if (authorityProblem) return authorityProblem;
-      if (hasQueryCredential(url)) return unauthorized("Bearer credentials are not accepted in the query string.");
+      if (hasQueryCredential(url)) {
+        return unauthorized(
+          "Bearer credentials are not accepted in the query string.",
+          url.pathname === MCP_PATH ? resourceMetadataUrl(url, env) : undefined,
+        );
+      }
 
       if (url.pathname === HEALTH_PATH && request.method === "GET") {
         return Response.json(
@@ -231,7 +236,7 @@ function validateRequestAuthority(request: Request, url: URL, env: WorkerEnv): R
       return problemResponse(403, "INVALID_ORIGIN", "Forbidden", "The request Origin is not allowed.");
     }
     const allowed = parsed.host.toLowerCase() === expectedHost
-      || allowedClientHosts(env).some((candidate) => host === candidate || host.endsWith(`.${candidate}`));
+      || matchesAllowedHost(host, allowedClientHosts(env));
     if (!allowed) {
       return problemResponse(403, "INVALID_ORIGIN", "Forbidden", "The request Origin is not allowed.");
     }

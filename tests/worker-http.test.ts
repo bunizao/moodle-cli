@@ -77,6 +77,21 @@ describe("Cloudflare Worker HTTP transport", () => {
     expect(mcpServer.handle).not.toHaveBeenCalled();
   });
 
+  it("includes resource metadata when rejecting query credentials on MCP", async () => {
+    const worker = createWorkerHandler({ mcpServer: { handle: vi.fn() }, broker: () => createBroker() });
+
+    const response = await worker.fetch(request("/mcp?access_token=wrong", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list", params: {} }),
+    }), await workerEnv());
+
+    expect(response.status).toBe(401);
+    expect(response.headers.get("www-authenticate")).toBe(
+      'Bearer realm="moodle-mcp", resource_metadata="https://moodle-mcp.example.workers.dev/.well-known/oauth-protected-resource"',
+    );
+  });
+
   it("accepts the previous access-token digest during rotation", async () => {
     const mcpServer = { handle: vi.fn(async () => ({ jsonrpc: "2.0", id: 1, result: {} })) };
     const worker = createWorkerHandler({ mcpServer, broker: () => createBroker() });
