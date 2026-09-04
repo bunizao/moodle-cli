@@ -218,6 +218,32 @@ describe("managed MCP CLI service", () => {
     expect(output.raw()).not.toContain("mcp-private-token");
   });
 
+  it("opens a pairing window and prints the connector URL without the sync token", async () => {
+    const receipt = deploymentReceipt();
+    const worker = workerClient();
+    const service = createMcpCommandService({
+      configLoader: async () => ({ baseUrl: "https://lms.example.edu" }),
+      receipts: receiptStore(receipt),
+      credentials: credentialStore(),
+      worker,
+    });
+
+    const result = await service.pair();
+
+    expect(worker.createPairing).toHaveBeenCalledWith({
+      endpoint: receipt.productionEndpoint,
+      sessionSyncToken: "sync-private-token",
+    });
+    expect(result.data).toMatchObject({
+      profile: receipt.profile,
+      endpoint: `${receipt.productionEndpoint}/mcp`,
+      authorizationServer: "https://moodle-school-mcp.demo.workers.dev",
+    });
+    expect(result.text).toContain(`${receipt.productionEndpoint}/mcp`);
+    expect(result.text).toContain("ABCD-2345");
+    expect(result.text).not.toContain("sync-private-token");
+  });
+
   it("rejects token reveal outside an interactive TTY at the service boundary", async () => {
     const service = createMcpCommandService({ stdin: { isTTY: false } as NodeJS.ReadStream });
 
@@ -491,6 +517,11 @@ function workerClient(
     putSession: vi.fn(async () => ({ revision: 5 })),
     getReadiness: vi.fn(async () => readiness),
     runSmoke: vi.fn(async () => ({ moodleUser: "Alice Example" })),
+    createPairing: vi.fn(async () => ({
+      code: "ABCD2345",
+      expiresAt: "2026-09-04T00:10:00.000Z",
+      authorizationServer: "https://moodle-school-mcp.demo.workers.dev",
+    })),
   };
 }
 

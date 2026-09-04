@@ -50,7 +50,7 @@ import {
   type RenewalSnapshot,
 } from "./renewal/index.js";
 import { createMoodleGateway } from "./gateway.js";
-import { LEGACY_PROTOCOL_VERSION, MODERN_PROTOCOL_VERSION } from "./protocol.js";
+import { SUPPORTED_PROTOCOL_VERSIONS } from "./protocol.js";
 import { createMoodleMcpServer } from "./server.js";
 import { serveMoodleMcpStdio } from "./stdio.js";
 
@@ -74,6 +74,7 @@ export interface McpCommandService {
   status(input: { verbose: boolean; logs: boolean }): Promise<McpCommandOutput>;
   login(): Promise<McpCommandOutput>;
   connect(input: { client?: string; mode: "bridge" | "remote"; showToken: boolean }): Promise<McpCommandOutput>;
+  pair(): Promise<McpCommandOutput>;
   remove(input: { yes: boolean }): Promise<McpCommandOutput>;
   serveStdio(): Promise<void>;
   bridge(profile?: string): Promise<void>;
@@ -264,7 +265,7 @@ class DefaultMcpCommandService implements McpCommandService {
       profile,
       localAuthentication,
       managed,
-      protocols: [MODERN_PROTOCOL_VERSION, LEGACY_PROTOCOL_VERSION],
+      protocols: [...SUPPORTED_PROTOCOL_VERSIONS],
       ...(input.verbose ? { serviceVersion: VERSION } : {}),
       ...(input.logs ? { logs: { available: false, reason: "live_tail_required" } } : {}),
     };
@@ -322,6 +323,35 @@ class DefaultMcpCommandService implements McpCommandService {
     return {
       data: { profile, mode: input.mode, connected: connected.map(({ client, configPath, changed }) => ({ client, configPath, changed })) },
       text,
+    };
+  }
+
+  async pair(): Promise<McpCommandOutput> {
+    const profile = deriveMcpProfile((await this.config()).baseUrl);
+    const [receipt, credentials] = await Promise.all([
+      this.receipts.read(profile),
+      this.credentials.read(profile),
+    ]);
+    if (!receipt || !credentials) throw new UsageError(`No managed Moodle MCP deployment exists for profile ${profile}.`);
+
+    const pairing = await this.worker.createPairing({
+      endpoint: receipt.productionEndpoint,
+      sessionSyncToken: credentials.sessionSyncToken,
+    });
+    const endpoint = `${receipt.productionEndpoint.replace(/\/$/u, "")}/mcp`;
+    return {
+      data: { profile, endpoint, expiresAt: pairing.expiresAt, authorizationServer: pairing.authorizationServer },
+      text: [
+        "Add this custom connector in Claude, then approve it with the pairing code.",
+        "",
+        "Connector URL",
+        `  ${endpoint}`,
+        "",
+        "Pairing code",
+        `  ${formatPairingCode(pairing.code)}`,
+        "",
+        `The code expires at ${pairing.expiresAt} and works for one approval.`,
+      ].join("\n"),
     };
   }
 
@@ -774,6 +804,10 @@ async function readAll(input: AsyncIterable<string | Uint8Array>): Promise<strin
   let value = "";
   for await (const chunk of input) value += typeof chunk === "string" ? chunk : decoder.decode(chunk, { stream: true });
   return value + decoder.decode();
+}
+
+function formatPairingCode(code: string): string {
+  return code.length === 8 ? `${code.slice(0, 4)}-${code.slice(4)}` : code;
 }
 
 function truncateName(value: string, maximum: number): string {

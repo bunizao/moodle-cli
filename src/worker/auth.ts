@@ -3,11 +3,15 @@ export async function digestBearerToken(token: string): Promise<string> {
   return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
-export async function verifyBearerToken(authorization: string | null, allowedDigests: Array<string | undefined>): Promise<boolean> {
-  if (!authorization?.startsWith("Bearer ")) return false;
+export function readBearerToken(authorization: string | null): string | null {
+  if (!authorization?.startsWith("Bearer ")) return null;
   const token = authorization.slice("Bearer ".length);
-  if (!token || token.trim() !== token) return false;
-  const candidateKey = await importHmacKey(await digestBearerToken(token), ["sign"]);
+  if (!token || token.trim() !== token) return null;
+  return token;
+}
+
+export async function verifySecret(secret: string, allowedDigests: Array<string | undefined>): Promise<boolean> {
+  const candidateKey = await importHmacKey(await digestBearerToken(secret), ["sign"]);
   if (!candidateKey) return false;
   const challenge = new TextEncoder().encode("moodle-mcp-bearer-digest");
   const signature = await crypto.subtle.sign("HMAC", candidateKey, challenge);
@@ -16,6 +20,12 @@ export async function verifyBearerToken(authorization: string | null, allowedDig
     if (allowedKey && await crypto.subtle.verify("HMAC", allowedKey, signature, challenge)) return true;
   }
   return false;
+}
+
+export async function verifyBearerToken(authorization: string | null, allowedDigests: Array<string | undefined>): Promise<boolean> {
+  const token = readBearerToken(authorization);
+  if (!token) return false;
+  return verifySecret(token, allowedDigests);
 }
 
 const QUERY_CREDENTIAL_NAMES = new Set(["access_token", "api_key", "apikey", "authorization", "bearer", "token"]);

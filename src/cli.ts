@@ -422,6 +422,12 @@ export function buildProgram(io: CliIO = {}): Command {
       await outputMcpResult(runtime, result, options);
     });
 
+  addOutputOptions(mutating(mcp.command("pair").description("Open a pairing window so Claude can connect to the remote MCP server."))).action(
+    async (options: OutputCommandOptions) => {
+      await outputMcpResult(runtime, await getMcpService().pair(), options);
+    },
+  );
+
   addOutputOptions(mutating(mcp.command("remove").description("Remove one managed Moodle MCP deployment."))).action(
     async (options: OutputCommandOptions) => {
       await outputMcpResult(runtime, await getMcpService().remove({ yes: Boolean(program.opts().yes) }), options);

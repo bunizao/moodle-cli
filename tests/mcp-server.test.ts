@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { MoodleGateway } from "../src/mcp/gateway.js";
-import { LEGACY_PROTOCOL_VERSION, MODERN_PROTOCOL_VERSION } from "../src/mcp/protocol.js";
+import { LEGACY_PROTOCOL_VERSION, MODERN_PROTOCOL_VERSION, SUPPORTED_PROTOCOL_VERSIONS } from "../src/mcp/protocol.js";
 import { createMoodleMcpServer } from "../src/mcp/server.js";
 
 describe("Moodle MCP server", () => {
@@ -24,7 +24,7 @@ describe("Moodle MCP server", () => {
       jsonrpc: "2.0",
       id: 1,
       result: {
-        supportedVersions: ["2026-07-28", "2025-11-25"],
+        supportedVersions: [...SUPPORTED_PROTOCOL_VERSIONS],
         capabilities: { tools: { listChanged: false } },
         serverInfo: { name: "moodle", version: "0.7.0-alpha.3" },
         resultType: "complete",
@@ -174,6 +174,30 @@ describe("Moodle MCP server", () => {
     });
   });
 
+  it("initializes the protocol versions claude.ai negotiates", async () => {
+    const server = createMoodleMcpServer(fakeGateway());
+    const initialize = await server.handle({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "initialize",
+      params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "claude-ai", version: "1" } },
+    });
+    const initialized = await server.handle({ jsonrpc: "2.0", method: "notifications/initialized" }, {
+      protocolVersion: "2025-06-18",
+    });
+    const listed = await server.handle(
+      { jsonrpc: "2.0", id: 2, method: "tools/list", params: {} },
+      { protocolVersion: "2025-06-18" },
+    );
+
+    expect(initialize).toMatchObject({
+      id: 1,
+      result: { protocolVersion: "2025-06-18", capabilities: { tools: { listChanged: false } } },
+    });
+    expect(initialized).toBeNull();
+    expect(listed).toMatchObject({ id: 2, result: { tools: expect.any(Array) } });
+  });
+
   it("rejects unsupported protocol versions with retry metadata", async () => {
     const server = createMoodleMcpServer(fakeGateway());
     const response = await server.handle(
@@ -188,7 +212,7 @@ describe("Moodle MCP server", () => {
         data: {
           type: "UNSUPPORTED_PROTOCOL_VERSION",
           protocolVersion: "2024-11-05",
-          supportedVersions: [MODERN_PROTOCOL_VERSION, LEGACY_PROTOCOL_VERSION],
+          supportedVersions: [...SUPPORTED_PROTOCOL_VERSIONS],
         },
       },
     });

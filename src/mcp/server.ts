@@ -6,13 +6,13 @@ import {
   jsonRpcFailure,
   jsonRpcSuccess,
   assertRequestMetadata,
-  LEGACY_PROTOCOL_VERSION,
   MODERN_PROTOCOL_VERSION,
   parseJsonRpcRequest,
   RequestMetadataMismatchError,
   resolveProtocolVersion,
   SUPPORTED_PROTOCOL_VERSIONS,
   UnsupportedProtocolVersionError,
+  usesLegacyInitialize,
   type JsonRpcId,
   type JsonRpcResponse,
   type McpRequestContext,
@@ -168,7 +168,7 @@ export function createMoodleMcpServer(
             _meta: RESULT_META,
           });
         }
-        if (request.method === "initialize" && protocolVersion === LEGACY_PROTOCOL_VERSION) {
+        if (request.method === "initialize" && usesLegacyInitialize(protocolVersion)) {
           return jsonRpcSuccess(id, {
             protocolVersion,
             capabilities: { tools: { listChanged: false } },

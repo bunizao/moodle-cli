@@ -2,7 +2,12 @@ import { z } from "zod";
 
 export const MODERN_PROTOCOL_VERSION = "2026-07-28" as const;
 export const LEGACY_PROTOCOL_VERSION = "2025-11-25" as const;
-export const SUPPORTED_PROTOCOL_VERSIONS = [MODERN_PROTOCOL_VERSION, LEGACY_PROTOCOL_VERSION] as const;
+export const COMPAT_PROTOCOL_VERSIONS = ["2025-06-18", "2025-03-26"] as const;
+export const SUPPORTED_PROTOCOL_VERSIONS = [
+  MODERN_PROTOCOL_VERSION,
+  LEGACY_PROTOCOL_VERSION,
+  ...COMPAT_PROTOCOL_VERSIONS,
+] as const;
 
 export type McpProtocolVersion = (typeof SUPPORTED_PROTOCOL_VERSIONS)[number];
 export type JsonRpcId = string | number | null;
@@ -136,6 +141,10 @@ export function assertRequestMetadata(
 
 export function isSupportedProtocolVersion(value: string): value is McpProtocolVersion {
   return SUPPORTED_PROTOCOL_VERSIONS.some((version) => version === value);
+}
+
+export function usesLegacyInitialize(version: McpProtocolVersion): boolean {
+  return version !== MODERN_PROTOCOL_VERSION;
 }
 
 export function jsonRpcSuccess(id: JsonRpcId, result: unknown): JsonRpcSuccess {

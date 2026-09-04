@@ -97,6 +97,11 @@ function dependencies(options: {
       putSession: vi.fn(async () => ({ revision: 5 })),
       getReadiness: vi.fn(async () => ({ status: "pass" as const, reasonCode: "SESSION_VALID", revision: 4 })),
       runSmoke: vi.fn(async () => ({ moodleUser: "Alice Example" })),
+      createPairing: vi.fn(async () => ({
+        code: "ABCD2345",
+        expiresAt: "2026-09-04T00:10:00.000Z",
+        authorizationServer: "https://moodle-school-mcp.demo.workers.dev",
+      })),
     },
     renewal: {
       install: vi.fn(async () => undefined),

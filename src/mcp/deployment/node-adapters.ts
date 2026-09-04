@@ -29,6 +29,7 @@ import {
   type RemoteWorker,
   type WranglerDeploymentAdapter,
   type WorkerReadiness,
+  type WorkerPairing,
   type WorkerSmokeResult,
 } from "./managed-deployment.js";
 
@@ -325,9 +326,15 @@ export class NodeReleaseMaterializer implements ReleaseMaterializer {
       preview_urls: true,
       vars: { MOODLE_ORIGIN: plan.intent.moodleOrigin },
       durable_objects: {
-        bindings: [{ name: "SESSION_BROKER", class_name: "SessionBroker" }],
+        bindings: [
+          { name: "SESSION_BROKER", class_name: "SessionBroker" },
+          { name: "AUTH_BROKER", class_name: "AuthBroker" },
+        ],
       },
-      migrations: [{ tag: "v1", new_sqlite_classes: ["SessionBroker"] }],
+      migrations: [
+        { tag: "v1", new_sqlite_classes: ["SessionBroker"] },
+        { tag: "v2", new_sqlite_classes: ["AuthBroker"] },
+      ],
     };
     const secrets: Record<string, string> = {
       MCP_ACCESS_TOKEN_DIGEST: digest(credentials.mcpAccessToken),
@@ -481,6 +488,24 @@ export class FetchManagedWorkerClient implements ManagedWorkerClient {
       throw new DeploymentApplyError("MCP_SMOKE_FAILED", "MCP get_user check returned no Moodle user");
     }
     return { moodleUser };
+  }
+
+  async createPairing(input: { endpoint: string; sessionSyncToken: string }): Promise<WorkerPairing> {
+    const response = await this.fetchImpl(endpointUrl(input.endpoint, "/pair"), {
+      method: "POST",
+      headers: { authorization: `Bearer ${input.sessionSyncToken}` },
+    });
+    const body = await safeJson(response);
+    if (!response.ok || !isRecord(body) || typeof body.code !== "string" || typeof body.expiresAt !== "string") {
+      throw new DeploymentApplyError("PAIRING_UNAVAILABLE", "The Worker could not open a pairing window");
+    }
+    return {
+      code: body.code,
+      expiresAt: body.expiresAt,
+      authorizationServer: typeof body.authorizationServer === "string"
+        ? body.authorizationServer
+        : new URL(endpointUrl(input.endpoint, "/pair")).origin,
+    };
   }
 
   private async mcpCall(

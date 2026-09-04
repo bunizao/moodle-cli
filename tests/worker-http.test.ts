@@ -69,7 +69,9 @@ describe("Cloudflare Worker HTTP transport", () => {
       const response = await worker.fetch(request("/mcp", { method: "POST", headers, body: "{" }), env);
 
       expect(response.status).toBe(401);
-      expect(response.headers.get("www-authenticate")).toBe('Bearer realm="moodle-mcp"');
+      expect(response.headers.get("www-authenticate")).toBe(
+        'Bearer realm="moodle-mcp", resource_metadata="https://moodle-mcp.example.workers.dev/.well-known/oauth-protected-resource"',
+      );
       expect(await response.json()).toMatchObject({ status: 401, code: "INVALID_BEARER_TOKEN" });
     }
     expect(mcpServer.handle).not.toHaveBeenCalled();
@@ -223,6 +225,57 @@ describe("Cloudflare Worker HTTP transport", () => {
 
     expect(response.status).toBe(400);
     expect(await response.json()).toMatchObject({ code: "MCP_PROTOCOL_METADATA_MISMATCH" });
+    expect(mcpServer.handle).not.toHaveBeenCalled();
+  });
+
+  it("accepts the versions claude.ai negotiates without modern metadata headers", async () => {
+    const mcpServer = { handle: vi.fn(async () => ({ jsonrpc: "2.0", id: 1, result: {} })) };
+    const worker = createWorkerHandler({ mcpServer, broker: () => createBroker() });
+    const env = await workerEnv();
+
+    const initialize = await worker.fetch(request("/mcp", {
+      method: "POST",
+      headers: { authorization: `Bearer ${ACCESS_TOKEN}`, "content-type": "application/json" },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "initialize",
+        params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "claude-ai", version: "1" } },
+      }),
+    }), env);
+    const listed = await worker.fetch(request("/mcp", {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${ACCESS_TOKEN}`,
+        "content-type": "application/json",
+        "mcp-protocol-version": "2025-06-18",
+      },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/list", params: {} }),
+    }), env);
+
+    expect(initialize.status).toBe(200);
+    expect(listed.status).toBe(200);
+    expect(mcpServer.handle).toHaveBeenNthCalledWith(1, expect.anything(), {});
+    expect(mcpServer.handle).toHaveBeenNthCalledWith(2, expect.anything(), { protocolVersion: "2025-06-18" });
+  });
+
+  it("still demands matching metadata headers on the modern protocol", async () => {
+    const mcpServer = { handle: vi.fn() };
+    const worker = createWorkerHandler({ mcpServer, broker: () => createBroker() });
+
+    const response = await worker.fetch(request("/mcp", {
+      method: "POST",
+      headers: { authorization: `Bearer ${ACCESS_TOKEN}`, "content-type": "application/json" },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "server/discover",
+        params: { _meta: { "io.modelcontextprotocol/protocolVersion": "2026-07-28" } },
+      }),
+    }), await workerEnv());
+
+    expect(response.status).toBe(400);
+    expect(await response.json()).toMatchObject({ code: "MCP_PROTOCOL_METADATA_INVALID" });
     expect(mcpServer.handle).not.toHaveBeenCalled();
   });
 
