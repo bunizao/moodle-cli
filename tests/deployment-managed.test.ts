@@ -243,7 +243,7 @@ describe("ManagedMcpDeployment transaction", () => {
     expect(deps.worker.runSmoke).toHaveBeenNthCalledWith(1, expect.objectContaining({
       endpoint: "https://version-next.preview.example",
     }));
-    expect(deps.wrangler.promote).toHaveBeenCalledWith(expect.objectContaining({ versionId: "version-next" }));
+    expect(deps.wrangler.promote).toHaveBeenCalledWith(expect.objectContaining({ versionId: "version-next", releaseDigest: INTENT.releaseDigest }));
     expect(deps.worker.runSmoke).toHaveBeenNthCalledWith(2, expect.objectContaining({
       endpoint: REMOTE.productionEndpoint,
     }));
@@ -256,6 +256,7 @@ describe("ManagedMcpDeployment transaction", () => {
     expect(deps.receipts.write).toHaveBeenCalledWith(expect.objectContaining({
       profile: INTENT.profile,
       productionVersionId: "version-next",
+      releaseDigest: INTENT.releaseDigest,
     }));
   });
 
@@ -576,5 +577,19 @@ describe("stable managed MCP surface", () => {
     expect(ONBOARDING_STAGES).toHaveLength(8);
     expect(ONBOARDING_COPY.introduction).toContain("Moodle MCP setup");
     expect(JSON.stringify(ONBOARDING_COPY)).not.toMatch(/cookieValue|Bearer [A-Za-z0-9]/);
+  });
+});
+
+describe("release digest reporting", () => {
+  it("keeps the receipt's release digest when Wrangler reports none", async () => {
+    const deps = dependencies({ remote: { ...REMOTE, releaseDigest: "" } });
+    const status = await new ManagedMcpDeployment(deps).inspect(INTENT.profile);
+    expect(status.worker?.releaseDigest).toBe(RECEIPT.releaseDigest);
+  });
+
+  it("prefers the digest Wrangler reports when it is present", async () => {
+    const deps = dependencies({ remote: { ...REMOTE, releaseDigest: "release-live" } });
+    const status = await new ManagedMcpDeployment(deps).inspect(INTENT.profile);
+    expect(status.worker?.releaseDigest).toBe("release-live");
   });
 });
