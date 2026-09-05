@@ -532,6 +532,7 @@ describe("ManagedMcpDeployment lifecycle", () => {
       productionVersionId: REMOTE.previousHealthyVersionId,
       releaseDigest: "",
       previousReleaseDigest: RECEIPT.releaseDigest,
+      restoredRelease: true,
     }));
 
     const failed = dependencies();
@@ -591,12 +592,21 @@ describe("release digest after rollback", () => {
     });
 
     const rolledBack = dependencies({
-      receipt: { ...RECEIPT, releaseDigest: "", previousReleaseDigest: RECEIPT.releaseDigest },
+      receipt: { ...RECEIPT, previousReleaseDigest: RECEIPT.releaseDigest, restoredRelease: true },
     });
     await expect(new ManagedMcpDeployment(rolledBack).plan(current)).resolves.toMatchObject({
       operation: "update",
       uploadCandidate: true,
     });
+  });
+
+  it("clears the restored marker once a release is deployed again", async () => {
+    const deps = dependencies({ receipt: { ...RECEIPT, restoredRelease: true } });
+    const manager = new ManagedMcpDeployment(deps);
+    await consume(manager.apply(await manager.plan({ ...INTENT, releaseDigest: RECEIPT.releaseDigest })));
+    expect(deps.wrangler.uploadCandidate).toHaveBeenCalled();
+    const written = vi.mocked(deps.receipts.write).mock.calls.at(-1)?.[0];
+    expect(written?.restoredRelease).toBeUndefined();
   });
 
   it("restores the recorded digest when rolling back to a release this CLI deployed", async () => {

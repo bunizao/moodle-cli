@@ -46,6 +46,9 @@ export interface DeploymentReceipt {
   // Digest of the release this one replaced, so a rollback can report what it
   // restored and the next deploy still sees the current release as changed.
   previousReleaseDigest?: string;
+  // Set when production was restored to an older version; the next deploy then
+  // re-releases even if the digests happen to match.
+  restoredRelease?: boolean;
   sessionRevision: number;
 }
 
@@ -250,7 +253,7 @@ export class ManagedMcpDeployment {
       : remote;
 
     const rotate = intent.rotateToken === true && credentials !== null;
-    const releaseChanged = existing?.releaseDigest !== intent.releaseDigest;
+    const releaseChanged = existing?.releaseDigest !== intent.releaseDigest || receipt?.restoredRelease === true;
     const uploadCandidate = !existing || replacingExisting || releaseChanged || intent.repair === true || rotate;
     return {
       intent: { ...intent },
@@ -795,8 +798,8 @@ function previousDigest(digest: string | undefined): Pick<DeploymentReceipt, "pr
 
 // An empty digest means the restored release is unknown to this CLI, which makes
 // the next deploy re-upload instead of treating the Worker as already current.
-function swappedDigests(receipt: DeploymentReceipt): Pick<DeploymentReceipt, "releaseDigest" | "previousReleaseDigest"> {
-  return { releaseDigest: receipt.previousReleaseDigest ?? "", previousReleaseDigest: receipt.releaseDigest };
+function swappedDigests(receipt: DeploymentReceipt): Pick<DeploymentReceipt, "releaseDigest" | "previousReleaseDigest" | "restoredRelease"> {
+  return { releaseDigest: receipt.previousReleaseDigest ?? "", previousReleaseDigest: receipt.releaseDigest, restoredRelease: true };
 }
 
 function started(stageId: OnboardingStageId): DeploymentEvent {
