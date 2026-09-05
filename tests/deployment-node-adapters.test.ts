@@ -591,7 +591,7 @@ describe("FetchManagedWorkerClient", () => {
     expect(metadata).toMatchObject({
       "io.modelcontextprotocol/protocolVersion": "2026-07-28",
       "io.modelcontextprotocol/clientCapabilities": {},
-      "io.modelcontextprotocol/clientInfo": { name: "moodle-cli-deployment-smoke", version: "0.7.0-alpha.5" },
+      "io.modelcontextprotocol/clientInfo": { name: "moodle-cli-deployment-smoke", version: "0.7.0-alpha.6" },
     });
   });
 });

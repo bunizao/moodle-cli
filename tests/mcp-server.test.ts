@@ -26,7 +26,7 @@ describe("Moodle MCP server", () => {
       result: {
         supportedVersions: ["2026-07-28", "2025-11-25"],
         capabilities: { tools: { listChanged: false } },
-        serverInfo: { name: "moodle", version: "0.7.0-alpha.5" },
+        serverInfo: { name: "moodle", version: "0.7.0-alpha.6" },
         resultType: "complete",
         _meta: { cacheScope: "private" },
       },
@@ -281,7 +281,7 @@ describe("Moodle MCP server", () => {
       result: {
         protocolVersion: LEGACY_PROTOCOL_VERSION,
         capabilities: { tools: { listChanged: false } },
-        serverInfo: { name: "moodle", version: "0.7.0-alpha.5" },
+        serverInfo: { name: "moodle", version: "0.7.0-alpha.6" },
       },
     });
     expect(listed).toMatchObject({ result: { tools: expect.any(Array) } });
