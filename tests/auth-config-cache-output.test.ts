@@ -3,7 +3,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import {
+  authFailureHint,
   braveProfilePaths,
+  cookieAccessBlocked,
   getAuthenticatedSession,
   getAuthenticatedSessionWithBrowserFallback,
   loadSessionFromEnv,
@@ -120,12 +122,14 @@ describe("auth chain", () => {
     expect(session.cookie.value).toBe("fresh-cookie");
   });
 
-  it("discovers Brave profiles on Linux and Windows", async () => {
+  it("discovers Brave profiles on Linux, Windows, and macOS", async () => {
     const homeDir = await mkdtemp(join(tmpdir(), "moodle-cli-brave-"));
     const linuxRoot = join(homeDir, ".config/BraveSoftware/Brave-Browser");
     const flatpakRoot = join(homeDir, ".var/app/com.brave.Browser/config/BraveSoftware/Brave-Browser");
     const windowsRoot = join(homeDir, "AppData/Local/BraveSoftware/Brave-Browser/User Data");
+    const macRoot = join(homeDir, "Library/Application Support/BraveSoftware/Brave-Browser");
     await Promise.all([
+      mkdir(join(macRoot, "Default"), { recursive: true }),
       mkdir(join(linuxRoot, "Default"), { recursive: true }),
       mkdir(join(linuxRoot, "Profile 2"), { recursive: true }),
       mkdir(join(linuxRoot, "Crashpad"), { recursive: true }),
@@ -141,7 +145,45 @@ describe("auth chain", () => {
     await expect(braveProfilePaths({ homeDir, platform: "win32" })).resolves.toEqual([
       join(windowsRoot, "Default"),
     ]);
-    await expect(braveProfilePaths({ homeDir, platform: "darwin" })).resolves.toEqual([]);
+    await expect(braveProfilePaths({ homeDir, platform: "darwin" })).resolves.toEqual([
+      join(macRoot, "Default"),
+    ]);
+  });
+
+  it("reports a blocked cookie store instead of looping on a browser login", async () => {
+    const openBrowser = vi.fn(async () => undefined);
+    const blocked = "Failed to read Safari cookies: EPERM: operation not permitted, open '/Users/x/Cookies.binarycookies'";
+
+    await expect(
+      getAuthenticatedSessionWithBrowserFallback(BASE_URL, {
+        homeDir: await mkdtemp(join(tmpdir(), "moodle-cli-auth-blocked-")),
+        platform: "darwin",
+        browserCookieProvider: async (_baseUrl, options) => {
+          options.onCookieWarnings?.([blocked]);
+          return [];
+        },
+        oktaCookieProvider: async () => [],
+        validateSession: async () => null,
+        openBrowser,
+      }),
+    ).rejects.toThrow(/Cannot read browser cookies/);
+
+    // A login cannot produce a cookie we are still not allowed to read.
+    expect(openBrowser).not.toHaveBeenCalled();
+  });
+
+  it("separates an unreadable cookie store from a missing session", () => {
+    const blocked = ["Failed to read Safari cookies: EPERM: operation not permitted"];
+    expect(cookieAccessBlocked(blocked)).toBe(true);
+    expect(cookieAccessBlocked(["Chrome cookies database not found."])).toBe(false);
+
+    const denied = authFailureHint(BASE_URL, blocked, "darwin");
+    expect(denied).toContain("Full Disk Access");
+    expect(denied).not.toContain("okta-auth");
+
+    const missing = authFailureHint(BASE_URL, ["Chrome cookies database not found."], "darwin");
+    expect(missing).toContain("okta-auth");
+    expect(missing).toContain("Chrome cookies database not found.");
   });
 });
 

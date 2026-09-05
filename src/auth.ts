@@ -63,6 +63,7 @@ export interface AuthOptions {
   cacheTtlMs?: number;
   now?: () => number;
   nonInteractive?: boolean;
+  onCookieWarnings?: (warnings: string[]) => void;
 }
 
 export interface BrowserLoginOptions extends AuthOptions {
@@ -97,8 +98,16 @@ export async function getAuthenticatedSession(
     return cached;
   }
 
+  const cookieWarnings: string[] = [];
+  const providerOptions: AuthOptions = {
+    ...options,
+    onCookieWarnings: (warnings) => {
+      cookieWarnings.push(...warnings);
+      options.onCookieWarnings?.(warnings);
+    },
+  };
   const browserProvider = options.browserCookieProvider ?? defaultBrowserCookieProvider;
-  const browserCookies = matchingMoodleSessionCookies(await browserProvider(baseUrl, options), baseUrl);
+  const browserCookies = matchingMoodleSessionCookies(await browserProvider(baseUrl, providerOptions), baseUrl);
   const browserSession = await firstValidSession(baseUrl, browserCookies, validate);
   if (browserSession) {
     await refreshSessionCache(baseUrl, browserSession.cookie, browserSession.context, options);
@@ -125,14 +134,26 @@ export async function getAuthenticatedSession(
     }
   }
 
-  throw new AuthError(`No usable MoodleSession found for ${baseUrl}.`, authFailureHint(baseUrl));
+  throw new AuthError(
+    `No usable MoodleSession found for ${baseUrl}.`,
+    authFailureHint(baseUrl, cookieWarnings, options.platform),
+  );
 }
 
 export async function getAuthenticatedSessionWithBrowserFallback(
   baseUrl: string,
   options: BrowserLoginOptions = {},
 ): Promise<AuthenticatedSession> {
-  const authOptions: AuthOptions = { ...options, noCache: true, nonInteractive: true };
+  const cookieWarnings: string[] = [];
+  const authOptions: AuthOptions = {
+    ...options,
+    noCache: true,
+    nonInteractive: true,
+    onCookieWarnings: (warnings) => {
+      cookieWarnings.push(...warnings);
+      options.onCookieWarnings?.(warnings);
+    },
+  };
   const browserAuthOptions: AuthOptions = {
     ...authOptions,
     env: { ...(options.env ?? process.env), [ENV_MOODLE_SESSION]: undefined },
@@ -153,6 +174,15 @@ export async function getAuthenticatedSessionWithBrowserFallback(
         throw error;
       }
     }
+  }
+
+  // A browser login writes a cookie we still would not be allowed to read, so
+  // the poll loop below would spin until it times out. Fail with the real cause.
+  if (cookieAccessBlocked(cookieWarnings)) {
+    throw new AuthError(
+      `Cannot read browser cookies for ${baseUrl}.`,
+      cookieAccessHint(cookieWarnings, options.platform),
+    );
   }
 
   const url = loginUrl(baseUrl);
@@ -229,7 +259,14 @@ export async function defaultBrowserCookieProvider(
   const braveProfiles = await braveProfilePaths(options);
   const brave = braveProfiles.length
     ? await getCookies({ url: baseUrl, browsers: ["chrome"], chromeProfile: braveProfiles, mode: "merge" })
-    : { cookies: [] };
+    : { cookies: [], warnings: [] as string[] };
+
+  // sweet-cookie reports unreadable stores here and documents that warnings never
+  // contain cookie values, so they are safe to relay to the user verbatim.
+  const warnings = [...(primary.warnings ?? []), ...(brave.warnings ?? [])];
+  if (warnings.length) {
+    options.onCookieWarnings?.(warnings);
+  }
 
   return [...primary.cookies, ...brave.cookies].map((cookie) => ({
     name: cookie.name,
@@ -250,7 +287,9 @@ export async function braveProfilePaths(options: AuthOptions = {}): Promise<stri
       ]
     : platform === "win32"
       ? [join(home, "AppData/Local/BraveSoftware/Brave-Browser/User Data")]
-      : [];
+      : platform === "darwin"
+        ? [join(home, "Library/Application Support/BraveSoftware/Brave-Browser")]
+        : [];
 
   const profiles: string[] = [];
   for (const root of roots) {
@@ -294,13 +333,52 @@ export async function loadSessionsFromOktaCli(
   return refreshed.length ? refreshed : stored;
 }
 
-export function authFailureHint(baseUrl: string): string {
+const COOKIE_ACCESS_DENIED = /EPERM|EACCES|operation not permitted|permission denied/i;
+
+/**
+ * True when the cookie store could not be read at all. Logging in again cannot
+ * fix this, so callers must not fall back to a browser login loop.
+ */
+export function cookieAccessBlocked(warnings: readonly string[]): boolean {
+  return warnings.some((warning) => COOKIE_ACCESS_DENIED.test(warning));
+}
+
+export function cookieAccessHint(
+  warnings: readonly string[],
+  platform: NodeJS.Platform = process.platform,
+): string {
+  const grant = platform === "darwin"
+    ? "Grant Full Disk Access to the application running this command (System Settings > Privacy & Security > Full Disk Access), then restart it."
+    : "Run this command as the user that owns the browser profile, or grant it read access to the browser cookie store.";
   return [
+    "The browser cookie store could not be read, so the session could not be detected.",
+    "If this runs inside a sandboxed app (an IDE or agent terminal), rerun it from a regular terminal first.",
+    grant,
+    `Alternatively set ${ENV_MOODLE_SESSION} to a valid MoodleSession cookie value.`,
+    "",
+    "Cookie store diagnostics:",
+    ...warnings.map((warning) => `  - ${warning}`),
+  ].join("\n");
+}
+
+export function authFailureHint(
+  baseUrl: string,
+  cookieWarnings: readonly string[] = [],
+  platform: NodeJS.Platform = process.platform,
+): string {
+  if (cookieAccessBlocked(cookieWarnings)) {
+    return cookieAccessHint(cookieWarnings, platform);
+  }
+  const lines = [
     `Log in to ${loginUrl(baseUrl)} in your browser, then rerun the command.`,
     `Or set ${ENV_MOODLE_SESSION} to a valid MoodleSession cookie value.`,
     `For automatic login, install okta-auth: ${OKTA_AUTH_INSTALL_COMMAND}, then run ${OKTA_AUTH_CONFIG_COMMAND}.`,
     `okta-auth: ${OKTA_AUTH_URL}`,
-  ].join("\n");
+  ];
+  if (cookieWarnings.length) {
+    lines.push("", "Cookie store diagnostics:", ...cookieWarnings.map((warning) => `  - ${warning}`));
+  }
+  return lines.join("\n");
 }
 
 export async function invalidateCachedSession(baseUrl: string, options: AuthOptions = {}): Promise<void> {
