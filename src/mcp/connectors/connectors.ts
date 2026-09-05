@@ -45,6 +45,7 @@ export interface ClientConnectorOptions {
   configPath: string;
   detectionPath?: string;
   command?: string;
+  commandArgs?: string[];
   mode?: "bridge" | "remote";
   endpoint?: string;
   accessToken?: string;
@@ -57,7 +58,7 @@ interface ConnectorCodec {
 }
 
 type ConnectorConnection =
-  | { mode: "bridge"; command: string; profile: string }
+  | { mode: "bridge"; command: string; args: string[] }
   | { mode: "remote"; endpoint: string; accessToken: string };
 
 export class ConfigFileClientConnector implements ClientConnector {
@@ -260,7 +261,7 @@ function jsonCodec(container: "mcpServers" | "servers"): ConnectorCodec {
 
 function jsonRegistration(connection: ConnectorConnection): Record<string, unknown> {
   return connection.mode === "bridge"
-    ? { command: connection.command, args: ["mcp", "bridge", "--profile", connection.profile] }
+    ? { command: connection.command, args: connection.args }
     : {
         type: "http",
         url: connection.endpoint,
@@ -276,7 +277,7 @@ function tomlBlock(registration: string, connection: ConnectorConnection): strin
   if (connection.mode === "bridge") {
     lines.push(
       `command = ${JSON.stringify(connection.command)}`,
-      `args = ${JSON.stringify(["mcp", "bridge", "--profile", connection.profile])}`,
+      `args = ${JSON.stringify(connection.args)}`,
     );
   } else {
     lines.push(
@@ -333,7 +334,11 @@ function validateProfile(profile: string): void {
 
 function resolveConnection(options: ClientConnectorOptions): ConnectorConnection {
   if (options.mode !== "remote") {
-    return { mode: "bridge", command: options.command ?? "moodle", profile: options.profile };
+    return {
+      mode: "bridge",
+      command: options.command ?? "moodle",
+      args: [...(options.commandArgs ?? []), "mcp", "bridge", "--profile", options.profile],
+    };
   }
   if (!options.endpoint || !options.accessToken) {
     throw new Error("Remote MCP connection requires an endpoint and access token");

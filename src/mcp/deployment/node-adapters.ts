@@ -1,3 +1,4 @@
+import { runtimeCommand } from "../self-command.js";
 import { spawn } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { chmod, copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
@@ -593,18 +594,19 @@ export interface DefaultManagedDeploymentOptions {
   homeDirectory?: string;
   platform?: NodeJS.Platform;
   executable?: string;
+  executableArgs?: string[];
   uid?: number;
   fetch?: typeof fetch;
   auth?: BrowserLoginOptions;
-  connector?: Omit<DefaultConnectorOptions, "homeDirectory" | "platform" | "command">;
-  renewal?: Omit<DefaultRenewalOptions, "homeDirectory" | "platform" | "executable" | "uid">;
+  connector?: Omit<DefaultConnectorOptions, "homeDirectory" | "platform" | "command" | "commandArgs">;
+  renewal?: Omit<DefaultRenewalOptions, "homeDirectory" | "platform" | "executable" | "executableArgs" | "uid">;
   dependencies?: Partial<ManagedMcpDeploymentDependencies>;
 }
 
 export function createDefaultManagedDeployment(options: DefaultManagedDeploymentOptions): ManagedMcpDeployment {
   const homeDirectory = options.homeDirectory ?? homedir();
   const platform = options.platform ?? process.platform;
-  const executable = options.executable ?? process.argv[1] ?? process.execPath;
+  const runtime = runtimeCommand(options.executable, options.executableArgs);
   const defaults: ManagedMcpDeploymentDependencies = {
     wrangler: new NodeWranglerDeploymentAdapter({ wranglerBinPath: options.wranglerBinPath }),
     materializer: new NodeReleaseMaterializer({
@@ -618,14 +620,16 @@ export function createDefaultManagedDeployment(options: DefaultManagedDeployment
       ...options.renewal,
       platform,
       homeDirectory,
-      executable,
+      executable: runtime.command,
+      executableArgs: runtime.args,
       uid: options.uid,
     }),
     clients: new DefaultClientIntegration({
       ...options.connector,
       platform,
       homeDirectory,
-      command: executable,
+      command: runtime.command,
+      commandArgs: runtime.args,
     }),
     receipts: new PrivateDeploymentReceiptStore(join(homeDirectory, ".config", "moodle-cli", "mcp", "deployments")),
     createToken: () => randomBytes(32).toString("base64url"),

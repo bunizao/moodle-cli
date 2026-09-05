@@ -4,6 +4,7 @@ export interface RenewalInstallOptions {
   platform: RenewalPlatform;
   profile: string;
   executable: string;
+  executableArgs?: string[];
   homeDirectory: string;
   uid?: number;
   intervalMinutes?: number;
@@ -94,14 +95,13 @@ function macOSPlan(options: RenewalInstallOptions, intervalMinutes: number): Ren
   const label = `com.moodle-cli.mcp-renewal.${options.profile}`;
   const path = `${trimEnd(options.homeDirectory, "/")}/Library/LaunchAgents/${label}.plist`;
   const target = `gui/${options.uid}`;
-  const args = renewalArgs(options.profile);
   const plist = [
     '<?xml version="1.0" encoding="UTF-8"?>',
     '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">',
     '<plist version="1.0"><dict>',
     `<key>Label</key><string>${xml(label)}</string>`,
     "<key>ProgramArguments</key><array>",
-    ...[options.executable, ...args].map((arg) => `<string>${xml(arg)}</string>`),
+    ...programArguments(options).map((arg) => `<string>${xml(arg)}</string>`),
     "</array>",
     `<key>StartInterval</key><integer>${intervalMinutes * 60}</integer>`,
     "<key>RunAtLoad</key><true/>",
@@ -126,7 +126,7 @@ function linuxPlan(options: RenewalInstallOptions, intervalMinutes: number): Ren
   const directory = `${trimEnd(options.homeDirectory, "/")}/.config/systemd/user`;
   const servicePath = `${directory}/${label}.service`;
   const timerPath = `${directory}/${label}.timer`;
-  const command = [options.executable, ...renewalArgs(options.profile)].map(systemdQuote).join(" ");
+  const command = programArguments(options).map(systemdQuote).join(" ");
   const service = [
     "[Unit]",
     `Description=Moodle MCP session renewal (${options.profile})`,
@@ -171,7 +171,7 @@ function linuxPlan(options: RenewalInstallOptions, intervalMinutes: number): Ren
 function windowsPlan(options: RenewalInstallOptions, intervalMinutes: number): RenewalInstallPlan {
   const label = `Moodle CLI MCP Renewal (${options.profile})`;
   const path = `${trimEnd(options.homeDirectory, "\\/")}\\AppData\\Local\\moodle-cli\\renewal\\${options.profile}.xml`;
-  const argumentsText = renewalArgs(options.profile).map(windowsArgument).join(" ");
+  const argumentsText = [...(options.executableArgs ?? []), ...renewalArgs(options.profile)].map(windowsArgument).join(" ");
   const task = [
     '<?xml version="1.0" encoding="UTF-8"?>',
     '<Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">',
@@ -200,12 +200,19 @@ function renewalArgs(profile: string): string[] {
   return ["mcp", "renewal", "run", "--profile", profile, "--json"];
 }
 
+function programArguments(options: RenewalInstallOptions): string[] {
+  return [options.executable, ...(options.executableArgs ?? []), ...renewalArgs(options.profile)];
+}
+
 function validateOptions(options: RenewalInstallOptions): void {
   if (!/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$/.test(options.profile)) {
     throw new Error("Invalid renewal profile name");
   }
   if (!options.executable || /[\r\n]/.test(options.executable)) {
     throw new Error("Invalid renewal executable path");
+  }
+  if ((options.executableArgs ?? []).some((arg) => /[\r\n]/.test(arg))) {
+    throw new Error("Invalid renewal executable arguments");
   }
   if (!options.homeDirectory || /[\r\n]/.test(options.homeDirectory)) {
     throw new Error("Invalid renewal home directory");

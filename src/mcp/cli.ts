@@ -139,7 +139,6 @@ class DefaultMcpCommandService implements McpCommandService {
     this.renewal = options.renewal ?? new DefaultRenewalIntegration({
       platform: process.platform,
       homeDirectory: this.homeDirectory,
-      executable: process.argv[1] ?? process.execPath,
     });
     this.sessions = options.sessions ?? createBackgroundMoodleSessionSource({
       env: options.env,
@@ -305,7 +304,6 @@ class DefaultMcpCommandService implements McpCommandService {
     const connectors = createDefaultClientConnectors(profile, {
       homeDirectory: this.homeDirectory,
       platform: process.platform,
-      command: process.argv[1] ?? "moodle",
       mode: input.mode,
       ...(input.mode === "remote" ? { endpoint, accessToken: credentials.mcpAccessToken } : {}),
     });
@@ -522,7 +520,6 @@ class DefaultMcpCommandService implements McpCommandService {
       compatibilityDate: this.options.compatibilityDate ?? WORKER_COMPATIBILITY_DATE,
       homeDirectory: this.homeDirectory,
       platform: process.platform,
-      executable: process.argv[1] ?? process.execPath,
       fetch: this.options.fetchImpl,
       auth: {
         env: this.options.env,
@@ -601,7 +598,6 @@ class DefaultMcpCommandService implements McpCommandService {
     const connectors = createDefaultClientConnectors(profile, {
       homeDirectory: this.homeDirectory,
       platform: process.platform,
-      command: process.argv[1] ?? "moodle",
     });
     const clients: string[] = [];
     for (const connector of connectors) {
