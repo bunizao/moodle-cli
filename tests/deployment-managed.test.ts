@@ -530,6 +530,8 @@ describe("ManagedMcpDeployment lifecycle", () => {
     }));
     expect(success.receipts.write).toHaveBeenCalledWith(expect.objectContaining({
       productionVersionId: REMOTE.previousHealthyVersionId,
+      releaseDigest: "",
+      previousReleaseDigest: RECEIPT.releaseDigest,
     }));
 
     const failed = dependencies();
@@ -577,6 +579,36 @@ describe("stable managed MCP surface", () => {
     expect(ONBOARDING_STAGES).toHaveLength(8);
     expect(ONBOARDING_COPY.introduction).toContain("Moodle MCP setup");
     expect(JSON.stringify(ONBOARDING_COPY)).not.toMatch(/cookieValue|Bearer [A-Za-z0-9]/);
+  });
+});
+
+describe("release digest after rollback", () => {
+  it("plans a candidate upload again once the current release was rolled back", async () => {
+    const current = { ...INTENT, releaseDigest: RECEIPT.releaseDigest };
+    await expect(new ManagedMcpDeployment(dependencies()).plan(current)).resolves.toMatchObject({
+      operation: "reconcile",
+      uploadCandidate: false,
+    });
+
+    const rolledBack = dependencies({
+      receipt: { ...RECEIPT, releaseDigest: "", previousReleaseDigest: RECEIPT.releaseDigest },
+    });
+    await expect(new ManagedMcpDeployment(rolledBack).plan(current)).resolves.toMatchObject({
+      operation: "update",
+      uploadCandidate: true,
+    });
+  });
+
+  it("restores the recorded digest when rolling back to a release this CLI deployed", async () => {
+    const deps = dependencies({
+      receipt: { ...RECEIPT, releaseDigest: "release-next", previousReleaseDigest: "release-current" },
+    });
+    await new ManagedMcpDeployment(deps).rollback(INTENT.profile);
+    expect(deps.receipts.write).toHaveBeenCalledWith(expect.objectContaining({
+      productionVersionId: REMOTE.previousHealthyVersionId,
+      releaseDigest: "release-current",
+      previousReleaseDigest: "release-next",
+    }));
   });
 });
 

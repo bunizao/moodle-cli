@@ -43,6 +43,9 @@ export interface DeploymentReceipt {
   productionEndpoint: string;
   productionVersionId: string;
   releaseDigest: string;
+  // Digest of the release this one replaced, so a rollback can report what it
+  // restored and the next deploy still sees the current release as changed.
+  previousReleaseDigest?: string;
   sessionRevision: number;
 }
 
@@ -572,6 +575,7 @@ export class ManagedMcpDeployment {
       await this.dependencies.receipts.write({
         ...receipt,
         productionVersionId: worker.previousHealthyVersionId,
+        ...swappedDigests(receipt),
         sessionRevision: upload.revision,
       });
       await this.reconcileLocalIntegrations(profile);
@@ -622,6 +626,7 @@ export class ManagedMcpDeployment {
     await this.dependencies.receipts.write({
       ...receipt,
       productionVersionId: previousVersionId,
+      ...swappedDigests(receipt),
     });
     return { status: "restored", versionId: previousVersionId };
   }
@@ -769,6 +774,7 @@ function makeReceipt(
       productionEndpoint: candidate.productionEndpoint,
       productionVersionId: candidate.versionId,
       releaseDigest: plan.intent.releaseDigest,
+      ...previousDigest(plan.existing?.releaseDigest),
       sessionRevision,
     };
   }
@@ -784,8 +790,19 @@ function makeReceipt(
     productionEndpoint: plan.existing.productionEndpoint,
     productionVersionId: plan.existing.productionVersionId,
     releaseDigest: plan.existing.releaseDigest,
+    ...previousDigest(plan.receipt?.previousReleaseDigest),
     sessionRevision,
   };
+}
+
+function previousDigest(digest: string | undefined): Pick<DeploymentReceipt, "previousReleaseDigest"> {
+  return digest === undefined ? {} : { previousReleaseDigest: digest };
+}
+
+// An empty digest means the restored release is unknown to this CLI, which makes
+// the next deploy re-upload instead of treating the Worker as already current.
+function swappedDigests(receipt: DeploymentReceipt): Pick<DeploymentReceipt, "releaseDigest" | "previousReleaseDigest"> {
+  return { releaseDigest: receipt.previousReleaseDigest ?? "", previousReleaseDigest: receipt.releaseDigest };
 }
 
 function started(stageId: OnboardingStageId): DeploymentEvent {
