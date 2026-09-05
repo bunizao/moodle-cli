@@ -95,18 +95,14 @@ export interface WranglerDeploymentAdapter {
     accountId: string;
     workerName: string;
     configPath: string;
+    secretsFilePath: string;
     releaseDigest: string;
   }): Promise<RemoteWorker>;
-  uploadSecrets(input: {
-    accountId: string;
-    workerName: string;
-    configPath: string;
-    secretsFilePath: string;
-  }): Promise<void>;
   uploadCandidate(input: {
     accountId: string;
     workerName: string;
     configPath: string;
+    secretsFilePath: string;
     releaseDigest: string;
     productionEndpoint: string;
   }): Promise<CandidateRelease>;
@@ -222,8 +218,8 @@ export class DeploymentPlanError extends Error {
 }
 
 export class DeploymentApplyError extends Error {
-  constructor(public readonly code: string, message: string) {
-    super(message);
+  constructor(public readonly code: string, message: string, options?: ErrorOptions) {
+    super(message, options);
     this.name = "DeploymentApplyError";
   }
 }
@@ -307,20 +303,16 @@ export class ManagedMcpDeployment {
 
       activeStage = "upload_private_credentials";
       yield started(activeStage);
-      if (plan.uploadCandidate) {
-        if (plan.operation === "create") {
-          initializedWorker = await this.dependencies.wrangler.initializeWorker({
-            accountId: plan.intent.accountId,
-            workerName: plan.intent.workerName,
-            configPath: prepared.wranglerConfigPath,
-            releaseDigest: plan.intent.releaseDigest,
-          });
-        }
-        await this.dependencies.wrangler.uploadSecrets({
+      // Secrets travel with the version they belong to. A separate `wrangler secret`
+      // upload deploys immediately and Cloudflare refuses it (error 10215) whenever
+      // production is not the newest version, which is exactly the state after a rollback.
+      if (plan.uploadCandidate && plan.operation === "create") {
+        initializedWorker = await this.dependencies.wrangler.initializeWorker({
           accountId: plan.intent.accountId,
           workerName: plan.intent.workerName,
           configPath: prepared.wranglerConfigPath,
           secretsFilePath: prepared.secretsFilePath,
+          releaseDigest: plan.intent.releaseDigest,
         });
         secretsUploaded = true;
       }
@@ -337,9 +329,11 @@ export class ManagedMcpDeployment {
           accountId: plan.intent.accountId,
           workerName: plan.intent.workerName,
           configPath: prepared.wranglerConfigPath,
+          secretsFilePath: prepared.secretsFilePath,
           releaseDigest: plan.intent.releaseDigest,
           productionEndpoint,
         });
+        secretsUploaded = true;
         if (!candidate.previewEndpoint) {
           await this.dependencies.wrangler.promote({
             accountId: plan.intent.accountId,
@@ -832,5 +826,6 @@ function asDeploymentError(error: unknown): DeploymentApplyError {
   if (error instanceof DeploymentApplyError) {
     return error;
   }
-  return new DeploymentApplyError("DEPLOYMENT_FAILED", "The managed Moodle MCP deployment failed");
+  const detail = error instanceof Error && error.message ? `: ${error.message}` : "";
+  return new DeploymentApplyError("DEPLOYMENT_FAILED", `The managed Moodle MCP deployment failed${detail}`, { cause: error });
 }

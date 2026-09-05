@@ -56,7 +56,6 @@ function dependencies(options: {
       checkAccess: vi.fn(async () => undefined),
       inspect: vi.fn(async () => remote),
       initializeWorker: vi.fn(async () => REMOTE),
-      uploadSecrets: vi.fn(async () => undefined),
       uploadCandidate: vi.fn(async () => ({
         versionId: "version-next",
         previewEndpoint: "https://version-next.preview.example",
@@ -219,11 +218,13 @@ describe("ManagedMcpDeployment transaction", () => {
       accountId: INTENT.accountId,
       workerName: INTENT.workerName,
       configPath: "/private/tmp/release/wrangler.json",
+      secretsFilePath: "/private/tmp/release/secrets.json",
       releaseDigest: INTENT.releaseDigest,
     });
+    expect(deps.wrangler.uploadCandidate).toHaveBeenCalledWith(expect.objectContaining({
+      secretsFilePath: "/private/tmp/release/secrets.json",
+    }));
     expect(vi.mocked(deps.wrangler.initializeWorker).mock.invocationCallOrder[0])
-      .toBeLessThan(vi.mocked(deps.wrangler.uploadSecrets).mock.invocationCallOrder[0]!);
-    expect(vi.mocked(deps.wrangler.uploadSecrets).mock.invocationCallOrder[0])
       .toBeLessThan(vi.mocked(deps.wrangler.uploadCandidate).mock.invocationCallOrder[0]!);
   });
 
@@ -399,7 +400,6 @@ describe("ManagedMcpDeployment transaction", () => {
     const manager = new ManagedMcpDeployment(deps);
     await consume(manager.apply(await manager.plan(INTENT)));
 
-    expect(deps.wrangler.uploadSecrets).not.toHaveBeenCalled();
     expect(deps.wrangler.initializeWorker).not.toHaveBeenCalled();
     expect(deps.wrangler.uploadCandidate).not.toHaveBeenCalled();
     expect(deps.wrangler.promote).not.toHaveBeenCalled();
@@ -429,7 +429,7 @@ describe("ManagedMcpDeployment transaction", () => {
   it("restores local credentials when secret rotation fails before Cloudflare accepts it", async () => {
     const deps = dependencies();
     vi.mocked(deps.createToken).mockReturnValueOnce("mcp-next").mockReturnValueOnce("sync-next");
-    vi.mocked(deps.wrangler.uploadSecrets).mockRejectedValueOnce(new Error("authorization expired"));
+    vi.mocked(deps.wrangler.uploadCandidate).mockRejectedValueOnce(new Error("authorization expired"));
     const manager = new ManagedMcpDeployment(deps);
     const result = await consumeFailure(manager.apply(await manager.plan({ ...INTENT, rotateToken: true })));
 
@@ -439,7 +439,7 @@ describe("ManagedMcpDeployment transaction", () => {
       sessionSyncToken: "sync-current",
       sessionEncryptionKey: "encryption-current",
     });
-    expect(deps.wrangler.uploadCandidate).not.toHaveBeenCalled();
+    expect(deps.wrangler.promote).not.toHaveBeenCalled();
   });
 
   it("removes a newly initialized Worker when its first deployment fails", async () => {

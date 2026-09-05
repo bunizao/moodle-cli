@@ -76,9 +76,21 @@ export class WranglerCommandError extends Error {
     public readonly stdout: string,
     public readonly stderr: string,
   ) {
-    super("Packaged Wrangler command failed");
+    super(wranglerFailureMessage(stderr, stdout));
     this.name = "WranglerCommandError";
   }
+}
+
+// Surface the Cloudflare API error Wrangler printed so a failed deploy explains
+// itself. Wrangler never echoes secret values here, only API problem text.
+function wranglerFailureMessage(stderr: string, stdout: string): string {
+  const lines = `${stderr}\n${stdout}`.replace(/\u001B\[[0-9;]*m/gu, "").split(/\r?\n/u).map((line) => line.trim());
+  const errorIndex = lines.findIndex((line) => line.includes("[ERROR]"));
+  const detail = errorIndex >= 0
+    ? lines.slice(errorIndex).filter((line) => line && !/^(To learn more|If you think this is a bug|Logs were written)/u.test(line))
+      .slice(0, 3).join(" ").replace(/^.*\[ERROR\]\s*/u, "")
+    : "";
+  return detail ? `Packaged Wrangler command failed: ${detail.slice(0, 600)}` : "Packaged Wrangler command failed";
 }
 
 export interface NodeWranglerOptions {
@@ -155,27 +167,11 @@ export class NodeWranglerDeploymentAdapter implements WranglerDeploymentAdapter 
     };
   }
 
-  async uploadSecrets(input: {
-    accountId: string;
-    workerName: string;
-    configPath: string;
-    secretsFilePath: string;
-  }): Promise<void> {
-    await this.wrangler([
-      "secret",
-      "bulk",
-      input.secretsFilePath,
-      "--name",
-      input.workerName,
-      "--config",
-      input.configPath,
-    ], input.accountId);
-  }
-
   async initializeWorker(input: {
     accountId: string;
     workerName: string;
     configPath: string;
+    secretsFilePath: string;
     releaseDigest: string;
   }): Promise<RemoteWorker> {
     let result: CommandResult | null = null;
@@ -186,6 +182,8 @@ export class NodeWranglerDeploymentAdapter implements WranglerDeploymentAdapter 
         input.workerName,
         "--config",
         input.configPath,
+        "--secrets-file",
+        input.secretsFilePath,
         "--message",
         `moodle-cli-bootstrap:${input.releaseDigest}`,
       ], input.accountId);
@@ -214,6 +212,7 @@ export class NodeWranglerDeploymentAdapter implements WranglerDeploymentAdapter 
     accountId: string;
     workerName: string;
     configPath: string;
+    secretsFilePath: string;
     releaseDigest: string;
     productionEndpoint: string;
   }): Promise<CandidateRelease> {
@@ -227,6 +226,8 @@ export class NodeWranglerDeploymentAdapter implements WranglerDeploymentAdapter 
         input.workerName,
         "--config",
         input.configPath,
+        "--secrets-file",
+        input.secretsFilePath,
         "--preview-alias",
         "moodle-cli-candidate",
         "--message",

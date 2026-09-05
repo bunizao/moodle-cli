@@ -164,6 +164,7 @@ describe("NodeWranglerDeploymentAdapter", () => {
       accountId: "account-1",
       workerName: "moodle-school-mcp",
       configPath,
+      secretsFilePath: "/private/release/secrets.json",
       releaseDigest: "release-next",
       productionEndpoint: "https://moodle-school-mcp.demo.workers.dev",
     });
@@ -221,6 +222,7 @@ describe("NodeWranglerDeploymentAdapter", () => {
       accountId: "account-1",
       workerName: "moodle-school-mcp",
       configPath,
+      secretsFilePath: "/private/release/secrets.json",
       releaseDigest: "release-next",
       productionEndpoint: "https://moodle-school-mcp.demo.workers.dev",
     })).resolves.toEqual({
@@ -258,6 +260,7 @@ describe("NodeWranglerDeploymentAdapter", () => {
       accountId: "account-1",
       workerName: "moodle-school-mcp",
       configPath,
+      secretsFilePath: "/private/release/secrets.json",
       releaseDigest: "release-next",
     })).resolves.toMatchObject({
       productionEndpoint: "https://moodle-school-mcp.demo.workers.dev",
@@ -272,6 +275,8 @@ describe("NodeWranglerDeploymentAdapter", () => {
         "moodle-school-mcp",
         "--config",
         configPath,
+        "--secrets-file",
+        "/private/release/secrets.json",
         "--message",
         "moodle-cli-bootstrap:release-next",
       ],
@@ -317,6 +322,7 @@ describe("NodeWranglerDeploymentAdapter", () => {
       accountId: "account-1",
       workerName: "moodle-school-mcp",
       configPath: "/private/release/wrangler.json",
+      secretsFilePath: "/private/release/secrets.json",
       releaseDigest: "release-next",
     })).rejects.toBeInstanceOf(WranglerCommandError);
     expect(workerExists).toBe(false);
@@ -361,22 +367,18 @@ describe("NodeWranglerDeploymentAdapter", () => {
     };
     const adapter = new NodeWranglerDeploymentAdapter({ wranglerBinPath: "/package/wrangler.js", runner });
 
-    await adapter.uploadSecrets({
-      accountId: "account-1",
-      workerName: "moodle-school-mcp",
-      configPath: "/private/release/wrangler.json",
-      secretsFilePath: "/private/release/secrets.json",
-    });
     await adapter.initializeWorker({
       accountId: "account-1",
       workerName: "moodle-school-mcp",
       configPath,
+      secretsFilePath: "/private/release/secrets.json",
       releaseDigest: "release-next",
     });
     await adapter.uploadCandidate({
       accountId: "account-1",
       workerName: "moodle-school-mcp",
       configPath,
+      secretsFilePath: "/private/release/secrets.json",
       releaseDigest: "release-next",
       productionEndpoint: "https://moodle-school-mcp.demo.workers.dev",
     });
@@ -398,6 +400,8 @@ describe("NodeWranglerDeploymentAdapter", () => {
     }
     const uploadCall = vi.mocked(runner.run).mock.calls.find((call) => call[1].includes("upload"));
     expect(uploadCall?.[1]).not.toContain("--json");
+    expect(uploadCall?.[1]).toContain("--secrets-file");
+    expect(vi.mocked(runner.run).mock.calls.some((call) => call[1].includes("secret"))).toBe(false);
     expect(uploadCall?.[2]).toMatchObject({
       WRANGLER_OUTPUT_FILE_PATH: join(root, "wrangler-version-upload.jsonl"),
     });
