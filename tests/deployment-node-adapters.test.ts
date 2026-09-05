@@ -380,7 +380,11 @@ describe("NodeWranglerDeploymentAdapter", () => {
       releaseDigest: "release-next",
       productionEndpoint: "https://moodle-school-mcp.demo.workers.dev",
     });
-    await adapter.promote({ accountId: "account-1", workerName: "moodle-school-mcp", versionId: "version-next" });
+    await adapter.promote({ accountId: "account-1", workerName: "moodle-school-mcp", versionId: "version-next", releaseDigest: "release-next" });
+    expect(vi.mocked(runner.run).mock.calls.at(-1)?.[1]).toEqual([
+      "/package/wrangler.js", "versions", "deploy", "version-next@100", "--name", "moodle-school-mcp", "--yes",
+      "--message", "moodle-cli-release:release-next",
+    ]);
     await adapter.restoreProduction({ accountId: "account-1", workerName: "moodle-school-mcp", previousVersionId: null });
     await adapter.removeWorker({
       accountId: "account-1",
@@ -421,7 +425,7 @@ describe("NodeWranglerDeploymentAdapter", () => {
           stdout: JSON.stringify([{
             id: "deployment-1",
             url: "https://moodle-school-mcp.demo.workers.dev",
-            message: "moodle-cli-release:release-next",
+            annotations: { "workers/message": "moodle-cli-release:release-next" },
             versions: [
               { version_id: "version-current", percentage: 100 },
               { version_id: "version-previous", percentage: 0 },

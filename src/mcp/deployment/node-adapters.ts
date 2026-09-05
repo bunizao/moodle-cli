@@ -249,7 +249,9 @@ export class NodeWranglerDeploymentAdapter implements WranglerDeploymentAdapter 
     }
   }
 
-  async promote(input: { accountId: string; workerName: string; versionId: string }): Promise<void> {
+  // restoreProduction re-deploys an older version whose digest is unknown, so the
+  // release annotation is only written when the caller knows it.
+  async promote(input: { accountId: string; workerName: string; versionId: string; releaseDigest?: string }): Promise<void> {
     await this.wrangler([
       "versions",
       "deploy",
@@ -257,6 +259,7 @@ export class NodeWranglerDeploymentAdapter implements WranglerDeploymentAdapter 
       "--name",
       input.workerName,
       "--yes",
+      ...(input.releaseDigest ? ["--message", `moodle-cli-release:${input.releaseDigest}`] : []),
     ], input.accountId);
   }
 

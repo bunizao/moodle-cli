@@ -107,7 +107,7 @@ export interface WranglerDeploymentAdapter {
     releaseDigest: string;
     productionEndpoint: string;
   }): Promise<CandidateRelease>;
-  promote(input: { accountId: string; workerName: string; versionId: string }): Promise<void>;
+  promote(input: { accountId: string; workerName: string; versionId: string; releaseDigest: string }): Promise<void>;
   restoreProduction(input: {
     accountId: string;
     workerName: string;
@@ -342,6 +342,7 @@ export class ManagedMcpDeployment {
             accountId: plan.intent.accountId,
             workerName: plan.intent.workerName,
             versionId: candidate.versionId,
+            releaseDigest: plan.intent.releaseDigest,
           });
           promoted = true;
         }
@@ -388,6 +389,7 @@ export class ManagedMcpDeployment {
           accountId: plan.intent.accountId,
           workerName: plan.intent.workerName,
           versionId: candidate.versionId,
+          releaseDigest: plan.intent.releaseDigest,
         });
         promoted = true;
       }
@@ -500,7 +502,12 @@ export class ManagedMcpDeployment {
       readinessReasonCode = remoteReadiness.reasonCode;
       sessionRevision = remoteReadiness.revision;
     }
-    const resolvedWorker = worker ? { ...worker, productionEndpoint: receipt.productionEndpoint } : null;
+    // Wrangler's deployments list only exposes deployment-level annotations, so a
+    // release promoted without one reads back with an empty digest. The receipt is
+    // authoritative for what this CLI released.
+    const resolvedWorker = worker
+      ? { ...worker, productionEndpoint: receipt.productionEndpoint, releaseDigest: worker.releaseDigest || receipt.releaseDigest }
+      : null;
     return {
       profile,
       worker: resolvedWorker,
