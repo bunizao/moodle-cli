@@ -137,8 +137,8 @@ export class NodeWranglerDeploymentAdapter implements WranglerDeploymentAdapter 
       throw error;
     }
     const document = parseJsonOutput(result.stdout);
-    const versionIds = deploymentVersionIds(document);
-    if (!versionIds.length) {
+    const [current, previous] = deploymentHistory(document);
+    if (!current) {
       return null;
     }
     const productionEndpoint = firstWorkersDevUrl(document) ?? `https://${workerName}.workers.dev`;
@@ -149,9 +149,9 @@ export class NodeWranglerDeploymentAdapter implements WranglerDeploymentAdapter 
       deploymentId,
       ownershipTag: deploymentId,
       productionEndpoint,
-      productionVersionId: versionIds[0]!,
-      previousHealthyVersionId: versionIds[1] ?? null,
-      releaseDigest: releaseDigestFromDocument(document) ?? "",
+      productionVersionId: current.versionId,
+      previousHealthyVersionId: previous?.versionId ?? null,
+      releaseDigest: releaseDigestFromMessage(current.message) ?? "",
     };
   }
 
@@ -783,22 +783,47 @@ function firstStringForKeys(value: unknown, keys: Set<string>): string | null {
   return collectStrings(value, keys)[0] ?? null;
 }
 
-function deploymentVersionIds(value: unknown): string[] {
-  const ids = collectStrings(value, new Set(["version_id", "versionId"]));
-  return [...new Set(ids)];
+interface DeploymentHistoryEntry {
+  versionId: string;
+  message: string | null;
 }
 
-function releaseDigestFromDocument(value: unknown): string | null {
-  let digestValue: string | null = null;
+// Wrangler's `deployments list --json` is oldest-first and the release annotation
+// belongs to one deployment, so the current release is the newest entry, not the
+// first version id or the first digest found anywhere in the document.
+function deploymentHistory(value: unknown): DeploymentHistoryEntry[] {
+  const entries: Array<DeploymentHistoryEntry & { createdOn: number; index: number }> = [];
   visit(value, (_key, item) => {
-    if (!digestValue && typeof item === "string") {
-      const match = item.match(/moodle-cli-release:([a-zA-Z0-9._-]+)/u);
-      if (match?.[1]) {
-        digestValue = match[1];
-      }
+    if (!isRecord(item) || !Array.isArray(item.versions)) {
+      return;
     }
+    const versionId = activeVersionId(item.versions);
+    if (!versionId) {
+      return;
+    }
+    const createdOn = typeof item.created_on === "string" ? Date.parse(item.created_on) : Number.NaN;
+    const message = isRecord(item.annotations) ? item.annotations["workers/message"] : undefined;
+    entries.push({
+      versionId,
+      message: typeof message === "string" ? message : null,
+      createdOn: Number.isNaN(createdOn) ? 0 : createdOn,
+      index: entries.length,
+    });
   });
-  return digestValue;
+  return entries
+    .sort((a, b) => b.createdOn - a.createdOn || b.index - a.index)
+    .map(({ versionId, message }) => ({ versionId, message }));
+}
+
+function activeVersionId(versions: unknown[]): string | null {
+  const records = versions.filter(isRecord);
+  const active = records.find((version) => version.percentage === 100) ?? records[0];
+  const id = active?.version_id ?? active?.versionId;
+  return typeof id === "string" ? id : null;
+}
+
+function releaseDigestFromMessage(message: string | null): string | null {
+  return message?.match(/moodle-cli-release:([a-zA-Z0-9._-]+)/u)?.[1] ?? null;
 }
 
 function collectAccountObjects(value: unknown): WranglerAccount[] {

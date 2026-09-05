@@ -422,15 +422,7 @@ describe("NodeWranglerDeploymentAdapter", () => {
           };
         }
         return {
-          stdout: JSON.stringify([{
-            id: "deployment-1",
-            url: "https://moodle-school-mcp.demo.workers.dev",
-            annotations: { "workers/message": "moodle-cli-release:release-next" },
-            versions: [
-              { version_id: "version-current", percentage: 100 },
-              { version_id: "version-previous", percentage: 0 },
-            ],
-          }]),
+          stdout: JSON.stringify(DEPLOYMENT_HISTORY),
           stderr: "",
         };
       }),
@@ -447,6 +439,7 @@ describe("NodeWranglerDeploymentAdapter", () => {
       releaseDigest: "release-next",
       productionEndpoint: "https://moodle-school-mcp.demo.workers.dev",
       productionVersionId: "version-current",
+      previousHealthyVersionId: "version-previous",
     });
     expect(runner.run).toHaveBeenLastCalledWith(
       process.execPath,
@@ -454,6 +447,66 @@ describe("NodeWranglerDeploymentAdapter", () => {
       { CLOUDFLARE_ACCOUNT_ID: "account-1" },
     );
     expect(vi.mocked(runner.run).mock.calls.flatMap((call) => call[1])).not.toContain("--account-id");
+  });
+});
+
+// Wrangler lists deployments oldest-first; the release annotation is per deployment.
+const DEPLOYMENT_HISTORY = [
+  {
+    id: "deployment-1",
+    created_on: "2026-09-05T05:26:46.035769Z",
+    url: "https://moodle-school-mcp.demo.workers.dev",
+    annotations: { "workers/message": "moodle-cli-release:release-old", "workers/triggered_by": "upload" },
+    versions: [{ version_id: "version-old", percentage: 100 }],
+  },
+  {
+    id: "deployment-2",
+    created_on: "2026-09-05T14:08:55.229301Z",
+    annotations: { "workers/triggered_by": "secret" },
+    versions: [{ version_id: "version-previous", percentage: 100 }],
+  },
+  {
+    id: "deployment-3",
+    created_on: "2026-09-05T14:09:01.816567Z",
+    annotations: { "workers/message": "moodle-cli-release:release-next", "workers/triggered_by": "deployment" },
+    versions: [{ version_id: "version-current", percentage: 100 }],
+  },
+];
+
+describe("NodeWranglerDeploymentAdapter inspect ordering", () => {
+  function inspectAdapter(deployments: unknown[]) {
+    const runner = { run: vi.fn(async () => ({ stdout: JSON.stringify(deployments), stderr: "" })) };
+    return new NodeWranglerDeploymentAdapter({ wranglerBinPath: "/package/wrangler.js", runner });
+  }
+
+  it("treats the newest deployment as production and the one before it as the rollback target", async () => {
+    await expect(inspectAdapter(DEPLOYMENT_HISTORY).inspect("account-1", "moodle-school-mcp")).resolves.toMatchObject({
+      productionVersionId: "version-current",
+      previousHealthyVersionId: "version-previous",
+      releaseDigest: "release-next",
+    });
+  });
+
+  it("does not borrow an older deployment's release digest", async () => {
+    const history = [DEPLOYMENT_HISTORY[0], DEPLOYMENT_HISTORY[2], {
+      id: "deployment-4",
+      created_on: "2026-09-06T00:00:00.000000Z",
+      annotations: { "workers/triggered_by": "secret" },
+      versions: [{ version_id: "version-secret", percentage: 100 }],
+    }];
+    await expect(inspectAdapter(history).inspect("account-1", "moodle-school-mcp")).resolves.toMatchObject({
+      productionVersionId: "version-secret",
+      previousHealthyVersionId: "version-current",
+      releaseDigest: "",
+    });
+  });
+
+  it("falls back to list order when deployments carry no timestamps", async () => {
+    const history = DEPLOYMENT_HISTORY.map(({ created_on: _createdOn, ...entry }) => entry);
+    await expect(inspectAdapter(history).inspect("account-1", "moodle-school-mcp")).resolves.toMatchObject({
+      productionVersionId: "version-current",
+      previousHealthyVersionId: "version-previous",
+    });
   });
 });
 
