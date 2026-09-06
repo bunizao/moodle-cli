@@ -1,5 +1,5 @@
 .venv/
-node_modules/
+node_modules
 config.yaml
 __pycache__/
 *.pyc
