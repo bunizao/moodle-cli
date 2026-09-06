@@ -333,7 +333,7 @@ describe("managed MCP CLI service", () => {
   it("notifies instead of opening a browser when background authentication needs MFA", async () => {
     const receipt = deploymentReceipt();
     const sessions = sessionSource();
-    vi.mocked(sessions.loadValidated).mockRejectedValueOnce(new AuthError("MFA required"));
+    vi.mocked(sessions.loadValidated).mockRejectedValueOnce(new AuthError("MFA required", "Sign in to Moodle in your browser."));
     const notify = vi.fn(async () => undefined);
     const worker = workerClient({ status: "fail", reasonCode: "SESSION_EXPIRED", revision: 4 });
     const service = createMcpCommandService({
@@ -354,6 +354,7 @@ describe("managed MCP CLI service", () => {
       state: "needs_sign_in",
       reasonCode: "SESSION_EXPIRED",
       revision: 4,
+      detail: "MFA required Sign in to Moodle in your browser.",
     });
   });
 

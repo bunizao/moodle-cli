@@ -399,6 +399,7 @@ class DefaultMcpCommandService implements McpCommandService {
       agentInstalled: await this.renewal.inspect(profile),
     };
     let replacement: MoodleSessionMaterial | null = null;
+    let signInDetail: string | undefined;
     if (snapshot.remote === "expiring" || snapshot.remote === "expired") {
       try {
         replacement = await this.sessions.loadValidated(profile, receipt.moodleOrigin);
@@ -408,6 +409,7 @@ class DefaultMcpCommandService implements McpCommandService {
           throw error;
         }
         snapshot.replacement = { source: "mfa_required" };
+        signInDetail = [error.message, error.hint].filter(Boolean).join(" ");
       }
     }
 
@@ -463,9 +465,11 @@ class DefaultMcpCommandService implements McpCommandService {
         text: "Moodle MCP session renewed.",
       };
     }
+    // A background job cannot open a browser, so record why no replacement cookie was found.
+    const detail = decision.state === "needs_sign_in" && signInDetail ? { detail: signInDetail } : {};
     return {
-      data: { profile, state: decision.state, reasonCode: decision.reasonCode, revision: receipt.sessionRevision },
-      text: renewalResultText(decision),
+      data: { profile, state: decision.state, reasonCode: decision.reasonCode, revision: receipt.sessionRevision, ...detail },
+      text: [renewalResultText(decision), signInDetail].filter(Boolean).join("\n"),
     };
   }
 

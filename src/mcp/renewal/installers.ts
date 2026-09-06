@@ -95,6 +95,8 @@ function macOSPlan(options: RenewalInstallOptions, intervalMinutes: number): Ren
   const label = `com.moodle-cli.mcp-renewal.${options.profile}`;
   const path = `${trimEnd(options.homeDirectory, "/")}/Library/LaunchAgents/${label}.plist`;
   const target = `gui/${options.uid}`;
+  // launchd discards job output unless told where to put it; ~/Library/Logs always exists.
+  const logPath = `${trimEnd(options.homeDirectory, "/")}/Library/Logs/${label}.log`;
   const plist = [
     '<?xml version="1.0" encoding="UTF-8"?>',
     '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">',
@@ -105,6 +107,8 @@ function macOSPlan(options: RenewalInstallOptions, intervalMinutes: number): Ren
     "</array>",
     `<key>StartInterval</key><integer>${intervalMinutes * 60}</integer>`,
     "<key>RunAtLoad</key><true/>",
+    `<key>StandardOutPath</key><string>${xml(logPath)}</string>`,
+    `<key>StandardErrorPath</key><string>${xml(logPath)}</string>`,
     "</dict></plist>",
     "",
   ].join("\n");

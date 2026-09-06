@@ -58,6 +58,19 @@ describe("RenewalInstaller", () => {
     expect(calls.join("\n")).not.toContain("another-profile");
   });
 
+  it("captures launchd job output in the user's log directory", () => {
+    const plan = buildRenewalInstallPlan({
+      platform: "darwin",
+      profile: "school",
+      executable: "/usr/bin/moodle",
+      homeDirectory: "/Users/alice/",
+      uid: 501,
+    });
+    const plist = plan.files[0]?.content ?? "";
+    expect(plist).toContain("<key>StandardOutPath</key><string>/Users/alice/Library/Logs/com.moodle-cli.mcp-renewal.school.log</string>");
+    expect(plist).toContain("<key>StandardErrorPath</key><string>/Users/alice/Library/Logs/com.moodle-cli.mcp-renewal.school.log</string>");
+  });
+
   it("rejects command or profile injection", () => {
     expect(() => buildRenewalInstallPlan({
       platform: "linux",
