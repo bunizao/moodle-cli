@@ -19,7 +19,7 @@ Wait for the answer before doing setup work. Do not ask the student to find the 
 
 Once the student shares a URL, complete the setup on their computer:
 
-- Check for Node.js 22+ and Bun. Install `moodle-cli` with the runtime available on the computer. Use `bunx --bun moodle-cli` as the command prefix when Bun is the only runtime.
+- Check for Node.js 22.13+ and Bun (older Node cannot read browser cookies). Install `moodle-cli` with the runtime available on the computer. Use `bunx --bun moodle-cli` as the command prefix when Bun is the only runtime.
 - Follow redirects and resolve the URL to the final Moodle origin in the form `https://host`. Remove the path, query, and fragment. Confirm that the origin serves Moodle before saving it.
 - Read `~/.config/moodle-cli/config.yaml` if it exists. Set `base_url` to the verified origin and preserve the other settings.
 - Tell the student that Moodle may open in their browser and that you will wait while they complete their university sign-in. Run `moodle auth login`. If a browser opens, let the student finish SSO there, then continue when the command returns.

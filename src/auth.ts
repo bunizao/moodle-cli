@@ -334,13 +334,17 @@ export async function loadSessionsFromOktaCli(
 }
 
 const COOKIE_ACCESS_DENIED = /EPERM|EACCES|operation not permitted|permission denied/i;
+// Chromium cookie stores are read through node:sqlite, which Node only ships
+// unflagged from 22.13. Older runtimes cannot read any browser cookie.
+const COOKIE_SQLITE_UNAVAILABLE = /No such built-in module: node:sqlite/i;
+export const MINIMUM_NODE_FOR_BROWSER_COOKIES = "22.13.0";
 
 /**
  * True when the cookie store could not be read at all. Logging in again cannot
  * fix this, so callers must not fall back to a browser login loop.
  */
 export function cookieAccessBlocked(warnings: readonly string[]): boolean {
-  return warnings.some((warning) => COOKIE_ACCESS_DENIED.test(warning));
+  return warnings.some((warning) => COOKIE_ACCESS_DENIED.test(warning) || COOKIE_SQLITE_UNAVAILABLE.test(warning));
 }
 
 export function cookieAccessHint(
@@ -350,10 +354,17 @@ export function cookieAccessHint(
   const grant = platform === "darwin"
     ? "Grant Full Disk Access to the application running this command (System Settings > Privacy & Security > Full Disk Access), then restart it."
     : "Run this command as the user that owns the browser profile, or grant it read access to the browser cookie store.";
+  const remedy = warnings.some((warning) => COOKIE_SQLITE_UNAVAILABLE.test(warning))
+    ? [
+        `This Node.js runtime has no node:sqlite, which is needed to read browser cookies. Use Node.js ${MINIMUM_NODE_FOR_BROWSER_COOKIES} or newer, or run the CLI with Bun (bunx --bun moodle-cli).`,
+      ]
+    : [
+        "If this runs inside a sandboxed app (an IDE or agent terminal), rerun it from a regular terminal first.",
+        grant,
+      ];
   return [
     "The browser cookie store could not be read, so the session could not be detected.",
-    "If this runs inside a sandboxed app (an IDE or agent terminal), rerun it from a regular terminal first.",
-    grant,
+    ...remedy,
     `Alternatively set ${ENV_MOODLE_SESSION} to a valid MoodleSession cookie value.`,
     "",
     "Cookie store diagnostics:",

@@ -177,6 +177,11 @@ describe("auth chain", () => {
     expect(cookieAccessBlocked(blocked)).toBe(true);
     expect(cookieAccessBlocked(["Chrome cookies database not found."])).toBe(false);
 
+    const sqliteMissing = ["node:sqlite failed reading Chrome cookies (requires modern Chromium, e.g. Chrome >= 100): No such built-in module: node:sqlite"];
+    expect(cookieAccessBlocked(sqliteMissing)).toBe(true);
+    expect(authFailureHint(BASE_URL, sqliteMissing, "darwin")).toMatch(/Node\.js 22\.13\.0 or newer/);
+    expect(authFailureHint(BASE_URL, sqliteMissing, "darwin")).not.toMatch(/Full Disk Access/);
+
     const denied = authFailureHint(BASE_URL, blocked, "darwin");
     expect(denied).toContain("Full Disk Access");
     expect(denied).not.toContain("okta-auth");

@@ -6,7 +6,7 @@ Let it keep up with deadlines and grades, fetch course files, and search forum d
 
 [![npm version](https://img.shields.io/npm/v/moodle-cli?logo=npm)](https://www.npmjs.com/package/moodle-cli)
 [![CI](https://github.com/bunizao/moodle-cli/actions/workflows/ci.yml/badge.svg)](https://github.com/bunizao/moodle-cli/actions/workflows/ci.yml)
-[![Node.js 22+](https://img.shields.io/badge/Node.js-22%2B-339933?logo=nodedotjs&logoColor=white)](https://nodejs.org/)
+[![Node.js 22.13+](https://img.shields.io/badge/Node.js-22.13%2B-339933?logo=nodedotjs&logoColor=white)](https://nodejs.org/)
 [![Bun](https://img.shields.io/badge/Bun-supported-fbf0df?logo=bun&logoColor=black)](https://bun.sh/)
 [![MIT License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
@@ -32,7 +32,7 @@ Your agent asks for your Moodle URL and opens your university's sign-in page whe
 
 ### Install and sign in manually
 
-Use Node.js 22+ or Bun:
+Use Node.js 22.13+ (needed for `node:sqlite`, which reads browser cookies) or Bun:
 
 ```bash
 # npm
