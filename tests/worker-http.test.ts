@@ -55,7 +55,11 @@ describe("Cloudflare Worker HTTP transport", () => {
     expect(response.status).toBe(405);
     expect(response.headers.get("allow")).toBe("POST");
     expect(response.headers.get("content-type")).toContain("application/problem+json");
-    expect(await response.json()).toMatchObject({ status: 405, code: "METHOD_NOT_ALLOWED" });
+    const problem = await response.json();
+    expect(problem).toMatchObject({ status: 405, code: "METHOD_NOT_ALLOWED" });
+    // The problem type stays a relative reference: it resolves against the Worker's own
+    // origin instead of naming a domain nobody owns.
+    expect(problem).toMatchObject({ type: "/problems/method-not-allowed" });
   });
 
   it("rejects missing and invalid Bearer credentials before parsing JSON", async () => {
