@@ -382,10 +382,9 @@ class DefaultMcpCommandService implements McpCommandService {
     }
 
     let receipt = storedReceipt;
-    const readiness = await this.worker.getReadiness({
-      endpoint: receipt.productionEndpoint,
-      sessionSyncToken: credentials.sessionSyncToken,
-    });
+    const target = { endpoint: receipt.productionEndpoint, sessionSyncToken: credentials.sessionSyncToken };
+    await this.worker.touchSession(target);
+    const readiness = await this.worker.getReadiness(target);
     if (readiness.revision !== null && readiness.revision !== receipt.sessionRevision) {
       receipt = await this.writeRenewalRevision(receipt, readiness.revision);
     }

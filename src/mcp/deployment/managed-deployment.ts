@@ -145,6 +145,9 @@ export interface ManagedWorkerClient {
     expectedRevision: number | null;
   }): Promise<{ revision: number }>;
   getReadiness(input: { endpoint: string; sessionSyncToken: string }): Promise<WorkerReadiness>;
+  // Readiness only reflects the last scheduled keepalive touch, so callers that need
+  // the live Moodle verdict ask the Worker to touch the session first.
+  touchSession(input: { endpoint: string; sessionSyncToken: string }): Promise<void>;
   runSmoke(input: {
     endpoint: string;
     mcpAccessToken: string;
@@ -494,10 +497,9 @@ export class ManagedMcpDeployment {
     let readinessReasonCode: string | null = null;
     let sessionRevision: number | null = null;
     if (worker && credentials) {
-      const remoteReadiness = await this.dependencies.worker.getReadiness({
-        endpoint: receipt.productionEndpoint,
-        sessionSyncToken: credentials.sessionSyncToken,
-      });
+      const target = { endpoint: receipt.productionEndpoint, sessionSyncToken: credentials.sessionSyncToken };
+      await this.dependencies.worker.touchSession(target);
+      const remoteReadiness = await this.dependencies.worker.getReadiness(target);
       readiness = remoteReadiness.status;
       readinessReasonCode = remoteReadiness.reasonCode;
       sessionRevision = remoteReadiness.revision;

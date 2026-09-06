@@ -377,8 +377,10 @@ export class DefaultMoodleSessionSource implements MoodleSessionSource {
   constructor(private readonly options: DefaultMoodleSessionSourceOptions = {}) {}
 
   async loadValidated(_profile: string, moodleOrigin: string): Promise<MoodleSessionMaterial> {
+    // Renewal runs because the remote session died, and the local cache usually holds
+    // that same cookie. Skip it so the replacement is a freshly validated browser cookie.
     const session = this.options.interactive === false
-      ? await getAuthenticatedSession(moodleOrigin, { ...this.options, nonInteractive: true })
+      ? await getAuthenticatedSession(moodleOrigin, { ...this.options, nonInteractive: true, noCache: true })
       : await getAuthenticatedSessionWithBrowserFallback(moodleOrigin, this.options);
     return {
       moodleOrigin,
@@ -436,7 +438,7 @@ export class FetchManagedWorkerClient implements ManagedWorkerClient {
       return { revision: body.revision };
     }
     const code = isRecord(body) && typeof body.code === "string" ? body.code : "SESSION_UPLOAD_FAILED";
-    throw new DeploymentApplyError(code, "The Worker rejected the Moodle session update");
+    throw new DeploymentApplyError(code, `The Worker rejected the Moodle session update (${code})`);
   }
 
   async getReadiness(input: { endpoint: string; sessionSyncToken: string }): Promise<WorkerReadiness> {
@@ -458,6 +460,16 @@ export class FetchManagedWorkerClient implements ManagedWorkerClient {
       };
     }
     return { status: "fail", reasonCode: null, revision: null };
+  }
+
+  async touchSession(input: { endpoint: string; sessionSyncToken: string }): Promise<void> {
+    // The verdict lands in the Worker's stored session state and is read back through
+    // getReadiness, so 409 (expired/missing) and 503 (Moodle unreachable) are outcomes
+    // here, not failures.
+    await this.fetchWithRetry(endpointUrl(input.endpoint, "/session/touch"), {
+      method: "POST",
+      headers: { authorization: `Bearer ${input.sessionSyncToken}` },
+    }, isRetryableWorkerRouting);
   }
 
   async runSmoke(input: {
@@ -704,6 +716,10 @@ function isRetryableSessionUpload(status: number): boolean {
 
 function isRetryableWorkerPropagation(status: number): boolean {
   return status === 404 || status === 429 || status >= 500;
+}
+
+function isRetryableWorkerRouting(status: number): boolean {
+  return status === 404 || status === 429;
 }
 
 async function safeJson(response: Response): Promise<unknown> {

@@ -2,6 +2,7 @@ import { mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
+import { writeCachedSession } from "../src/session-cache.js";
 import {
   FetchManagedWorkerClient,
   NodeDeploymentCommandRunner,
@@ -542,6 +543,21 @@ describe("FetchManagedWorkerClient", () => {
     expect(sleep).toHaveBeenNthCalledWith(3, 2_000);
   });
 
+  it("treats an expired verdict from the touch route as an outcome, not a failure", async () => {
+    const fetchImpl = vi.fn()
+      .mockResolvedValueOnce(new Response("not found", { status: 404 }))
+      .mockResolvedValueOnce(Response.json({ code: "SESSION_EXPIRED" }, { status: 409 }));
+    const client = new FetchManagedWorkerClient(fetchImpl as unknown as typeof fetch, vi.fn(async () => undefined));
+
+    await expect(client.touchSession({ endpoint: "https://worker.example", sessionSyncToken: "sync-token" }))
+      .resolves.toBeUndefined();
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(fetchImpl).toHaveBeenLastCalledWith("https://worker.example/session/touch", expect.objectContaining({
+      method: "POST",
+      headers: { authorization: "Bearer sync-token" },
+    }));
+  });
+
   it("retains readiness reason codes and remote revisions", async () => {
     const structured = new FetchManagedWorkerClient(vi.fn(async () => Response.json({
       status: "warn",
@@ -654,10 +670,10 @@ describe("FetchManagedWorkerClient", () => {
 });
 
 describe("background Moodle session source", () => {
-  it("uses cache, browser cookies, and Okta without opening an interactive browser", async () => {
+  it("uses browser cookies and Okta without opening an interactive browser", async () => {
     const openBrowser = vi.fn(async () => undefined);
     const source = createBackgroundMoodleSessionSource({
-      noCache: true,
+      homeDir: await mkdtemp(join(tmpdir(), "moodle-session-source-")),
       openBrowser,
       browserCookieProvider: async () => [],
       oktaCookieProvider: async () => [],
@@ -666,6 +682,30 @@ describe("background Moodle session source", () => {
     await expect(source.loadValidated("school", "https://moodle.example.edu"))
       .rejects.toThrow("No usable MoodleSession");
     expect(openBrowser).not.toHaveBeenCalled();
+  });
+
+  it("skips the local session cache so a dead cookie is never re-uploaded as the replacement", async () => {
+    const homeDir = await mkdtemp(join(tmpdir(), "moodle-session-source-"));
+    const baseUrl = "https://moodle.example.edu";
+    await writeCachedSession({
+      baseUrl,
+      cookieName: "MoodleSession",
+      cookieValue: "dead-cookie",
+      sesskey: "old-sesskey",
+      userid: 7,
+      savedAt: Date.now(),
+    }, { homeDir });
+    const validateSession = vi.fn(async (_url: string, cookie: { value: string }) =>
+      cookie.value === "fresh-cookie" ? { sesskey: "new-sesskey", userid: 7 } : null);
+    const source = createBackgroundMoodleSessionSource({
+      homeDir,
+      validateSession,
+      browserCookieProvider: async () => [{ name: "MoodleSession", value: "fresh-cookie", domain: "moodle.example.edu" }],
+      oktaCookieProvider: async () => [],
+    });
+
+    await expect(source.loadValidated("school", baseUrl)).resolves.toMatchObject({ cookieValue: "fresh-cookie" });
+    expect(validateSession).not.toHaveBeenCalledWith(baseUrl, expect.objectContaining({ value: "dead-cookie" }));
   });
 });
 

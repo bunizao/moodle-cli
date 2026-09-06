@@ -277,6 +277,28 @@ describe("managed MCP CLI service", () => {
     expect(receipts.write).not.toHaveBeenCalled();
   });
 
+  it("touches the remote session before reading readiness so a freshly killed session is detected", async () => {
+    const receipt = deploymentReceipt();
+    const worker = workerClient({ status: "fail", reasonCode: "SESSION_EXPIRED", revision: 8 });
+    vi.mocked(worker.putSession).mockResolvedValueOnce({ revision: 9 });
+    const service = createMcpCommandService({
+      receipts: receiptStore(receipt),
+      credentials: credentialStore(),
+      worker,
+      renewal: renewalIntegration(true),
+      sessions: sessionSource(),
+    });
+
+    const result = await service.renew(receipt.profile);
+
+    const target = { endpoint: receipt.productionEndpoint, sessionSyncToken: expect.any(String) };
+    expect(worker.touchSession).toHaveBeenCalledWith(target);
+    expect(vi.mocked(worker.touchSession).mock.invocationCallOrder[0])
+      .toBeLessThan(vi.mocked(worker.getReadiness).mock.invocationCallOrder[0]);
+    expect(worker.putSession).toHaveBeenCalledWith(expect.objectContaining({ expectedRevision: 8 }));
+    expect(result.data).toMatchObject({ state: "healthy", reasonCode: "SESSION_VALID", revision: 9 });
+  });
+
   it("recovers an expiring session from non-interactive local sources", async () => {
     const receipt = deploymentReceipt();
     const receipts = receiptStore(receipt);
@@ -490,6 +512,7 @@ function workerClient(
   return {
     putSession: vi.fn(async () => ({ revision: 5 })),
     getReadiness: vi.fn(async () => readiness),
+    touchSession: vi.fn(async () => undefined),
     runSmoke: vi.fn(async () => ({ moodleUser: "Alice Example" })),
   };
 }

@@ -95,6 +95,7 @@ function dependencies(options: {
     worker: {
       putSession: vi.fn(async () => ({ revision: 5 })),
       getReadiness: vi.fn(async () => ({ status: "pass" as const, reasonCode: "SESSION_VALID", revision: 4 })),
+      touchSession: vi.fn(async () => undefined),
       runSmoke: vi.fn(async () => ({ moodleUser: "Alice Example" })),
     },
     renewal: {
