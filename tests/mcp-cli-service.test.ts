@@ -96,6 +96,9 @@ describe("managed MCP CLI service", () => {
     const bundle = join(root, "worker.js");
     await writeFile(bundle, "export default {};\n");
     const receipt = deploymentReceipt();
+    const progressChunks: string[] = [];
+    const stderr = { write: (chunk: string) => { progressChunks.push(chunk); return true; } } as unknown as NodeJS.WritableStream;
+    let progressBeforeInspect = "";
     const deployment = {
       plan: vi.fn(async (intent: DeploymentIntent) => ({
         intent,
@@ -106,6 +109,20 @@ describe("managed MCP CLI service", () => {
       })),
       apply: async function* () {
         yield {
+          stageId: "validate_moodle_session" as const,
+          stage: 1,
+          total: 8 as const,
+          label: "Validating Moodle session",
+          status: "started" as const,
+        };
+        yield {
+          stageId: "validate_moodle_session" as const,
+          stage: 1,
+          total: 8 as const,
+          label: "Validating Moodle session",
+          status: "completed" as const,
+        };
+        yield {
           stageId: "run_release_checks" as const,
           stage: 7,
           total: 8 as const,
@@ -114,25 +131,28 @@ describe("managed MCP CLI service", () => {
           moodleUser: "Alice Example",
         };
       },
-      inspect: vi.fn(async () => ({
-        profile: receipt.profile,
-        worker: {
-          accountId: receipt.accountId,
-          workerName: receipt.workerName,
-          deploymentId: receipt.deploymentId,
-          ownershipTag: receipt.deploymentId,
-          productionEndpoint: receipt.productionEndpoint,
-          productionVersionId: receipt.productionVersionId,
-          previousHealthyVersionId: null,
-          releaseDigest: receipt.releaseDigest,
-        },
-        credentialsStored: true,
-        renewalInstalled: true,
-        clientsConnected: true,
-        readiness: "pass" as const,
-        readinessReasonCode: "SESSION_VALID",
-        sessionRevision: receipt.sessionRevision,
-      })),
+      inspect: vi.fn(async () => {
+        progressBeforeInspect = progressChunks.join("");
+        return {
+          profile: receipt.profile,
+          worker: {
+            accountId: receipt.accountId,
+            workerName: receipt.workerName,
+            deploymentId: receipt.deploymentId,
+            ownershipTag: receipt.deploymentId,
+            productionEndpoint: receipt.productionEndpoint,
+            productionVersionId: receipt.productionVersionId,
+            previousHealthyVersionId: null,
+            releaseDigest: receipt.releaseDigest,
+          },
+          credentialsStored: true,
+          renewalInstalled: true,
+          clientsConnected: true,
+          readiness: "pass" as const,
+          readinessReasonCode: "SESSION_VALID",
+          sessionRevision: receipt.sessionRevision,
+        };
+      }),
     } as unknown as ManagedMcpDeployment;
     const service = createMcpCommandService({
       homeDir: root,
@@ -142,6 +162,7 @@ describe("managed MCP CLI service", () => {
       credentials: credentialStore(),
       worker: workerClient(),
       createDeployment: () => deployment,
+      stderr,
     });
 
     try {
@@ -152,6 +173,10 @@ describe("managed MCP CLI service", () => {
         rollback: false,
         yes: true,
       });
+      // Stages must reach the terminal while the deployment runs, not in one dump at the end.
+      expect(progressBeforeInspect).toContain("✓ [1/8] Validating Moodle session");
+      expect(progressBeforeInspect).toContain("✓ [7/8] Running MCP and Moodle checks");
+      expect(result.text).not.toContain("[1/8]");
       expect(result.text).toContain("Moodle MCP is ready.");
       expect(result.text).toContain(`  ${receipt.productionEndpoint}/mcp`);
       expect(result.text).toContain(`  Site: ${receipt.moodleOrigin}`);
@@ -159,6 +184,52 @@ describe("managed MCP CLI service", () => {
       expect(result.text).toContain("  Next check: within 30 minutes");
       expect(result.text).toContain("Connected clients\n  No supported clients detected");
       expect(result.text).not.toMatch(/Bearer|MoodleSession|private-token/iu);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("says why the terminal is waiting before Wrangler opens Cloudflare's sign-in page", async () => {
+    const root = await mkdtemp(join(tmpdir(), "moodle-cli-cf-signin-"));
+    const bundle = join(root, "worker.js");
+    await writeFile(bundle, "export default {};\n");
+    const progressChunks: string[] = [];
+    let announcedBeforeLogin = "";
+    const listAccounts = vi.fn(async () => [] as { id: string; name: string }[]);
+    listAccounts.mockResolvedValueOnce([]).mockResolvedValue([{ id: "account-1", name: "Personal" }]);
+    const wrangler = {
+      listAccounts,
+      login: vi.fn(async () => {
+        announcedBeforeLogin = progressChunks.join("");
+      }),
+    } as unknown as NodeWranglerDeploymentAdapter;
+
+    const service = createMcpCommandService({
+      homeDir: root,
+      workerBundlePath: bundle,
+      stdin: { isTTY: true } as NodeJS.ReadStream,
+      stderr: { write: (chunk: string) => { progressChunks.push(chunk); return true; } } as unknown as NodeJS.WritableStream,
+      configLoader: async () => ({ baseUrl: "https://lms.example.edu" }),
+      receipts: { read: vi.fn(async () => null), write: vi.fn(async () => undefined), delete: vi.fn(async () => undefined) },
+      credentials: credentialStore(),
+      worker: workerClient(),
+      wrangler,
+      createDeployment: () => ({
+        plan: vi.fn(async (intent: DeploymentIntent) => ({
+          intent,
+          operation: "create" as const,
+          uploadCandidate: false,
+          existing: null,
+          receipt: null,
+        })),
+      } as unknown as ManagedMcpDeployment),
+    });
+
+    try {
+      await service.deploy(deployDryRun());
+      expect(wrangler.login).toHaveBeenCalledOnce();
+      expect(announcedBeforeLogin).toContain("Cloudflare sign-in is required.");
+      expect(announcedBeforeLogin).toContain("moodle-cli will not receive your Cloudflare password.");
     } finally {
       await rm(root, { recursive: true, force: true });
     }

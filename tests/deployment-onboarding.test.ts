@@ -1,11 +1,18 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   ONBOARDING_COPY,
   clientConfigurationFailedCopy,
+  createProgressReporter,
   formatOnboardingStage,
   moodleUnavailableCopy,
   successfulDeploymentCopy,
 } from "../src/mcp/deployment/index.js";
+
+function collectingStream(): { stream: NodeJS.WritableStream; written: () => string } {
+  let buffer = "";
+  const stream = { write: (chunk: string) => { buffer += chunk; return true; } };
+  return { stream: stream as unknown as NodeJS.WritableStream, written: () => buffer };
+}
 
 describe("managed deployment onboarding copy", () => {
   it("keeps first-run, login, and Cloudflare prompts stable", () => {
@@ -48,5 +55,64 @@ describe("managed deployment onboarding copy", () => {
     expect(moodleUnavailableCopy("https://moodle.example.edu")).toContain("No login is required yet");
     expect(clientConfigurationFailedCopy("Codex")).toContain("No existing client configuration was overwritten");
     expect(ONBOARDING_COPY.productionRestored).toContain("previous healthy release");
+  });
+});
+
+describe("deployment progress reporter", () => {
+  it("animates the running step and replaces it once the step completes", () => {
+    vi.useFakeTimers();
+    try {
+      const target = collectingStream();
+      let clock = 0;
+      const progress = createProgressReporter({
+        stream: target.stream,
+        interactive: true,
+        intervalMs: 100,
+        now: () => clock,
+      });
+
+      progress.begin("[5/8] Deploying candidate version");
+      clock = 4000;
+      vi.advanceTimersByTime(300);
+      const duringStep = target.written();
+      expect(duringStep).toContain("[5/8] Deploying candidate version");
+      expect(duringStep).toContain("4s");
+      expect(duringStep).not.toContain("\n");
+
+      progress.end("\u2713 [5/8] Deploying candidate version");
+      expect(target.written()).toMatch(/\u2713 \[5\/8\] Deploying candidate version\n$/u);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("writes only completed steps when the stream is not a terminal", () => {
+    const target = collectingStream();
+    const progress = createProgressReporter({ stream: target.stream, interactive: false });
+
+    progress.begin("[1/8] Validating Moodle session");
+    expect(target.written()).toBe("");
+
+    progress.end("\u2713 [1/8] Validating Moodle session");
+    expect(target.written()).toBe("\u2713 [1/8] Validating Moodle session\n");
+  });
+
+  it("leaves no unfinished line behind when a step is abandoned", () => {
+    vi.useFakeTimers();
+    try {
+      const target = collectingStream();
+      const progress = createProgressReporter({ stream: target.stream, interactive: true, now: () => 0 });
+
+      progress.begin("[2/8] Checking Cloudflare access");
+      progress.clear();
+      const cleared = target.written();
+      // The final write must be an erase, so the failure message starts on a clean line.
+      expect(cleared.endsWith("\r\u001B[2K")).toBe(true);
+
+      vi.advanceTimersByTime(1000);
+      expect(target.written()).toBe(cleared);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

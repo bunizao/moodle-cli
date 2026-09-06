@@ -22,10 +22,13 @@ import {
   FetchManagedWorkerClient,
   ManagedMcpDeployment,
   NodeWranglerDeploymentAdapter,
+  ONBOARDING_COPY,
   PrivateDeploymentReceiptStore,
   WranglerCommandError,
   createBackgroundMoodleSessionSource,
   createDefaultManagedDeployment,
+  createProgressReporter,
+  formatOnboardingStage,
   successfulDeploymentCopy,
   type DeploymentCredentialRepository,
   type DeploymentEvent,
@@ -37,6 +40,7 @@ import {
   type ManagedWorkerClient,
   type MoodleSessionMaterial,
   type MoodleSessionSource,
+  type ProgressReporter,
   type WorkerReadiness,
   type WranglerAccount,
 } from "./deployment/index.js";
@@ -127,6 +131,7 @@ class DefaultMcpCommandService implements McpCommandService {
   private readonly renewal: LocalDeploymentIntegration;
   private readonly sessions: MoodleSessionSource;
   private readonly notifyRenewalSignIn: () => Promise<void>;
+  private progressReporter: ProgressReporter | undefined;
 
   constructor(private readonly options: McpCommandServiceOptions) {
     this.homeDirectory = options.homeDir ?? homedir();
@@ -150,44 +155,69 @@ class DefaultMcpCommandService implements McpCommandService {
   }
 
   async deploy(input: McpDeployInput): Promise<McpCommandOutput> {
-    const identity = await this.resolveDeploymentIdentity(input.yes);
-    const deployment = this.deployment(false);
-    if (input.rollback) {
-      const recovery = await deployment.rollback(identity.profile);
-      return {
-        data: recovery,
-        text: `Moodle MCP restored release ${recovery.versionId}.`,
-      };
-    }
+    // Every step here waits on Wrangler, Cloudflare, or Moodle, so the terminal reports
+    // the running step instead of staying blank until the whole run finishes.
+    const progress = this.progress();
+    try {
+      progress.begin("Reading Cloudflare account and deployment state");
+      const identity = await this.resolveDeploymentIdentity(input.yes);
+      const deployment = this.deployment(false);
+      if (input.rollback) {
+        progress.begin("Restoring the previous release");
+        const recovery = await deployment.rollback(identity.profile);
+        return {
+          data: recovery,
+          text: `Moodle MCP restored release ${recovery.versionId}.`,
+        };
+      }
 
-    const plan = await this.planDeployment(deployment, {
-      ...identity,
-      releaseDigest: await this.releaseDigest(),
-      repair: input.repair,
-      rotateToken: input.rotateToken,
-      dryRun: input.dryRun,
-    });
-    if (input.dryRun) {
-      return {
-        data: {
-          operation: plan.operation,
-          workerName: plan.intent.workerName,
-          accountId: plan.intent.accountId,
-          moodleOrigin: plan.intent.moodleOrigin,
-          uploadCandidate: plan.uploadCandidate,
-        },
-        text: [
-          "Moodle MCP deployment plan",
-          `Operation: ${plan.operation}`,
-          `Worker: ${plan.intent.workerName}`,
-          `Candidate upload: ${plan.uploadCandidate ? "yes" : "no"}`,
-        ].join("\n"),
-      };
-    }
+      progress.begin("Planning the deployment");
+      const plan = await this.planDeployment(deployment, {
+        ...identity,
+        releaseDigest: await this.releaseDigest(),
+        repair: input.repair,
+        rotateToken: input.rotateToken,
+        dryRun: input.dryRun,
+      });
+      if (input.dryRun) {
+        return {
+          data: {
+            operation: plan.operation,
+            workerName: plan.intent.workerName,
+            accountId: plan.intent.accountId,
+            moodleOrigin: plan.intent.moodleOrigin,
+            uploadCandidate: plan.uploadCandidate,
+          },
+          text: [
+            "Moodle MCP deployment plan",
+            `Operation: ${plan.operation}`,
+            `Worker: ${plan.intent.workerName}`,
+            `Candidate upload: ${plan.uploadCandidate ? "yes" : "no"}`,
+          ].join("\n"),
+        };
+      }
 
-    const events: DeploymentEvent[] = [];
-    for await (const event of deployment.apply(plan)) events.push(event);
-    const status = await deployment.inspect(identity.profile);
+      const events: DeploymentEvent[] = [];
+      for await (const event of deployment.apply(plan)) {
+        events.push(event);
+        if (event.status === "started") progress.begin(formatOnboardingStage(event.stageId, "pending"));
+        else if (event.status === "completed") progress.end(formatOnboardingStage(event.stageId, "completed"));
+        else progress.clear();
+      }
+      progress.begin("Reading deployment status");
+      const status = await deployment.inspect(identity.profile);
+      return await this.deploymentSuccess(identity, events, status);
+    } finally {
+      // A failure must not leave a half-drawn spinner in front of the error message.
+      progress.clear();
+    }
+  }
+
+  private async deploymentSuccess(
+    identity: { profile: string; moodleOrigin: string },
+    events: DeploymentEvent[],
+    status: Awaited<ReturnType<ManagedMcpDeployment["inspect"]>>,
+  ): Promise<McpCommandOutput> {
     const receipt = await this.receipts.read(identity.profile);
     const endpoint = status.worker?.productionEndpoint ?? receipt?.productionEndpoint;
     if (!endpoint) {
@@ -195,7 +225,7 @@ class DefaultMcpCommandService implements McpCommandService {
     }
     return {
       data: { events, status },
-      text: renderDeploymentSuccess(events, {
+      text: successfulDeploymentCopy({
         endpoint: `${endpoint.replace(/\/$/u, "")}/mcp`,
         moodleSite: identity.moodleOrigin,
         moodleUser: events.find((event) => event.moodleUser)?.moodleUser ?? "Unknown Moodle user",
@@ -249,7 +279,15 @@ class DefaultMcpCommandService implements McpCommandService {
   async status(input: { verbose: boolean; logs: boolean }): Promise<McpCommandOutput> {
     const config = await this.config();
     const profile = deriveMcpProfile(config.baseUrl);
-    const managed = await this.deployment(false).inspect(profile);
+    const progress = this.progress();
+    let managed;
+    try {
+      // inspect() asks the Worker to touch the live Moodle session before answering.
+      progress.begin("Checking the remote Worker and Moodle session");
+      managed = await this.deployment(false).inspect(profile);
+    } finally {
+      progress.clear();
+    }
     let localAuthentication: unknown = { status: "unknown" };
     try {
       localAuthentication = await getAuthStatus(config.baseUrl, {
@@ -282,11 +320,19 @@ class DefaultMcpCommandService implements McpCommandService {
 
   async login(): Promise<McpCommandOutput> {
     const profile = deriveMcpProfile((await this.config()).baseUrl);
-    const recovery = await this.deployment(false).recover(profile);
-    return {
-      data: recovery,
-      text: "✓ New Moodle session acquired.\n✓ Remote session updated.\n✓ MCP readiness restored.",
-    };
+    const progress = this.progress();
+    try {
+      // Sign-in can wait on the browser for up to two minutes, so say so rather than
+      // leaving the terminal blank.
+      progress.begin("Reading your Moodle session (a browser sign-in may be required)");
+      const recovery = await this.deployment(false).recover(profile);
+      return {
+        data: recovery,
+        text: "✓ New Moodle session acquired.\n✓ Remote session updated.\n✓ MCP readiness restored.",
+      };
+    } finally {
+      progress.clear();
+    }
   }
 
   async connect(input: { client?: string; mode: "bridge" | "remote"; showToken: boolean }): Promise<McpCommandOutput> {
@@ -528,6 +574,10 @@ class DefaultMcpCommandService implements McpCommandService {
         env: this.options.env,
         fetch: this.options.fetchImpl,
         homeDir: this.homeDirectory,
+        onBrowserOpened: (url: string) => this.announceWait(
+          `${ONBOARDING_COPY.waitingForSignIn}\n\n  ${url}`,
+          "Waiting for Moodle sign-in",
+        ),
       },
       dependencies: {
         wrangler: this.wrangler(),
@@ -575,6 +625,9 @@ class DefaultMcpCommandService implements McpCommandService {
       if (!this.isInteractive()) {
         throw new UsageError("Cloudflare sign-in requires an interactive terminal. Run `moodle mcp deploy` interactively first.");
       }
+      // Wrangler opens Cloudflare's authorization page and prints nothing of its own,
+      // because its output is captured.
+      this.announceWait(ONBOARDING_COPY.cloudflareSignIn, "Waiting for Cloudflare authorization");
       await this.wrangler().login();
       accounts = await this.wrangler().listAccounts();
     }
@@ -625,6 +678,8 @@ class DefaultMcpCommandService implements McpCommandService {
   }
 
   private prompt(question: string): Promise<string> {
+    // A spinner and a readline prompt share the same line, so stop the animation first.
+    this.progress().clear();
     if (this.options.prompt) return this.options.prompt(question);
     const input = this.options.stdin ?? process.stdin;
     const output = this.options.stderr ?? process.stderr;
@@ -647,6 +702,22 @@ class DefaultMcpCommandService implements McpCommandService {
 
   private isInteractive(): boolean {
     return Boolean((this.options.stdin ?? process.stdin).isTTY);
+  }
+
+  // Progress belongs on stderr so that --json and --yaml keep stdout to themselves.
+  // One shared reporter, so anything else that writes can stop the animation first.
+  private progress(): ProgressReporter {
+    this.progressReporter ??= createProgressReporter({ stream: this.options.stderr ?? process.stderr });
+    return this.progressReporter;
+  }
+
+  // Sign-in moves to a browser window, so the terminal has to say what it is waiting
+  // for and then keep a live line running until the browser comes back.
+  private announceWait(message: string, waitingFor: string): void {
+    const progress = this.progress();
+    progress.clear();
+    (this.options.stderr ?? process.stderr).write(`${message}\n\n`);
+    progress.begin(waitingFor);
   }
 }
 
@@ -752,20 +823,6 @@ function displayClientName(client: SupportedMcpClient): string {
     cursor: "Cursor",
   };
   return names[client];
-}
-
-function renderDeploymentSuccess(
-  events: DeploymentEvent[],
-  summary: Parameters<typeof successfulDeploymentCopy>[0],
-): string {
-  const completed = events
-    .filter((event) => event.status === "completed")
-    .map((event) => `[${event.stage}/${event.total}] ✓ ${event.label}`);
-  return [
-    ...completed,
-    "",
-    successfulDeploymentCopy(summary),
-  ].join("\n");
 }
 
 async function readAll(input: AsyncIterable<string | Uint8Array>): Promise<string> {
