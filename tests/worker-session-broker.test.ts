@@ -92,7 +92,7 @@ describe("SessionBroker Durable Object", () => {
     expect(await response.json()).toMatchObject({
       status: "fail",
       serviceId: "moodle-mcp",
-      version: "0.7.0-alpha.6",
+      version: "0.7.0-alpha.7",
       checks: { "moodle:session": [{ status: "fail", code: "SESSION_MISSING" }] },
     });
   });
