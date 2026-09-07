@@ -187,7 +187,8 @@ describe("auth chain", () => {
     expect(denied).not.toContain("okta-auth");
 
     const missing = authFailureHint(BASE_URL, ["Chrome cookies database not found."], "darwin");
-    expect(missing).toContain("okta-auth");
+    expect(missing).toContain("moodle auth login");
+    expect(missing).not.toContain("okta");
     expect(missing).toContain("Chrome cookies database not found.");
   });
 });
@@ -447,7 +448,7 @@ describe("agent output contract", () => {
     const error = JSON.parse(stderr.text());
     expect(error).toMatchObject({ ok: false, error: { code: "auth" }, exit_code: 3 });
     expect(error.error.hint).toContain("MOODLE_SESSION");
-    expect(error.error.hint).toContain("okta-auth");
+    expect(error.error.hint).toContain("moodle auth login");
   });
 });
 

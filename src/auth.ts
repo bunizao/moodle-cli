@@ -9,9 +9,6 @@ import {
   ENV_MOODLE_SESSION,
   LOGIN_PATH,
   MOODLE_SESSION_COOKIE_PREFIX,
-  OKTA_AUTH_CONFIG_COMMAND,
-  OKTA_AUTH_INSTALL_COMMAND,
-  OKTA_AUTH_URL,
 } from "./constants.js";
 import { AuthError } from "./errors.js";
 import {
@@ -382,9 +379,8 @@ export function authFailureHint(
   }
   const lines = [
     `Log in to ${loginUrl(baseUrl)} in your browser, then rerun the command.`,
+    "Or run `moodle auth login` to sign in through a browser window this command controls.",
     `Or set ${ENV_MOODLE_SESSION} to a valid MoodleSession cookie value.`,
-    `For automatic login, install okta-auth: ${OKTA_AUTH_INSTALL_COMMAND}, then run ${OKTA_AUTH_CONFIG_COMMAND}.`,
-    `okta-auth: ${OKTA_AUTH_URL}`,
   ];
   if (cookieWarnings.length) {
     lines.push("", "Cookie store diagnostics:", ...cookieWarnings.map((warning) => `  - ${warning}`));
