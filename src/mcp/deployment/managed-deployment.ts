@@ -452,15 +452,23 @@ export class ManagedMcpDeployment {
       if (plan.intent.rotateToken && credentialsBefore && !secretsUploaded) {
         await this.dependencies.credentials.write(plan.intent.profile, credentialsBefore);
       }
-      if (promoted && plan.existing && !productionRestored && !appliedReceipt) {
-        await this.dependencies.wrangler.restoreProduction({
-          accountId: plan.intent.accountId,
-          workerName: plan.intent.workerName,
-          previousVersionId: plan.existing.productionVersionId,
-        });
-        productionRestored = true;
-        if (plan.intent.rotateToken && credentialsBefore) {
-          await this.dependencies.credentials.write(plan.intent.profile, credentialsBefore);
+      // A release that applied a Durable Object migration cannot be rolled back: the
+      // previous version still depends on the older migration and Cloudflare refuses
+      // to redeploy it. Rolling back is best effort in every case, because losing that
+      // race must never replace the error that actually stopped the deployment.
+      if (promoted && plan.existing && !productionRestored && !appliedReceipt && !candidate?.alreadyLive) {
+        try {
+          await this.dependencies.wrangler.restoreProduction({
+            accountId: plan.intent.accountId,
+            workerName: plan.intent.workerName,
+            previousVersionId: plan.existing.productionVersionId,
+          });
+          productionRestored = true;
+          if (plan.intent.rotateToken && credentialsBefore) {
+            await this.dependencies.credentials.write(plan.intent.profile, credentialsBefore);
+          }
+        } catch {
+          // Keep the original failure.
         }
       }
       if (initializedWorker && !appliedReceipt) {

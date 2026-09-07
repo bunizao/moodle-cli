@@ -398,6 +398,42 @@ describe("ManagedMcpDeployment transaction", () => {
     expect(deps.worker.runSmoke).not.toHaveBeenCalled();
   });
 
+  it("does not try to roll back a release that applied a Durable Object migration", async () => {
+    const deps = dependencies();
+    vi.mocked(deps.wrangler.uploadCandidate).mockResolvedValueOnce({
+      versionId: "version-migrated",
+      previewEndpoint: null,
+      productionEndpoint: REMOTE.productionEndpoint,
+      deploymentId: REMOTE.deploymentId,
+      alreadyLive: true,
+    });
+    vi.mocked(deps.worker.putSession).mockRejectedValueOnce(new Error("session upload failed"));
+    const manager = new ManagedMcpDeployment(deps);
+    const result = await consumeFailure(manager.apply(await manager.plan(INTENT)));
+
+    expect(result.error).toMatchObject({ code: "DEPLOYMENT_FAILED" });
+    expect(deps.wrangler.promote).not.toHaveBeenCalled();
+    expect(deps.wrangler.restoreProduction).not.toHaveBeenCalled();
+  });
+
+  it("reports the original failure when the rollback itself fails", async () => {
+    const deps = dependencies();
+    vi.mocked(deps.wrangler.uploadCandidate).mockResolvedValueOnce({
+      versionId: "version-next",
+      previewEndpoint: null,
+      productionEndpoint: REMOTE.productionEndpoint,
+      deploymentId: REMOTE.deploymentId,
+    });
+    vi.mocked(deps.worker.putSession).mockRejectedValueOnce(new Error("session upload failed"));
+    vi.mocked(deps.wrangler.restoreProduction).mockRejectedValueOnce(new Error("cannot restore across a migration"));
+    const manager = new ManagedMcpDeployment(deps);
+    const result = await consumeFailure(manager.apply(await manager.plan(INTENT)));
+
+    expect(deps.wrangler.restoreProduction).toHaveBeenCalled();
+    expect(result.error).toMatchObject({ code: "DEPLOYMENT_FAILED" });
+    expect(String((result.error as Error).message)).not.toContain("cannot restore");
+  });
+
   it("reconciles an unchanged deployment without uploading or promoting another version", async () => {
     const deps = dependencies({
       remote: { ...REMOTE, releaseDigest: INTENT.releaseDigest },
