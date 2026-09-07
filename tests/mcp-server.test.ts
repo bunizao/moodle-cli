@@ -265,7 +265,7 @@ describe("Moodle MCP server", () => {
         message: "Unsupported protocol version",
         data: {
           requested: "2024-11-05",
-          supported: [MODERN_PROTOCOL_VERSION, LEGACY_PROTOCOL_VERSION],
+          supported: [...SUPPORTED_PROTOCOL_VERSIONS],
         },
       },
     });

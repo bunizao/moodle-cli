@@ -2,7 +2,7 @@ import { hasQueryCredential, readBearerToken, verifyBearerToken } from "./auth.j
 import { createAuthBrokerApi, isOAuthRoute, parseAllowedRedirectHosts, type AuthBrokerApi } from "./auth-broker.js";
 import { DEFAULT_CLIENT_HOSTS, matchesAllowedHost, PROTECTED_RESOURCE_METADATA_PATH } from "./oauth.js";
 import { problemResponse } from "./problems.js";
-import { LEGACY_PROTOCOL_VERSION, SUPPORTED_PROTOCOL_VERSIONS } from "../mcp/protocol.js";
+import { MODERN_PROTOCOL_VERSION, SUPPORTED_PROTOCOL_VERSIONS } from "../mcp/protocol.js";
 import { VERSION } from "../version.js";
 
 export const HEALTH_PATH = "/healthz";
@@ -359,7 +359,10 @@ function validateProtocolMetadata(headers: Headers, body: JsonRpcRequest, protoc
   const headerMethod = headers.get("mcp-method");
   const headerName = headers.get("mcp-name") ?? undefined;
   const paramsName = params && typeof params.name === "string" ? params.name : undefined;
-  const requiresModernHeaders = protocolVersion !== LEGACY_PROTOCOL_VERSION;
+  // Only the modern protocol carries MCP-Method/MCP-Name. Legacy and the compatibility
+  // revisions hosted clients negotiate send neither, so demanding them rejects every
+  // request those clients make.
+  const requiresModernHeaders = protocolVersion === MODERN_PROTOCOL_VERSION;
   const hasModernHeaders = headerMethod !== null || headerName !== undefined;
   if ((requiresModernHeaders || hasModernHeaders) && (headerMethod !== body.method || headerName !== paramsName)) {
     return headerMismatchResponse(body, "MCP method metadata does not match the JSON-RPC request.");

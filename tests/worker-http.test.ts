@@ -325,6 +325,27 @@ describe("Cloudflare Worker HTTP transport", () => {
     });
   });
 
+  it("accepts the compatibility versions hosted clients negotiate", async () => {
+    const mcpServer = { handle: vi.fn(async () => ({ jsonrpc: "2.0", id: 1, result: { tools: [] } })) };
+    const worker = createWorkerHandler({ mcpServer, broker: () => createBroker() });
+    const response = await worker.fetch(request("/mcp", {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${ACCESS_TOKEN}`,
+        "content-type": "application/json",
+        "mcp-protocol-version": "2025-06-18",
+      },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list", params: {} }),
+    }), await workerEnv());
+
+    expect(response.status).toBe(200);
+    expect(mcpServer.handle).toHaveBeenCalledWith(expect.objectContaining({ method: "tools/list" }), {
+      protocolVersion: "2025-06-18",
+      method: undefined,
+      toolName: undefined,
+    });
+  });
+
   it("accepts legacy remote requests without modern method headers", async () => {
     const mcpServer = { handle: vi.fn(async () => ({
       jsonrpc: "2.0",
