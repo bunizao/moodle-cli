@@ -3,7 +3,7 @@ import { realpathSync } from "node:fs";
 import { mkdir, rm, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import { getAuthenticatedSession } from "./auth.js";
+import { getAuthenticatedSession, MINIMUM_NODE_FOR_BROWSER_COOKIES } from "./auth.js";
 import {
   AJAX_SERVICE_PATH,
   CACHE_DIR_NAME,
@@ -63,6 +63,7 @@ export interface KeepaliveInstallOptions {
   argv1?: string;
   uid?: number;
   runCommand?: typeof spawnSync;
+  canReadBrowserCookies?: boolean;
 }
 
 export async function touchMoodleSession(
@@ -247,11 +248,36 @@ export function buildKeepalivePlist(programArguments: string[], intervalMinutes:
   ].join("\n");
 }
 
+/**
+ * Bun reads browser cookies through its own APIs; Node needs node:sqlite, which
+ * it only ships unflagged from 22.13.
+ */
+async function runtimeReadsBrowserCookies(): Promise<boolean> {
+  if (process.versions.bun) return true;
+  try {
+    await import("node:sqlite");
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export async function installKeepalive(options: KeepaliveInstallOptions = {}): Promise<KeepaliveInstallResult> {
   const platform = options.platform ?? process.platform;
   if (platform !== "darwin") {
     throw new Error(
       "Automatic keepalive install requires macOS launchd. Add a cron entry instead: */30 * * * * moodle auth keepalive --json",
+    );
+  }
+
+  // The plist bakes in the runtime that installed it. A runtime that cannot read
+  // browser cookies still renews a live session, so the install looks healthy and
+  // only fails once the session expires and there is nothing left to renew from.
+  const readsCookies = options.canReadBrowserCookies ?? (await runtimeReadsBrowserCookies());
+  if (!readsCookies) {
+    throw new Error(
+      `This runtime (${process.version}) cannot read browser cookies, and the launch agent would be pinned to it. `
+        + `Reinstall with Node.js ${MINIMUM_NODE_FOR_BROWSER_COOKIES} or newer, or with Bun.`,
     );
   }
 

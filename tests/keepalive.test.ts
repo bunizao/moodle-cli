@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   buildKeepalivePlist,
   getAuthStatus,
+  installKeepalive,
   keepAliveOnce,
   keepaliveProgramArguments,
   touchMoodleSession,
@@ -150,5 +151,36 @@ describe("keepalive launch agent", () => {
       "keepalive",
       "--json",
     ]);
+  });
+
+  it("refuses to install a launch agent pinned to a runtime that cannot read cookies", async () => {
+    const home = await mkdtemp(join(tmpdir(), "keepalive-guard-"));
+    const runCommand = vi.fn();
+
+    await expect(installKeepalive({
+      homeDir: home,
+      platform: "darwin",
+      canReadBrowserCookies: false,
+      runCommand: runCommand as never,
+    })).rejects.toThrow(/cannot read browser cookies/);
+    expect(runCommand).not.toHaveBeenCalled();
+  });
+
+  it("installs when the runtime can read cookies", async () => {
+    const home = await mkdtemp(join(tmpdir(), "keepalive-ok-"));
+    const runCommand = vi.fn(() => ({ status: 0 })) as never;
+
+    const result = await installKeepalive({
+      homeDir: home,
+      platform: "darwin",
+      canReadBrowserCookies: true,
+      execPath: "/opt/node/bin/node",
+      argv1: "",
+      uid: 501,
+      runCommand,
+    });
+
+    expect(result.command[0]).toBe("/opt/node/bin/node");
+    await expect(readFile(result.plist_path, "utf8")).resolves.toContain("com.moodle-cli.keepalive");
   });
 });
