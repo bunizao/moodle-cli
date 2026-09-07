@@ -95,6 +95,8 @@ export interface CandidateRelease {
   previewEndpoint: string | null;
   productionEndpoint: string;
   deploymentId: string;
+  /** The release is already serving production and must not be promoted again. */
+  alreadyLive?: boolean;
 }
 
 export interface WranglerDeploymentAdapter {
@@ -347,7 +349,9 @@ export class ManagedMcpDeployment {
           productionEndpoint,
         });
         secretsUploaded = true;
-        if (!candidate.previewEndpoint) {
+        if (candidate.alreadyLive) {
+          promoted = true;
+        } else if (!candidate.previewEndpoint) {
           await this.dependencies.wrangler.promote({
             accountId: plan.intent.accountId,
             workerName: plan.intent.workerName,

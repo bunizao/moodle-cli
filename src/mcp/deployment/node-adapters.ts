@@ -94,6 +94,15 @@ function wranglerFailureMessage(stderr: string, stdout: string): string {
   return detail ? `Packaged Wrangler command failed: ${detail.slice(0, 600)}` : "Packaged Wrangler command failed";
 }
 
+// Cloudflare rejects a Durable Object migration sent through a versioned upload
+// (API error 10211). Detect that one case instead of always deploying, which would
+// give up the candidate smoke test on every ordinary release.
+function requiresNonVersionedDeploy(error: unknown): boolean {
+  if (!(error instanceof WranglerCommandError)) return false;
+  const text = `${error.stderr}\n${error.stdout}`;
+  return text.includes("10211") || /migrations must be fully applied/iu.test(text);
+}
+
 export interface NodeWranglerOptions {
   wranglerBinPath?: string;
   runner?: DeploymentCommandRunner;
@@ -220,20 +229,25 @@ export class NodeWranglerDeploymentAdapter implements WranglerDeploymentAdapter 
     const outputFilePath = join(dirname(input.configPath), "wrangler-version-upload.jsonl");
     await rm(outputFilePath, { force: true });
     try {
-      await this.wrangler([
-        "versions",
-        "upload",
-        "--name",
-        input.workerName,
-        "--config",
-        input.configPath,
-        "--secrets-file",
-        input.secretsFilePath,
-        "--preview-alias",
-        "moodle-cli-candidate",
-        "--message",
-        `moodle-cli-release:${input.releaseDigest}`,
-      ], input.accountId, { WRANGLER_OUTPUT_FILE_PATH: outputFilePath });
+      try {
+        await this.wrangler([
+          "versions",
+          "upload",
+          "--name",
+          input.workerName,
+          "--config",
+          input.configPath,
+          "--secrets-file",
+          input.secretsFilePath,
+          "--preview-alias",
+          "moodle-cli-candidate",
+          "--message",
+          `moodle-cli-release:${input.releaseDigest}`,
+        ], input.accountId, { WRANGLER_OUTPUT_FILE_PATH: outputFilePath });
+      } catch (error) {
+        if (!requiresNonVersionedDeploy(error)) throw error;
+        return await this.deployMigratedRelease(input);
+      }
       const document = await readWranglerVersionUpload(outputFilePath, input.workerName);
       const versionId = typeof document.version_id === "string" ? document.version_id : null;
       const previewEndpoint = firstWorkersDevUrl(document.preview_alias_url)
@@ -250,6 +264,41 @@ export class NodeWranglerDeploymentAdapter implements WranglerDeploymentAdapter 
     } finally {
       await rm(outputFilePath, { force: true });
     }
+  }
+
+  // A release that adds a Durable Object class can only reach an existing Worker as a
+  // plain deploy, so it goes straight to production: there is no candidate to smoke-test
+  // and nothing left to promote.
+  private async deployMigratedRelease(input: {
+    accountId: string;
+    workerName: string;
+    configPath: string;
+    secretsFilePath: string;
+    releaseDigest: string;
+    productionEndpoint: string;
+  }): Promise<CandidateRelease> {
+    await this.wrangler([
+      "deploy",
+      "--name",
+      input.workerName,
+      "--config",
+      input.configPath,
+      "--secrets-file",
+      input.secretsFilePath,
+      "--message",
+      `moodle-cli-release:${input.releaseDigest}`,
+    ], input.accountId);
+    const worker = await this.inspect(input.accountId, input.workerName);
+    if (!worker?.productionVersionId) {
+      throw new DeploymentApplyError("MIGRATION_DEPLOY_INVALID", "Wrangler did not return the deployed version");
+    }
+    return {
+      versionId: worker.productionVersionId,
+      previewEndpoint: null,
+      productionEndpoint: worker.productionEndpoint || input.productionEndpoint,
+      deploymentId: ownershipId(input.accountId, input.workerName),
+      alreadyLive: true,
+    };
   }
 
   // restoreProduction re-deploys an older version whose digest is unknown, so the

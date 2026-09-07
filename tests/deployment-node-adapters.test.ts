@@ -126,6 +126,83 @@ describe("NodeWranglerDeploymentAdapter", () => {
     expect(resolvePackagedWranglerBin()).toMatch(/node_modules[/\\]wrangler[/\\]bin[/\\]wrangler\.js$/u);
   });
 
+  it("falls back to a non-versioned deploy when a release adds a Durable Object", async () => {
+    const root = await mkdtemp(join(tmpdir(), "wrangler-migration-test-"));
+    const configPath = join(root, "wrangler.json");
+    const runner: DeploymentCommandRunner = {
+      run: vi.fn(async (_command, args) => {
+        if (args.includes("upload")) {
+          throw new WranglerCommandError(
+            1,
+            "",
+            "✘ [ERROR] A request to the Cloudflare API failed. You attempted to upload a version of a "
+              + "Worker that includes a Durable Object migration, but migrations must be fully applied "
+              + "via a non-versioned deployment. [code: 10211]",
+          );
+        }
+        if (args.includes("deployments")) {
+          return {
+            stdout: JSON.stringify([
+              {
+                id: "deployment-2",
+                created_on: "2026-09-08T00:00:00Z",
+                annotations: { "workers/message": "moodle-cli-release:release-next" },
+                versions: [{ version_id: "version-migrated", percentage: 100 }],
+              },
+            ]),
+            stderr: "",
+          };
+        }
+        return { stdout: "Deployed\nhttps://moodle-school-mcp.demo.workers.dev\n", stderr: "" };
+      }),
+    };
+    const adapter = new NodeWranglerDeploymentAdapter({
+      wranglerBinPath: "/package/node_modules/wrangler/bin/wrangler.js",
+      runner,
+    });
+
+    const candidate = await adapter.uploadCandidate({
+      accountId: "account-1",
+      workerName: "moodle-school-mcp",
+      configPath,
+      secretsFilePath: "/private/release/secrets.json",
+      releaseDigest: "release-next",
+      productionEndpoint: "https://moodle-school-mcp.demo.workers.dev",
+    });
+
+    expect(candidate).toMatchObject({ versionId: "version-migrated", previewEndpoint: null, alreadyLive: true });
+    const invoked = (runner.run as ReturnType<typeof vi.fn>).mock.calls.map((call) => call[1] as string[]);
+    expect(invoked.some((args) => args[1] === "deploy")).toBe(true);
+  });
+
+  it("does not deploy around an ordinary candidate upload failure", async () => {
+    const root = await mkdtemp(join(tmpdir(), "wrangler-plain-failure-"));
+    const configPath = join(root, "wrangler.json");
+    const runner: DeploymentCommandRunner = {
+      run: vi.fn(async (_command, args) => {
+        if (args.includes("upload")) {
+          throw new WranglerCommandError(1, "", "✘ [ERROR] Authentication error [code: 10000]");
+        }
+        return { stdout: "{}", stderr: "" };
+      }),
+    };
+    const adapter = new NodeWranglerDeploymentAdapter({
+      wranglerBinPath: "/package/node_modules/wrangler/bin/wrangler.js",
+      runner,
+    });
+
+    await expect(adapter.uploadCandidate({
+      accountId: "account-1",
+      workerName: "moodle-school-mcp",
+      configPath,
+      secretsFilePath: "/private/release/secrets.json",
+      releaseDigest: "release-next",
+      productionEndpoint: "https://moodle-school-mcp.demo.workers.dev",
+    })).rejects.toThrow(/Authentication error/);
+    const invoked = (runner.run as ReturnType<typeof vi.fn>).mock.calls.map((call) => call[1] as string[]);
+    expect(invoked.some((args) => args[1] === "deploy")).toBe(false);
+  });
+
   it("invokes only the packaged Wrangler script and parses candidate metadata", async () => {
     const root = await mkdtemp(join(tmpdir(), "wrangler-candidate-test-"));
     const configPath = join(root, "wrangler.json");
