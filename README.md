@@ -187,7 +187,7 @@ moodle mcp pair
 
 The command prints the connector URL and a one-time pairing code that is valid for ten minutes and one approval. Add the URL as a custom connector in Claude, sign in when Claude opens the approval page, and enter the code. Claude then keeps a rotating OAuth token instead of your Bearer token, and `/authorize` refuses every request while no pairing window is open.
 
-Alpha version `0.7.0-alpha.7` supports MCP `2026-07-28`, a stateless compatibility lane for `2025-11-25`, and the `2025-06-18` and `2025-03-26` revisions that current hosted clients negotiate.
+Release candidate `0.7.0-rc.1` supports MCP `2026-07-28`, a stateless compatibility lane for `2025-11-25`, and the `2025-06-18` and `2025-03-26` revisions that current hosted clients negotiate.
 
 ### Configuration
 
