@@ -52,7 +52,6 @@ export interface AuthOptions {
   fetch?: typeof fetch;
   validateSession?: SessionValidator;
   browserCookieProvider?: CookieProvider;
-  oktaCookieProvider?: CookieProvider;
   execFile?: ExecFile;
   homeDir?: string;
   platform?: NodeJS.Platform;
@@ -109,26 +108,6 @@ export async function getAuthenticatedSession(
   if (browserSession) {
     await refreshSessionCache(baseUrl, browserSession.cookie, browserSession.context, options);
     return { baseUrl, cookie: browserSession.cookie, ...browserSession.context, fromCache: false };
-  }
-
-  const oktaProvider = options.oktaCookieProvider ?? loadSessionsFromOktaCli;
-  const oktaCookies = matchingMoodleSessionCookies(await oktaProvider(baseUrl, options), baseUrl);
-  const oktaSession = await firstValidSession(baseUrl, oktaCookies, validate);
-  if (oktaSession) {
-    await refreshSessionCache(baseUrl, oktaSession.cookie, oktaSession.context, options);
-    return { baseUrl, cookie: oktaSession.cookie, ...oktaSession.context, fromCache: false };
-  }
-
-  if (!options.oktaCookieProvider && oktaCookies.length && !options.nonInteractive) {
-    const refreshed = matchingMoodleSessionCookies(
-      await loadSessionsFromOktaCli(baseUrl, { ...options, oktaCookieProvider: undefined, noCache: true }, true),
-      baseUrl,
-    );
-    const refreshedSession = await firstValidSession(baseUrl, refreshed, validate);
-    if (refreshedSession) {
-      await refreshSessionCache(baseUrl, refreshedSession.cookie, refreshedSession.context, options);
-      return { baseUrl, cookie: refreshedSession.cookie, ...refreshedSession.context, fromCache: false };
-    }
   }
 
   throw new AuthError(
@@ -190,7 +169,7 @@ export async function getAuthenticatedSessionWithBrowserFallback(
   const timeoutMs = options.browserLoginTimeoutMs ?? 120_000;
   const attempts = Math.max(1, Math.ceil(timeoutMs / pollIntervalMs));
   const sleep = options.sleep ?? ((milliseconds) => new Promise<void>((resolve) => setTimeout(resolve, milliseconds)));
-  const pollOptions: AuthOptions = { ...browserAuthOptions, oktaCookieProvider: async () => [] };
+  const pollOptions: AuthOptions = browserAuthOptions;
 
   for (let attempt = 0; attempt < attempts; attempt += 1) {
     await sleep(pollIntervalMs);
@@ -306,30 +285,6 @@ export async function braveProfilePaths(options: AuthOptions = {}): Promise<stri
   return profiles;
 }
 
-export async function loadSessionsFromOktaCli(
-  baseUrl: string,
-  options: AuthOptions = {},
-  forceLogin = false,
-): Promise<MoodleSessionCookie[]> {
-  const execFile = options.execFile ?? defaultExecFile;
-  const executable = await findExecutable("okta", execFile, options.platform);
-  if (!executable) {
-    return [];
-  }
-
-  const stored = await readOktaCookies(executable, baseUrl, execFile);
-  if ((stored.length && !forceLogin) || options.nonInteractive) {
-    return stored;
-  }
-
-  const login = await runOktaJson(executable, ["login", baseUrl], execFile);
-  if (!login) {
-    return stored;
-  }
-  const refreshed = await readOktaCookies(executable, baseUrl, execFile);
-  return refreshed.length ? refreshed : stored;
-}
-
 const COOKIE_ACCESS_DENIED = /EPERM|EACCES|operation not permitted|permission denied/i;
 // Chromium cookie stores are read through node:sqlite, which Node only ships
 // unflagged from 22.13. Older runtimes cannot read any browser cookie.
@@ -439,43 +394,6 @@ function validateSessionWithFetch(options: AuthOptions): SessionValidator {
     }
     return parseSessionContext(html);
   };
-}
-
-async function readOktaCookies(
-  executable: string,
-  baseUrl: string,
-  execFile: ExecFile,
-): Promise<MoodleSessionCookie[]> {
-  const payload = await runOktaJson(executable, ["cookies", baseUrl], execFile);
-  if (!payload) {
-    return [];
-  }
-
-  const cookies = Array.isArray(payload.cookies) ? payload.cookies : Array.isArray(payload) ? payload : [];
-  return cookies.filter(isRecord).map((cookie) => ({
-    name: String(cookie.name ?? ""),
-    value: String(cookie.value ?? ""),
-    domain: typeof cookie.domain === "string" ? cookie.domain : undefined,
-    path: typeof cookie.path === "string" ? cookie.path : undefined,
-    source: "okta",
-  }));
-}
-
-async function runOktaJson(
-  executable: string,
-  args: string[],
-  execFile: ExecFile,
-): Promise<Record<string, unknown> | null> {
-  const result = await execFile(executable, [...args, "--json"]);
-  if (result.exitCode !== 0 || !result.stdout.trim()) {
-    return null;
-  }
-  try {
-    const payload = JSON.parse(result.stdout) as unknown;
-    return isRecord(payload) ? payload : null;
-  } catch {
-    return null;
-  }
 }
 
 async function findExecutable(

@@ -7,7 +7,7 @@ export type RenewalReasonCode =
   | "RENEWAL_AGENT_MISSING";
 
 export type ReplacementSession =
-  | { source: "browser" | "okta"; fingerprintChanged: boolean; valid: boolean }
+  | { source: "browser"; fingerprintChanged: boolean; valid: boolean }
   | { source: "none" | "mfa_required" };
 
 export interface RenewalSnapshot {
@@ -20,7 +20,7 @@ export interface RenewalSnapshot {
 export type RenewalAction =
   | { type: "install_agent" }
   | { type: "preserve_session" }
-  | { type: "validate_and_upload"; source: "browser" | "okta" }
+  | { type: "validate_and_upload"; source: "browser" }
   | { type: "retry_upload" }
   | { type: "refresh_remote_revision" }
   | { type: "notify_sign_in" }
@@ -68,7 +68,7 @@ export function decideRenewal(snapshot: RenewalSnapshot): RenewalDecision {
   }
 
   if (
-    (snapshot.replacement.source === "browser" || snapshot.replacement.source === "okta")
+    snapshot.replacement.source === "browser"
     && snapshot.replacement.valid
     && snapshot.replacement.fingerprintChanged
   ) {
@@ -104,7 +104,7 @@ export function decideRenewal(snapshot: RenewalSnapshot): RenewalDecision {
 
 export interface RenewalActionExecutor {
   installAgent(): Promise<void>;
-  validateAndUpload(source: "browser" | "okta"): Promise<void>;
+  validateAndUpload(source: "browser"): Promise<void>;
   retryUpload(): Promise<void>;
   refreshRemoteRevision(): Promise<void>;
   notifySignIn(): Promise<void>;

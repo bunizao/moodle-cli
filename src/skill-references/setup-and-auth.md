@@ -33,14 +33,9 @@ The CLI tries these session sources:
 1. `MOODLE_SESSION`
 2. A fresh local session cache
 3. Supported browser cookies
-4. `okta-auth-cli`
 
-For automatic Okta login:
-
-```bash
-uv tool install okta-auth-cli
-okta config
-```
+When no browser cookie is readable, `moodle auth login` opens the Moodle sign-in
+page and waits for the session to appear.
 
 Validate setup with:
 
@@ -56,7 +51,7 @@ Moodle expires idle sessions server-side (often a few hours). To avoid re-runnin
 
 ```bash
 moodle auth status --json              # cache freshness + server session state
-moodle auth keepalive --json           # renew once (re-login from browser/okta cookies if expired)
+moodle auth keepalive --json           # renew once (re-login from browser cookies if expired)
 moodle auth keepalive install          # macOS launch agent, renews every 30 min
 moodle auth keepalive install --interval 15
 moodle auth keepalive uninstall
@@ -69,7 +64,7 @@ On Linux, schedule `moodle auth keepalive --json` with cron instead of `install`
 
 ## Recover Failures
 
-- **No usable MoodleSession**: sign in to Moodle in a supported browser and retry; otherwise configure `okta-auth-cli` or provide `MOODLE_SESSION` through the environment.
+- **No usable MoodleSession**: sign in to Moodle in a supported browser and retry, run `moodle auth login`, or provide `MOODLE_SESSION` through the environment.
 - **Configured site is wrong**: correct `MOODLE_BASE_URL` or the saved `base_url`, then rerun `moodle user --json`.
 - **Cached session expired**: run `moodle auth login`, or rerun with `--no-cache` once so the CLI reacquires a session.
 - **Non-interactive config error**: set `MOODLE_BASE_URL`; a pipe cannot answer the first-run prompt.

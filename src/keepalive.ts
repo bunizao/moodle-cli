@@ -154,7 +154,7 @@ export async function keepAliveOnce(baseUrl: string, options: KeepaliveOptions =
         fetch: options.fetchImpl,
         noCache: true,
         now: options.now,
-        // Background runs must never block on an interactive Okta login.
+        // Background runs must never block on an interactive browser login.
         nonInteractive: true,
       }));
   try {

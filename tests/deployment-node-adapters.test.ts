@@ -670,13 +670,12 @@ describe("FetchManagedWorkerClient", () => {
 });
 
 describe("background Moodle session source", () => {
-  it("uses browser cookies and Okta without opening an interactive browser", async () => {
+  it("uses browser cookies without opening an interactive browser", async () => {
     const openBrowser = vi.fn(async () => undefined);
     const source = createBackgroundMoodleSessionSource({
       homeDir: await mkdtemp(join(tmpdir(), "moodle-session-source-")),
       openBrowser,
       browserCookieProvider: async () => [],
-      oktaCookieProvider: async () => [],
     });
 
     await expect(source.loadValidated("school", "https://moodle.example.edu"))
@@ -701,7 +700,6 @@ describe("background Moodle session source", () => {
       homeDir,
       validateSession,
       browserCookieProvider: async () => [{ name: "MoodleSession", value: "fresh-cookie", domain: "moodle.example.edu" }],
-      oktaCookieProvider: async () => [],
     });
 
     await expect(source.loadValidated("school", baseUrl)).resolves.toMatchObject({ cookieValue: "fresh-cookie" });

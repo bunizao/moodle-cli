@@ -290,7 +290,7 @@ export function formatKeepaliveResult(result: KeepaliveRunResult): string {
     case "renewed":
       return `Session renewed${result.time_remaining_seconds ? `; server timeout in ${formatDuration(result.time_remaining_seconds)}` : ""}`;
     case "reauthenticated":
-      return "Session was expired; re-authenticated from browser/okta cookies";
+      return "Session was expired; re-authenticated from browser cookies";
     case "expired":
       return "Session expired and could not be renewed. Log in to Moodle in your browser or run: moodle auth login";
     case "no_session":

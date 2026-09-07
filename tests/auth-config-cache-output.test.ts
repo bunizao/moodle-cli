@@ -60,7 +60,6 @@ describe("auth chain", () => {
       browserCookieProvider: async () => [
         { name: "MoodleSession", value: "browser-cookie", domain: "school.example.edu" },
       ],
-      oktaCookieProvider: async () => [],
       validateSession: async () => ({ sesskey: "sess", userid: 7 }),
       openBrowser,
     });
@@ -82,7 +81,6 @@ describe("auth chain", () => {
           ? []
           : [{ name: "MoodleSessionSSO", value: "fresh-cookie", domain: ".school.example.edu" }];
       },
-      oktaCookieProvider: async () => [],
       validateSession: async (_baseUrl, cookie) =>
         cookie.value === "fresh-cookie" ? { sesskey: "fresh-sess", userid: 9 } : null,
       openBrowser,
@@ -109,7 +107,6 @@ describe("auth chain", () => {
           ? []
           : [{ name: "MoodleSession", value: "fresh-cookie", domain: "school.example.edu" }];
       },
-      oktaCookieProvider: async () => [],
       validateSession: async (_baseUrl, cookie) =>
         cookie.value === "fresh-cookie" ? { sesskey: "fresh-sess", userid: 9 } : null,
       openBrowser,
@@ -162,7 +159,6 @@ describe("auth chain", () => {
           options.onCookieWarnings?.([blocked]);
           return [];
         },
-        oktaCookieProvider: async () => [],
         validateSession: async () => null,
         openBrowser,
       }),
