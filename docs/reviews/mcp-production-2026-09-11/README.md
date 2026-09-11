@@ -1,5 +1,7 @@
 # MCP security and production readiness review
 
+Historical review of `79f6fe5`; see [the completed fixes](FIXES.md) for the repaired implementation.
+
 **Decision: NO-GO for production at `79f6fe5`.** The cookie encryption primitive works, but an upstream redirect can disclose the decrypted cookie. The browser OAuth flow and the upgrade from existing deployments also have confirmed blockers.
 
 Reviewed on 2026-09-11: [PR #25](https://github.com/bunizao/moodle-cli/pull/25), `feat/mcp-cloudflare-worker`, head `79f6fe5a3a85c7ed3765e0895afb43b000e38948`, base `f35adba8b2edfd6c599c7bbe27866cb1881d4217`. The remote PR was still open, mergeable, and green in CI. Those facts do not establish successful deployment.

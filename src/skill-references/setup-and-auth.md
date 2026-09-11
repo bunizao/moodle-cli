@@ -95,7 +95,7 @@ Never print or request the raw Moodle cookie, MCP access token, session sync tok
 
 ### Managing private MCP access
 
-Use `moodle mcp clients --json` to inspect OAuth clients, `moodle mcp revoke CLIENT_ID` to remove one client, or `moodle mcp revoke --all` to close all OAuth access, pending authorizations, and pairing windows. These use the owner's protected sync credential.
+After upgrading from the original OAuth release, run `moodle mcp pair` again because old grants are invalidated. Use `moodle mcp clients --json` to inspect OAuth clients, `moodle mcp revoke CLIENT_ID` to remove one client, or `moodle mcp revoke --all` to close all OAuth access, pending authorizations, and pairing windows. These use the owner's protected sync credential.
 
 `moodle mcp deploy --rotate-token` invalidates previous static credentials and OAuth grants immediately. `moodle mcp deploy --rotate-key` re-encrypts and verifies the active session before retiring the previous encryption key. `moodle mcp deploy --repair` reconciles interrupted uploads using the live session revision. Rollback requires a compatible session schema and matching current keys/credentials; updates retain a static-bridge recovery release.
 

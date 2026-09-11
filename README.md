@@ -237,7 +237,7 @@ moodle --yes mcp deploy --rotate-key
 moodle --yes mcp deploy --repair
 ```
 
-Revocation closes pending authorizations and pairing windows as well as tokens. Token rotation immediately invalidates old static credentials and OAuth grants; local bridge configurations resolve the new token automatically. Native remote header clients must receive the new token. Key rotation migrates the active encrypted record, verifies it, then removes the previous key from the active configuration.
+The initial upgrade invalidates old OAuth grants; run `moodle mcp pair` again for hosted clients. Revocation closes pending authorizations and pairing windows as well as tokens. Token rotation immediately invalidates old static credentials and OAuth grants; local bridge configurations resolve the new token automatically. Native remote header clients must receive the new token. Key rotation migrates the active encrypted record, verifies it, then removes the previous key from the active configuration.
 
 Deployment uses Cloudflare's atomic code/secrets operation, including Durable Object migrations. An update first verifies a compatible recovery release that supports the owner's static bridge; OAuth is temporarily unavailable in recovery mode. Rollback checks session schema, encryption-key identity and credential identity. It will not activate an incompatible pre-migration version or restore revoked credentials. `--repair` reconciles the live session revision after interrupted uploads.
 
