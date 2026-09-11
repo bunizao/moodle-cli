@@ -365,9 +365,10 @@ export function buildProgram(io: CliIO = {}): Command {
   addOutputOptions(mutating(mcp.command("deploy").description("Deploy or update the managed Moodle MCP server.")))
     .option("--dry-run", "Preview deployment changes without applying them.")
     .option("--repair", "Repair authentication and managed deployment state.")
+    .option("--rotate-key", "Rotate the session encryption key and migrate the active session.")
     .option("--rotate-token", "Rotate the MCP access token with an overlap window.")
     .option("--rollback", "Restore the previous healthy Worker release.")
-    .action(async (options: OutputCommandOptions & { dryRun?: boolean; repair?: boolean; rotateToken?: boolean; rollback?: boolean }) => {
+    .action(async (options: OutputCommandOptions & { dryRun?: boolean; repair?: boolean; rotateToken?: boolean; rotateKey?: boolean; rollback?: boolean }) => {
       const dryRun = Boolean(options.dryRun || program.opts().dryRun);
       if (!dryRun && !await confirm(
         { summary: [ONBOARDING_COPY.introduction, "", ONBOARDING_COPY.credentials].join("\n") },
@@ -381,6 +382,7 @@ export function buildProgram(io: CliIO = {}): Command {
         dryRun,
         repair: Boolean(options.repair),
         rotateToken: Boolean(options.rotateToken),
+        rotateKey: Boolean(options.rotateKey),
         rollback: Boolean(options.rollback),
         yes: Boolean(program.opts().yes),
       });
@@ -420,6 +422,16 @@ export function buildProgram(io: CliIO = {}): Command {
       }
       const result = await getMcpService().connect({ client, mode: options.mode, showToken: Boolean(options.showToken) });
       await outputMcpResult(runtime, result, options);
+    });
+
+  addOutputOptions(mcp.command("clients").description("List pending and approved OAuth clients.")).action(async (options: OutputCommandOptions) => {
+    await outputMcpResult(runtime, await getMcpService().manageClients({}), options);
+  });
+  addOutputOptions(mutating(mcp.command("revoke").description("Revoke an OAuth client or all OAuth access.").argument("[client-id]")))
+    .option("--all", "Revoke every client, token, pending authorization, and pairing window.")
+    .action(async (clientId: string | undefined, options: OutputCommandOptions & { all?: boolean }) => {
+      if (Boolean(clientId) === Boolean(options.all)) throw new UsageError("Provide a client ID or --all.");
+      await outputMcpResult(runtime, await getMcpService().manageClients({ revoke: true, clientId }), options);
     });
 
   addOutputOptions(mutating(mcp.command("pair").description("Open a pairing window so Claude can connect to the remote MCP server."))).action(

@@ -82,6 +82,7 @@ export async function readCachedSession(
       if (session) await writeCachedSession(session, { ...options, noCache: false });
     }
   } catch {
+    if (parseCachedSession(raw)) await fs.rm(path, { force: true });
     return null;
   }
   if (!session || !sameBaseUrl(session.baseUrl, baseUrl)) {

@@ -56,5 +56,5 @@ function isMutating(command: Command): boolean {
   if (VERB_SET.has(command.name())) {
     return ["send", "submit", "set", "mark-read"].includes(command.name());
   }
-  return ["install", "uninstall", "login", "deploy", "connect", "pair", "remove", "push"].includes(command.name());
+  return ["install", "uninstall", "login", "deploy", "connect", "pair", "revoke", "remove", "push"].includes(command.name());
 }

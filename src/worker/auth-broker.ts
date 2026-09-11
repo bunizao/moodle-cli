@@ -32,6 +32,7 @@ export function parseAllowedRedirectHosts(value: string | undefined): string[] |
 
 export class AuthBroker {
   private readonly now: () => number;
+  private pending: Promise<unknown> = Promise.resolve();
 
   constructor(
     private readonly state: AuthBrokerStateLike,
@@ -42,11 +43,17 @@ export class AuthBroker {
   }
 
   async fetch(request: Request): Promise<Response> {
+    const response = this.pending.then(() => this.route(request));
+    this.pending = response.catch(() => undefined);
+    return response;
+  }
+
+  private async route(request: Request): Promise<Response> {
     const url = new URL(request.url);
     const router = this.router(this.issuer(url));
     if (this.env.SESSION_SYNC_TOKEN_DIGEST) {
       const previous = await this.state.storage.get<string>("oauth:owner-credential");
-      if (previous && previous !== this.env.SESSION_SYNC_TOKEN_DIGEST) await router.revokeClients();
+      if (previous !== this.env.SESSION_SYNC_TOKEN_DIGEST) await router.revokeClients();
       if (previous !== this.env.SESSION_SYNC_TOKEN_DIGEST) await this.state.storage.put("oauth:owner-credential", this.env.SESSION_SYNC_TOKEN_DIGEST);
     }
     if (url.pathname === "/internal/clients") {

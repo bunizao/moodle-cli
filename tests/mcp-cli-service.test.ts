@@ -518,6 +518,7 @@ function workerClient(
     putSession: vi.fn(async () => ({ revision: 5 })),
     getReadiness: vi.fn(async () => readiness),
     runSmoke: vi.fn(async () => ({ moodleUser: "Alice Example" })),
+    manageClients: vi.fn(async () => ({ clients: [] })),
     createPairing: vi.fn(async () => ({
       code: "ABCD2345",
       expiresAt: "2026-09-04T00:10:00.000Z",

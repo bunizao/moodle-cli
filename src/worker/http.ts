@@ -55,102 +55,112 @@ export interface WorkerHandler {
 export function createWorkerHandler(dependencies: WorkerDependencies): WorkerHandler {
   return {
     async fetch(request, env) {
-      const url = new URL(request.url);
-      const authorityProblem = validateRequestAuthority(request, url, env);
-      if (authorityProblem) return authorityProblem;
-      if (hasQueryCredential(url)) {
-        return unauthorized(
-          "Bearer credentials are not accepted in the query string.",
-          url.pathname === MCP_PATH ? resourceMetadataUrl(url, env) : undefined,
-        );
-      }
-
-      if (url.pathname === HEALTH_PATH && request.method === "GET") {
-        return Response.json(
-          { status: "pass", serviceId: WORKER_SERVICE_ID, version: WORKER_SERVICE_VERSION },
-          { headers: { "content-type": "application/health+json; charset=utf-8" } },
-        );
-      }
-
-      if (url.pathname === MCP_PATH && request.method !== "POST") {
-        return problemResponse(405, "METHOD_NOT_ALLOWED", "Method Not Allowed", "The MCP transport accepts POST requests only.", {
-          allow: "POST",
-        });
-      }
-
-      if (url.pathname === "/clients") {
-        if (!await verifyBearerToken(request.headers.get("authorization"), [env.SESSION_SYNC_TOKEN_DIGEST])) return unauthorized();
-        if (request.method !== "GET" && request.method !== "DELETE") return problemResponse(405, "METHOD_NOT_ALLOWED", "Method Not Allowed", "Use GET or DELETE.");
-        const authBroker = resolveAuthBroker(dependencies, env, url);
-        if (authBroker instanceof Response) return authBroker;
-        const response = await authBroker.manageClients(request);
-        const headers = new Headers(response.headers);
-        headers.set("cache-control", "no-store");
-        return new Response(response.body, { status: response.status, headers });
-      }
-      if (isOAuthRoute(url.pathname)) {
-        const authBroker = resolveAuthBroker(dependencies, env, url);
-        if (authBroker instanceof Response) return authBroker;
-        return authBroker.handleOAuth(request, url);
-      }
-
-      if (url.pathname === PAIR_PATH && request.method === "POST") {
-        if (!await verifyBearerToken(request.headers.get("authorization"), [env.SESSION_SYNC_TOKEN_DIGEST])) return unauthorized();
-        const authBroker = resolveAuthBroker(dependencies, env, url);
-        if (authBroker instanceof Response) return authBroker;
-        const pairing = await authBroker.createPairing();
-        return Response.json({
-          code: pairing.code,
-          expiresAt: new Date(pairing.expiresAt).toISOString(),
-          authorizationServer: issuerOrigin(url, env),
-        }, { headers: { "cache-control": "no-store" } });
-      }
-
-      if (url.pathname === PAIR_PATH) {
-        return problemResponse(405, "METHOD_NOT_ALLOWED", "Method Not Allowed", "The pairing route accepts POST requests only.", {
-          allow: "POST",
-        });
-      }
-
-      if (url.pathname === MCP_PATH) {
-        if (!await authorizeMcpRequest(request, url, env, dependencies)) {
-          return unauthorized("A valid Bearer token is required.", resourceMetadataUrl(url, env));
+      try {
+        const url = new URL(request.url);
+        const authorityProblem = validateRequestAuthority(request, url, env);
+        if (authorityProblem) return authorityProblem;
+        if (request.body) {
+          const bounded = await boundedRequest(request);
+          if (bounded instanceof Response) return bounded;
+          request = bounded;
         }
-        const server = typeof dependencies.mcpServer === "function"
-          ? dependencies.mcpServer(env)
-          : dependencies.mcpServer;
-        return handleMcpRequest(request, server);
-      }
+        if (hasQueryCredential(url)) {
+          return unauthorized(
+            "Bearer credentials are not accepted in the query string.",
+            url.pathname === MCP_PATH ? resourceMetadataUrl(url, env) : undefined,
+          );
+        }
 
-      if (url.pathname === READY_PATH && request.method === "GET") {
-        if (!await authorizeSessionSync(request, env)) return unauthorized();
-        const broker = resolveBroker(dependencies, env);
-        if (broker instanceof Response) return broker;
-        return broker.ready();
-      }
+        if (url.pathname === HEALTH_PATH && request.method === "GET") {
+          return Response.json(
+            { status: "pass", serviceId: WORKER_SERVICE_ID, version: WORKER_SERVICE_VERSION },
+            { headers: { "content-type": "application/health+json; charset=utf-8" } },
+          );
+        }
 
-      if (url.pathname === SESSION_PATH && request.method === "PUT") {
-        if (!await authorizeSessionSync(request, env)) return unauthorized();
-        const broker = resolveBroker(dependencies, env);
-        if (broker instanceof Response) return broker;
-        return broker.replaceSession(request);
-      }
+        if (url.pathname === MCP_PATH && request.method !== "POST") {
+          return problemResponse(405, "METHOD_NOT_ALLOWED", "Method Not Allowed", "The MCP transport accepts POST requests only.", {
+            allow: "POST",
+          });
+        }
 
-      if (url.pathname === SESSION_TOUCH_PATH && request.method === "POST") {
-        if (!await authorizeSessionSync(request, env)) return unauthorized();
-        const broker = resolveBroker(dependencies, env);
-        if (broker instanceof Response) return broker;
-        return broker.touch();
-      }
+        if (url.pathname === "/clients") {
+          if (url.searchParams.has("client_id") && !/^[A-Za-z0-9_-]{1,128}$/u.test(url.searchParams.get("client_id")!)) return problemResponse(400, "INVALID_CLIENT_ID", "Bad Request", "The client ID is invalid.");
+          if (!await verifyBearerToken(request.headers.get("authorization"), [env.SESSION_SYNC_TOKEN_DIGEST])) return unauthorized();
+          if (request.method !== "GET" && request.method !== "DELETE") return problemResponse(405, "METHOD_NOT_ALLOWED", "Method Not Allowed", "Use GET or DELETE.");
+          const authBroker = resolveAuthBroker(dependencies, env, url);
+          if (authBroker instanceof Response) return authBroker;
+          const response = await authBroker.manageClients(request);
+          const headers = new Headers(response.headers);
+          headers.set("cache-control", "no-store");
+          return new Response(response.body, { status: response.status, headers });
+        }
+        if (isOAuthRoute(url.pathname)) {
+          const authBroker = resolveAuthBroker(dependencies, env, url);
+          if (authBroker instanceof Response) return authBroker;
+          return authBroker.handleOAuth(request, url);
+        }
 
-      if (url.pathname === READY_PATH || url.pathname === SESSION_PATH || url.pathname === SESSION_TOUCH_PATH) {
-        const method = url.pathname === READY_PATH ? "GET" : url.pathname === SESSION_PATH ? "PUT" : "POST";
-        return problemResponse(405, "METHOD_NOT_ALLOWED", "Method Not Allowed", "The session route does not accept this method.", {
-          allow: method,
-        });
-      }
+        if (url.pathname === PAIR_PATH && request.method === "POST") {
+          if (!await verifyBearerToken(request.headers.get("authorization"), [env.SESSION_SYNC_TOKEN_DIGEST])) return unauthorized();
+          const authBroker = resolveAuthBroker(dependencies, env, url);
+          if (authBroker instanceof Response) return authBroker;
+          const pairing = await authBroker.createPairing();
+          return Response.json({
+            code: pairing.code,
+            expiresAt: new Date(pairing.expiresAt).toISOString(),
+            authorizationServer: issuerOrigin(url, env),
+          }, { headers: { "cache-control": "no-store" } });
+        }
 
-      return problemResponse(404, "NOT_FOUND", "Not Found", "The requested route does not exist.");
+        if (url.pathname === PAIR_PATH) {
+          return problemResponse(405, "METHOD_NOT_ALLOWED", "Method Not Allowed", "The pairing route accepts POST requests only.", {
+            allow: "POST",
+          });
+        }
+
+        if (url.pathname === MCP_PATH) {
+          if (!await authorizeMcpRequest(request, url, env, dependencies)) {
+            return unauthorized("A valid Bearer token is required.", resourceMetadataUrl(url, env));
+          }
+          const server = typeof dependencies.mcpServer === "function"
+            ? dependencies.mcpServer(env)
+            : dependencies.mcpServer;
+          return handleMcpRequest(request, server);
+        }
+
+        if (url.pathname === READY_PATH && request.method === "GET") {
+          if (!await authorizeSessionSync(request, env)) return unauthorized();
+          const broker = resolveBroker(dependencies, env);
+          if (broker instanceof Response) return broker;
+          return broker.ready();
+        }
+
+        if (url.pathname === SESSION_PATH && request.method === "PUT") {
+          if (!await authorizeSessionSync(request, env)) return unauthorized();
+          const broker = resolveBroker(dependencies, env);
+          if (broker instanceof Response) return broker;
+          return broker.replaceSession(request);
+        }
+
+        if (url.pathname === SESSION_TOUCH_PATH && request.method === "POST") {
+          if (!await authorizeSessionSync(request, env)) return unauthorized();
+          const broker = resolveBroker(dependencies, env);
+          if (broker instanceof Response) return broker;
+          return broker.touch();
+        }
+
+        if (url.pathname === READY_PATH || url.pathname === SESSION_PATH || url.pathname === SESSION_TOUCH_PATH) {
+          const method = url.pathname === READY_PATH ? "GET" : url.pathname === SESSION_PATH ? "PUT" : "POST";
+          return problemResponse(405, "METHOD_NOT_ALLOWED", "Method Not Allowed", "The session route does not accept this method.", {
+            allow: method,
+          });
+        }
+
+        return problemResponse(404, "NOT_FOUND", "Not Found", "The requested route does not exist.");
+      } catch {
+        return problemResponse(503, "SERVICE_UNAVAILABLE", "Service Unavailable", "The service could not complete the request.");
+      }
     },
   };
 }
@@ -373,4 +383,33 @@ function activePreviousDigest(digest: string | undefined, expiresAt: string | un
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+async function boundedRequest(request: Request): Promise<Request | Response> {
+  const limit = 64 * 1024;
+  const reader = request.body!.getReader();
+  const chunks: Uint8Array[] = [];
+  let length = 0;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const read = async () => {
+    for (;;) {
+      const chunk = await reader.read();
+      if (chunk.done) break;
+      length += chunk.value.byteLength;
+      if (length > limit) return problemResponse(413, "REQUEST_TOO_LARGE", "Content Too Large", "Request bodies are limited to 64 KiB.");
+      chunks.push(chunk.value);
+    }
+    const body = new Uint8Array(length);
+    let offset = 0;
+    for (const chunk of chunks) { body.set(chunk, offset); offset += chunk.byteLength; }
+    return new Request(request, { body });
+  };
+  try {
+    return await Promise.race([read(), new Promise<Response>((resolve) => {
+      timer = setTimeout(() => resolve(problemResponse(408, "REQUEST_TIMEOUT", "Request Timeout", "The request body was not received in time.")), 30_000);
+    })]);
+  } finally {
+    clearTimeout(timer);
+    await reader.cancel().catch(() => undefined);
+  }
 }

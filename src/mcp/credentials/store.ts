@@ -43,7 +43,10 @@ export class SafeCredentialStore {
       return this.fallback.read(profile);
     }
 
-    if (preferredValue) return preferredValue;
+    if (preferredValue) {
+      if (this.protectedOnly) await this.fallback.delete(profile);
+      return preferredValue;
+    }
     const legacy = await this.fallback.read(profile);
     if (legacy && this.protectedOnly) {
       await this.preferred.write(profile, legacy);
@@ -100,9 +103,7 @@ export function rotateCredentials(
     mcpAccessToken: createToken(),
     sessionSyncToken: createToken(),
     sessionEncryptionKey: current.sessionEncryptionKey,
-    previousMcpAccessToken: current.mcpAccessToken,
-    previousSessionSyncToken: current.sessionSyncToken,
-    previousTokensExpireAt: now() + TOKEN_OVERLAP_MS,
+    ...(current.previousSessionEncryptionKey ? { previousSessionEncryptionKey: current.previousSessionEncryptionKey } : {}),
   };
 }
 

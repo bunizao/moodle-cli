@@ -1,3 +1,4 @@
+import { deleteCachedSession } from "../session-cache.js";
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
@@ -65,6 +66,7 @@ export interface McpDeployInput {
   dryRun: boolean;
   repair: boolean;
   rotateToken: boolean;
+  rotateKey?: boolean;
   rollback: boolean;
   yes: boolean;
 }
@@ -75,6 +77,7 @@ export interface McpCommandService {
   login(): Promise<McpCommandOutput>;
   connect(input: { client?: string; mode: "bridge" | "remote"; showToken: boolean }): Promise<McpCommandOutput>;
   pair(): Promise<McpCommandOutput>;
+  manageClients(input: { revoke?: boolean; clientId?: string }): Promise<McpCommandOutput>;
   remove(input: { yes: boolean }): Promise<McpCommandOutput>;
   serveStdio(): Promise<void>;
   bridge(profile?: string): Promise<void>;
@@ -167,6 +170,7 @@ class DefaultMcpCommandService implements McpCommandService {
       releaseDigest: await this.releaseDigest(),
       repair: input.repair,
       rotateToken: input.rotateToken,
+      rotateKey: input.rotateKey,
       dryRun: input.dryRun,
     });
     if (input.dryRun) {
@@ -326,6 +330,16 @@ class DefaultMcpCommandService implements McpCommandService {
     };
   }
 
+  async manageClients(input: { revoke?: boolean; clientId?: string }): Promise<McpCommandOutput> {
+    if (input.clientId && !/^[A-Za-z0-9_-]{1,128}$/u.test(input.clientId)) throw new UsageError("The OAuth client ID is invalid.");
+    const profile = deriveMcpProfile((await this.config()).baseUrl);
+    const receipt = await this.receipts.read(profile);
+    const credentials = await this.credentials.read(profile);
+    if (!receipt || !credentials) throw new UsageError(`No managed Moodle MCP deployment exists for profile ${profile}.`);
+    const data = await this.worker.manageClients({ endpoint: receipt.productionEndpoint, sessionSyncToken: credentials.sessionSyncToken, ...input });
+    return { data, text: input.revoke ? "OAuth authorization revoked." : JSON.stringify(data, null, 2) };
+  }
+
   async pair(): Promise<McpCommandOutput> {
     const profile = deriveMcpProfile((await this.config()).baseUrl);
     const [receipt, credentials] = await Promise.all([
@@ -370,13 +384,14 @@ class DefaultMcpCommandService implements McpCommandService {
       if (answer.trim() !== receipt.workerName) throw new UsageError("Moodle MCP removal was cancelled.");
     }
     const result = await this.deployment(false).remove(profile);
+    await deleteCachedSession((await this.config()).baseUrl, { homeDir: this.homeDirectory });
     return {
       data: result,
       text: [
         "Moodle MCP has been removed.",
         `Worker: ${result.workerRemoved ? "deleted" : "not present"}`,
         "Local renewal, client registrations, and deployment credentials: deleted",
-        "Local Moodle configuration and authentication cache: kept",
+        "Local Moodle configuration: kept; matching authentication cache: removed",
       ].join("\n"),
     };
   }

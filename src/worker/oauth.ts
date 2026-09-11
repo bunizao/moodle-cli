@@ -179,6 +179,7 @@ export function createOAuthRouter(options: OAuthRouterOptions): OAuthRouter {
     } catch {
       return undefined;
     }
+    if (parsed.username || parsed.password || parsed.search || parsed.hash) return undefined;
     const normalized = `${parsed.origin}${parsed.pathname.replace(/\/$/u, "")}`;
     if (normalized !== resourceUrl && normalized !== issuer) return undefined;
     return resourceUrl;

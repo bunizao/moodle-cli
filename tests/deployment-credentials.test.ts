@@ -242,15 +242,13 @@ it.runIf(process.platform === "darwin")("recovers an empty macOS Keychain entry 
 }, 30_000);
 
 describe("rotateCredentials", () => {
-  it("retains the current pair for a two-token overlap window", () => {
+  it("invalidates previous transport credentials on rotation", () => {
     const tokens = ["mcp-next", "sync-next"];
     expect(rotateCredentials(CREDENTIALS, () => tokens.shift() ?? "missing", () => 1_000)).toEqual({
       mcpAccessToken: "mcp-next",
       sessionSyncToken: "sync-next",
       sessionEncryptionKey: "encryption-current",
-      previousMcpAccessToken: "mcp-current",
-      previousSessionSyncToken: "sync-current",
-      previousTokensExpireAt: 601_000,
+
     });
   });
 });

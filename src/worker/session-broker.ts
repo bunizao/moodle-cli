@@ -30,6 +30,7 @@ export interface SessionBrokerEnv {
   MOODLE_ORIGIN: string;
   SESSION_ENCRYPTION_KEY: string;
   SESSION_ENCRYPTION_KEY_PREVIOUS?: string;
+  SESSION_CREDENTIAL_ID?: string;
 }
 
 export interface SessionCandidate {
@@ -162,7 +163,7 @@ export class SessionBroker {
   private async ready(): Promise<Response> {
     const session = await this.loadSession();
     const health = readiness(session, this.now());
-    return Response.json(health, {
+    return Response.json({ ...health, encryptionKeyId: (await this.keyring()).current.id, ...(this.env.SESSION_CREDENTIAL_ID ? { credentialId: this.env.SESSION_CREDENTIAL_ID } : {}) }, {
       status: health.status === "fail" ? 503 : 200,
       headers: { "content-type": "application/health+json; charset=utf-8" },
     });
@@ -401,6 +402,7 @@ function readiness(session: StoredSession | undefined, now: number) {
 
   return {
     status,
+    sessionSchemaVersion: 2,
     serviceId: WORKER_SERVICE_ID,
     version: WORKER_SERVICE_VERSION,
     checks: {
