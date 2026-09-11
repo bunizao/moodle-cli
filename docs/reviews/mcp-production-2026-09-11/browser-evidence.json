@@ -1,0 +1,129 @@
+{
+  "browser": "Google Chrome (Chromium) 152.0.7977.84 headless",
+  "revision": "79f6fe5a3a85c7ed3765e0895afb43b000e38948",
+  "result": "Browser OAuth approval blocked by shipped response policies; no callback in unmodified baseline. Referrer-policy and CSP blockers separately isolated.",
+  "evidence": {
+    "baseline": {
+      "revision": "79f6fe5a3a85c7ed3765e0895afb43b000e38948",
+      "server": "Actual bundled Worker in Miniflare/workerd; synthetic credentials and loopback callback only",
+      "mode": "baseline",
+      "instrumentation": "None: original application response policies",
+      "console": [
+        {
+          "type": "error",
+          "text": "Failed to load resource: the server responded with a status of 403 (Forbidden)"
+        }
+      ],
+      "pageErrors": [],
+      "requestFailures": [],
+      "callbackRequests": [],
+      "browserVersion": "152.0.7977.84",
+      "approval": {
+        "status": 200,
+        "csp": "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'",
+        "referrerPolicy": "no-referrer",
+        "buttons": [
+          "Approve access"
+        ],
+        "inputName": "pairing_code"
+      },
+      "formRequest": {
+        "origin": "null",
+        "refererPresent": false,
+        "url": "https://127.0.0.1:50071/oauth/authorize"
+      },
+      "authorizeResponse": {
+        "status": 403,
+        "location": "",
+        "csp": null
+      },
+      "finalUrl": "https://127.0.0.1:50071/oauth/authorize",
+      "callbackReached": false,
+      "bodyText": "{\"type\":\"https://moodle-cli.dev/problems/invalid-origin\",\"title\":\"Forbidden\",\"status\":403,\"detail\":\"The request Origin is not allowed.\",\"code\":\"INVALID_ORIGIN\"}"
+    },
+    "referrer_only": {
+      "revision": "79f6fe5a3a85c7ed3765e0895afb43b000e38948",
+      "server": "Actual bundled Worker in Miniflare/workerd; synthetic credentials and loopback callback only",
+      "instrumentation": "Approval GET response Referrer-Policy changed to strict-origin-when-cross-origin to isolate CSP; CSP unchanged; application source unchanged",
+      "console": [
+        {
+          "type": "error",
+          "text": "Sending form data to 'https://127.0.0.1:49845/oauth/authorize' violates the following Content Security Policy directive: \"form-action 'self'\". The request has been blocked.\n"
+        }
+      ],
+      "pageErrors": [],
+      "requestFailures": [
+        {
+          "url": "https://127.0.0.1:49845/oauth/authorize",
+          "failure": "net::ERR_ABORTED"
+        }
+      ],
+      "callbackRequests": [],
+      "browserVersion": "152.0.7977.84",
+      "approval": {
+        "status": 200,
+        "csp": "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'",
+        "buttons": [
+          "Approve access"
+        ],
+        "inputName": "pairing_code"
+      },
+      "formRequest": {
+        "origin": "https://127.0.0.1:49845",
+        "refererPresent": true,
+        "url": "https://127.0.0.1:49845/oauth/authorize"
+      },
+      "finalUrl": "https://127.0.0.1:49845/oauth/authorize?response_type=code&client_id=xM0W_awF5jhhiq99nNx0QSzi0IL30JxKWWNVzXSf-Dw&redirect_uri=http%3A%2F%2F127.0.0.1%3A49842%2Fcallback&code_challenge_method=S256&code_challenge=0Ak-chNl2aZ6wugPQrvEcnkXfNZfHDCBRE4Me5ioDF0&resource=https%3A%2F%2F127.0.0.1%3A49845%2Fmcp&state=<redacted>",
+      "callbackReached": false,
+      "bodyText": "Approve access to your Moodle\nClient\nSynthetic Chromium CSP Client\nRedirect\nhttp://127.0.0.1:49842\nAccess\nRead-only Moodle data (moodle.read)\nPairing code  Approve access\n\nRun moodle mcp pair on your computer to get a code. It is valid for 10 minutes and one approval."
+    },
+    "positive_control": {
+      "revision": "79f6fe5a3a85c7ed3765e0895afb43b000e38948",
+      "server": "Actual bundled Worker in Miniflare/workerd; synthetic credentials and loopback callback only",
+      "instrumentation": "Positive control only: approval GET Referrer-Policy changed to strict-origin-when-cross-origin AND form-action extended with exact synthetic callback origin; application source unchanged",
+      "console": [],
+      "pageErrors": [],
+      "requestFailures": [],
+      "callbackRequests": [
+        {
+          "path": "/callback",
+          "hasCode": true
+        }
+      ],
+      "browserVersion": "152.0.7977.84",
+      "approval": {
+        "status": 200,
+        "csp": "default-src 'none'; style-src 'unsafe-inline'; form-action 'self' http://127.0.0.1:49976; frame-ancestors 'none'",
+        "buttons": [
+          "Approve access"
+        ],
+        "inputName": "pairing_code"
+      },
+      "formRequest": {
+        "origin": "https://127.0.0.1:49978",
+        "refererPresent": true,
+        "url": "https://127.0.0.1:49978/oauth/authorize"
+      },
+      "authorizeResponse": {
+        "status": 302,
+        "location": "http://127.0.0.1:49976/callback?code=<redacted>&state=<redacted>",
+        "csp": null
+      },
+      "finalUrl": "http://127.0.0.1:49976/callback?code=<redacted>&state=<redacted>",
+      "callbackReached": true,
+      "bodyText": "Synthetic OAuth callback reached"
+    }
+  },
+  "sources": [
+    "src/worker/oauth.ts:600-610",
+    "src/worker/oauth.ts:334-372",
+    "src/worker/http.ts:223-245"
+  ],
+  "limitations": [
+    "Synthetic local HTTPS Worker with certificate verification ignored; allowed local HTTP loopback callback. No actual Claude URL visited.",
+    "Header modifications occur only in explicitly labeled test controls; repository source remains unchanged.",
+    "Python Playwright package unavailable; used existing bundled Node Playwright with installed Chrome."
+  ],
+  "script": "browser-probe.mjs",
+  "sourceStatus": ""
+}
