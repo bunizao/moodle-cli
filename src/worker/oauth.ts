@@ -15,6 +15,7 @@ const AUTHORIZATION_CODE_TTL_MS = 60 * 1000;
 const PAIRING_CODE_TTL_MS = 10 * 60 * 1000;
 const PAIRING_CODE_MAX_ATTEMPTS = 5;
 const MAX_REGISTERED_CLIENTS = 20;
+const PENDING_CLIENT_TTL_MS = 10 * 60 * 1000;
 const PAIRING_CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 const PAIRING_CODE_LENGTH = 8;
 export const DEFAULT_CLIENT_HOSTS = ["claude.ai", "claude.com"];
@@ -57,6 +58,8 @@ export interface OAuthRouter {
   handle(request: Request, url: URL): Promise<Response | null>;
   createPairing(): Promise<PairingIssue>;
   verifyAccessToken(token: string, resource: string): Promise<AccessGrant | null>;
+  listClients(): Promise<Array<{ clientId: string; clientName: string; approved: boolean }>>;
+  revokeClients(clientId?: string): Promise<void>;
 }
 
 interface ClientRecord {
@@ -64,6 +67,7 @@ interface ClientRecord {
   clientName: string;
   redirectUris: string[];
   createdAt: number;
+  approvedAt?: number;
 }
 
 interface PairingRecord {
@@ -118,7 +122,18 @@ export function createOAuthRouter(options: OAuthRouterOptions): OAuthRouter {
 
   async function readClient(clientId: string): Promise<ClientRecord | undefined> {
     if (!/^[A-Za-z0-9_-]{1,128}$/u.test(clientId)) return undefined;
-    return storage.get<ClientRecord>(`${CLIENT_PREFIX}${clientId}`);
+    const client = await storage.get<ClientRecord>(`${CLIENT_PREFIX}${clientId}`);
+    if (!client || client.approvedAt !== undefined || client.createdAt + PENDING_CLIENT_TTL_MS > now()) return client;
+    for (const prefix of [CODE_PREFIX, ACCESS_PREFIX, REFRESH_PREFIX]) {
+      const grants = await storage.list<{ clientId: string; expiresAt: number }>({ prefix });
+      if ([...grants.values()].some((grant) => grant.clientId === clientId && grant.expiresAt > now())) {
+        const approved = { ...client, approvedAt: client.createdAt };
+        await storage.put(`${CLIENT_PREFIX}${clientId}`, approved);
+        return approved;
+      }
+    }
+    await storage.delete(`${CLIENT_PREFIX}${clientId}`);
+    return undefined;
   }
 
   function isAllowedRedirectUri(value: string): boolean {
@@ -128,7 +143,7 @@ export function createOAuthRouter(options: OAuthRouterOptions): OAuthRouter {
     } catch {
       return false;
     }
-    if (parsed.hash) return false;
+    if (parsed.hash || parsed.username || parsed.password || value.length > 2048) return false;
     if (LOOPBACK_HOSTS.has(parsed.hostname)) return parsed.protocol === "http:" || parsed.protocol === "https:";
     if (parsed.protocol !== "https:") return false;
     return matchesAllowedHost(parsed.hostname, allowedRedirectHosts);
@@ -157,7 +172,7 @@ export function createOAuthRouter(options: OAuthRouterOptions): OAuthRouter {
   }
 
   function normalizeResource(value: string | null): string | null | undefined {
-    if (value === null) return null;
+    if (value === null) return resourceUrl;
     let parsed: URL;
     try {
       parsed = new URL(value);
@@ -287,9 +302,16 @@ export function createOAuthRouter(options: OAuthRouterOptions): OAuthRouter {
       return oauthError(400, "invalid_redirect_uri", "A redirect URI is not allowed by this deployment.");
     }
 
+    await prune();
     const clients = await storage.list<ClientRecord>({ prefix: CLIENT_PREFIX });
-    if (clients.size >= MAX_REGISTERED_CLIENTS) {
-      return oauthError(400, "invalid_client_metadata", "This server has reached its client registration limit.");
+    const pending: ClientRecord[] = [];
+    for (const client of clients.values()) {
+      const current = await readClient(client.clientId);
+      if (current && current.approvedAt === undefined) pending.push(current);
+    }
+    if (pending.length >= MAX_REGISTERED_CLIENTS) {
+      pending.sort((left, right) => left.createdAt - right.createdAt);
+      await storage.delete(`${CLIENT_PREFIX}${pending[0]!.clientId}`);
     }
 
     const clientId = createSecret();
@@ -337,14 +359,19 @@ export function createOAuthRouter(options: OAuthRouterOptions): OAuthRouter {
       return htmlResponse(approvalPage(authorizeRequest, params, {
         pairingOpen: Boolean(pairing),
         ...(pairing ? {} : { message: "No pairing window is open. Run `moodle mcp pair` on your computer, then reload this page." }),
-      }));
+      }), 200, authorizeRequest.redirectUri);
     }
 
     if (!pairing) {
       return htmlResponse(approvalPage(authorizeRequest, params, {
         pairingOpen: false,
         message: "No pairing window is open. Run `moodle mcp pair` on your computer, then submit the code it prints.",
-      }), 403);
+      }), 403, authorizeRequest.redirectUri);
+    }
+    const approvedClients = [...(await storage.list<ClientRecord>({ prefix: CLIENT_PREFIX })).values()]
+      .filter((client) => client.approvedAt !== undefined);
+    if (authorizeRequest.client.approvedAt === undefined && approvedClients.length >= MAX_REGISTERED_CLIENTS) {
+      return htmlResponse(errorPage("The approved client limit is reached. Revoke an existing client before pairing."), 409);
     }
     if (!await consumePairingAttempt(pairing, params.get("pairing_code") ?? "")) {
       const remaining = PAIRING_CODE_MAX_ATTEMPTS - pairing.attempts - 1;
@@ -353,9 +380,10 @@ export function createOAuthRouter(options: OAuthRouterOptions): OAuthRouter {
         message: remaining > 0
           ? `That pairing code is not correct. ${remaining} ${remaining === 1 ? "attempt remains" : "attempts remain"}.`
           : "Too many incorrect attempts. Run `moodle mcp pair` again to open a new pairing window.",
-      }), 403);
+      }), 403, authorizeRequest.redirectUri);
     }
 
+    await storage.put(`${CLIENT_PREFIX}${authorizeRequest.clientId}`, { ...authorizeRequest.client, approvedAt: now() });
     await prune();
     const code = createSecret();
     await storage.put<CodeRecord>(`${CODE_PREFIX}${await digestBearerToken(code)}`, {
@@ -411,7 +439,7 @@ export function createOAuthRouter(options: OAuthRouterOptions): OAuthRouter {
     }
     return issueTokens({
       clientId: record.clientId,
-      resource: record.resource ?? requestedResource,
+      resource: resourceUrl,
       scope: record.scope,
       family: createSecret(),
     });
@@ -420,6 +448,8 @@ export function createOAuthRouter(options: OAuthRouterOptions): OAuthRouter {
   async function handleRefreshTokenGrant(form: URLSearchParams): Promise<Response> {
     const refreshToken = form.get("refresh_token") ?? "";
     if (!refreshToken) return oauthError(400, "invalid_request", "A refresh token is required.");
+    const requestedResource = normalizeResource(form.get("resource"));
+    if (requestedResource === undefined) return oauthError(400, "invalid_target", "The requested resource is not hosted by this server.");
     const digest = await digestBearerToken(refreshToken);
     const record = await storage.get<TokenRecord>(`${REFRESH_PREFIX}${digest}`);
     if (!record) {
@@ -428,6 +458,7 @@ export function createOAuthRouter(options: OAuthRouterOptions): OAuthRouter {
       return oauthError(400, "invalid_grant", "The refresh token is invalid or expired.");
     }
     await storage.delete(`${REFRESH_PREFIX}${digest}`);
+    if (record.resource !== resourceUrl) return oauthError(400, "invalid_grant", "The grant must be authorized again for this resource.");
     if (record.expiresAt <= now()) return oauthError(400, "invalid_grant", "The refresh token is invalid or expired.");
     const clientId = form.get("client_id");
     if (clientId !== null && clientId !== record.clientId) {
@@ -513,6 +544,24 @@ export function createOAuthRouter(options: OAuthRouterOptions): OAuthRouter {
       return null;
     },
 
+    async listClients() {
+      const result = [];
+      for (const client of (await storage.list<ClientRecord>({ prefix: CLIENT_PREFIX })).values()) {
+        const current = await readClient(client.clientId);
+        if (current) result.push({ clientId: current.clientId, clientName: current.clientName, approved: current.approvedAt !== undefined });
+      }
+      return result;
+    },
+
+    async revokeClients(clientId) {
+      await storage.delete(PAIRING_KEY);
+      for (const prefix of [CLIENT_PREFIX, CODE_PREFIX, ACCESS_PREFIX, REFRESH_PREFIX, CONSUMED_REFRESH_PREFIX]) {
+        for (const [key, record] of await storage.list<{ clientId: string }>({ prefix })) {
+          if (!clientId || record.clientId === clientId) await storage.delete(key);
+        }
+      }
+    },
+
     async createPairing() {
       const code = createPairingCode();
       const expiresAt = now() + PAIRING_CODE_TTL_MS;
@@ -533,7 +582,7 @@ export function createOAuthRouter(options: OAuthRouterOptions): OAuthRouter {
         await storage.delete(key);
         return null;
       }
-      if (record.resource !== null && record.resource !== resource) return null;
+      if (record.resource !== resourceUrl || resource !== resourceUrl) return null;
       return { clientId: record.clientId, scope: record.scope };
     },
   };
@@ -597,14 +646,15 @@ function methodNotAllowed(allow: string): Response {
   });
 }
 
-function htmlResponse(body: string, status = 200): Response {
+function htmlResponse(body: string, status = 200, redirectUri?: string): Response {
+  const callback = redirectUri ? ` ${new URL(redirectUri).origin}` : "";
   return new Response(body, {
     status,
     headers: {
       "content-type": "text/html; charset=utf-8",
       "cache-control": "no-store",
-      "content-security-policy": "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'",
-      "referrer-policy": "no-referrer",
+      "content-security-policy": `default-src 'none'; style-src 'unsafe-inline'; form-action 'self'${callback}; frame-ancestors 'none'`,
+      "referrer-policy": "strict-origin-when-cross-origin",
       "x-frame-options": "DENY",
       "x-content-type-options": "nosniff",
     },

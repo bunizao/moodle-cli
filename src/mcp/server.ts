@@ -228,7 +228,7 @@ export function createMoodleMcpServer(
             data: { type: "INVALID_REQUEST", issues: error.issues },
           });
         }
-        const message = error instanceof Error ? error.message : String(error);
+        const message = "The MCP request could not be completed.";
         return jsonRpcFailure(id, { code: -32603, message });
       }
     },
@@ -390,8 +390,11 @@ function mapMoodleError(error: unknown): { type: string; message: string; moodle
     usage: "MOODLE_INVALID_REQUEST",
   };
   const type = code.startsWith("MOODLE_") ? code : typeByCode[code] ?? "MOODLE_UPSTREAM_ERROR";
-  const message = error instanceof Error ? error.message : "Moodle could not complete the request.";
-  const moodleCode = typeof record.moodleErrorCode === "string" ? record.moodleErrorCode : undefined;
+  const message = type === "MOODLE_AUTH_REQUIRED" ? "The Moodle session has expired. Sign in again."
+    : type === "MOODLE_NOT_FOUND" || type === "MOODLE_COURSE_NOT_FOUND" ? "The requested Moodle item was not found."
+    : type === "MOODLE_INVALID_REQUEST" ? "The Moodle request is invalid."
+    : "Moodle could not complete the request.";
+  const moodleCode = typeof record.moodleErrorCode === "string" && /^[a-z][a-z0-9_]{0,63}$/u.test(record.moodleErrorCode) ? record.moodleErrorCode : undefined;
   return { type, message, ...(moodleCode ? { moodleCode } : {}) };
 }
 

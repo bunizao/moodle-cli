@@ -103,7 +103,7 @@ export function buildProgram(io: CliIO = {}): Command {
   program.hook("preAction", (_command, actionCommand) => {
     resolveFormat(actionCommand.optsWithGlobals(), Boolean(stdout && "isTTY" in stdout && stdout.isTTY));
   });
-  program.option("--no-cache", "Bypass session cache reads.");
+  program.option("--no-cache", "Bypass session cache reads and writes.");
   program.argument("[target]", "Supported Moodle URL");
 
   const runtime: Runtime = {

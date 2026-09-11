@@ -78,15 +78,25 @@ export function createWorkerHandler(dependencies: WorkerDependencies): WorkerHan
         });
       }
 
+      if (url.pathname === "/clients") {
+        if (!await verifyBearerToken(request.headers.get("authorization"), [env.SESSION_SYNC_TOKEN_DIGEST])) return unauthorized();
+        if (request.method !== "GET" && request.method !== "DELETE") return problemResponse(405, "METHOD_NOT_ALLOWED", "Method Not Allowed", "Use GET or DELETE.");
+        const authBroker = resolveAuthBroker(dependencies, env, url);
+        if (authBroker instanceof Response) return authBroker;
+        const response = await authBroker.manageClients(request);
+        const headers = new Headers(response.headers);
+        headers.set("cache-control", "no-store");
+        return new Response(response.body, { status: response.status, headers });
+      }
       if (isOAuthRoute(url.pathname)) {
-        const authBroker = resolveAuthBroker(dependencies, env);
+        const authBroker = resolveAuthBroker(dependencies, env, url);
         if (authBroker instanceof Response) return authBroker;
         return authBroker.handleOAuth(request, url);
       }
 
       if (url.pathname === PAIR_PATH && request.method === "POST") {
-        if (!await authorizeSessionSync(request, env)) return unauthorized();
-        const authBroker = resolveAuthBroker(dependencies, env);
+        if (!await verifyBearerToken(request.headers.get("authorization"), [env.SESSION_SYNC_TOKEN_DIGEST])) return unauthorized();
+        const authBroker = resolveAuthBroker(dependencies, env, url);
         if (authBroker instanceof Response) return authBroker;
         const pairing = await authBroker.createPairing();
         return Response.json({
@@ -195,7 +205,7 @@ async function authorizeMcpRequest(
   }
   const token = readBearerToken(authorization);
   if (!token) return false;
-  const authBroker = resolveAuthBroker(dependencies, env);
+  const authBroker = resolveAuthBroker(dependencies, env, url);
   if (authBroker instanceof Response) return false;
   return Boolean(await authBroker.verifyAccessToken(token, `${issuerOrigin(url, env)}${MCP_PATH}`));
 }
@@ -208,9 +218,9 @@ function resourceMetadataUrl(url: URL, env: WorkerEnv): string {
   return `${issuerOrigin(url, env)}${PROTECTED_RESOURCE_METADATA_PATH}`;
 }
 
-function resolveAuthBroker(dependencies: WorkerDependencies, env: WorkerEnv): AuthBrokerApi | Response {
+function resolveAuthBroker(dependencies: WorkerDependencies, env: WorkerEnv, url: URL): AuthBrokerApi | Response {
   if (dependencies.authBroker) return dependencies.authBroker(env);
-  if (env.AUTH_BROKER) return createAuthBrokerApi(env.AUTH_BROKER.get(env.AUTH_BROKER.idFromName("primary")));
+  if (env.AUTH_BROKER) return createAuthBrokerApi(env.AUTH_BROKER.get(env.AUTH_BROKER.idFromName("primary")), issuerOrigin(url, env));
   return problemResponse(503, "OAUTH_UNAVAILABLE", "Service Unavailable", "The authorization broker is unavailable.");
 }
 

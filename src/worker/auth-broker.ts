@@ -10,6 +10,7 @@ export interface AuthBrokerStateLike {
 
 export interface AuthBrokerEnv {
   EXPECTED_HOST?: string;
+  SESSION_SYNC_TOKEN_DIGEST?: string;
   OAUTH_ALLOWED_REDIRECT_HOSTS?: string;
 }
 
@@ -43,6 +44,18 @@ export class AuthBroker {
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
     const router = this.router(this.issuer(url));
+    if (this.env.SESSION_SYNC_TOKEN_DIGEST) {
+      const previous = await this.state.storage.get<string>("oauth:owner-credential");
+      if (previous && previous !== this.env.SESSION_SYNC_TOKEN_DIGEST) await router.revokeClients();
+      if (previous !== this.env.SESSION_SYNC_TOKEN_DIGEST) await this.state.storage.put("oauth:owner-credential", this.env.SESSION_SYNC_TOKEN_DIGEST);
+    }
+    if (url.pathname === "/internal/clients") {
+      if (request.method === "GET") return Response.json({ clients: await router.listClients() });
+      if (request.method === "DELETE") {
+        await router.revokeClients(url.searchParams.get("client_id") ?? undefined);
+        return new Response(null, { status: 204 });
+      }
+    }
 
     if (url.pathname === INTERNAL_VERIFY_PATH && request.method === "POST") {
       const input = await safeJson(request);
@@ -78,17 +91,22 @@ export interface AuthBrokerApi {
   handleOAuth(request: Request, url: URL): Promise<Response>;
   verifyAccessToken(token: string, resource: string): Promise<AccessGrant | null>;
   createPairing(): Promise<PairingIssue>;
+  manageClients(request: Request): Promise<Response>;
 }
 
 export interface AuthBrokerStubLike {
   fetch(request: Request): Promise<Response>;
 }
 
-export function createAuthBrokerApi(stub: AuthBrokerStubLike): AuthBrokerApi {
+export function createAuthBrokerApi(stub: AuthBrokerStubLike, issuer = "https://auth-broker"): AuthBrokerApi {
   return {
+    manageClients: (request) => {
+      const url = new URL(request.url);
+      return stub.fetch(new Request(`${issuer}/internal/clients${url.search}`, { method: request.method }));
+    },
     handleOAuth: (request) => stub.fetch(new Request(request.url, request)),
     async verifyAccessToken(token, resource) {
-      const response = await stub.fetch(new Request("https://auth-broker" + INTERNAL_VERIFY_PATH, {
+      const response = await stub.fetch(new Request(issuer + INTERNAL_VERIFY_PATH, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ token, resource }),
@@ -100,7 +118,7 @@ export function createAuthBrokerApi(stub: AuthBrokerStubLike): AuthBrokerApi {
         : null;
     },
     async createPairing() {
-      const response = await stub.fetch(new Request("https://auth-broker" + INTERNAL_PAIR_PATH, { method: "POST" }));
+      const response = await stub.fetch(new Request(issuer + INTERNAL_PAIR_PATH, { method: "POST" }));
       const issue = await safeJson(response);
       if (!response.ok || typeof issue?.code !== "string" || typeof issue.expiresAt !== "number") {
         throw new Error("The authorization broker could not create a pairing code.");

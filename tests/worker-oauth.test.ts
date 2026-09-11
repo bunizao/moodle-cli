@@ -205,9 +205,10 @@ describe("Worker OAuth authorization server", () => {
     expect(confidential.status).toBe(400);
   });
 
-  it("rejects registrations at capacity without evicting existing clients", async () => {
+  it("reclaims pending slots without evicting approved clients", async () => {
     const { worker, env } = await harness();
     const first = await registerClient(worker, env);
+    await authorize(worker, env, first.body.client_id as string, await openPairing(worker, env));
     for (let index = 1; index < 20; index += 1) await registerClient(worker, env);
 
     const overflow = await registerClient(worker, env);
@@ -220,8 +221,7 @@ describe("Worker OAuth authorization server", () => {
       resource: `${ORIGIN}/mcp`,
     })}`), env);
 
-    expect(overflow.response.status).toBe(400);
-    expect(overflow.body).toMatchObject({ error: "invalid_client_metadata" });
+    expect(overflow.response.status).toBe(201);
     expect(existing.status).toBe(200);
   });
 
@@ -400,5 +400,45 @@ describe("Worker OAuth authorization server", () => {
 
     expect(rejected.status).toBe(302);
     expect(new URL(rejected.headers.get("location")!).searchParams.get("error")).toBe("invalid_target");
+  });
+});
+
+describe("OAuth lifecycle hardening", () => {
+  it("expires pending registrations and preserves approved clients", async () => {
+    let now = 1_000;
+    const { worker, env } = await harness({ now: () => now });
+    const approved = (await registerClient(worker, env)).body.client_id as string;
+    await authorize(worker, env, approved, await openPairing(worker, env));
+    const pending = (await registerClient(worker, env)).body.client_id as string;
+    now += 11 * 60 * 1000;
+    const list = await worker.fetch(request("/clients", { headers: { authorization: `Bearer ${SYNC_TOKEN}` } }), env);
+    const body = await list.json() as { clients: Array<{ clientId: string }> };
+    expect(body.clients.map((client) => client.clientId)).toEqual([approved]);
+    expect(body.clients.some((client) => client.clientId === pending)).toBe(false);
+  });
+
+  it("owner revocation invalidates access, refresh, pending codes and pairing", async () => {
+    const { worker, env } = await harness();
+    const clientId = (await registerClient(worker, env)).body.client_id as string;
+    const granted = await authorize(worker, env, clientId, await openPairing(worker, env));
+    const tokens = await exchangeCode(worker, env, clientId, new URL(granted.headers.get("location")!).searchParams.get("code")!);
+    const pending = await authorize(worker, env, clientId, await openPairing(worker, env));
+    const pendingCode = new URL(pending.headers.get("location")!).searchParams.get("code")!;
+    const pairing = await openPairing(worker, env);
+    expect((await worker.fetch(request("/clients", { method: "DELETE", headers: { authorization: `Bearer ${tokens.access_token}` } }), env)).status).toBe(401);
+    expect((await worker.fetch(request("/clients", { method: "DELETE", headers: { authorization: `Bearer ${SYNC_TOKEN}` } }), env)).status).toBe(204);
+    expect((await worker.fetch(request("/mcp", mcpRequest(tokens.access_token as string)), env)).status).toBe(401);
+    expect((await worker.fetch(request("/oauth/token", form({ grant_type: "refresh_token", refresh_token: tokens.refresh_token as string })), env)).status).toBe(400);
+    expect((await worker.fetch(request("/oauth/token", form({ grant_type: "authorization_code", code: pendingCode, client_id: clientId, code_verifier: VERIFIER })), env)).status).toBe(400);
+    expect((await authorize(worker, env, clientId, pairing)).status).not.toBe(302);
+  });
+
+  it("keeps browser consent policies compatible with the validated callback", async () => {
+    const { worker, env } = await harness();
+    const clientId = (await registerClient(worker, env)).body.client_id as string;
+    await openPairing(worker, env);
+    const page = await worker.fetch(request(`/oauth/authorize?${new URLSearchParams({ response_type: "code", client_id: clientId, redirect_uri: REDIRECT_URI, code_challenge_method: "S256", code_challenge: await pkceChallenge(VERIFIER) })}`), env);
+    expect(page.headers.get("referrer-policy")).toBe("strict-origin-when-cross-origin");
+    expect(page.headers.get("content-security-policy")).toContain("form-action 'self' https://claude.ai;");
   });
 });

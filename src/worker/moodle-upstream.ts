@@ -26,6 +26,7 @@ export class FetchMoodleSessionUpstream implements MoodleSessionUpstream {
       method: "GET",
       headers: { cookie: `${candidate.cookieName}=${candidate.cookieValue}` },
       redirect: "manual",
+      signal: AbortSignal.timeout(30_000),
     });
     if (response.status >= 300 && response.status < 400) return { valid: false, code: "SESSION_EXPIRED" };
     if (response.status >= 500) throw new Error(`Moodle returned HTTP ${response.status}.`);
@@ -43,6 +44,7 @@ export class FetchMoodleSessionUpstream implements MoodleSessionUpstream {
       /data-userid=["'](\d+)["']/i,
       /\buserid\s*:\s*['"]?(\d+)/,
     ]);
+    if (!userId || !Number.isSafeInteger(Number(userId)) || Number(userId) <= 0) return { valid: false, code: "SESSION_INVALID" };
     const rotatedCookie = cookieFromSetCookie(response.headers.get("set-cookie"), candidate.cookieName);
     return {
       valid: true,
@@ -70,6 +72,7 @@ export class FetchMoodleSessionUpstream implements MoodleSessionUpstream {
       },
       body: JSON.stringify(methods.map((methodname, index) => ({ index, methodname, args: {} }))),
       redirect: "manual",
+      signal: AbortSignal.timeout(30_000),
     });
     if (response.status >= 300 && response.status < 400) return { alive: false, remainingSeconds: null };
     if (!response.ok) return { alive: null, remainingSeconds: null };

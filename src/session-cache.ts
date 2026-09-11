@@ -1,3 +1,6 @@
+import { createHash, randomBytes } from "node:crypto";
+import { createDefaultCredentialStore } from "./mcp/credentials/node-store.js";
+import { createEncryptionKeyring, decryptValue, encryptValue } from "./worker/crypto.js";
 import { chmod, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
@@ -22,6 +25,7 @@ export interface SessionCacheOptions {
   now?: () => number;
   noCache?: boolean;
   fs?: SessionCacheFs;
+  encryptionKey?: () => Promise<string>;
 }
 
 export interface SessionCacheFs {
@@ -67,7 +71,19 @@ export async function readCachedSession(
     throw error;
   }
 
-  const session = parseCachedSession(raw);
+  let session: CachedSession | null;
+  try {
+    const value: unknown = JSON.parse(raw);
+    if (isRecord(value) && value.version === 2 && typeof value.encrypted_session === "string") {
+      const keyring = await createEncryptionKeyring(await cacheEncryptionKey(options));
+      session = parseCachedSession((await decryptValue(value.encrypted_session, keyring)).value);
+    } else {
+      session = parseCachedSession(raw);
+      if (session) await writeCachedSession(session, { ...options, noCache: false });
+    }
+  } catch {
+    return null;
+  }
   if (!session || !sameBaseUrl(session.baseUrl, baseUrl)) {
     return null;
   }
@@ -80,10 +96,13 @@ export async function writeCachedSession(
   session: CachedSession,
   options: SessionCacheOptions = {},
 ): Promise<void> {
+  if (options.noCache) return;
   const fs = options.fs ?? nodeFs;
   const path = sessionCachePath(options.homeDir);
+  const keyring = await createEncryptionKeyring(await cacheEncryptionKey(options));
+  const encrypted = { version: 2, encrypted_session: await encryptValue(JSON.stringify(session), keyring) };
   await fs.mkdir(dirname(path), { recursive: true, mode: 0o700 });
-  await fs.writeFile(path, `${JSON.stringify(session, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+  await fs.writeFile(path, `${JSON.stringify(encrypted)}\n`, { encoding: "utf8", mode: 0o600 });
   await fs.chmod(path, 0o600);
 }
 
@@ -154,4 +173,27 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function isMissingFileError(error: unknown): boolean {
   return isRecord(error) && error.code === "ENOENT";
+}
+
+const pendingCacheKeys = new Map<string, Promise<string>>();
+
+async function cacheEncryptionKey(options: SessionCacheOptions): Promise<string> {
+  if (options.encryptionKey) return options.encryptionKey();
+  const homeDirectory = options.homeDir ?? homedir();
+  let pending = pendingCacheKeys.get(homeDirectory);
+  if (!pending) {
+    pending = (async () => {
+      const store = createDefaultCredentialStore({ homeDirectory });
+      const profile = `local-cache-${createHash("sha256").update(homeDirectory).digest("hex").slice(0, 16)}`;
+      const existing = await store.read(profile);
+      if (existing) return existing.sessionEncryptionKey;
+      const sessionEncryptionKey = randomBytes(32).toString("base64url");
+      // The cache uses only the shared vault record's encryption key, never transport credentials.
+      await store.write(profile, { mcpAccessToken: "", sessionSyncToken: "", sessionEncryptionKey });
+      return sessionEncryptionKey;
+    })();
+    pendingCacheKeys.set(homeDirectory, pending);
+    pending.catch(() => pendingCacheKeys.delete(homeDirectory));
+  }
+  return pending;
 }

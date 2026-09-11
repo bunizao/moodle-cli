@@ -152,3 +152,14 @@ describe("keepalive launch agent", () => {
     ]);
   });
 });
+
+vi.mock("../src/session-cache.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../src/session-cache.js")>();
+  const encryptionKey = async () => "synthetic-test-cache-encryption-key";
+  return {
+    ...actual,
+    readCachedSession: (baseUrl: string, options = {}) => actual.readCachedSession(baseUrl, { ...options, encryptionKey }),
+    writeCachedSession: (session: import("../src/session-cache.js").CachedSession, options = {}) => actual.writeCachedSession(session, { ...options, encryptionKey }),
+    deleteCachedSession: (baseUrl: string, options = {}) => actual.deleteCachedSession(baseUrl, { ...options, encryptionKey }),
+  };
+});

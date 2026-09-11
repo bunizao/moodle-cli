@@ -75,7 +75,7 @@ export interface SessionBrokerDependencies {
 }
 
 interface StoredSession {
-  encrypted_cookie: string;
+  cookie_value: string;
   cookie_name: string;
   revision: number;
   sesskey: string;
@@ -103,6 +103,14 @@ export class SessionBroker {
   }
 
   async fetch(request: Request): Promise<Response> {
+    try {
+      return await this.route(request);
+    } catch {
+      return problemResponse(503, "SESSION_UNAVAILABLE", "Service Unavailable", "The encrypted session could not be read. Restore its encryption key before retrying.");
+    }
+  }
+
+  private async route(request: Request): Promise<Response> {
     const url = new URL(request.url);
     if (url.pathname === "/mcp" && request.method === "POST") return this.handleMcp(request);
     if (url.pathname === "/readyz" && request.method === "GET") return this.ready();
@@ -122,7 +130,7 @@ export class SessionBroker {
       return problemResponse(400, "MCP_PROTOCOL_METADATA_INVALID", "Bad Request", "The internal MCP request is invalid.");
     }
 
-    const session = await this.state.storage.get<StoredSession>(SESSION_STORAGE_KEY);
+    const session = await this.loadSession();
     if (!session) {
       return problemResponse(503, "SESSION_MISSING", "Service Unavailable", "No Moodle session is available.");
     }
@@ -130,12 +138,7 @@ export class SessionBroker {
       return problemResponse(503, "SESSION_EXPIRED", "Service Unavailable", "The Moodle session has expired.");
     }
 
-    let cookieValue: string;
-    try {
-      cookieValue = (await decryptValue(session.encrypted_cookie, await this.keyring())).value;
-    } catch {
-      return problemResponse(503, "SESSION_UNAVAILABLE", "Service Unavailable", "The Moodle session is unavailable.");
-    }
+    const cookieValue = session.cookie_value;
 
     const client = createMoodleClientCore(this.env.MOODLE_ORIGIN, {
       cookie: { name: session.cookie_name, value: cookieValue },
@@ -149,11 +152,15 @@ export class SessionBroker {
   }
 
   async alarm(): Promise<void> {
-    await this.touchSession();
+    try {
+      await this.touchSession();
+    } catch {
+      await this.state.storage.setAlarm(this.now() + MAX_BACKOFF_MS);
+    }
   }
 
   private async ready(): Promise<Response> {
-    const session = await this.state.storage.get<StoredSession>(SESSION_STORAGE_KEY);
+    const session = await this.loadSession();
     const health = readiness(session, this.now());
     return Response.json(health, {
       status: health.status === "fail" ? 503 : 200,
@@ -191,14 +198,16 @@ export class SessionBroker {
 
     const now = this.now();
     const nextAlarmAt = nextTouchAt(now, validation.remainingSeconds);
-    const keyring = await this.keyring();
-    const encryptedCookie = await encryptValue(validation.rotatedCookie ?? input.cookieValue, keyring);
+    if (!Number.isSafeInteger(validation.moodleUserId) || validation.moodleUserId <= 0) {
+      return problemResponse(422, "SESSION_IDENTITY_UNKNOWN", "Unprocessable Content", "Moodle did not provide a valid account identity.");
+    }
     const result = await this.transaction(async (storage) => {
-      const current = await storage.get<StoredSession>(SESSION_STORAGE_KEY);
+      const current = await this.readSession(storage);
       const currentRevision = current?.revision ?? null;
       if (currentRevision !== input.expectedRevision) return null;
+      if (current && current.moodle_user_id !== validation.moodleUserId) return "identity_mismatch" as const;
       const session: StoredSession = {
-        encrypted_cookie: encryptedCookie,
+        cookie_value: validation.rotatedCookie ?? input.cookieValue,
         cookie_name: input.cookieName,
         revision: (currentRevision ?? 0) + 1,
         sesskey: validation.sesskey,
@@ -210,10 +219,13 @@ export class SessionBroker {
         expires_at: expiresAt(now, validation.remainingSeconds),
         failure_count: 0,
       };
-      await storage.put(SESSION_STORAGE_KEY, session);
+      await this.writeSession(storage, session);
       return session;
     });
 
+    if (result === "identity_mismatch") {
+      return problemResponse(409, "SESSION_ACCOUNT_MISMATCH", "Conflict", "This Worker belongs to another Moodle account. Create a separate deployment for that account.");
+    }
     if (!result) {
       return problemResponse(409, "SESSION_REVISION_CONFLICT", "Conflict", "The remote Moodle session has a newer revision.");
     }
@@ -239,19 +251,10 @@ export class SessionBroker {
   }
 
   private async touchSession(): Promise<StoredSession | "missing" | "unreachable" | "expired"> {
-    const current = await this.state.storage.get<StoredSession>(SESSION_STORAGE_KEY);
+    const current = await this.loadSession();
     if (!current) return "missing";
 
-    let cookie: string;
-    let needsKeyRotation = false;
-    try {
-      const decrypted = await decryptValue(current.encrypted_cookie, await this.keyring());
-      cookie = decrypted.value;
-      needsKeyRotation = decrypted.needsRotation;
-    } catch {
-      await this.recordFailure(current, "SESSION_DECRYPTION_FAILED");
-      return "unreachable";
-    }
+    const cookie = current.cookie_value;
 
     let touched: SessionTouchResult;
     try {
@@ -281,9 +284,7 @@ export class SessionBroker {
     const nextCookie = touched.rotatedCookie ?? cookie;
     const updated: StoredSession = {
       ...current,
-      encrypted_cookie: touched.rotatedCookie || needsKeyRotation
-        ? await encryptValue(nextCookie, await this.keyring())
-        : current.encrypted_cookie,
+      cookie_value: nextCookie,
       revision: touched.rotatedCookie ? current.revision + 1 : current.revision,
       last_verified_at: now,
       last_touch_at: now,
@@ -296,7 +297,7 @@ export class SessionBroker {
       await this.state.storage.setAlarm(nextAlarmAt);
       return updated;
     }
-    return await this.state.storage.get<StoredSession>(SESSION_STORAGE_KEY) ?? "missing";
+    return await this.loadSession() ?? "missing";
   }
 
   private async recordFailure(current: StoredSession, code: string): Promise<void> {
@@ -313,10 +314,45 @@ export class SessionBroker {
 
   private putIfCurrent(expected: StoredSession, updated: StoredSession): Promise<boolean> {
     return this.transaction(async (storage) => {
-      const current = await storage.get<StoredSession>(SESSION_STORAGE_KEY);
-      if (current?.revision !== expected.revision || current.encrypted_cookie !== expected.encrypted_cookie) return false;
-      await storage.put(SESSION_STORAGE_KEY, updated);
+      const current = await this.readSession(storage);
+      if (current?.revision !== expected.revision || current.cookie_value !== expected.cookie_value) return false;
+      await this.writeSession(storage, updated);
       return true;
+    });
+  }
+
+  private async readSession(storage: DurableObjectStorageLike): Promise<StoredSession | undefined> {
+    const record = await storage.get<Record<string, unknown>>(SESSION_STORAGE_KEY);
+    if (!record) return undefined;
+    if (record.version === 2 && typeof record.encrypted_session === "string") {
+      const decrypted = await decryptValue(record.encrypted_session, await this.keyring());
+      const session = JSON.parse(decrypted.value) as StoredSession;
+      if (typeof session.cookie_value !== "string" || typeof session.sesskey !== "string"
+        || !Number.isSafeInteger(session.moodle_user_id) || session.moodle_user_id <= 0) throw new Error("Invalid encrypted session.");
+      return session;
+    }
+    if (typeof record.encrypted_cookie !== "string") throw new Error("Invalid legacy session.");
+    const { encrypted_cookie, ...metadata } = record;
+    const cookie = await decryptValue(encrypted_cookie, await this.keyring());
+    return { ...metadata, cookie_value: cookie.value } as unknown as StoredSession;
+  }
+
+  private async writeSession(storage: DurableObjectStorageLike, session: StoredSession): Promise<void> {
+    await storage.put(SESSION_STORAGE_KEY, {
+      version: 2,
+      encrypted_session: await encryptValue(JSON.stringify(session), await this.keyring()),
+    });
+  }
+
+  private async loadSession(): Promise<StoredSession | undefined> {
+    return this.transaction(async (storage) => {
+      const record = await storage.get<{ version?: number; encrypted_session?: string }>(SESSION_STORAGE_KEY);
+      if (!record) return undefined;
+      const session = await this.readSession(storage);
+      if (session && (record.version !== 2 || (await decryptValue(record.encrypted_session!, await this.keyring())).needsRotation)) {
+        await this.writeSession(storage, session);
+      }
+      return session;
     });
   }
 

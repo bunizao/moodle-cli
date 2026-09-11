@@ -1,3 +1,4 @@
+import { fetchWithSession } from "./session-fetch.js";
 import { spawnSync, type SpawnSyncReturns } from "node:child_process";
 import { realpathSync } from "node:fs";
 import { mkdir, rm, stat, writeFile } from "node:fs/promises";
@@ -76,14 +77,14 @@ export async function touchMoodleSession(
   const url = `${baseUrl.replace(/\/$/, "")}${AJAX_SERVICE_PATH}?sesskey=${encodeURIComponent(sesskey)}&info=${methods.join(",")}`;
   let response: Response;
   try {
-    response = await fetchImpl(url, {
+    response = await fetchWithSession(url, {
       method: "POST",
       headers: {
         "content-type": "application/json",
         cookie: `${cookie.name}=${cookie.value}`,
       },
       body: JSON.stringify(methods.map((methodname, index) => ({ index, methodname, args: {} }))),
-    });
+    }, baseUrl, cookie, fetchImpl);
   } catch {
     return { alive: null, timeRemainingSeconds: null };
   }
