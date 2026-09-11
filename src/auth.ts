@@ -1,3 +1,4 @@
+import { fetchWithSession } from "./session-fetch.js";
 import { ALL_PROFILES, getCookies } from "@steipete/sweet-cookie";
 import { execFile as execFileCallback } from "node:child_process";
 import { readdir } from "node:fs/promises";
@@ -336,10 +337,7 @@ function validateSessionWithFetch(options: AuthOptions): SessionValidator {
 
     let response: Response;
     try {
-      response = await fetcher(`${baseUrl}${DASHBOARD_PATH}`, {
-        redirect: "follow",
-        headers: { cookie: `${cookie.name}=${cookie.value}` },
-      });
+      response = await fetchWithSession(`${baseUrl}${DASHBOARD_PATH}`, {}, baseUrl, cookie, fetcher);
     } catch {
       return null;
     }

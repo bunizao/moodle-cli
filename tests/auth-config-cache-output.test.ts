@@ -209,7 +209,7 @@ describe("config and session cache", () => {
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
-  it("persists warm sessions with 0600 permissions and honors no-cache reads", async () => {
+  it("encrypts warm sessions with 0600 permissions and honors no-cache", async () => {
     const homeDir = await mkdtemp(join(tmpdir(), "moodle-cli-cache-"));
     await writeCachedSession(
       { baseUrl: BASE_URL, cookieName: "MoodleSession", cookieValue: "secret", sesskey: "sess", userid: 7, savedAt: 1000 },
@@ -224,7 +224,9 @@ describe("config and session cache", () => {
     expect(mode).toBe(0o600);
 
     const raw = await readFile(join(homeDir, ".cache/moodle-cli/session.json"), "utf8");
-    expect(JSON.parse(raw).sesskey).toBe("sess");
+    expect(JSON.parse(raw)).toMatchObject({ version: 2, encrypted_session: expect.any(String) });
+    expect(raw).not.toContain('"sesskey"');
+    expect(raw).not.toContain('"cookieValue"');
   });
 
   it("uses warm cache without dashboard or cookie reads", async () => {
@@ -434,3 +436,14 @@ function fetchFor(options: { ajax: (request: { url: string; init?: RequestInit }
     throw new Error(`Unexpected fetch: ${url}`);
   });
 }
+
+vi.mock("../src/session-cache.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../src/session-cache.js")>();
+  const encryptionKey = async () => "synthetic-test-cache-encryption-key";
+  return {
+    ...actual,
+    readCachedSession: (baseUrl: string, options = {}) => actual.readCachedSession(baseUrl, { ...options, encryptionKey }),
+    writeCachedSession: (session: import("../src/session-cache.js").CachedSession, options = {}) => actual.writeCachedSession(session, { ...options, encryptionKey }),
+    deleteCachedSession: (baseUrl: string, options = {}) => actual.deleteCachedSession(baseUrl, { ...options, encryptionKey }),
+  };
+});

@@ -1,0 +1,10 @@
+{
+  "roundTrip": true,
+  "randomizedIV": true,
+  "rawCookieAbsent": true,
+  "tamperingRejected": true,
+  "wrongKeyRejected": true,
+  "previousKeyReadable": true,
+  "rotationDetected": true,
+  "missingKeyRejected": true
+}

@@ -1,3 +1,4 @@
+import { deleteCachedSession } from "../session-cache.js";
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
@@ -50,7 +51,7 @@ import {
   type RenewalSnapshot,
 } from "./renewal/index.js";
 import { createMoodleGateway } from "./gateway.js";
-import { LEGACY_PROTOCOL_VERSION, MODERN_PROTOCOL_VERSION } from "./protocol.js";
+import { SUPPORTED_PROTOCOL_VERSIONS } from "./protocol.js";
 import { createMoodleMcpServer } from "./server.js";
 import { serveMoodleMcpStdio } from "./stdio.js";
 
@@ -65,6 +66,7 @@ export interface McpDeployInput {
   dryRun: boolean;
   repair: boolean;
   rotateToken: boolean;
+  rotateKey?: boolean;
   rollback: boolean;
   yes: boolean;
 }
@@ -74,6 +76,8 @@ export interface McpCommandService {
   status(input: { verbose: boolean; logs: boolean }): Promise<McpCommandOutput>;
   login(): Promise<McpCommandOutput>;
   connect(input: { client?: string; mode: "bridge" | "remote"; showToken: boolean }): Promise<McpCommandOutput>;
+  pair(): Promise<McpCommandOutput>;
+  manageClients(input: { revoke?: boolean; clientId?: string }): Promise<McpCommandOutput>;
   remove(input: { yes: boolean }): Promise<McpCommandOutput>;
   serveStdio(): Promise<void>;
   bridge(profile?: string): Promise<void>;
@@ -166,6 +170,7 @@ class DefaultMcpCommandService implements McpCommandService {
       releaseDigest: await this.releaseDigest(),
       repair: input.repair,
       rotateToken: input.rotateToken,
+      rotateKey: input.rotateKey,
       dryRun: input.dryRun,
     });
     if (input.dryRun) {
@@ -264,7 +269,7 @@ class DefaultMcpCommandService implements McpCommandService {
       profile,
       localAuthentication,
       managed,
-      protocols: [MODERN_PROTOCOL_VERSION, LEGACY_PROTOCOL_VERSION],
+      protocols: [...SUPPORTED_PROTOCOL_VERSIONS],
       ...(input.verbose ? { serviceVersion: VERSION } : {}),
       ...(input.logs ? { logs: { available: false, reason: "live_tail_required" } } : {}),
     };
@@ -325,6 +330,51 @@ class DefaultMcpCommandService implements McpCommandService {
     };
   }
 
+  async manageClients(input: { revoke?: boolean; clientId?: string }): Promise<McpCommandOutput> {
+    if (input.clientId && !/^[A-Za-z0-9_-]{1,128}$/u.test(input.clientId)) throw new UsageError("The OAuth client ID is invalid.");
+    const profile = deriveMcpProfile((await this.config()).baseUrl);
+    const receipt = await this.receipts.read(profile);
+    const credentials = await this.credentials.read(profile);
+    if (!receipt || !credentials) throw new UsageError(`No managed Moodle MCP deployment exists for profile ${profile}.`);
+    const data = await this.worker.manageClients({ endpoint: receipt.productionEndpoint, sessionSyncToken: credentials.sessionSyncToken, ...input });
+    return { data, text: input.revoke ? "OAuth authorization revoked." : JSON.stringify(data, null, 2) };
+  }
+
+  async pair(): Promise<McpCommandOutput> {
+    const profile = deriveMcpProfile((await this.config()).baseUrl);
+    const [receipt, credentials] = await Promise.all([
+      this.receipts.read(profile),
+      this.credentials.read(profile),
+    ]);
+    if (!receipt || !credentials) throw new UsageError(`No managed Moodle MCP deployment exists for profile ${profile}.`);
+
+    const pairing = await this.worker.createPairing({
+      endpoint: receipt.productionEndpoint,
+      sessionSyncToken: credentials.sessionSyncToken,
+    });
+    const endpoint = `${receipt.productionEndpoint.replace(/\/$/u, "")}/mcp`;
+    return {
+      data: {
+        profile,
+        endpoint,
+        code: pairing.code,
+        expiresAt: pairing.expiresAt,
+        authorizationServer: pairing.authorizationServer,
+      },
+      text: [
+        "Add this custom connector in Claude, then approve it with the pairing code.",
+        "",
+        "Connector URL",
+        `  ${endpoint}`,
+        "",
+        "Pairing code",
+        `  ${formatPairingCode(pairing.code)}`,
+        "",
+        `The code expires at ${pairing.expiresAt} and works for one approval.`,
+      ].join("\n"),
+    };
+  }
+
   async remove(input: { yes: boolean }): Promise<McpCommandOutput> {
     const profile = deriveMcpProfile((await this.config()).baseUrl);
     const receipt = await this.receipts.read(profile);
@@ -334,13 +384,14 @@ class DefaultMcpCommandService implements McpCommandService {
       if (answer.trim() !== receipt.workerName) throw new UsageError("Moodle MCP removal was cancelled.");
     }
     const result = await this.deployment(false).remove(profile);
+    await deleteCachedSession((await this.config()).baseUrl, { homeDir: this.homeDirectory });
     return {
       data: result,
       text: [
         "Moodle MCP has been removed.",
         `Worker: ${result.workerRemoved ? "deleted" : "not present"}`,
         "Local renewal, client registrations, and deployment credentials: deleted",
-        "Local Moodle configuration and authentication cache: kept",
+        "Local Moodle configuration: kept; matching authentication cache: removed",
       ].join("\n"),
     };
   }
@@ -774,6 +825,10 @@ async function readAll(input: AsyncIterable<string | Uint8Array>): Promise<strin
   let value = "";
   for await (const chunk of input) value += typeof chunk === "string" ? chunk : decoder.decode(chunk, { stream: true });
   return value + decoder.decode();
+}
+
+function formatPairingCode(code: string): string {
+  return code.length === 8 ? `${code.slice(0, 4)}-${code.slice(4)}` : code;
 }
 
 function truncateName(value: string, maximum: number): string {

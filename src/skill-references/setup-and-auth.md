@@ -83,9 +83,20 @@ moodle mcp deploy
 moodle mcp status --json
 moodle mcp login
 moodle mcp connect
+moodle mcp pair
 moodle mcp remove
 ```
 
 `moodle mcp deploy` validates the local Moodle session, deploys and verifies a private Cloudflare Worker, installs local renewal, and connects detected clients. The default bridge mode keeps the Bearer token out of client files. Use `moodle mcp login` when status reports `SESSION_EXPIRED`; use `moodle mcp deploy --repair` when Cloudflare authorization or managed deployment state needs repair.
 
+`moodle mcp connect` covers clients that read a configuration file. Use `moodle mcp pair` for claude.ai and other hosted clients that authenticate with OAuth: it prints the connector URL and a one-time pairing code that expires in ten minutes, and the Worker refuses every authorization attempt while no pairing window is open. Read the code back to the user; never paste it into a web form yourself.
+
 Never print or request the raw Moodle cookie, MCP access token, session sync token, or sesskey. An advanced operator may pipe a cookie directly to `moodle mcp session push --stdin`; do not place it in arguments or shell history.
+
+### Managing private MCP access
+
+After upgrading from the original OAuth release, run `moodle mcp pair` again because old grants are invalidated. Use `moodle mcp clients --json` to inspect OAuth clients, `moodle mcp revoke CLIENT_ID` to remove one client, or `moodle mcp revoke --all` to close all OAuth access, pending authorizations, and pairing windows. These use the owner's protected sync credential.
+
+`moodle mcp deploy --rotate-token` invalidates previous static credentials and OAuth grants immediately. `moodle mcp deploy --rotate-key` re-encrypts and verifies the active session before retiring the previous encryption key. `moodle mcp deploy --repair` reconciles interrupted uploads using the live session revision. Rollback requires a compatible session schema and matching current keys/credentials; updates retain a static-bridge recovery release.
+
+The Worker is pinned to its Moodle account. Do not reuse it for another account. Session records and local caches are encrypted; OS-protected credential storage is required. `--no-cache` bypasses reads and writes. Existing plaintext caches migrate when read, and managed removal deletes the matching authentication cache. Keep the owner's device and Cloudflare account trusted: the running Worker must decrypt the cookie to call Moodle.

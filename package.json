@@ -21,29 +21,32 @@
     "build:worker": "tsup --config tsup.worker.config.ts && node scripts/check-worker-bundle.mjs",
     "bin:smoke": "bun scripts/smoke-standalone.mjs",
     "check": "tsc --noEmit",
-    "pack:check": "npm pack --dry-run --json | node -e \"let data = ''; process.stdin.on('data', chunk => data += chunk); process.stdin.on('end', () => { const files = JSON.parse(data)[0]?.files?.map(file => file.path) ?? []; for (const required of ['dist/moodle.js', 'dist/worker/worker.js', 'README.md', 'ONBOARDING.md', 'SKILL.md', 'references/command-reference.md', 'references/downloads.md', 'agents/openai.yaml']) if (!files.includes(required)) throw new Error('npm package is missing ' + required); });\"",
+    "pack:check": "npm pack --dry-run --json | node -e \"let data = ''; process.stdin.on('data', chunk => data += chunk); process.stdin.on('end', () => { const files = JSON.parse(data)[0]?.files?.map(file => file.path) ?? []; for (const required of ['dist/moodle.js', 'dist/worker/worker.js', 'dist/worker/recovery.js', 'README.md', 'ONBOARDING.md', 'SKILL.md', 'references/command-reference.md', 'references/downloads.md', 'agents/openai.yaml']) if (!files.includes(required)) throw new Error('npm package is missing ' + required); });\"",
     "pack:smoke": "tmp=\"$(mktemp -d)\" && npm pack --pack-destination \"$tmp\" >/dev/null && npm install --prefix \"$tmp/install\" \"$tmp\"/moodle-cli-*.tgz >/dev/null && test \"$(\"$tmp/install/node_modules/.bin/moodle\" --version)\" = \"$(node -p \"JSON.parse(require('node:fs').readFileSync('package.json', 'utf8')).version\")\" && \"$tmp/install/node_modules/.bin/moodle\" download --help >/dev/null && \"$tmp/install/node_modules/.bin/moodle\" mcp --help >/dev/null",
     "test": "vitest run",
     "test:mcp": "vitest run tests/mcp-*.test.ts tests/deployment-*.test.ts tests/renewal-*.test.ts tests/connectors-*.test.ts",
     "test:worker": "vitest run tests/worker-*.test.ts",
     "test:watch": "vitest",
     "skill:generate": "node dist/moodle.js skills generate",
-    "prepublishOnly": "npm run test && npm run build && npm run pack:check"
+    "prepublishOnly": "npm run test && npm run build && npm run pack:check",
+    "test:worker:runtime": "node scripts/smoke-worker.mjs",
+    "test:worker:browser": "node scripts/smoke-worker-browser.mjs"
   },
   "dependencies": {
     "@bunizao/cli-kit": "^0.1.0",
     "@steipete/sweet-cookie": "^0.4.0",
     "commander": "^13.1.0",
     "node-html-parser": "^7.0.1",
-    "wrangler": "^4.120.0",
+    "wrangler": "^4.131.0",
     "yaml": "^2.8.0",
     "zod": "^4.0.5"
   },
   "devDependencies": {
+    "@playwright/test": "^1.63.0",
     "@types/node": "^24.0.10",
     "tsup": "^8.5.0",
     "typescript": "^7.0.2",
-    "vitest": "^3.2.4"
+    "vitest": "^5.0.0"
   },
   "engines": {
     "node": ">=22"
@@ -55,5 +58,10 @@
   "bugs": {
     "url": "https://github.com/bunizao/moodle-cli/issues"
   },
-  "homepage": "https://github.com/bunizao/moodle-cli#readme"
+  "homepage": "https://github.com/bunizao/moodle-cli#readme",
+  "overrides": {
+    "tsup": {
+      "esbuild": "^0.28.1"
+    }
+  }
 }

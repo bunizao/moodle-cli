@@ -47,6 +47,8 @@ export async function createMoodleClient(
     homeDir: options.homeDir,
     now: options.now,
     ttlMs: options.ttlMs,
+    noCache: options.noCache,
+    encryptionKey: options.encryptionKey,
   };
   const authOptions = { ...options, fetch: options.fetch ?? options.fetchImpl };
   const persistence = persistenceCallbacks(baseUrl, cacheOptions);

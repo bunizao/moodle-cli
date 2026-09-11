@@ -1,0 +1,38 @@
+{
+  "revision": "68727e8a2613f9764f28246c9fef3ddda3588fb7",
+  "server": "Actual bundled Worker in Miniflare/workerd; synthetic credentials and loopback callback only",
+  "mode": "baseline",
+  "instrumentation": "None: original application response policies",
+  "console": [],
+  "pageErrors": [],
+  "requestFailures": [],
+  "callbackRequests": [
+    {
+      "path": "/callback",
+      "hasCode": true
+    }
+  ],
+  "browserVersion": "152.0.7977.84",
+  "approval": {
+    "status": 200,
+    "csp": "default-src 'none'; style-src 'unsafe-inline'; form-action 'self' http://127.0.0.1:62576; frame-ancestors 'none'",
+    "referrerPolicy": "strict-origin-when-cross-origin",
+    "buttons": [
+      "Approve access"
+    ],
+    "inputName": "pairing_code"
+  },
+  "formRequest": {
+    "origin": "https://127.0.0.1:62578",
+    "refererPresent": true,
+    "url": "https://127.0.0.1:62578/oauth/authorize"
+  },
+  "authorizeResponse": {
+    "status": 302,
+    "location": "http://127.0.0.1:62576/callback?code=<redacted>&state=<redacted>",
+    "csp": null
+  },
+  "finalUrl": "http://127.0.0.1:62576/callback?code=<redacted>&state=<redacted>",
+  "callbackReached": true,
+  "bodyText": "Synthetic OAuth callback reached"
+}

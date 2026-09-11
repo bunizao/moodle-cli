@@ -1,3 +1,4 @@
+import { fetchWithSession } from "./session-fetch.js";
 import { z } from "zod";
 import {
   AJAX_SERVICE_PATH,
@@ -571,14 +572,14 @@ export class MoodleClientCore {
 
   private async callBatchInternal(requests: AjaxCall[], allowRetry: boolean): Promise<OptionalAjaxBatchResult[]> {
     const payload = requests.map((request, index) => ({ index, methodname: request.methodname, args: request.args ?? {} }));
-    const response = await this.fetchImpl(`${this.baseUrl}${AJAX_SERVICE_PATH}?sesskey=${encodeURIComponent(this.sesskey ?? "")}&info=${requests.map((request) => request.methodname).join(",")}`, {
+    const response = await fetchWithSession(`${this.baseUrl}${AJAX_SERVICE_PATH}?sesskey=${encodeURIComponent(this.sesskey ?? "")}&info=${requests.map((request) => request.methodname).join(",")}`, {
       method: "POST",
       headers: {
         "content-type": "application/json",
         cookie: `${this.cookie.name}=${this.cookie.value}`,
       },
       body: JSON.stringify(payload),
-    });
+    }, this.baseUrl, this.cookie, this.fetchImpl);
     if (response.url.includes("/login/")) {
       if (this.onLoginRequired && allowRetry && !this.retryingLogin) {
         await this.reauthenticate();
@@ -631,12 +632,7 @@ export class MoodleClientCore {
   }
 
   private async requestAbsoluteInternal(url: string, init: RequestInit, allowRetry: boolean): Promise<Response> {
-    const headers = new Headers(init.headers);
-    headers.delete("cookie");
-    if (new URL(url).origin === new URL(this.baseUrl).origin) {
-      headers.set("cookie", `${this.cookie.name}=${this.cookie.value}`);
-    }
-    const response = await this.fetchImpl(url, { ...init, headers, redirect: "follow" });
+    const response = await fetchWithSession(url, init, this.baseUrl, this.cookie, this.fetchImpl);
     if (response.url.includes("/login/")) {
       if (this.onLoginRequired && allowRetry && !this.retryingLogin) {
         await this.reauthenticate();

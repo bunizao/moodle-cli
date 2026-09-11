@@ -39,6 +39,8 @@ If the student declines or has no account, finish the onboarding with local acce
 
 If the student wants remote access, run `moodle mcp deploy`. Let them complete Cloudflare authorization in the browser when Wrangler requests it. The deployment command manages Worker creation, encrypted Moodle session upload, local renewal, and supported client configuration.
 
+For claude.ai, Claude Desktop, or another hosted client that signs in with OAuth, run `moodle mcp pair` after the deployment. Give the student the connector URL and the one-time pairing code it prints, and let them enter the code on the approval page Claude opens. The code expires in ten minutes and covers one approval.
+
 Verify the deployment with `moodle mcp status --json`. Continue troubleshooting until the command reports that the Worker and Moodle session are ready. Ask which web AI client the student wants to use, then guide them through that client's current custom MCP connection flow. Put access credentials into the client's connection settings, not the chat.
 
 ## Finish with something useful

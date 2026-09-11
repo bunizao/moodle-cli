@@ -278,3 +278,31 @@ describe("SessionBroker Durable Object", () => {
     expect(JSON.stringify(body)).not.toContain(OLD_COOKIE);
   });
 });
+
+describe("encrypted session lifecycle", () => {
+  it("encrypts the complete record and refuses an account switch", async () => {
+    const objectState = state();
+    const upstream = validUpstream();
+    const broker = new SessionBroker(objectState, env(), { upstream });
+    expect((await putSession(broker, candidate(OLD_COOKIE, null))).status).toBe(201);
+    const persisted = objectState.storage.values.get("session") as Record<string, unknown>;
+    expect(Object.keys(persisted).sort()).toEqual(["encrypted_session", "version"]);
+    expect(JSON.stringify(persisted)).not.toContain('"sesskey"');
+    expect(JSON.stringify(persisted)).not.toContain(OLD_COOKIE);
+    vi.mocked(upstream.validate).mockResolvedValue({ valid: true, sesskey: "other", moodleUserId: 99, remainingSeconds: 7200 });
+    const switched = await putSession(broker, candidate(NEW_COOKIE, 1));
+    expect(switched.status).toBe(409);
+    expect(await switched.json()).toMatchObject({ code: "SESSION_ACCOUNT_MISMATCH" });
+    expect(objectState.storage.values.get("session")).toEqual(persisted);
+  });
+
+  it("fails closed with the wrong key and preserves recoverable ciphertext", async () => {
+    const objectState = state();
+    const broker = new SessionBroker(objectState, env(), { upstream: validUpstream() });
+    await putSession(broker, candidate(OLD_COOKIE, null));
+    const stored = structuredClone(objectState.storage.values.get("session"));
+    const wrong = new SessionBroker(objectState, env("wrong"), { upstream: validUpstream() });
+    expect((await wrong.fetch(new Request("https://broker/readyz"))).status).toBe(503);
+    expect(objectState.storage.values.get("session")).toEqual(stored);
+  });
+});

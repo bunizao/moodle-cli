@@ -458,7 +458,7 @@ export function createDefaultCredentialStore(options: {
   const fallback = platform === "win32"
     ? new WindowsDpapiFileCredentialBackend(fallbackDirectory, runner)
     : new PrivateFileCredentialBackend(fallbackDirectory);
-  return new SafeCredentialStore(preferred, fallback);
+  return new SafeCredentialStore(preferred, fallback, platform !== "win32");
 }
 
 function parseCredentials(value: string): DeploymentCredentials {
@@ -478,6 +478,7 @@ function parseCredentials(value: string): DeploymentCredentials {
     mcpAccessToken: credentials.mcpAccessToken,
     sessionSyncToken: credentials.sessionSyncToken,
     sessionEncryptionKey: credentials.sessionEncryptionKey,
+    ...(typeof credentials.previousSessionEncryptionKey === "string" ? { previousSessionEncryptionKey: credentials.previousSessionEncryptionKey } : {}),
     ...(typeof credentials.previousMcpAccessToken === "string"
       ? { previousMcpAccessToken: credentials.previousMcpAccessToken }
       : {}),
