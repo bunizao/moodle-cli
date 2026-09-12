@@ -1,6 +1,6 @@
 import { hasQueryCredential, readBearerToken, verifyBearerToken } from "./auth.js";
 import { createAuthBrokerApi, isOAuthRoute, parseAllowedRedirectHosts, type AuthBrokerApi } from "./auth-broker.js";
-import { DEFAULT_CLIENT_HOSTS, matchesAllowedHost, PROTECTED_RESOURCE_METADATA_PATH } from "./oauth.js";
+import { AUTHORIZE_PATH, DEFAULT_CLIENT_HOSTS, matchesAllowedHost, PROTECTED_RESOURCE_METADATA_PATH } from "./oauth.js";
 import { problemResponse } from "./problems.js";
 import { MODERN_PROTOCOL_VERSION, SUPPORTED_PROTOCOL_VERSIONS } from "../mcp/protocol.js";
 import { VERSION } from "../version.js";
@@ -233,6 +233,16 @@ function validateRequestAuthority(request: Request, url: URL, env: WorkerEnv): R
 
   const origin = request.headers.get("origin");
   if (!origin) return null;
+  if (
+    origin === "null"
+    && request.method === "POST"
+    && url.pathname === AUTHORIZE_PATH
+    && request.headers.get("content-type")?.toLowerCase().startsWith("application/x-www-form-urlencoded")
+  ) {
+    // Chromium can serialize a top-level approval form's Origin as null. The
+    // one-use pairing code still protects this narrowly scoped POST from CSRF.
+    return null;
+  }
   try {
     const parsed = new URL(origin);
     // An OAuth client drives the authorization flow from its own origin, so the

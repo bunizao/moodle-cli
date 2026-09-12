@@ -177,6 +177,33 @@ describe("Cloudflare Worker HTTP transport", () => {
     expect(mcpServer.handle).not.toHaveBeenCalled();
   });
 
+  it("accepts Chromium's opaque origin only for the OAuth approval form", async () => {
+    const handleOAuth = vi.fn(async () => new Response(null, { status: 204 }));
+    const worker = createWorkerHandler({
+      mcpServer: { handle: vi.fn() },
+      broker: () => createBroker(),
+      authBroker: () => ({
+        handleOAuth,
+        createPairing: vi.fn(),
+        verifyAccessToken: vi.fn(async () => null),
+      }),
+    });
+    const approved = await worker.fetch(request("/oauth/authorize", {
+      method: "POST",
+      headers: { origin: "null", "content-type": "application/x-www-form-urlencoded" },
+      body: "pairing_code=ABCD2345",
+    }), await workerEnv());
+    const rejected = await worker.fetch(request("/mcp", {
+      method: "POST",
+      headers: { origin: "null", "content-type": "application/json" },
+      body: "{}",
+    }), await workerEnv());
+
+    expect(approved.status).toBe(204);
+    expect(handleOAuth).toHaveBeenCalledOnce();
+    expect(rejected.status).toBe(403);
+  });
+
   it("accepts the pinned candidate preview host", async () => {
     const env = await workerEnv();
     env.EXPECTED_HOSTS = [
