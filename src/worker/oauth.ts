@@ -332,19 +332,20 @@ export function createOAuthRouter(options: OAuthRouterOptions): OAuthRouter {
     }
 
     const authorizeRequest = resolved.request;
+    const redirectOrigin = new URL(authorizeRequest.redirectUri).origin;
     const pairing = await readPairing();
     if (request.method === "GET") {
       return htmlResponse(approvalPage(authorizeRequest, params, {
         pairingOpen: Boolean(pairing),
         ...(pairing ? {} : { message: "No pairing window is open. Run `moodle mcp pair` on your computer, then reload this page." }),
-      }));
+      }), 200, redirectOrigin);
     }
 
     if (!pairing) {
       return htmlResponse(approvalPage(authorizeRequest, params, {
         pairingOpen: false,
         message: "No pairing window is open. Run `moodle mcp pair` on your computer, then submit the code it prints.",
-      }), 403);
+      }), 403, redirectOrigin);
     }
     if (!await consumePairingAttempt(pairing, params.get("pairing_code") ?? "")) {
       const remaining = PAIRING_CODE_MAX_ATTEMPTS - pairing.attempts - 1;
@@ -353,7 +354,7 @@ export function createOAuthRouter(options: OAuthRouterOptions): OAuthRouter {
         message: remaining > 0
           ? `That pairing code is not correct. ${remaining} ${remaining === 1 ? "attempt remains" : "attempts remain"}.`
           : "Too many incorrect attempts. Run `moodle mcp pair` again to open a new pairing window.",
-      }), 403);
+      }), 403, redirectOrigin);
     }
 
     await prune();
@@ -597,13 +598,14 @@ function methodNotAllowed(allow: string): Response {
   });
 }
 
-function htmlResponse(body: string, status = 200): Response {
+function htmlResponse(body: string, status = 200, formActionOrigin?: string): Response {
+  const formAction = ["'self'", formActionOrigin].filter(Boolean).join(" ");
   return new Response(body, {
     status,
     headers: {
       "content-type": "text/html; charset=utf-8",
       "cache-control": "no-store",
-      "content-security-policy": "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'",
+      "content-security-policy": `default-src 'none'; style-src 'unsafe-inline'; form-action ${formAction}; frame-ancestors 'none'`,
       "referrer-policy": "no-referrer",
       "x-frame-options": "DENY",
       "x-content-type-options": "nosniff",

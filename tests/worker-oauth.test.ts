@@ -235,6 +235,24 @@ describe("Worker OAuth authorization server", () => {
     expect(await response.text()).toContain("moodle mcp pair");
   });
 
+  it("allows the validated OAuth callback through the approval page CSP", async () => {
+    const { worker, env } = await harness();
+    const { body } = await registerClient(worker, env);
+    await openPairing(worker, env);
+
+    const response = await worker.fetch(request(`/oauth/authorize?${new URLSearchParams({
+      response_type: "code",
+      client_id: body.client_id as string,
+      redirect_uri: REDIRECT_URI,
+      code_challenge: "A".repeat(43),
+      code_challenge_method: "S256",
+      resource: `${ORIGIN}/mcp`,
+    })}`), env);
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-security-policy")).toContain("form-action 'self' https://claude.ai");
+  });
+
   it("completes the pairing, code, and token exchange that claude.ai performs", async () => {
     const { worker, env, mcpServer } = await harness();
     const { body } = await registerClient(worker, env);
