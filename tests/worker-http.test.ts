@@ -1,3 +1,4 @@
+import { VERSION } from "../src/version.js";
 import { createWorkerHandler, digestBearerToken, type SessionBrokerApi, type WorkerEnv } from "../src/worker/index.js";
 import workerEntrypoint from "../src/worker/entry.js";
 
@@ -41,7 +42,7 @@ describe("Cloudflare Worker HTTP transport", () => {
     expect(await response.json()).toEqual({
       status: "pass",
       serviceId: "moodle-mcp",
-      version: "0.7.0-rc.1",
+      version: VERSION,
     });
     expect(mcpServer.handle).not.toHaveBeenCalled();
     expect(broker.ready).not.toHaveBeenCalled();

@@ -1,3 +1,4 @@
+import { VERSION } from "../src/version.js";
 import { describe, expect, it } from "vitest";
 
 import type { MoodleGateway } from "../src/mcp/gateway.js";
@@ -26,7 +27,7 @@ describe("Moodle MCP server", () => {
       result: {
         supportedVersions: [...SUPPORTED_PROTOCOL_VERSIONS],
         capabilities: { tools: { listChanged: false } },
-        serverInfo: { name: "moodle", version: "0.7.0-rc.1" },
+        serverInfo: { name: "moodle", version: VERSION },
         resultType: "complete",
         _meta: { cacheScope: "private" },
       },
@@ -305,7 +306,7 @@ describe("Moodle MCP server", () => {
       result: {
         protocolVersion: LEGACY_PROTOCOL_VERSION,
         capabilities: { tools: { listChanged: false } },
-        serverInfo: { name: "moodle", version: "0.7.0-rc.1" },
+        serverInfo: { name: "moodle", version: VERSION },
       },
     });
     expect(listed).toMatchObject({ result: { tools: expect.any(Array) } });

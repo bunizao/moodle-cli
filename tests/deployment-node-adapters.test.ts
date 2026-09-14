@@ -1,8 +1,9 @@
+import { VERSION } from "../src/version.js";
 import { mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import { writeCachedSession } from "../src/session-cache.js";
+import * as sessionCache from "../src/session-cache.js";
 import {
   FetchManagedWorkerClient,
   NodeDeploymentCommandRunner,
@@ -582,7 +583,7 @@ describe("FetchManagedWorkerClient", () => {
     expect(metadata).toMatchObject({
       "io.modelcontextprotocol/protocolVersion": "2026-07-28",
       "io.modelcontextprotocol/clientCapabilities": {},
-      "io.modelcontextprotocol/clientInfo": { name: "moodle-cli-deployment-smoke", version: "0.7.0-rc.1" },
+      "io.modelcontextprotocol/clientInfo": { name: "moodle-cli-deployment-smoke", version: VERSION },
     });
   });
 });
@@ -604,14 +605,14 @@ describe("background Moodle session source", () => {
   it("skips the local session cache so a dead cookie is never re-uploaded as the replacement", async () => {
     const homeDir = await mkdtemp(join(tmpdir(), "moodle-session-source-"));
     const baseUrl = "https://moodle.example.edu";
-    await writeCachedSession({
+    const readCache = vi.spyOn(sessionCache, "readCachedSession").mockImplementation(async (_url, options) => options?.noCache ? null : ({
       baseUrl,
       cookieName: "MoodleSession",
       cookieValue: "dead-cookie",
       sesskey: "old-sesskey",
       userid: 7,
       savedAt: Date.now(),
-    }, { homeDir });
+    }));
     const validateSession = vi.fn(async (_url: string, cookie: { value: string }) =>
       cookie.value === "fresh-cookie" ? { sesskey: "new-sesskey", userid: 7 } : null);
     const source = createBackgroundMoodleSessionSource({
@@ -620,8 +621,13 @@ describe("background Moodle session source", () => {
       browserCookieProvider: async () => [{ name: "MoodleSession", value: "fresh-cookie", domain: "moodle.example.edu" }],
     });
 
-    await expect(source.loadValidated("school", baseUrl)).resolves.toMatchObject({ cookieValue: "fresh-cookie" });
-    expect(validateSession).not.toHaveBeenCalledWith(baseUrl, expect.objectContaining({ value: "dead-cookie" }));
+    try {
+      await expect(source.loadValidated("school", baseUrl)).resolves.toMatchObject({ cookieValue: "fresh-cookie" });
+      expect(readCache).toHaveBeenCalledWith(baseUrl, expect.objectContaining({ noCache: true }));
+      expect(validateSession).not.toHaveBeenCalledWith(baseUrl, expect.objectContaining({ value: "dead-cookie" }));
+    } finally {
+      readCache.mockRestore();
+    }
   });
 });
 

@@ -1,3 +1,4 @@
+import { VERSION } from "../src/version.js";
 import {
   SessionBroker,
   type DurableObjectStateLike,
@@ -92,7 +93,7 @@ describe("SessionBroker Durable Object", () => {
     expect(await response.json()).toMatchObject({
       status: "fail",
       serviceId: "moodle-mcp",
-      version: "0.7.0-rc.1",
+      version: VERSION,
       checks: { "moodle:session": [{ status: "fail", code: "SESSION_MISSING" }] },
     });
   });
