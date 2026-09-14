@@ -112,7 +112,7 @@ export class ConfigFileClientConnector implements ClientConnector {
     };
     if (changed) {
       if (backupPath && before !== null) {
-        await this.fileSystem.writePrivate(backupPath, before);
+        await this.fileSystem.writePrivate(backupPath, this.codec.remove(before, this.registration));
       }
       await this.fileSystem.writePrivate(this.options.configPath, after);
     }
@@ -140,6 +140,11 @@ export class ConfigFileClientConnector implements ClientConnector {
   }
 
   async removeRegistration(): Promise<void> {
+    const backupPath = `${this.options.configPath}.moodle-mcp.backup`;
+    if (await this.fileSystem.exists(backupPath)) {
+      const backup = await this.fileSystem.readText(backupPath);
+      await this.fileSystem.writePrivate(backupPath, this.codec.remove(backup, this.registration));
+    }
     const before = await this.readConfig();
     if (before === null) {
       return;
@@ -148,7 +153,7 @@ export class ConfigFileClientConnector implements ClientConnector {
     if (after === before) {
       return;
     }
-    await this.fileSystem.writePrivate(`${this.options.configPath}.moodle-mcp.backup`, before);
+    await this.fileSystem.writePrivate(`${this.options.configPath}.moodle-mcp.backup`, after);
     await this.fileSystem.writePrivate(this.options.configPath, after);
   }
 

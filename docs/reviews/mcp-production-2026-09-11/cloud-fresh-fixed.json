@@ -1,0 +1,36 @@
+{
+  "worker": "moodle-fix-20260911-27f418",
+  "syntheticOnly": true,
+  "checks": {
+    "v1Session": 200,
+    "upgradeAlreadyActive": true,
+    "migratedSessionMcp": 200,
+    "freshInstall": true,
+    "canonicalDefaultResource": 200,
+    "retiredKeyRemoved": 200,
+    "staticAndOAuthRevoked": true,
+    "finalActiveMcp": 200,
+    "recoveryBridge": 200,
+    "compatibleRollback": 200
+  },
+  "endpoint": "https://moodle-fix-20260911-27f418.bunizao.workers.dev",
+  "legacy": {
+    "keys": [
+      "version",
+      "encrypted_session"
+    ],
+    "version": 2,
+    "containsPlaintext": false,
+    "generation": 2
+  },
+  "encrypted": {
+    "keys": [
+      "encrypted_session",
+      "version"
+    ],
+    "version": 2,
+    "containsPlaintext": false,
+    "generation": 2
+  },
+  "cleanedUp": true
+}

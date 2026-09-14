@@ -184,6 +184,7 @@ describe("Cloudflare Worker HTTP transport", () => {
       broker: () => createBroker(),
       authBroker: () => ({
         handleOAuth,
+        manageClients: vi.fn(),
         createPairing: vi.fn(),
         verifyAccessToken: vi.fn(async () => null),
       }),
@@ -293,6 +294,30 @@ describe("Cloudflare Worker HTTP transport", () => {
       id: 1,
       error: { code: -32_020, message: "HeaderMismatch" },
     });
+    expect(mcpServer.handle).not.toHaveBeenCalled();
+  });
+
+  it("negotiates initialize without a protocol header", async () => {
+    const mcpServer = { handle: vi.fn(async () => ({ jsonrpc: "2.0", id: 1, result: { protocolVersion: "2025-06-18" } })) };
+    const worker = createWorkerHandler({ mcpServer, broker: () => createBroker() });
+    const response = await worker.fetch(request("/mcp", {
+      method: "POST",
+      headers: { authorization: `Bearer ${ACCESS_TOKEN}`, "content-type": "application/json" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-06-18" } }),
+    }), await workerEnv());
+    expect(response.status).toBe(200);
+    expect(mcpServer.handle).toHaveBeenCalledWith(expect.objectContaining({ method: "initialize" }), expect.not.objectContaining({ protocolVersion: expect.anything() }));
+  });
+
+  it.each([null, [], { jsonrpc: "2.0", id: 1 }])("rejects malformed RPC envelopes: %j", async (body) => {
+    const mcpServer = { handle: vi.fn() };
+    const worker = createWorkerHandler({ mcpServer, broker: () => createBroker() });
+    const response = await worker.fetch(request("/mcp", {
+      method: "POST",
+      headers: { authorization: `Bearer ${ACCESS_TOKEN}`, "content-type": "application/json" },
+      body: JSON.stringify(body),
+    }), await workerEnv());
+    expect(response.status).toBe(400);
     expect(mcpServer.handle).not.toHaveBeenCalled();
   });
 

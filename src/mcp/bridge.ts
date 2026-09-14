@@ -64,6 +64,8 @@ export async function bridgeRemoteMcp(options: RemoteMcpBridgeOptions): Promise<
         method: "POST",
         headers,
         body: line,
+        redirect: "error",
+        signal: AbortSignal.timeout(30_000),
       });
     } catch {
       await writeRemoteError(options.output, request.id, 0);

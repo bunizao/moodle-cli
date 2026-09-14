@@ -53,6 +53,7 @@ function dependencies(options: {
   const receipt = options.receipt === undefined ? RECEIPT : options.receipt;
   return {
     wrangler: {
+      uploadSecrets: vi.fn(async () => undefined),
       checkAccess: vi.fn(async () => undefined),
       inspect: vi.fn(async () => remote),
       initializeWorker: vi.fn(async () => REMOTE),
@@ -97,6 +98,7 @@ function dependencies(options: {
       getReadiness: vi.fn(async () => ({ status: "pass" as const, reasonCode: "SESSION_VALID", revision: 4 })),
       touchSession: vi.fn(async () => undefined),
       runSmoke: vi.fn(async () => ({ moodleUser: "Alice Example" })),
+      manageClients: vi.fn(async () => ({ clients: [] })),
       createPairing: vi.fn(async () => ({
         code: "ABCD2345",
         expiresAt: "2026-09-04T00:10:00.000Z",
@@ -391,21 +393,21 @@ describe("ManagedMcpDeployment transaction", () => {
       previousVersionId: REMOTE.productionVersionId,
     });
     expect(deps.credentials.write).toHaveBeenLastCalledWith(INTENT.profile, {
-      mcpAccessToken: "mcp-current",
-      sessionSyncToken: "sync-current",
+      mcpAccessToken: "mcp-next",
+      sessionSyncToken: "sync-next",
       sessionEncryptionKey: "encryption-current",
     });
     expect(deps.worker.runSmoke).not.toHaveBeenCalled();
   });
 
-  it("does not try to roll back a release that applied a Durable Object migration", async () => {
+  it("does not promote an atomic deployment twice and checks recovery on failure", async () => {
     const deps = dependencies();
     vi.mocked(deps.wrangler.uploadCandidate).mockResolvedValueOnce({
       versionId: "version-migrated",
       previewEndpoint: null,
       productionEndpoint: REMOTE.productionEndpoint,
       deploymentId: REMOTE.deploymentId,
-      alreadyLive: true,
+      alreadyDeployed: true,
     });
     vi.mocked(deps.worker.putSession).mockRejectedValueOnce(new Error("session upload failed"));
     const manager = new ManagedMcpDeployment(deps);
@@ -413,7 +415,7 @@ describe("ManagedMcpDeployment transaction", () => {
 
     expect(result.error).toMatchObject({ code: "DEPLOYMENT_FAILED" });
     expect(deps.wrangler.promote).not.toHaveBeenCalled();
-    expect(deps.wrangler.restoreProduction).not.toHaveBeenCalled();
+    expect(deps.wrangler.restoreProduction).toHaveBeenCalled();
   });
 
   it("reports the original failure when the rollback itself fails", async () => {
@@ -430,7 +432,8 @@ describe("ManagedMcpDeployment transaction", () => {
     const result = await consumeFailure(manager.apply(await manager.plan(INTENT)));
 
     expect(deps.wrangler.restoreProduction).toHaveBeenCalled();
-    expect(result.error).toMatchObject({ code: "DEPLOYMENT_FAILED" });
+    expect(result.error).toMatchObject({ code: "DEPLOYMENT_RECOVERY_REQUIRED" });
+    expect((result.error as Error).cause).toMatchObject({ message: "session upload failed" });
     expect(String((result.error as Error).message)).not.toContain("cannot restore");
   });
 
@@ -451,7 +454,7 @@ describe("ManagedMcpDeployment transaction", () => {
     expect(deps.clients.install).toHaveBeenCalledWith(INTENT.profile);
   });
 
-  it("keeps rotated credentials overlapping while the candidate is validated", async () => {
+  it("replaces static credentials when rotating transport access", async () => {
     const deps = dependencies();
     vi.mocked(deps.createToken).mockReturnValueOnce("mcp-next").mockReturnValueOnce("sync-next");
     const manager = new ManagedMcpDeployment(deps);
@@ -461,9 +464,7 @@ describe("ManagedMcpDeployment transaction", () => {
       mcpAccessToken: "mcp-next",
       sessionSyncToken: "sync-next",
       sessionEncryptionKey: "encryption-current",
-      previousMcpAccessToken: "mcp-current",
-      previousSessionSyncToken: "sync-current",
-      previousTokensExpireAt: expect.any(Number),
+
     }));
     expect(deps.worker.runSmoke).toHaveBeenCalledWith(expect.objectContaining({ mcpAccessToken: "mcp-next" }));
   });
@@ -471,7 +472,7 @@ describe("ManagedMcpDeployment transaction", () => {
   it("restores local credentials when secret rotation fails before Cloudflare accepts it", async () => {
     const deps = dependencies();
     vi.mocked(deps.createToken).mockReturnValueOnce("mcp-next").mockReturnValueOnce("sync-next");
-    vi.mocked(deps.wrangler.uploadCandidate).mockRejectedValueOnce(new Error("authorization expired"));
+    vi.mocked(deps.wrangler.uploadSecrets).mockRejectedValueOnce(new Error("authorization expired"));
     const manager = new ManagedMcpDeployment(deps);
     const result = await consumeFailure(manager.apply(await manager.plan({ ...INTENT, rotateToken: true })));
 
@@ -676,4 +677,56 @@ describe("release digest reporting", () => {
     const status = await new ManagedMcpDeployment(deps).inspect(INTENT.profile);
     expect(status.worker?.releaseDigest).toBe("release-live");
   });
+});
+
+describe("atomic deployment recovery", () => {
+  it("verifies a compatible recovery release before the candidate and uses it on failure", async () => {
+    const deps = dependencies();
+    deps.wrangler = { ...deps.wrangler, atomicSecrets: true };
+    deps.wrangler.deployRecovery = vi.fn(async () => ({ versionId: "compatible-recovery", previewEndpoint: null, alreadyDeployed: true, productionEndpoint: REMOTE.productionEndpoint, deploymentId: REMOTE.deploymentId }));
+    vi.mocked(deps.materializer.prepare).mockResolvedValue({ artifactDirectory: "/private/tmp/release", wranglerConfigPath: "/private/tmp/release/main.json", recoveryConfigPath: "/private/tmp/release/recovery.json", secretsFilePath: "/private/tmp/release/secrets.json" });
+    vi.mocked(deps.wrangler.uploadCandidate).mockRejectedValue(new Error("candidate deployment failed"));
+    const manager = new ManagedMcpDeployment(deps);
+    const result = await consumeFailure(manager.apply(await manager.plan(INTENT)));
+    expect(result.error).toBeInstanceOf(DeploymentApplyError);
+    expect(deps.wrangler.uploadSecrets).not.toHaveBeenCalled();
+    expect(deps.worker.runSmoke).toHaveBeenCalledWith(expect.objectContaining({ endpoint: REMOTE.productionEndpoint, mcpAccessToken: "mcp-current", sessionSyncToken: "sync-current" }));
+    expect(deps.wrangler.restoreProduction).toHaveBeenCalledWith(expect.objectContaining({ previousVersionId: "compatible-recovery" }));
+    expect(deps.receipts.write).toHaveBeenLastCalledWith(expect.objectContaining({ productionVersionId: "compatible-recovery", recoveryVersionId: "compatible-recovery" }));
+  });
+
+  it("reconciles a remotely committed revision during repair", async () => {
+    const deps = dependencies();
+    vi.mocked(deps.worker.getReadiness).mockResolvedValue({ status: "pass", reasonCode: "SESSION_VALID", revision: 9 });
+    vi.mocked(deps.worker.putSession).mockImplementation(async (input) => {
+      if (input.expectedRevision !== 9) throw new Error("revision conflict");
+      return { revision: 10 };
+    });
+    const manager = new ManagedMcpDeployment(deps);
+    await consume(manager.apply(await manager.plan({ ...INTENT, repair: true })));
+    expect(deps.worker.getReadiness).toHaveBeenCalled();
+    expect(deps.worker.putSession).toHaveBeenCalledWith(expect.objectContaining({ expectedRevision: 9 }));
+    expect(deps.receipts.write).toHaveBeenCalledWith(expect.objectContaining({ sessionRevision: 10 }));
+  });
+
+  it("retains both encryption keys while rotating the active session", async () => {
+    const deps = dependencies();
+    const manager = new ManagedMcpDeployment(deps);
+    await consume(manager.apply(await manager.plan({ ...INTENT, rotateKey: true })));
+    expect(deps.credentials.write).toHaveBeenCalledWith(INTENT.profile, expect.objectContaining({ sessionEncryptionKey: "new-token", previousSessionEncryptionKey: "encryption-current" }));
+  });
+});
+
+it("retires the previous encryption key only after the active session is verified", async () => {
+  const deps = dependencies();
+  deps.wrangler = { ...deps.wrangler, atomicSecrets: true };
+  vi.mocked(deps.wrangler.uploadCandidate).mockResolvedValue({ versionId: "new-active", previewEndpoint: null, alreadyDeployed: true, productionEndpoint: REMOTE.productionEndpoint, deploymentId: REMOTE.deploymentId });
+  const manager = new ManagedMcpDeployment(deps);
+  await consume(manager.apply(await manager.plan({ ...INTENT, rotateKey: true })));
+  expect(deps.materializer.prepare).toHaveBeenCalledTimes(2);
+  const lastCredentials = vi.mocked(deps.credentials.write).mock.calls.at(-1)![1];
+  expect(lastCredentials.sessionEncryptionKey).toBe("new-token");
+  expect(lastCredentials).not.toHaveProperty("previousSessionEncryptionKey");
+  expect(deps.worker.runSmoke).toHaveBeenCalledTimes(2);
+  expect(deps.wrangler.uploadSecrets).not.toHaveBeenCalled();
 });
