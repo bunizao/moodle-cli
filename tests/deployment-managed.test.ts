@@ -53,10 +53,10 @@ function dependencies(options: {
   const receipt = options.receipt === undefined ? RECEIPT : options.receipt;
   return {
     wrangler: {
+      uploadSecrets: vi.fn(async () => undefined),
       checkAccess: vi.fn(async () => undefined),
       inspect: vi.fn(async () => remote),
       initializeWorker: vi.fn(async () => REMOTE),
-      uploadSecrets: vi.fn(async () => undefined),
       uploadCandidate: vi.fn(async () => ({
         versionId: "version-next",
         previewEndpoint: "https://version-next.preview.example",
@@ -96,7 +96,14 @@ function dependencies(options: {
     worker: {
       putSession: vi.fn(async () => ({ revision: 5 })),
       getReadiness: vi.fn(async () => ({ status: "pass" as const, reasonCode: "SESSION_VALID", revision: 4 })),
+      touchSession: vi.fn(async () => undefined),
       runSmoke: vi.fn(async () => ({ moodleUser: "Alice Example" })),
+      manageClients: vi.fn(async () => ({ clients: [] })),
+      createPairing: vi.fn(async () => ({
+        code: "ABCD2345",
+        expiresAt: "2026-09-04T00:10:00.000Z",
+        authorizationServer: "https://moodle-school-mcp.demo.workers.dev",
+      })),
     },
     renewal: {
       install: vi.fn(async () => undefined),
@@ -219,11 +226,13 @@ describe("ManagedMcpDeployment transaction", () => {
       accountId: INTENT.accountId,
       workerName: INTENT.workerName,
       configPath: "/private/tmp/release/wrangler.json",
+      secretsFilePath: "/private/tmp/release/secrets.json",
       releaseDigest: INTENT.releaseDigest,
     });
+    expect(deps.wrangler.uploadCandidate).toHaveBeenCalledWith(expect.objectContaining({
+      secretsFilePath: "/private/tmp/release/secrets.json",
+    }));
     expect(vi.mocked(deps.wrangler.initializeWorker).mock.invocationCallOrder[0])
-      .toBeLessThan(vi.mocked(deps.wrangler.uploadSecrets).mock.invocationCallOrder[0]!);
-    expect(vi.mocked(deps.wrangler.uploadSecrets).mock.invocationCallOrder[0])
       .toBeLessThan(vi.mocked(deps.wrangler.uploadCandidate).mock.invocationCallOrder[0]!);
   });
 
@@ -243,7 +252,7 @@ describe("ManagedMcpDeployment transaction", () => {
     expect(deps.worker.runSmoke).toHaveBeenNthCalledWith(1, expect.objectContaining({
       endpoint: "https://version-next.preview.example",
     }));
-    expect(deps.wrangler.promote).toHaveBeenCalledWith(expect.objectContaining({ versionId: "version-next" }));
+    expect(deps.wrangler.promote).toHaveBeenCalledWith(expect.objectContaining({ versionId: "version-next", releaseDigest: INTENT.releaseDigest }));
     expect(deps.worker.runSmoke).toHaveBeenNthCalledWith(2, expect.objectContaining({
       endpoint: REMOTE.productionEndpoint,
     }));
@@ -256,6 +265,7 @@ describe("ManagedMcpDeployment transaction", () => {
     expect(deps.receipts.write).toHaveBeenCalledWith(expect.objectContaining({
       profile: INTENT.profile,
       productionVersionId: "version-next",
+      releaseDigest: INTENT.releaseDigest,
     }));
   });
 
@@ -383,11 +393,48 @@ describe("ManagedMcpDeployment transaction", () => {
       previousVersionId: REMOTE.productionVersionId,
     });
     expect(deps.credentials.write).toHaveBeenLastCalledWith(INTENT.profile, {
-      mcpAccessToken: "mcp-current",
-      sessionSyncToken: "sync-current",
+      mcpAccessToken: "mcp-next",
+      sessionSyncToken: "sync-next",
       sessionEncryptionKey: "encryption-current",
     });
     expect(deps.worker.runSmoke).not.toHaveBeenCalled();
+  });
+
+  it("does not promote an atomic deployment twice and checks recovery on failure", async () => {
+    const deps = dependencies();
+    vi.mocked(deps.wrangler.uploadCandidate).mockResolvedValueOnce({
+      versionId: "version-migrated",
+      previewEndpoint: null,
+      productionEndpoint: REMOTE.productionEndpoint,
+      deploymentId: REMOTE.deploymentId,
+      alreadyDeployed: true,
+    });
+    vi.mocked(deps.worker.putSession).mockRejectedValueOnce(new Error("session upload failed"));
+    const manager = new ManagedMcpDeployment(deps);
+    const result = await consumeFailure(manager.apply(await manager.plan(INTENT)));
+
+    expect(result.error).toMatchObject({ code: "DEPLOYMENT_FAILED" });
+    expect(deps.wrangler.promote).not.toHaveBeenCalled();
+    expect(deps.wrangler.restoreProduction).toHaveBeenCalled();
+  });
+
+  it("reports the original failure when the rollback itself fails", async () => {
+    const deps = dependencies();
+    vi.mocked(deps.wrangler.uploadCandidate).mockResolvedValueOnce({
+      versionId: "version-next",
+      previewEndpoint: null,
+      productionEndpoint: REMOTE.productionEndpoint,
+      deploymentId: REMOTE.deploymentId,
+    });
+    vi.mocked(deps.worker.putSession).mockRejectedValueOnce(new Error("session upload failed"));
+    vi.mocked(deps.wrangler.restoreProduction).mockRejectedValueOnce(new Error("cannot restore across a migration"));
+    const manager = new ManagedMcpDeployment(deps);
+    const result = await consumeFailure(manager.apply(await manager.plan(INTENT)));
+
+    expect(deps.wrangler.restoreProduction).toHaveBeenCalled();
+    expect(result.error).toMatchObject({ code: "DEPLOYMENT_RECOVERY_REQUIRED" });
+    expect((result.error as Error).cause).toMatchObject({ message: "session upload failed" });
+    expect(String((result.error as Error).message)).not.toContain("cannot restore");
   });
 
   it("reconciles an unchanged deployment without uploading or promoting another version", async () => {
@@ -398,7 +445,6 @@ describe("ManagedMcpDeployment transaction", () => {
     const manager = new ManagedMcpDeployment(deps);
     await consume(manager.apply(await manager.plan(INTENT)));
 
-    expect(deps.wrangler.uploadSecrets).not.toHaveBeenCalled();
     expect(deps.wrangler.initializeWorker).not.toHaveBeenCalled();
     expect(deps.wrangler.uploadCandidate).not.toHaveBeenCalled();
     expect(deps.wrangler.promote).not.toHaveBeenCalled();
@@ -408,7 +454,7 @@ describe("ManagedMcpDeployment transaction", () => {
     expect(deps.clients.install).toHaveBeenCalledWith(INTENT.profile);
   });
 
-  it("keeps rotated credentials overlapping while the candidate is validated", async () => {
+  it("replaces static credentials when rotating transport access", async () => {
     const deps = dependencies();
     vi.mocked(deps.createToken).mockReturnValueOnce("mcp-next").mockReturnValueOnce("sync-next");
     const manager = new ManagedMcpDeployment(deps);
@@ -418,9 +464,7 @@ describe("ManagedMcpDeployment transaction", () => {
       mcpAccessToken: "mcp-next",
       sessionSyncToken: "sync-next",
       sessionEncryptionKey: "encryption-current",
-      previousMcpAccessToken: "mcp-current",
-      previousSessionSyncToken: "sync-current",
-      previousTokensExpireAt: expect.any(Number),
+
     }));
     expect(deps.worker.runSmoke).toHaveBeenCalledWith(expect.objectContaining({ mcpAccessToken: "mcp-next" }));
   });
@@ -438,7 +482,7 @@ describe("ManagedMcpDeployment transaction", () => {
       sessionSyncToken: "sync-current",
       sessionEncryptionKey: "encryption-current",
     });
-    expect(deps.wrangler.uploadCandidate).not.toHaveBeenCalled();
+    expect(deps.wrangler.promote).not.toHaveBeenCalled();
   });
 
   it("removes a newly initialized Worker when its first deployment fails", async () => {
@@ -529,6 +573,9 @@ describe("ManagedMcpDeployment lifecycle", () => {
     }));
     expect(success.receipts.write).toHaveBeenCalledWith(expect.objectContaining({
       productionVersionId: REMOTE.previousHealthyVersionId,
+      releaseDigest: "",
+      previousReleaseDigest: RECEIPT.releaseDigest,
+      restoredRelease: true,
     }));
 
     const failed = dependencies();
@@ -577,4 +624,109 @@ describe("stable managed MCP surface", () => {
     expect(ONBOARDING_COPY.introduction).toContain("Moodle MCP setup");
     expect(JSON.stringify(ONBOARDING_COPY)).not.toMatch(/cookieValue|Bearer [A-Za-z0-9]/);
   });
+});
+
+describe("release digest after rollback", () => {
+  it("plans a candidate upload again once the current release was rolled back", async () => {
+    const current = { ...INTENT, releaseDigest: RECEIPT.releaseDigest };
+    await expect(new ManagedMcpDeployment(dependencies()).plan(current)).resolves.toMatchObject({
+      operation: "reconcile",
+      uploadCandidate: false,
+    });
+
+    const rolledBack = dependencies({
+      receipt: { ...RECEIPT, previousReleaseDigest: RECEIPT.releaseDigest, restoredRelease: true },
+    });
+    await expect(new ManagedMcpDeployment(rolledBack).plan(current)).resolves.toMatchObject({
+      operation: "update",
+      uploadCandidate: true,
+    });
+  });
+
+  it("clears the restored marker once a release is deployed again", async () => {
+    const deps = dependencies({ receipt: { ...RECEIPT, restoredRelease: true } });
+    const manager = new ManagedMcpDeployment(deps);
+    await consume(manager.apply(await manager.plan({ ...INTENT, releaseDigest: RECEIPT.releaseDigest })));
+    expect(deps.wrangler.uploadCandidate).toHaveBeenCalled();
+    const written = vi.mocked(deps.receipts.write).mock.calls.at(-1)?.[0];
+    expect(written?.restoredRelease).toBeUndefined();
+  });
+
+  it("restores the recorded digest when rolling back to a release this CLI deployed", async () => {
+    const deps = dependencies({
+      receipt: { ...RECEIPT, releaseDigest: "release-next", previousReleaseDigest: "release-current" },
+    });
+    await new ManagedMcpDeployment(deps).rollback(INTENT.profile);
+    expect(deps.receipts.write).toHaveBeenCalledWith(expect.objectContaining({
+      productionVersionId: REMOTE.previousHealthyVersionId,
+      releaseDigest: "release-current",
+      previousReleaseDigest: "release-next",
+    }));
+  });
+});
+
+describe("release digest reporting", () => {
+  it("keeps the receipt's release digest when Wrangler reports none", async () => {
+    const deps = dependencies({ remote: { ...REMOTE, releaseDigest: "" } });
+    const status = await new ManagedMcpDeployment(deps).inspect(INTENT.profile);
+    expect(status.worker?.releaseDigest).toBe(RECEIPT.releaseDigest);
+  });
+
+  it("prefers the digest Wrangler reports when it is present", async () => {
+    const deps = dependencies({ remote: { ...REMOTE, releaseDigest: "release-live" } });
+    const status = await new ManagedMcpDeployment(deps).inspect(INTENT.profile);
+    expect(status.worker?.releaseDigest).toBe("release-live");
+  });
+});
+
+describe("atomic deployment recovery", () => {
+  it("verifies a compatible recovery release before the candidate and uses it on failure", async () => {
+    const deps = dependencies();
+    deps.wrangler = { ...deps.wrangler, atomicSecrets: true };
+    deps.wrangler.deployRecovery = vi.fn(async () => ({ versionId: "compatible-recovery", previewEndpoint: null, alreadyDeployed: true, productionEndpoint: REMOTE.productionEndpoint, deploymentId: REMOTE.deploymentId }));
+    vi.mocked(deps.materializer.prepare).mockResolvedValue({ artifactDirectory: "/private/tmp/release", wranglerConfigPath: "/private/tmp/release/main.json", recoveryConfigPath: "/private/tmp/release/recovery.json", secretsFilePath: "/private/tmp/release/secrets.json" });
+    vi.mocked(deps.wrangler.uploadCandidate).mockRejectedValue(new Error("candidate deployment failed"));
+    const manager = new ManagedMcpDeployment(deps);
+    const result = await consumeFailure(manager.apply(await manager.plan(INTENT)));
+    expect(result.error).toBeInstanceOf(DeploymentApplyError);
+    expect(deps.wrangler.uploadSecrets).not.toHaveBeenCalled();
+    expect(deps.worker.runSmoke).toHaveBeenCalledWith(expect.objectContaining({ endpoint: REMOTE.productionEndpoint, mcpAccessToken: "mcp-current", sessionSyncToken: "sync-current" }));
+    expect(deps.wrangler.restoreProduction).toHaveBeenCalledWith(expect.objectContaining({ previousVersionId: "compatible-recovery" }));
+    expect(deps.receipts.write).toHaveBeenLastCalledWith(expect.objectContaining({ productionVersionId: "compatible-recovery", recoveryVersionId: "compatible-recovery" }));
+  });
+
+  it("reconciles a remotely committed revision during repair", async () => {
+    const deps = dependencies();
+    vi.mocked(deps.worker.getReadiness).mockResolvedValue({ status: "pass", reasonCode: "SESSION_VALID", revision: 9 });
+    vi.mocked(deps.worker.putSession).mockImplementation(async (input) => {
+      if (input.expectedRevision !== 9) throw new Error("revision conflict");
+      return { revision: 10 };
+    });
+    const manager = new ManagedMcpDeployment(deps);
+    await consume(manager.apply(await manager.plan({ ...INTENT, repair: true })));
+    expect(deps.worker.getReadiness).toHaveBeenCalled();
+    expect(deps.worker.putSession).toHaveBeenCalledWith(expect.objectContaining({ expectedRevision: 9 }));
+    expect(deps.receipts.write).toHaveBeenCalledWith(expect.objectContaining({ sessionRevision: 10 }));
+  });
+
+  it("retains both encryption keys while rotating the active session", async () => {
+    const deps = dependencies();
+    const manager = new ManagedMcpDeployment(deps);
+    await consume(manager.apply(await manager.plan({ ...INTENT, rotateKey: true })));
+    expect(deps.credentials.write).toHaveBeenCalledWith(INTENT.profile, expect.objectContaining({ sessionEncryptionKey: "new-token", previousSessionEncryptionKey: "encryption-current" }));
+  });
+});
+
+it("retires the previous encryption key only after the active session is verified", async () => {
+  const deps = dependencies();
+  deps.wrangler = { ...deps.wrangler, atomicSecrets: true };
+  vi.mocked(deps.wrangler.uploadCandidate).mockResolvedValue({ versionId: "new-active", previewEndpoint: null, alreadyDeployed: true, productionEndpoint: REMOTE.productionEndpoint, deploymentId: REMOTE.deploymentId });
+  const manager = new ManagedMcpDeployment(deps);
+  await consume(manager.apply(await manager.plan({ ...INTENT, rotateKey: true })));
+  expect(deps.materializer.prepare).toHaveBeenCalledTimes(2);
+  const lastCredentials = vi.mocked(deps.credentials.write).mock.calls.at(-1)![1];
+  expect(lastCredentials.sessionEncryptionKey).toBe("new-token");
+  expect(lastCredentials).not.toHaveProperty("previousSessionEncryptionKey");
+  expect(deps.worker.runSmoke).toHaveBeenCalledTimes(2);
+  expect(deps.wrangler.uploadSecrets).not.toHaveBeenCalled();
 });

@@ -3,6 +3,7 @@ import { defineConfig } from "tsup";
 export default defineConfig({
   entry: {
     worker: "src/worker/entry.ts",
+    recovery: "src/worker/recovery.ts",
   },
   format: ["esm"],
   target: "es2022",

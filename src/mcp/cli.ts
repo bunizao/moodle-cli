@@ -1,3 +1,4 @@
+import { deleteCachedSession } from "../session-cache.js";
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
@@ -22,10 +23,13 @@ import {
   FetchManagedWorkerClient,
   ManagedMcpDeployment,
   NodeWranglerDeploymentAdapter,
+  ONBOARDING_COPY,
   PrivateDeploymentReceiptStore,
   WranglerCommandError,
   createBackgroundMoodleSessionSource,
   createDefaultManagedDeployment,
+  createProgressReporter,
+  formatOnboardingStage,
   successfulDeploymentCopy,
   type DeploymentCredentialRepository,
   type DeploymentEvent,
@@ -37,6 +41,7 @@ import {
   type ManagedWorkerClient,
   type MoodleSessionMaterial,
   type MoodleSessionSource,
+  type ProgressReporter,
   type WorkerReadiness,
   type WranglerAccount,
 } from "./deployment/index.js";
@@ -50,7 +55,7 @@ import {
   type RenewalSnapshot,
 } from "./renewal/index.js";
 import { createMoodleGateway } from "./gateway.js";
-import { LEGACY_PROTOCOL_VERSION, MODERN_PROTOCOL_VERSION } from "./protocol.js";
+import { SUPPORTED_PROTOCOL_VERSIONS } from "./protocol.js";
 import { createMoodleMcpServer } from "./server.js";
 import { serveMoodleMcpStdio } from "./stdio.js";
 
@@ -65,6 +70,7 @@ export interface McpDeployInput {
   dryRun: boolean;
   repair: boolean;
   rotateToken: boolean;
+  rotateKey?: boolean;
   rollback: boolean;
   yes: boolean;
 }
@@ -74,6 +80,8 @@ export interface McpCommandService {
   status(input: { verbose: boolean; logs: boolean }): Promise<McpCommandOutput>;
   login(): Promise<McpCommandOutput>;
   connect(input: { client?: string; mode: "bridge" | "remote"; showToken: boolean }): Promise<McpCommandOutput>;
+  pair(): Promise<McpCommandOutput>;
+  manageClients(input: { revoke?: boolean; clientId?: string }): Promise<McpCommandOutput>;
   remove(input: { yes: boolean }): Promise<McpCommandOutput>;
   serveStdio(): Promise<void>;
   bridge(profile?: string): Promise<void>;
@@ -127,6 +135,7 @@ class DefaultMcpCommandService implements McpCommandService {
   private readonly renewal: LocalDeploymentIntegration;
   private readonly sessions: MoodleSessionSource;
   private readonly notifyRenewalSignIn: () => Promise<void>;
+  private progressReporter: ProgressReporter | undefined;
 
   constructor(private readonly options: McpCommandServiceOptions) {
     this.homeDirectory = options.homeDir ?? homedir();
@@ -139,7 +148,6 @@ class DefaultMcpCommandService implements McpCommandService {
     this.renewal = options.renewal ?? new DefaultRenewalIntegration({
       platform: process.platform,
       homeDirectory: this.homeDirectory,
-      executable: process.argv[1] ?? process.execPath,
     });
     this.sessions = options.sessions ?? createBackgroundMoodleSessionSource({
       env: options.env,
@@ -151,44 +159,70 @@ class DefaultMcpCommandService implements McpCommandService {
   }
 
   async deploy(input: McpDeployInput): Promise<McpCommandOutput> {
-    const identity = await this.resolveDeploymentIdentity(input.yes);
-    const deployment = this.deployment(false);
-    if (input.rollback) {
-      const recovery = await deployment.rollback(identity.profile);
-      return {
-        data: recovery,
-        text: `Moodle MCP restored release ${recovery.versionId}.`,
-      };
-    }
+    // Every step here waits on Wrangler, Cloudflare, or Moodle, so the terminal reports
+    // the running step instead of staying blank until the whole run finishes.
+    const progress = this.progress();
+    try {
+      progress.begin("Reading Cloudflare account and deployment state");
+      const identity = await this.resolveDeploymentIdentity(input.yes);
+      const deployment = this.deployment(false);
+      if (input.rollback) {
+        progress.begin("Restoring the previous release");
+        const recovery = await deployment.rollback(identity.profile);
+        return {
+          data: recovery,
+          text: `Moodle MCP restored release ${recovery.versionId}.`,
+        };
+      }
 
-    const plan = await this.planDeployment(deployment, {
-      ...identity,
-      releaseDigest: await this.releaseDigest(),
-      repair: input.repair,
-      rotateToken: input.rotateToken,
-      dryRun: input.dryRun,
-    });
-    if (input.dryRun) {
-      return {
-        data: {
-          operation: plan.operation,
-          workerName: plan.intent.workerName,
-          accountId: plan.intent.accountId,
-          moodleOrigin: plan.intent.moodleOrigin,
-          uploadCandidate: plan.uploadCandidate,
-        },
-        text: [
-          "Moodle MCP deployment plan",
-          `Operation: ${plan.operation}`,
-          `Worker: ${plan.intent.workerName}`,
-          `Candidate upload: ${plan.uploadCandidate ? "yes" : "no"}`,
-        ].join("\n"),
-      };
-    }
+      progress.begin("Planning the deployment");
+      const plan = await this.planDeployment(deployment, {
+        ...identity,
+        releaseDigest: await this.releaseDigest(),
+        repair: input.repair,
+        rotateToken: input.rotateToken,
+        rotateKey: input.rotateKey,
+        dryRun: input.dryRun,
+      });
+      if (input.dryRun) {
+        return {
+          data: {
+            operation: plan.operation,
+            workerName: plan.intent.workerName,
+            accountId: plan.intent.accountId,
+            moodleOrigin: plan.intent.moodleOrigin,
+            uploadCandidate: plan.uploadCandidate,
+          },
+          text: [
+            "Moodle MCP deployment plan",
+            `Operation: ${plan.operation}`,
+            `Worker: ${plan.intent.workerName}`,
+            `Candidate upload: ${plan.uploadCandidate ? "yes" : "no"}`,
+          ].join("\n"),
+        };
+      }
 
-    const events: DeploymentEvent[] = [];
-    for await (const event of deployment.apply(plan)) events.push(event);
-    const status = await deployment.inspect(identity.profile);
+      const events: DeploymentEvent[] = [];
+      for await (const event of deployment.apply(plan)) {
+        events.push(event);
+        if (event.status === "started") progress.begin(formatOnboardingStage(event.stageId, "pending"));
+        else if (event.status === "completed") progress.end(formatOnboardingStage(event.stageId, "completed"));
+        else progress.clear();
+      }
+      progress.begin("Reading deployment status");
+      const status = await deployment.inspect(identity.profile);
+      return await this.deploymentSuccess(identity, events, status);
+    } finally {
+      // A failure must not leave a half-drawn spinner in front of the error message.
+      progress.clear();
+    }
+  }
+
+  private async deploymentSuccess(
+    identity: { profile: string; moodleOrigin: string },
+    events: DeploymentEvent[],
+    status: Awaited<ReturnType<ManagedMcpDeployment["inspect"]>>,
+  ): Promise<McpCommandOutput> {
     const receipt = await this.receipts.read(identity.profile);
     const endpoint = status.worker?.productionEndpoint ?? receipt?.productionEndpoint;
     if (!endpoint) {
@@ -196,7 +230,7 @@ class DefaultMcpCommandService implements McpCommandService {
     }
     return {
       data: { events, status },
-      text: renderDeploymentSuccess(events, {
+      text: successfulDeploymentCopy({
         endpoint: `${endpoint.replace(/\/$/u, "")}/mcp`,
         moodleSite: identity.moodleOrigin,
         moodleUser: events.find((event) => event.moodleUser)?.moodleUser ?? "Unknown Moodle user",
@@ -250,7 +284,15 @@ class DefaultMcpCommandService implements McpCommandService {
   async status(input: { verbose: boolean; logs: boolean }): Promise<McpCommandOutput> {
     const config = await this.config();
     const profile = deriveMcpProfile(config.baseUrl);
-    const managed = await this.deployment(false).inspect(profile);
+    const progress = this.progress();
+    let managed;
+    try {
+      // inspect() asks the Worker to touch the live Moodle session before answering.
+      progress.begin("Checking the remote Worker and Moodle session");
+      managed = await this.deployment(false).inspect(profile);
+    } finally {
+      progress.clear();
+    }
     let localAuthentication: unknown = { status: "unknown" };
     try {
       localAuthentication = await getAuthStatus(config.baseUrl, {
@@ -260,11 +302,13 @@ class DefaultMcpCommandService implements McpCommandService {
     } catch {
       localAuthentication = { status: "unknown" };
     }
+    const updateAvailable = await this.remoteWorkerBehindLocal(profile);
     const data = {
       profile,
       localAuthentication,
       managed,
-      protocols: [MODERN_PROTOCOL_VERSION, LEGACY_PROTOCOL_VERSION],
+      protocols: [...SUPPORTED_PROTOCOL_VERSIONS],
+      updateAvailable,
       ...(input.verbose ? { serviceVersion: VERSION } : {}),
       ...(input.logs ? { logs: { available: false, reason: "live_tail_required" } } : {}),
     };
@@ -276,6 +320,7 @@ class DefaultMcpCommandService implements McpCommandService {
         `Credentials: ${managed.credentialsStored ? "stored" : "missing"}`,
         `Renewal: ${managed.renewalInstalled ? "installed" : "missing"}`,
         `Clients: ${managed.clientsConnected ? "connected" : "not connected"}`,
+        ...(updateAvailable ? ["Update: remote Worker is behind this CLI. Run `moodle mcp deploy` to update it."] : []),
         ...(input.logs ? ["Logs: use a live sanitized tail from an interactive terminal"] : []),
       ].join("\n"),
     };
@@ -283,11 +328,19 @@ class DefaultMcpCommandService implements McpCommandService {
 
   async login(): Promise<McpCommandOutput> {
     const profile = deriveMcpProfile((await this.config()).baseUrl);
-    const recovery = await this.deployment(false).recover(profile);
-    return {
-      data: recovery,
-      text: "✓ New Moodle session acquired.\n✓ Remote session updated.\n✓ MCP readiness restored.",
-    };
+    const progress = this.progress();
+    try {
+      // Sign-in can wait on the browser for up to two minutes, so say so rather than
+      // leaving the terminal blank.
+      progress.begin("Reading your Moodle session (a browser sign-in may be required)");
+      const recovery = await this.deployment(false).recover(profile);
+      return {
+        data: recovery,
+        text: "✓ New Moodle session acquired.\n✓ Remote session updated.\n✓ MCP readiness restored.",
+      };
+    } finally {
+      progress.clear();
+    }
   }
 
   async connect(input: { client?: string; mode: "bridge" | "remote"; showToken: boolean }): Promise<McpCommandOutput> {
@@ -305,7 +358,6 @@ class DefaultMcpCommandService implements McpCommandService {
     const connectors = createDefaultClientConnectors(profile, {
       homeDirectory: this.homeDirectory,
       platform: process.platform,
-      command: process.argv[1] ?? "moodle",
       mode: input.mode,
       ...(input.mode === "remote" ? { endpoint, accessToken: credentials.mcpAccessToken } : {}),
     });
@@ -325,6 +377,51 @@ class DefaultMcpCommandService implements McpCommandService {
     };
   }
 
+  async manageClients(input: { revoke?: boolean; clientId?: string }): Promise<McpCommandOutput> {
+    if (input.clientId && !/^[A-Za-z0-9_-]{1,128}$/u.test(input.clientId)) throw new UsageError("The OAuth client ID is invalid.");
+    const profile = deriveMcpProfile((await this.config()).baseUrl);
+    const receipt = await this.receipts.read(profile);
+    const credentials = await this.credentials.read(profile);
+    if (!receipt || !credentials) throw new UsageError(`No managed Moodle MCP deployment exists for profile ${profile}.`);
+    const data = await this.worker.manageClients({ endpoint: receipt.productionEndpoint, sessionSyncToken: credentials.sessionSyncToken, ...input });
+    return { data, text: input.revoke ? "OAuth authorization revoked." : JSON.stringify(data, null, 2) };
+  }
+
+  async pair(): Promise<McpCommandOutput> {
+    const profile = deriveMcpProfile((await this.config()).baseUrl);
+    const [receipt, credentials] = await Promise.all([
+      this.receipts.read(profile),
+      this.credentials.read(profile),
+    ]);
+    if (!receipt || !credentials) throw new UsageError(`No managed Moodle MCP deployment exists for profile ${profile}.`);
+
+    const pairing = await this.worker.createPairing({
+      endpoint: receipt.productionEndpoint,
+      sessionSyncToken: credentials.sessionSyncToken,
+    });
+    const endpoint = `${receipt.productionEndpoint.replace(/\/$/u, "")}/mcp`;
+    return {
+      data: {
+        profile,
+        endpoint,
+        code: pairing.code,
+        expiresAt: pairing.expiresAt,
+        authorizationServer: pairing.authorizationServer,
+      },
+      text: [
+        "Add this custom connector in Claude, then approve it with the pairing code.",
+        "",
+        "Connector URL",
+        `  ${endpoint}`,
+        "",
+        "Pairing code",
+        `  ${formatPairingCode(pairing.code)}`,
+        "",
+        `The code expires at ${pairing.expiresAt} and works for one approval.`,
+      ].join("\n"),
+    };
+  }
+
   async remove(input: { yes: boolean }): Promise<McpCommandOutput> {
     const profile = deriveMcpProfile((await this.config()).baseUrl);
     const receipt = await this.receipts.read(profile);
@@ -334,13 +431,14 @@ class DefaultMcpCommandService implements McpCommandService {
       if (answer.trim() !== receipt.workerName) throw new UsageError("Moodle MCP removal was cancelled.");
     }
     const result = await this.deployment(false).remove(profile);
+    await deleteCachedSession((await this.config()).baseUrl, { homeDir: this.homeDirectory });
     return {
       data: result,
       text: [
         "Moodle MCP has been removed.",
         `Worker: ${result.workerRemoved ? "deleted" : "not present"}`,
         "Local renewal, client registrations, and deployment credentials: deleted",
-        "Local Moodle configuration and authentication cache: kept",
+        "Local Moodle configuration: kept; matching authentication cache: removed",
       ].join("\n"),
     };
   }
@@ -384,10 +482,9 @@ class DefaultMcpCommandService implements McpCommandService {
     }
 
     let receipt = storedReceipt;
-    const readiness = await this.worker.getReadiness({
-      endpoint: receipt.productionEndpoint,
-      sessionSyncToken: credentials.sessionSyncToken,
-    });
+    const target = { endpoint: receipt.productionEndpoint, sessionSyncToken: credentials.sessionSyncToken };
+    await this.worker.touchSession(target);
+    const readiness = await this.worker.getReadiness(target);
     if (readiness.revision !== null && readiness.revision !== receipt.sessionRevision) {
       receipt = await this.writeRenewalRevision(receipt, readiness.revision);
     }
@@ -402,6 +499,7 @@ class DefaultMcpCommandService implements McpCommandService {
       agentInstalled: await this.renewal.inspect(profile),
     };
     let replacement: MoodleSessionMaterial | null = null;
+    let signInDetail: string | undefined;
     if (snapshot.remote === "expiring" || snapshot.remote === "expired") {
       try {
         replacement = await this.sessions.loadValidated(profile, receipt.moodleOrigin);
@@ -411,6 +509,7 @@ class DefaultMcpCommandService implements McpCommandService {
           throw error;
         }
         snapshot.replacement = { source: "mfa_required" };
+        signInDetail = [error.message, error.hint].filter(Boolean).join(" ");
       }
     }
 
@@ -466,9 +565,11 @@ class DefaultMcpCommandService implements McpCommandService {
         text: "Moodle MCP session renewed.",
       };
     }
+    // A background job cannot open a browser, so record why no replacement cookie was found.
+    const detail = decision.state === "needs_sign_in" && signInDetail ? { detail: signInDetail } : {};
     return {
-      data: { profile, state: decision.state, reasonCode: decision.reasonCode, revision: receipt.sessionRevision },
-      text: renewalResultText(decision),
+      data: { profile, state: decision.state, reasonCode: decision.reasonCode, revision: receipt.sessionRevision, ...detail },
+      text: [renewalResultText(decision), signInDetail].filter(Boolean).join("\n"),
     };
   }
 
@@ -522,12 +623,15 @@ class DefaultMcpCommandService implements McpCommandService {
       compatibilityDate: this.options.compatibilityDate ?? WORKER_COMPATIBILITY_DATE,
       homeDirectory: this.homeDirectory,
       platform: process.platform,
-      executable: process.argv[1] ?? process.execPath,
       fetch: this.options.fetchImpl,
       auth: {
         env: this.options.env,
         fetch: this.options.fetchImpl,
         homeDir: this.homeDirectory,
+        onBrowserOpened: (url: string) => this.announceWait(
+          `${ONBOARDING_COPY.waitingForSignIn}\n\n  ${url}`,
+          "Waiting for Moodle sign-in",
+        ),
       },
       dependencies: {
         wrangler: this.wrangler(),
@@ -575,6 +679,9 @@ class DefaultMcpCommandService implements McpCommandService {
       if (!this.isInteractive()) {
         throw new UsageError("Cloudflare sign-in requires an interactive terminal. Run `moodle mcp deploy` interactively first.");
       }
+      // Wrangler opens Cloudflare's authorization page and prints nothing of its own,
+      // because its output is captured.
+      this.announceWait(ONBOARDING_COPY.cloudflareSignIn, "Waiting for Cloudflare authorization");
       await this.wrangler().login();
       accounts = await this.wrangler().listAccounts();
     }
@@ -601,7 +708,6 @@ class DefaultMcpCommandService implements McpCommandService {
     const connectors = createDefaultClientConnectors(profile, {
       homeDirectory: this.homeDirectory,
       platform: process.platform,
-      command: process.argv[1] ?? "moodle",
     });
     const clients: string[] = [];
     for (const connector of connectors) {
@@ -626,6 +732,8 @@ class DefaultMcpCommandService implements McpCommandService {
   }
 
   private prompt(question: string): Promise<string> {
+    // A spinner and a readline prompt share the same line, so stop the animation first.
+    this.progress().clear();
     if (this.options.prompt) return this.options.prompt(question);
     const input = this.options.stdin ?? process.stdin;
     const output = this.options.stderr ?? process.stderr;
@@ -646,8 +754,38 @@ class DefaultMcpCommandService implements McpCommandService {
     return readFile(this.workerBundlePath()).then((content) => sha256(content));
   }
 
+  // True when a deployment receipt exists but its recorded release digest no
+  // longer matches the Worker bundle shipped with this CLI, i.e. the remote
+  // Worker is running older code than the locally installed package. Best
+  // effort: any failure to read the receipt or bundle reports "no update".
+  private async remoteWorkerBehindLocal(profile: string): Promise<boolean> {
+    try {
+      const receipt = await this.receipts.read(profile);
+      if (!receipt) return false;
+      return receipt.releaseDigest !== (await this.releaseDigest());
+    } catch {
+      return false;
+    }
+  }
+
   private isInteractive(): boolean {
     return Boolean((this.options.stdin ?? process.stdin).isTTY);
+  }
+
+  // Progress belongs on stderr so that --json and --yaml keep stdout to themselves.
+  // One shared reporter, so anything else that writes can stop the animation first.
+  private progress(): ProgressReporter {
+    this.progressReporter ??= createProgressReporter({ stream: this.options.stderr ?? process.stderr });
+    return this.progressReporter;
+  }
+
+  // Sign-in moves to a browser window, so the terminal has to say what it is waiting
+  // for and then keep a live line running until the browser comes back.
+  private announceWait(message: string, waitingFor: string): void {
+    const progress = this.progress();
+    progress.clear();
+    (this.options.stderr ?? process.stderr).write(`${message}\n\n`);
+    progress.begin(waitingFor);
   }
 }
 
@@ -755,25 +893,15 @@ function displayClientName(client: SupportedMcpClient): string {
   return names[client];
 }
 
-function renderDeploymentSuccess(
-  events: DeploymentEvent[],
-  summary: Parameters<typeof successfulDeploymentCopy>[0],
-): string {
-  const completed = events
-    .filter((event) => event.status === "completed")
-    .map((event) => `[${event.stage}/${event.total}] ✓ ${event.label}`);
-  return [
-    ...completed,
-    "",
-    successfulDeploymentCopy(summary),
-  ].join("\n");
-}
-
 async function readAll(input: AsyncIterable<string | Uint8Array>): Promise<string> {
   const decoder = new TextDecoder();
   let value = "";
   for await (const chunk of input) value += typeof chunk === "string" ? chunk : decoder.decode(chunk, { stream: true });
   return value + decoder.decode();
+}
+
+function formatPairingCode(code: string): string {
+  return code.length === 8 ? `${code.slice(0, 4)}-${code.slice(4)}` : code;
 }
 
 function truncateName(value: string, maximum: number): string {

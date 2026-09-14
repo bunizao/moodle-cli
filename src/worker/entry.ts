@@ -6,6 +6,7 @@ import {
   type WorkerHandler,
 } from "./http.js";
 
+export { AuthBroker } from "./auth-broker.js";
 export { SessionBroker } from "./session-broker.js";
 
 const worker = createWorkerHandler({

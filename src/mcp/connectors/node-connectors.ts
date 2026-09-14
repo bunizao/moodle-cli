@@ -1,3 +1,4 @@
+import { runtimeCommand } from "../self-command.js";
 import { chmod, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
@@ -44,6 +45,7 @@ export interface DefaultConnectorOptions {
   homeDirectory?: string;
   platform?: NodeJS.Platform;
   command?: string;
+  commandArgs?: string[];
   fileSystem?: ConnectorFileSystem;
   mode?: "bridge" | "remote";
   endpoint?: string;
@@ -57,9 +59,11 @@ export function createDefaultClientConnectors(
   const home = options.homeDirectory ?? homedir();
   const platform = options.platform ?? process.platform;
   const fileSystem = options.fileSystem ?? new NodeConnectorFileSystem();
+  const runtime = runtimeCommand(options.command, options.commandArgs);
   const shared = {
     profile,
-    command: options.command,
+    command: runtime.command,
+    commandArgs: runtime.args,
     mode: options.mode,
     endpoint: options.endpoint,
     accessToken: options.accessToken,

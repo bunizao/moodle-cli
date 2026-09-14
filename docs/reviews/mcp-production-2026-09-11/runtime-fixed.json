@@ -1,0 +1,41 @@
+{
+  "runtime": "Miniflare/workerd",
+  "revision": "68727e8a2613f9764f28246c9fef3ddda3588fb7",
+  "health": 200,
+  "oauthFlow": {
+    "authorization": 302,
+    "token": 200,
+    "mcp": 200,
+    "accountBefore": 101
+  },
+  "accountSwitch": {
+    "status": 200,
+    "accountAfter": 101,
+    "previousGrantCanReadNewAccount": false
+  },
+  "crossOriginRedirect": {
+    "requestsReceived": 1,
+    "syntheticCookieForwarded": false
+  },
+  "refreshReplay": {
+    "replay": 400,
+    "descendantAccess": 401
+  },
+  "credentialRotation": {
+    "oldStaticAccess": 401,
+    "oldOAuthAccess": 401
+  },
+  "concurrentPairing": [
+    302,
+    403
+  ],
+  "registrationExhaustion": {
+    "anonymousAccepted": 20,
+    "legitimateNextRegistration": 201,
+    "registrationAccepted": true
+  },
+  "responseRedaction": {
+    "rawCookiePresent": false,
+    "sesskeyPresent": false
+  }
+}

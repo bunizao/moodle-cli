@@ -325,31 +325,21 @@ The skill description and default prompt will include local file downloads. The 
 
 ### Decision
 
-Do not add a `download_file` MCP tool in this release.
+Add a bounded `get_file` MCP tool in `0.7.0`. It returns file content to the MCP client; it does not write a path on the client's machine.
 
 ### Rationale
 
-The same MCP server runs through local stdio and a remote Cloudflare Worker. A remote Worker cannot write a path on the MCP client's machine. Adding a local-only write tool would make the tool catalog transport-dependent and break parity between local and managed MCP.
+A remote Worker cannot write a path on the MCP client's machine, but MCP tool results can carry an embedded binary resource. The local and managed servers therefore expose the same read-only `get_file` contract while `moodle download` remains the explicit local-write command.
 
-Returning file bytes through tool results is also rejected because it would:
-
-- Base64-expand binary content.
-- Increase JSON-RPC and client memory pressure.
-- Encounter Cloudflare request and response limits.
-- Duplicate the CLI's local writer and conflict semantics.
-- Expand the credential and data-exposure surface.
-
-The MCP server remains read-only and continues to advertise only tool capabilities.
+To bound base64 expansion, JSON-RPC payloads, Worker memory, and client memory, `get_file` rejects files larger than 16 MiB before returning content. It accepts only a positive resource activity ID, a same-site resource URL, or a same-site `pluginfile.php` URL. The result includes sanitized metadata and an embedded MCP resource; it never includes the Moodle cookie, sesskey, or credential-bearing query parameters.
 
 ### Existing tool enhancement
 
-`get_activity` will return the enriched activity detail, including `file_entries`. No new MCP registration or gateway method is necessary because the existing tool already forwards the complete activity object through a loose output schema.
-
-An MCP-only agent may discover and report authenticated file metadata, but it must not claim that a file was downloaded to the user's machine. When local CLI execution is available, the generated skill directs the agent to use `moodle download`.
+`get_activity` returns the enriched activity detail, including `file_entries`. An MCP-only agent can pass a resource ID or one selected `file_entries.url` to `get_file`. It should describe the result as retrieved content unless the MCP client explicitly materializes the resource locally. When the user requests an exact local destination, the generated skill directs a shell-capable agent to use `moodle download`.
 
 ### Reconsideration criteria
 
-Revisit MCP download support only if one of these becomes true:
+Revisit larger-file support only if one of these becomes true:
 
 1. MCP defines a client-side file sink with an explicit local-write contract.
 2. The product introduces a separately authenticated, bounded, short-lived download endpoint.
@@ -363,7 +353,7 @@ Revisit MCP download support only if one of these becomes true:
 | 2 | File entry model and parsing | `src/models.ts`, `src/scraper.ts`, activity tests | Resource and folder detail expose compatible `file_entries` |
 | 3 | Streaming download module | `src/download.ts`, download tests | Wrapper, redirect, filename, cancellation, conflict, and cleanup tests pass |
 | 4 | `download` command and `dl` alias | `src/cli.ts`, CLI contract tests | Canonical and alias invocations produce the same receipt |
-| 5 | MCP compatibility proof | MCP gateway/server tests | Tool catalog remains read-only and `get_activity` exposes file entries |
+| 5 | MCP file retrieval and compatibility proof | MCP gateway/server tests | `get_file` returns a bounded embedded resource and `get_activity` exposes file entries |
 | 6 | Generated skill and documentation | skill sources, generated bundle, README | Skill drift check and package smoke pass |
 | 7 | Real Moodle smoke | Temporary local destination | A small authenticated Monash resource downloads as a non-HTML, non-empty file |
 
@@ -423,11 +413,11 @@ docs(skill): teach agents the download workflow
 
 ### MCP
 
-- Tool catalog remains the same ten read-only tools.
+- Tool catalog contains eleven read-only tools, including `get_file`.
 - All tools retain read-only annotations.
 - `get_activity` includes resource `file_entries`.
 - `get_activity` includes folder `file_entries`.
-- Discovery does not advertise MCP resources or unsupported file capabilities.
+- `get_file` returns a bounded embedded resource without advertising a separate MCP resource server.
 
 ## 11. Quality Gates
 
@@ -484,7 +474,7 @@ The first release will not include:
 - Panopto video extraction.
 - External URL downloads.
 - Assignment attachment discovery beyond existing activity behavior.
-- Binary MCP tool results.
+- MCP files larger than the bounded `get_file` result.
 - A Worker download proxy.
 - A transport-specific MCP tool catalog.
 

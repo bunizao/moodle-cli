@@ -26,10 +26,10 @@ describe("renewal decision state machine", () => {
       [{ type: "validate_and_upload", source: "browser" }],
     ],
     [
-      "fresh Okta session",
-      { ...HEALTHY, remote: "expiring", replacement: { source: "okta", valid: true, fingerprintChanged: true } },
+      "fresh browser session",
+      { ...HEALTHY, remote: "expiring", replacement: { source: "browser", valid: true, fingerprintChanged: true } },
       "SESSION_EXPIRING",
-      [{ type: "validate_and_upload", source: "okta" }],
+      [{ type: "validate_and_upload", source: "browser" }],
     ],
     [
       "MFA required",

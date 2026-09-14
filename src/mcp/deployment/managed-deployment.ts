@@ -19,6 +19,7 @@ export interface DeploymentIntent {
   releaseDigest: string;
   replaceExisting?: boolean;
   rotateToken?: boolean;
+  rotateKey?: boolean;
   repair?: boolean;
   dryRun?: boolean;
 }
@@ -43,7 +44,15 @@ export interface DeploymentReceipt {
   productionEndpoint: string;
   productionVersionId: string;
   releaseDigest: string;
+  // Digest of the release this one replaced, so a rollback can report what it
+  // restored and the next deploy still sees the current release as changed.
+  previousReleaseDigest?: string;
+  // Set when production was restored to an older version; the next deploy then
+  // re-releases even if the digests happen to match.
+  restoredRelease?: boolean;
   sessionRevision: number;
+  verified?: boolean;
+  recoveryVersionId?: string;
 }
 
 export interface DeploymentPlan {
@@ -66,48 +75,60 @@ export interface WorkerReadiness {
   status: "pass" | "warn" | "fail";
   reasonCode: string | null;
   revision: number | null;
+  sessionSchemaVersion?: number;
+  encryptionKeyId?: string;
+  credentialId?: string;
 }
 
 export interface WorkerSmokeResult {
   moodleUser: string;
 }
 
+export interface WorkerPairing {
+  code: string;
+  expiresAt: string;
+  authorizationServer: string;
+}
+
 export interface PreparedRelease {
   artifactDirectory: string;
   wranglerConfigPath: string;
   secretsFilePath: string;
+  recoveryConfigPath?: string;
+  encryptionKeyId?: string;
+  credentialId?: string;
 }
 
 export interface CandidateRelease {
   versionId: string;
   previewEndpoint: string | null;
+  alreadyDeployed?: boolean;
   productionEndpoint: string;
   deploymentId: string;
 }
 
 export interface WranglerDeploymentAdapter {
+  readonly atomicSecrets?: boolean;
+  deployRecovery?(input: { accountId: string; workerName: string; configPath: string; secretsFilePath: string; releaseDigest: string; productionEndpoint: string }): Promise<CandidateRelease>;
+  uploadSecrets(input: { accountId: string; workerName: string; configPath: string; secretsFilePath: string; releaseDigest?: string }): Promise<void>;
   checkAccess(accountId: string): Promise<void>;
   inspect(accountId: string, workerName: string): Promise<RemoteWorker | null>;
   initializeWorker(input: {
     accountId: string;
     workerName: string;
     configPath: string;
+    secretsFilePath?: string;
     releaseDigest: string;
   }): Promise<RemoteWorker>;
-  uploadSecrets(input: {
-    accountId: string;
-    workerName: string;
-    configPath: string;
-    secretsFilePath: string;
-  }): Promise<void>;
   uploadCandidate(input: {
     accountId: string;
     workerName: string;
     configPath: string;
+    secretsFilePath?: string;
     releaseDigest: string;
     productionEndpoint: string;
   }): Promise<CandidateRelease>;
-  promote(input: { accountId: string; workerName: string; versionId: string }): Promise<void>;
+  promote(input: { accountId: string; workerName: string; versionId: string; releaseDigest: string }): Promise<void>;
   restoreProduction(input: {
     accountId: string;
     workerName: string;
@@ -143,11 +164,19 @@ export interface ManagedWorkerClient {
     expectedRevision: number | null;
   }): Promise<{ revision: number }>;
   getReadiness(input: { endpoint: string; sessionSyncToken: string }): Promise<WorkerReadiness>;
+  // Readiness only reflects the last scheduled keepalive touch, so callers that need
+  // the live Moodle verdict ask the Worker to touch the session first.
+  touchSession(input: { endpoint: string; sessionSyncToken: string }): Promise<void>;
   runSmoke(input: {
     endpoint: string;
     mcpAccessToken: string;
     sessionSyncToken: string;
+    expectedSessionSchemaVersion?: number;
+    expectedEncryptionKeyId?: string;
+    expectedCredentialId?: string;
   }): Promise<WorkerSmokeResult>;
+  createPairing(input: { endpoint: string; sessionSyncToken: string }): Promise<WorkerPairing>;
+  manageClients(input: { endpoint: string; sessionSyncToken: string; revoke?: boolean; clientId?: string }): Promise<unknown>;
 }
 
 export interface LocalDeploymentIntegration {
@@ -219,8 +248,8 @@ export class DeploymentPlanError extends Error {
 }
 
 export class DeploymentApplyError extends Error {
-  constructor(public readonly code: string, message: string) {
-    super(message);
+  constructor(public readonly code: string, message: string, options?: ErrorOptions) {
+    super(message, options);
     this.name = "DeploymentApplyError";
   }
 }
@@ -250,8 +279,8 @@ export class ManagedMcpDeployment {
       ? { ...remote, productionEndpoint: receipt.productionEndpoint, releaseDigest: receipt.releaseDigest }
       : remote;
 
-    const rotate = intent.rotateToken === true && credentials !== null;
-    const releaseChanged = existing?.releaseDigest !== intent.releaseDigest;
+    const rotate = (intent.rotateToken === true || intent.rotateKey === true) && credentials !== null;
+    const releaseChanged = existing?.releaseDigest !== intent.releaseDigest || receipt?.restoredRelease === true;
     const uploadCandidate = !existing || replacingExisting || releaseChanged || intent.repair === true || rotate;
     return {
       intent: { ...intent },
@@ -279,6 +308,7 @@ export class ManagedMcpDeployment {
     let candidate: CandidateRelease | null = null;
     let appliedReceipt: DeploymentReceipt | null = null;
     let productionRestored = false;
+    let recovery: CandidateRelease | null = null;
     let moodleUser: string | null = null;
 
     try {
@@ -310,16 +340,34 @@ export class ManagedMcpDeployment {
             accountId: plan.intent.accountId,
             workerName: plan.intent.workerName,
             configPath: prepared.wranglerConfigPath,
+            secretsFilePath: prepared.secretsFilePath,
             releaseDigest: plan.intent.releaseDigest,
           });
         }
-        await this.dependencies.wrangler.uploadSecrets({
+        if (!this.dependencies.wrangler.atomicSecrets) await this.dependencies.wrangler.uploadSecrets({
           accountId: plan.intent.accountId,
           workerName: plan.intent.workerName,
           configPath: prepared.wranglerConfigPath,
           secretsFilePath: prepared.secretsFilePath,
+          releaseDigest: plan.intent.releaseDigest,
         });
-        secretsUploaded = true;
+        secretsUploaded = !this.dependencies.wrangler.atomicSecrets || initializedWorker !== null;
+        if (plan.existing && this.dependencies.wrangler.deployRecovery) {
+          if (!prepared.recoveryConfigPath) throw new DeploymentApplyError("RECOVERY_BUNDLE_MISSING", "Reinstall the CLI to restore its packaged recovery Worker");
+          secretsUploaded = true;
+          recovery = await this.dependencies.wrangler.deployRecovery({
+            accountId: plan.intent.accountId, workerName: plan.intent.workerName,
+            configPath: prepared.recoveryConfigPath, secretsFilePath: prepared.secretsFilePath,
+            releaseDigest: `${plan.intent.releaseDigest}-recovery`, productionEndpoint: plan.existing.productionEndpoint,
+          });
+          promoted = true;
+          secretsUploaded = true;
+          const current = await this.dependencies.worker.getReadiness({ endpoint: recovery.productionEndpoint, sessionSyncToken: credentials.sessionSyncToken });
+          const recoveredSession = await this.dependencies.worker.putSession({ endpoint: recovery.productionEndpoint, sessionSyncToken: credentials.sessionSyncToken, session, expectedRevision: current.revision });
+          candidateRevision = recoveredSession.revision;
+          session.remoteRevision = candidateRevision;
+          await this.dependencies.worker.runSmoke({ endpoint: recovery.productionEndpoint, mcpAccessToken: credentials.mcpAccessToken, sessionSyncToken: credentials.sessionSyncToken, expectedSessionSchemaVersion: 2, expectedEncryptionKeyId: prepared.encryptionKeyId, expectedCredentialId: prepared.credentialId });
+        }
       }
       yield completed(activeStage);
 
@@ -330,18 +378,24 @@ export class ManagedMcpDeployment {
         if (!productionEndpoint) {
           throw new DeploymentApplyError("MISSING_ENDPOINT", "The Worker production endpoint is unavailable");
         }
+        if (this.dependencies.wrangler.atomicSecrets) secretsUploaded = true;
         candidate = await this.dependencies.wrangler.uploadCandidate({
           accountId: plan.intent.accountId,
           workerName: plan.intent.workerName,
           configPath: prepared.wranglerConfigPath,
+          secretsFilePath: prepared.secretsFilePath,
           releaseDigest: plan.intent.releaseDigest,
           productionEndpoint,
         });
-        if (!candidate.previewEndpoint) {
+        if (candidate.alreadyDeployed) {
+          promoted = true;
+          secretsUploaded = true;
+        } else if (!candidate.previewEndpoint) {
           await this.dependencies.wrangler.promote({
             accountId: plan.intent.accountId,
             workerName: plan.intent.workerName,
             versionId: candidate.versionId,
+            releaseDigest: plan.intent.releaseDigest,
           });
           promoted = true;
         }
@@ -354,13 +408,13 @@ export class ManagedMcpDeployment {
       if (!sessionEndpoint) {
         throw new DeploymentApplyError("MISSING_ENDPOINT", "The Worker did not provide a session endpoint");
       }
-      const expectedRevision = plan.intent.replaceExisting && !plan.receipt
+      const expectedRevision = plan.intent.repair || (plan.intent.replaceExisting && !plan.receipt)
         ? (await this.dependencies.worker.getReadiness({
             endpoint: sessionEndpoint,
             sessionSyncToken: credentials.sessionSyncToken,
           })).revision
         : session.remoteRevision;
-      const upload = await this.dependencies.worker.putSession({
+      const upload = recovery && candidateRevision !== null ? { revision: candidateRevision } : await this.dependencies.worker.putSession({
         endpoint: sessionEndpoint,
         sessionSyncToken: credentials.sessionSyncToken,
         session,
@@ -388,6 +442,7 @@ export class ManagedMcpDeployment {
           accountId: plan.intent.accountId,
           workerName: plan.intent.workerName,
           versionId: candidate.versionId,
+          releaseDigest: plan.intent.releaseDigest,
         });
         promoted = true;
       }
@@ -401,6 +456,7 @@ export class ManagedMcpDeployment {
           endpoint: productionEndpoint,
           mcpAccessToken: credentials.mcpAccessToken,
           sessionSyncToken: credentials.sessionSyncToken,
+          ...(this.dependencies.wrangler.atomicSecrets ? { expectedSessionSchemaVersion: 2, expectedEncryptionKeyId: prepared.encryptionKeyId, expectedCredentialId: prepared.credentialId } : {}),
         });
         moodleUser = smoke.moodleUser;
       } catch {
@@ -416,6 +472,7 @@ export class ManagedMcpDeployment {
           session,
           productionEndpoint,
           candidateRevision,
+          recovery?.versionId,
         );
         productionRestored = true;
         throw new DeploymentApplyError(
@@ -423,8 +480,21 @@ export class ManagedMcpDeployment {
           "The previous healthy release was restored with the current credentials and Moodle session",
         );
       }
-      appliedReceipt = makeReceipt(plan, candidate, candidateRevision);
+      appliedReceipt = { ...makeReceipt(plan, candidate, candidateRevision), ...(recovery ? { recoveryVersionId: recovery.versionId } : {}) };
       await this.dependencies.receipts.write(appliedReceipt);
+      if (plan.intent.rotateKey && credentials.previousSessionEncryptionKey && this.dependencies.wrangler.atomicSecrets) {
+        const { previousSessionEncryptionKey: retiredKey, ...currentCredentials } = credentials;
+        const currentRelease = await this.dependencies.materializer.prepare(plan, currentCredentials);
+        try {
+          const active = await this.dependencies.wrangler.uploadCandidate({ accountId: plan.intent.accountId, workerName: plan.intent.workerName, configPath: currentRelease.wranglerConfigPath, secretsFilePath: currentRelease.secretsFilePath, releaseDigest: plan.intent.releaseDigest, productionEndpoint });
+          await this.dependencies.worker.runSmoke({ endpoint: productionEndpoint, mcpAccessToken: currentCredentials.mcpAccessToken, sessionSyncToken: currentCredentials.sessionSyncToken, expectedSessionSchemaVersion: 2, expectedEncryptionKeyId: prepared.encryptionKeyId, expectedCredentialId: prepared.credentialId });
+          await this.dependencies.credentials.write(plan.intent.profile, currentCredentials);
+          appliedReceipt = { ...appliedReceipt, productionVersionId: active.versionId };
+          await this.dependencies.receipts.write(appliedReceipt);
+        } finally {
+          await this.dependencies.materializer.cleanup(currentRelease);
+        }
+      }
       yield completed(activeStage, moodleUser ? { moodleUser } : undefined);
 
       activeStage = "install_local_integrations";
@@ -433,17 +503,24 @@ export class ManagedMcpDeployment {
       await this.dependencies.clients.install(plan.intent.profile);
       yield completed(activeStage);
     } catch (error) {
-      if (plan.intent.rotateToken && credentialsBefore && !secretsUploaded) {
+      if ((plan.intent.rotateToken || plan.intent.rotateKey) && credentialsBefore && !secretsUploaded) {
         await this.dependencies.credentials.write(plan.intent.profile, credentialsBefore);
       }
       if (promoted && plan.existing && !productionRestored && !appliedReceipt) {
-        await this.dependencies.wrangler.restoreProduction({
-          accountId: plan.intent.accountId,
-          workerName: plan.intent.workerName,
-          previousVersionId: plan.existing.productionVersionId,
-        });
+        try {
+          await this.dependencies.wrangler.restoreProduction({
+            accountId: plan.intent.accountId,
+            workerName: plan.intent.workerName,
+            previousVersionId: recovery?.versionId ?? plan.existing.productionVersionId,
+          });
+        } catch (recoveryError) {
+          if (candidate && plan.receipt) {
+            await this.dependencies.receipts.write({ ...plan.receipt, productionVersionId: candidate.versionId, sessionRevision: candidateRevision ?? plan.receipt.sessionRevision, verified: false });
+          }
+          throw new DeploymentApplyError("DEPLOYMENT_RECOVERY_REQUIRED", "The active version and encrypted session were preserved. Run deploy --repair; automatic rollback was not compatible or available.", { cause: error });
+        }
         productionRestored = true;
-        if (plan.intent.rotateToken && credentialsBefore) {
+        if ((plan.intent.rotateToken || plan.intent.rotateKey) && credentialsBefore && !secretsUploaded) {
           await this.dependencies.credentials.write(plan.intent.profile, credentialsBefore);
         }
       }
@@ -454,6 +531,8 @@ export class ManagedMcpDeployment {
           deploymentId: deploymentId(plan.intent.accountId, plan.intent.workerName),
         });
         await this.removeLocalState(plan.intent.profile);
+      } else if (!appliedReceipt && plan.receipt && recovery && productionRestored) {
+        await this.dependencies.receipts.write({ ...plan.receipt, productionVersionId: recovery.versionId, recoveryVersionId: recovery.versionId, releaseDigest: `${plan.intent.releaseDigest}-recovery`, sessionRevision: candidateRevision ?? plan.receipt.sessionRevision, verified: true });
       } else if (!appliedReceipt && plan.receipt && candidateRevision !== null) {
         await this.dependencies.receipts.write({ ...plan.receipt, sessionRevision: candidateRevision });
       }
@@ -492,15 +571,19 @@ export class ManagedMcpDeployment {
     let readinessReasonCode: string | null = null;
     let sessionRevision: number | null = null;
     if (worker && credentials) {
-      const remoteReadiness = await this.dependencies.worker.getReadiness({
-        endpoint: receipt.productionEndpoint,
-        sessionSyncToken: credentials.sessionSyncToken,
-      });
+      const target = { endpoint: receipt.productionEndpoint, sessionSyncToken: credentials.sessionSyncToken };
+      await this.dependencies.worker.touchSession(target);
+      const remoteReadiness = await this.dependencies.worker.getReadiness(target);
       readiness = remoteReadiness.status;
       readinessReasonCode = remoteReadiness.reasonCode;
       sessionRevision = remoteReadiness.revision;
     }
-    const resolvedWorker = worker ? { ...worker, productionEndpoint: receipt.productionEndpoint } : null;
+    // Wrangler's deployments list only exposes deployment-level annotations, so a
+    // release promoted without one reads back with an empty digest. The receipt is
+    // authoritative for what this CLI released.
+    const resolvedWorker = worker
+      ? { ...worker, productionEndpoint: receipt.productionEndpoint, releaseDigest: worker.releaseDigest || receipt.releaseDigest }
+      : null;
     return {
       profile,
       worker: resolvedWorker,
@@ -543,13 +626,13 @@ export class ManagedMcpDeployment {
       await this.reconcileLocalIntegrations(profile);
       return { status: "ready", versionId: worker.productionVersionId };
     } catch {
-      if (!worker.previousHealthyVersionId) {
+      if (!receipt.recoveryVersionId && !worker.previousHealthyVersionId) {
         throw new DeploymentApplyError("RECOVERY_FAILED", "No previous healthy Worker release is available");
       }
       await this.dependencies.wrangler.restoreProduction({
         accountId: receipt.accountId,
         workerName: receipt.workerName,
-        previousVersionId: worker.previousHealthyVersionId,
+        previousVersionId: receipt.recoveryVersionId ?? worker.previousHealthyVersionId,
       });
       upload = await this.dependencies.worker.putSession({
         endpoint: receipt.productionEndpoint,
@@ -564,11 +647,12 @@ export class ManagedMcpDeployment {
       });
       await this.dependencies.receipts.write({
         ...receipt,
-        productionVersionId: worker.previousHealthyVersionId,
+        productionVersionId: (receipt.recoveryVersionId ?? worker.previousHealthyVersionId)!,
+        ...swappedDigests(receipt),
         sessionRevision: upload.revision,
       });
       await this.reconcileLocalIntegrations(profile);
-      return { status: "restored", versionId: worker.previousHealthyVersionId };
+      return { status: "restored", versionId: (receipt.recoveryVersionId ?? worker.previousHealthyVersionId)! };
     }
   }
 
@@ -584,7 +668,7 @@ export class ManagedMcpDeployment {
     if (!worker || !credentials) {
       throw new DeploymentApplyError("DEPLOYMENT_INCOMPLETE", `Deployment state for profile ${profile} is incomplete`);
     }
-    const previousVersionId = worker.previousHealthyVersionId;
+    const previousVersionId = receipt.recoveryVersionId ?? worker.previousHealthyVersionId;
     if (!previousVersionId) {
       throw new DeploymentApplyError("ROLLBACK_VERSION_MISSING", "No previous healthy Worker release is available");
     }
@@ -615,6 +699,7 @@ export class ManagedMcpDeployment {
     await this.dependencies.receipts.write({
       ...receipt,
       productionVersionId: previousVersionId,
+      ...swappedDigests(receipt),
     });
     return { status: "restored", versionId: previousVersionId };
   }
@@ -651,9 +736,12 @@ export class ManagedMcpDeployment {
     plan: DeploymentPlan,
     existing: DeploymentCredentials | null,
   ): Promise<DeploymentCredentials> {
-    const credentials = plan.intent.rotateToken && existing
+    let credentials = plan.intent.rotateToken && existing
       ? rotateCredentials(existing, this.dependencies.createToken)
       : existing ?? createDeploymentCredentials(this.dependencies.createToken);
+    if (plan.intent.rotateKey && existing) {
+      credentials = { ...credentials, sessionEncryptionKey: this.dependencies.createToken(), previousSessionEncryptionKey: existing.sessionEncryptionKey };
+    }
     await this.dependencies.credentials.write(plan.intent.profile, credentials);
     return credentials;
   }
@@ -664,11 +752,12 @@ export class ManagedMcpDeployment {
     session: MoodleSessionMaterial,
     productionEndpoint: string,
     revision: number | null,
+    recoveryVersionId?: string,
   ): Promise<number> {
     await this.dependencies.wrangler.restoreProduction({
       accountId: plan.intent.accountId,
       workerName: plan.intent.workerName,
-      previousVersionId: plan.existing?.productionVersionId ?? null,
+      previousVersionId: recoveryVersionId ?? plan.existing?.productionVersionId ?? null,
     });
     const upload = await this.dependencies.worker.putSession({
       endpoint: productionEndpoint,
@@ -762,7 +851,9 @@ function makeReceipt(
       productionEndpoint: candidate.productionEndpoint,
       productionVersionId: candidate.versionId,
       releaseDigest: plan.intent.releaseDigest,
+      ...previousDigest(plan.existing?.releaseDigest),
       sessionRevision,
+      verified: true,
     };
   }
   if (!plan.existing) {
@@ -777,8 +868,19 @@ function makeReceipt(
     productionEndpoint: plan.existing.productionEndpoint,
     productionVersionId: plan.existing.productionVersionId,
     releaseDigest: plan.existing.releaseDigest,
+    ...previousDigest(plan.receipt?.previousReleaseDigest),
     sessionRevision,
   };
+}
+
+function previousDigest(digest: string | undefined): Pick<DeploymentReceipt, "previousReleaseDigest"> {
+  return digest === undefined ? {} : { previousReleaseDigest: digest };
+}
+
+// An empty digest means the restored release is unknown to this CLI, which makes
+// the next deploy re-upload instead of treating the Worker as already current.
+function swappedDigests(receipt: DeploymentReceipt): Pick<DeploymentReceipt, "releaseDigest" | "previousReleaseDigest" | "restoredRelease"> {
+  return { releaseDigest: receipt.previousReleaseDigest ?? "", previousReleaseDigest: receipt.releaseDigest, restoredRelease: true };
 }
 
 function started(stageId: OnboardingStageId): DeploymentEvent {
@@ -808,5 +910,6 @@ function asDeploymentError(error: unknown): DeploymentApplyError {
   if (error instanceof DeploymentApplyError) {
     return error;
   }
-  return new DeploymentApplyError("DEPLOYMENT_FAILED", "The managed Moodle MCP deployment failed");
+  const detail = error instanceof Error && error.message ? `: ${error.message}` : "";
+  return new DeploymentApplyError("DEPLOYMENT_FAILED", `The managed Moodle MCP deployment failed${detail}`, { cause: error });
 }

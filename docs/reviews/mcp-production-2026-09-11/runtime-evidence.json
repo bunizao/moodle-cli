@@ -1,0 +1,41 @@
+{
+  "runtime": "Miniflare/workerd",
+  "revision": "79f6fe5a3a85c7ed3765e0895afb43b000e38948",
+  "health": 200,
+  "oauthFlow": {
+    "authorization": 302,
+    "token": 200,
+    "mcp": 200,
+    "accountBefore": 101
+  },
+  "accountSwitch": {
+    "status": 200,
+    "accountAfter": 202,
+    "previousGrantCanReadNewAccount": true
+  },
+  "crossOriginRedirect": {
+    "requestsReceived": 1,
+    "syntheticCookieForwarded": true
+  },
+  "credentialRotation": {
+    "oldStaticAccess": 401,
+    "oldOAuthAccess": 200
+  },
+  "refreshReplay": {
+    "replay": 400,
+    "descendantAccess": 401
+  },
+  "concurrentPairing": [
+    403,
+    302
+  ],
+  "registrationExhaustion": {
+    "anonymousAccepted": 20,
+    "legitimateNextRegistration": 400,
+    "error": "invalid_client_metadata"
+  },
+  "responseRedaction": {
+    "rawCookiePresent": false,
+    "sesskeyPresent": false
+  }
+}

@@ -1,7 +1,8 @@
+import { VERSION } from "../src/version.js";
 import { describe, expect, it } from "vitest";
 
 import type { MoodleGateway } from "../src/mcp/gateway.js";
-import { LEGACY_PROTOCOL_VERSION, MODERN_PROTOCOL_VERSION } from "../src/mcp/protocol.js";
+import { LEGACY_PROTOCOL_VERSION, MODERN_PROTOCOL_VERSION, SUPPORTED_PROTOCOL_VERSIONS } from "../src/mcp/protocol.js";
 import { createMoodleMcpServer } from "../src/mcp/server.js";
 
 describe("Moodle MCP server", () => {
@@ -24,9 +25,9 @@ describe("Moodle MCP server", () => {
       jsonrpc: "2.0",
       id: 1,
       result: {
-        supportedVersions: ["2026-07-28", "2025-11-25"],
+        supportedVersions: [...SUPPORTED_PROTOCOL_VERSIONS],
         capabilities: { tools: { listChanged: false } },
-        serverInfo: { name: "moodle", version: "0.7.0-alpha.3" },
+        serverInfo: { name: "moodle", version: VERSION },
         resultType: "complete",
         _meta: { cacheScope: "private" },
       },
@@ -63,14 +64,67 @@ describe("Moodle MCP server", () => {
       "list_forums",
       "search_forums",
       "get_thread",
+      "get_file",
     ]);
-    expect(tools).toHaveLength(10);
+    expect(tools).toHaveLength(11);
     expect(tools.every((tool) => (
       (tool.annotations as Record<string, unknown>).readOnlyHint === true
       && (tool.annotations as Record<string, unknown>).destructiveHint === false
       && typeof tool.inputSchema === "object"
       && typeof tool.outputSchema === "object"
     ))).toBe(true);
+    for (const tool of tools) {
+      const output = tool.outputSchema as { properties?: Record<string, { properties?: Record<string, unknown>; items?: unknown }> };
+      const [result] = Object.values(output.properties ?? {});
+      expect(result, `${String(tool.name)} should describe its structured result`).toSatisfy((schema: unknown) => {
+        if (!schema || typeof schema !== "object") return false;
+        const value = schema as { properties?: Record<string, unknown>; items?: unknown };
+        return Object.keys(value.properties ?? {}).length > 0 || value.items !== undefined;
+      });
+    }
+    const getActivity = tools.find((tool) => tool.name === "get_activity") as {
+      outputSchema: { properties: { activity: { properties: Record<string, unknown> } } };
+    };
+    expect(getActivity.outputSchema.properties.activity.properties).toHaveProperty("file_entries");
+  });
+
+  it("returns an authenticated file as an embedded MCP resource", async () => {
+    const server = createMoodleMcpServer(fakeGateway());
+    const response = await server.handle({
+      jsonrpc: "2.0",
+      id: "file",
+      method: "tools/call",
+      params: modernParams({ name: "get_file", arguments: { source: 91234 } }),
+    });
+
+    expect(response).toMatchObject({
+      id: "file",
+      result: {
+        content: [
+          { type: "text", text: "Loaded Moodle file slides.pdf (6 bytes)." },
+          {
+            type: "resource",
+            resource: {
+              uri: "https://moodle.example.edu/pluginfile.php/1/slides.pdf",
+              mimeType: "application/pdf",
+              blob: "c2xpZGVz",
+            },
+          },
+        ],
+        structuredContent: {
+          file: {
+            name: "slides.pdf",
+            mime_type: "application/pdf",
+            bytes: 6,
+            uri: "https://moodle.example.edu/pluginfile.php/1/slides.pdf",
+          },
+        },
+        resultType: "complete",
+        _meta: { cacheScope: "private" },
+      },
+    });
+    expect(JSON.stringify((response as { result: { structuredContent: unknown } }).result.structuredContent))
+      .not.toContain("c2xpZGVz");
   });
 
   it("calls a tool with typed content and private result metadata", async () => {
@@ -164,7 +218,7 @@ describe("Moodle MCP server", () => {
         structuredContent: {
           error: {
             type: "MOODLE_AUTH_REQUIRED",
-            message: "The Moodle session expired.",
+            message: "The Moodle session has expired. Sign in again.",
             moodleCode: "servicerequireslogin",
           },
         },
@@ -172,6 +226,30 @@ describe("Moodle MCP server", () => {
         _meta: { cacheScope: "private" },
       },
     });
+  });
+
+  it("initializes the protocol versions claude.ai negotiates", async () => {
+    const server = createMoodleMcpServer(fakeGateway());
+    const initialize = await server.handle({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "initialize",
+      params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "claude-ai", version: "1" } },
+    });
+    const initialized = await server.handle({ jsonrpc: "2.0", method: "notifications/initialized" }, {
+      protocolVersion: "2025-06-18",
+    });
+    const listed = await server.handle(
+      { jsonrpc: "2.0", id: 2, method: "tools/list", params: {} },
+      { protocolVersion: "2025-06-18" },
+    );
+
+    expect(initialize).toMatchObject({
+      id: 1,
+      result: { protocolVersion: "2025-06-18", capabilities: { tools: { listChanged: false } } },
+    });
+    expect(initialized).toBeNull();
+    expect(listed).toMatchObject({ id: 2, result: { tools: expect.any(Array) } });
   });
 
   it("rejects unsupported protocol versions with retry metadata", async () => {
@@ -184,11 +262,11 @@ describe("Moodle MCP server", () => {
     expect(response).toMatchObject({
       id: 5,
       error: {
-        code: -32602,
+        code: -32_022,
+        message: "Unsupported protocol version",
         data: {
-          type: "UNSUPPORTED_PROTOCOL_VERSION",
-          protocolVersion: "2024-11-05",
-          supportedVersions: [MODERN_PROTOCOL_VERSION, LEGACY_PROTOCOL_VERSION],
+          requested: "2024-11-05",
+          supported: [...SUPPORTED_PROTOCOL_VERSIONS],
         },
       },
     });
@@ -228,7 +306,7 @@ describe("Moodle MCP server", () => {
       result: {
         protocolVersion: LEGACY_PROTOCOL_VERSION,
         capabilities: { tools: { listChanged: false } },
-        serverInfo: { name: "moodle", version: "0.7.0-alpha.3" },
+        serverInfo: { name: "moodle", version: VERSION },
       },
     });
     expect(listed).toMatchObject({ result: { tools: expect.any(Array) } });
@@ -272,6 +350,7 @@ describe("Moodle MCP server", () => {
     ["list_forums", { courseId: 101 }, "forums"],
     ["search_forums", { query: "exam" }, "results"],
     ["get_thread", { discussionId: 701 }, "thread"],
+    ["get_file", { source: 91234 }, "file"],
   ])("dispatches %s through its public result shape", async (name, args, resultKey) => {
     const server = createMoodleMcpServer(fakeGateway());
     const response = await server.handle({
@@ -387,6 +466,13 @@ function fakeGateway(): MoodleGateway {
       group_name: "",
       url: "https://moodle.example.edu/mod/forum/discuss.php?d=701",
       posts: [],
+    }),
+    getFile: async () => ({
+      name: "slides.pdf",
+      mimeType: "application/pdf",
+      bytes: 6,
+      uri: "https://moodle.example.edu/pluginfile.php/1/slides.pdf",
+      blob: "c2xpZGVz",
     }),
   };
 }

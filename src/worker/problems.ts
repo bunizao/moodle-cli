@@ -15,7 +15,7 @@ export function problemResponse(
 ): Response {
   return Response.json(
     {
-      type: `https://moodle-cli.dev/problems/${code.toLowerCase().replaceAll("_", "-")}`,
+      type: `/problems/${code.toLowerCase().replaceAll("_", "-")}`,
       title,
       status,
       detail,

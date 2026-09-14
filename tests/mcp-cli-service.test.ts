@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -68,6 +69,55 @@ describe("managed MCP CLI service", () => {
     }
   });
 
+  it("flags status when the remote Worker is behind the installed CLI bundle", async () => {
+    const root = await mkdtemp(join(tmpdir(), "moodle-cli-service-"));
+    const bundle = join(root, "worker.js");
+    await writeFile(bundle, "export default { updated: true };\n");
+    const receipt = { ...deploymentReceipt(), releaseDigest: "stale-digest" };
+    const service = createMcpCommandService({
+      homeDir: root,
+      workerBundlePath: bundle,
+      configLoader: async () => ({ baseUrl: "https://lms.example.edu" }),
+      receipts: receiptStore(receipt),
+      credentials: credentialStore(),
+      worker: workerClient(),
+      createDeployment: () => managedInspect(receipt),
+    });
+
+    try {
+      const result = await service.status({ verbose: false, logs: false });
+      expect((result.data as { updateAvailable: boolean }).updateAvailable).toBe(true);
+      expect(result.text).toContain("remote Worker is behind this CLI");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("does not flag status when the remote Worker matches the installed CLI bundle", async () => {
+    const root = await mkdtemp(join(tmpdir(), "moodle-cli-service-"));
+    const bundle = join(root, "worker.js");
+    const contents = "export default { updated: true };\n";
+    await writeFile(bundle, contents);
+    const receipt = { ...deploymentReceipt(), releaseDigest: createHash("sha256").update(contents).digest("hex") };
+    const service = createMcpCommandService({
+      homeDir: root,
+      workerBundlePath: bundle,
+      configLoader: async () => ({ baseUrl: "https://lms.example.edu" }),
+      receipts: receiptStore(receipt),
+      credentials: credentialStore(),
+      worker: workerClient(),
+      createDeployment: () => managedInspect(receipt),
+    });
+
+    try {
+      const result = await service.status({ verbose: false, logs: false });
+      expect((result.data as { updateAvailable: boolean }).updateAvailable).toBe(false);
+      expect(result.text).not.toContain("remote Worker is behind this CLI");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("uses the explicit rollback operation for --rollback", async () => {
     const receipt = deploymentReceipt();
     const rollback = vi.fn(async () => ({ status: "restored" as const, versionId: "version-previous" }));
@@ -96,6 +146,9 @@ describe("managed MCP CLI service", () => {
     const bundle = join(root, "worker.js");
     await writeFile(bundle, "export default {};\n");
     const receipt = deploymentReceipt();
+    const progressChunks: string[] = [];
+    const stderr = { write: (chunk: string) => { progressChunks.push(chunk); return true; } } as unknown as NodeJS.WritableStream;
+    let progressBeforeInspect = "";
     const deployment = {
       plan: vi.fn(async (intent: DeploymentIntent) => ({
         intent,
@@ -106,6 +159,20 @@ describe("managed MCP CLI service", () => {
       })),
       apply: async function* () {
         yield {
+          stageId: "validate_moodle_session" as const,
+          stage: 1,
+          total: 8 as const,
+          label: "Validating Moodle session",
+          status: "started" as const,
+        };
+        yield {
+          stageId: "validate_moodle_session" as const,
+          stage: 1,
+          total: 8 as const,
+          label: "Validating Moodle session",
+          status: "completed" as const,
+        };
+        yield {
           stageId: "run_release_checks" as const,
           stage: 7,
           total: 8 as const,
@@ -114,25 +181,28 @@ describe("managed MCP CLI service", () => {
           moodleUser: "Alice Example",
         };
       },
-      inspect: vi.fn(async () => ({
-        profile: receipt.profile,
-        worker: {
-          accountId: receipt.accountId,
-          workerName: receipt.workerName,
-          deploymentId: receipt.deploymentId,
-          ownershipTag: receipt.deploymentId,
-          productionEndpoint: receipt.productionEndpoint,
-          productionVersionId: receipt.productionVersionId,
-          previousHealthyVersionId: null,
-          releaseDigest: receipt.releaseDigest,
-        },
-        credentialsStored: true,
-        renewalInstalled: true,
-        clientsConnected: true,
-        readiness: "pass" as const,
-        readinessReasonCode: "SESSION_VALID",
-        sessionRevision: receipt.sessionRevision,
-      })),
+      inspect: vi.fn(async () => {
+        progressBeforeInspect = progressChunks.join("");
+        return {
+          profile: receipt.profile,
+          worker: {
+            accountId: receipt.accountId,
+            workerName: receipt.workerName,
+            deploymentId: receipt.deploymentId,
+            ownershipTag: receipt.deploymentId,
+            productionEndpoint: receipt.productionEndpoint,
+            productionVersionId: receipt.productionVersionId,
+            previousHealthyVersionId: null,
+            releaseDigest: receipt.releaseDigest,
+          },
+          credentialsStored: true,
+          renewalInstalled: true,
+          clientsConnected: true,
+          readiness: "pass" as const,
+          readinessReasonCode: "SESSION_VALID",
+          sessionRevision: receipt.sessionRevision,
+        };
+      }),
     } as unknown as ManagedMcpDeployment;
     const service = createMcpCommandService({
       homeDir: root,
@@ -142,6 +212,7 @@ describe("managed MCP CLI service", () => {
       credentials: credentialStore(),
       worker: workerClient(),
       createDeployment: () => deployment,
+      stderr,
     });
 
     try {
@@ -152,6 +223,10 @@ describe("managed MCP CLI service", () => {
         rollback: false,
         yes: true,
       });
+      // Stages must reach the terminal while the deployment runs, not in one dump at the end.
+      expect(progressBeforeInspect).toContain("✓ [1/8] Validating Moodle session");
+      expect(progressBeforeInspect).toContain("✓ [7/8] Running MCP and Moodle checks");
+      expect(result.text).not.toContain("[1/8]");
       expect(result.text).toContain("Moodle MCP is ready.");
       expect(result.text).toContain(`  ${receipt.productionEndpoint}/mcp`);
       expect(result.text).toContain(`  Site: ${receipt.moodleOrigin}`);
@@ -159,6 +234,52 @@ describe("managed MCP CLI service", () => {
       expect(result.text).toContain("  Next check: within 30 minutes");
       expect(result.text).toContain("Connected clients\n  No supported clients detected");
       expect(result.text).not.toMatch(/Bearer|MoodleSession|private-token/iu);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("says why the terminal is waiting before Wrangler opens Cloudflare's sign-in page", async () => {
+    const root = await mkdtemp(join(tmpdir(), "moodle-cli-cf-signin-"));
+    const bundle = join(root, "worker.js");
+    await writeFile(bundle, "export default {};\n");
+    const progressChunks: string[] = [];
+    let announcedBeforeLogin = "";
+    const listAccounts = vi.fn(async () => [] as { id: string; name: string }[]);
+    listAccounts.mockResolvedValueOnce([]).mockResolvedValue([{ id: "account-1", name: "Personal" }]);
+    const wrangler = {
+      listAccounts,
+      login: vi.fn(async () => {
+        announcedBeforeLogin = progressChunks.join("");
+      }),
+    } as unknown as NodeWranglerDeploymentAdapter;
+
+    const service = createMcpCommandService({
+      homeDir: root,
+      workerBundlePath: bundle,
+      stdin: { isTTY: true } as NodeJS.ReadStream,
+      stderr: { write: (chunk: string) => { progressChunks.push(chunk); return true; } } as unknown as NodeJS.WritableStream,
+      configLoader: async () => ({ baseUrl: "https://lms.example.edu" }),
+      receipts: { read: vi.fn(async () => null), write: vi.fn(async () => undefined), delete: vi.fn(async () => undefined) },
+      credentials: credentialStore(),
+      worker: workerClient(),
+      wrangler,
+      createDeployment: () => ({
+        plan: vi.fn(async (intent: DeploymentIntent) => ({
+          intent,
+          operation: "create" as const,
+          uploadCandidate: false,
+          existing: null,
+          receipt: null,
+        })),
+      } as unknown as ManagedMcpDeployment),
+    });
+
+    try {
+      await service.deploy(deployDryRun());
+      expect(wrangler.login).toHaveBeenCalledOnce();
+      expect(announcedBeforeLogin).toContain("Cloudflare sign-in is required.");
+      expect(announcedBeforeLogin).toContain("moodle-cli will not receive your Cloudflare password.");
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -216,6 +337,33 @@ describe("managed MCP CLI service", () => {
 
     expect(output.lines()).toEqual([{ jsonrpc: "2.0", id: 1, result: { tools: [] } }]);
     expect(output.raw()).not.toContain("mcp-private-token");
+  });
+
+  it("opens a pairing window and prints the connector URL without the sync token", async () => {
+    const receipt = deploymentReceipt();
+    const worker = workerClient();
+    const service = createMcpCommandService({
+      configLoader: async () => ({ baseUrl: "https://lms.example.edu" }),
+      receipts: receiptStore(receipt),
+      credentials: credentialStore(),
+      worker,
+    });
+
+    const result = await service.pair();
+
+    expect(worker.createPairing).toHaveBeenCalledWith({
+      endpoint: receipt.productionEndpoint,
+      sessionSyncToken: "sync-private-token",
+    });
+    expect(result.data).toMatchObject({
+      profile: receipt.profile,
+      endpoint: `${receipt.productionEndpoint}/mcp`,
+      code: "ABCD2345",
+      authorizationServer: "https://moodle-school-mcp.demo.workers.dev",
+    });
+    expect(result.text).toContain(`${receipt.productionEndpoint}/mcp`);
+    expect(result.text).toContain("ABCD-2345");
+    expect(result.text).not.toContain("sync-private-token");
   });
 
   it("rejects token reveal outside an interactive TTY at the service boundary", async () => {
@@ -277,6 +425,28 @@ describe("managed MCP CLI service", () => {
     expect(receipts.write).not.toHaveBeenCalled();
   });
 
+  it("touches the remote session before reading readiness so a freshly killed session is detected", async () => {
+    const receipt = deploymentReceipt();
+    const worker = workerClient({ status: "fail", reasonCode: "SESSION_EXPIRED", revision: 8 });
+    vi.mocked(worker.putSession).mockResolvedValueOnce({ revision: 9 });
+    const service = createMcpCommandService({
+      receipts: receiptStore(receipt),
+      credentials: credentialStore(),
+      worker,
+      renewal: renewalIntegration(true),
+      sessions: sessionSource(),
+    });
+
+    const result = await service.renew(receipt.profile);
+
+    const target = { endpoint: receipt.productionEndpoint, sessionSyncToken: expect.any(String) };
+    expect(worker.touchSession).toHaveBeenCalledWith(target);
+    expect(vi.mocked(worker.touchSession).mock.invocationCallOrder[0])
+      .toBeLessThan(vi.mocked(worker.getReadiness).mock.invocationCallOrder[0]);
+    expect(worker.putSession).toHaveBeenCalledWith(expect.objectContaining({ expectedRevision: 8 }));
+    expect(result.data).toMatchObject({ state: "healthy", reasonCode: "SESSION_VALID", revision: 9 });
+  });
+
   it("recovers an expiring session from non-interactive local sources", async () => {
     const receipt = deploymentReceipt();
     const receipts = receiptStore(receipt);
@@ -311,7 +481,7 @@ describe("managed MCP CLI service", () => {
   it("notifies instead of opening a browser when background authentication needs MFA", async () => {
     const receipt = deploymentReceipt();
     const sessions = sessionSource();
-    vi.mocked(sessions.loadValidated).mockRejectedValueOnce(new AuthError("MFA required"));
+    vi.mocked(sessions.loadValidated).mockRejectedValueOnce(new AuthError("MFA required", "Sign in to Moodle in your browser."));
     const notify = vi.fn(async () => undefined);
     const worker = workerClient({ status: "fail", reasonCode: "SESSION_EXPIRED", revision: 4 });
     const service = createMcpCommandService({
@@ -332,6 +502,7 @@ describe("managed MCP CLI service", () => {
       state: "needs_sign_in",
       reasonCode: "SESSION_EXPIRED",
       revision: 4,
+      detail: "MFA required Sign in to Moodle in your browser.",
     });
   });
 
@@ -423,6 +594,30 @@ function deploymentReceipt() {
   };
 }
 
+function managedInspect(receipt: ReturnType<typeof deploymentReceipt>): ManagedMcpDeployment {
+  return {
+    inspect: vi.fn(async () => ({
+      profile: receipt.profile,
+      worker: {
+        accountId: receipt.accountId,
+        workerName: receipt.workerName,
+        deploymentId: receipt.deploymentId,
+        ownershipTag: receipt.deploymentId,
+        productionEndpoint: receipt.productionEndpoint,
+        productionVersionId: receipt.productionVersionId,
+        previousHealthyVersionId: null,
+        releaseDigest: receipt.releaseDigest,
+      },
+      credentialsStored: true,
+      renewalInstalled: true,
+      clientsConnected: true,
+      readiness: "pass" as const,
+      readinessReasonCode: "SESSION_VALID",
+      sessionRevision: receipt.sessionRevision,
+    })),
+  } as unknown as ManagedMcpDeployment;
+}
+
 function deployDryRun() {
   return { dryRun: true, repair: false, rotateToken: false, rollback: false, yes: true };
 }
@@ -490,7 +685,14 @@ function workerClient(
   return {
     putSession: vi.fn(async () => ({ revision: 5 })),
     getReadiness: vi.fn(async () => readiness),
+    touchSession: vi.fn(async () => undefined),
     runSmoke: vi.fn(async () => ({ moodleUser: "Alice Example" })),
+    manageClients: vi.fn(async () => ({ clients: [] })),
+    createPairing: vi.fn(async () => ({
+      code: "ABCD2345",
+      expiresAt: "2026-09-04T00:10:00.000Z",
+      authorizationServer: "https://moodle-school-mcp.demo.workers.dev",
+    })),
   };
 }
 

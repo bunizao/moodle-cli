@@ -19,7 +19,7 @@ Wait for the answer before doing setup work. Do not ask the student to find the 
 
 Once the student shares a URL, complete the setup on their computer:
 
-- Check for Node.js 22+ and Bun. Install `moodle-cli` with the runtime available on the computer. Use `bunx --bun moodle-cli` as the command prefix when Bun is the only runtime.
+- Check for Node.js 22.13+ and Bun (older Node cannot read browser cookies). Install `moodle-cli` with the runtime available on the computer. Use `bunx --bun moodle-cli` as the command prefix when Bun is the only runtime.
 - Follow redirects and resolve the URL to the final Moodle origin in the form `https://host`. Remove the path, query, and fragment. Confirm that the origin serves Moodle before saving it.
 - Read `~/.config/moodle-cli/config.yaml` if it exists. Set `base_url` to the verified origin and preserve the other settings.
 - Tell the student that Moodle may open in their browser and that you will wait while they complete their university sign-in. Run `moodle auth login`. If a browser opens, let the student finish SSO there, then continue when the command returns.
@@ -38,6 +38,8 @@ After local verification succeeds, ask:
 If the student declines or has no account, finish the onboarding with local access. Mention that they can add remote access later.
 
 If the student wants remote access, run `moodle mcp deploy`. Let them complete Cloudflare authorization in the browser when Wrangler requests it. The deployment command manages Worker creation, encrypted Moodle session upload, local renewal, and supported client configuration.
+
+For claude.ai, Claude Desktop, or another hosted client that signs in with OAuth, run `moodle mcp pair` after the deployment. Give the student the connector URL and the one-time pairing code it prints, and let them enter the code on the approval page Claude opens. The code expires in ten minutes and covers one approval.
 
 Verify the deployment with `moodle mcp status --json`. Continue troubleshooting until the command reports that the Worker and Moodle session are ready. Ask which web AI client the student wants to use, then guide them through that client's current custom MCP connection flow. Put access credentials into the client's connection settings, not the chat.
 

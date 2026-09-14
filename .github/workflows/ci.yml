@@ -40,6 +40,22 @@ jobs:
       - name: Build
         run: npm run build
 
+      - name: Test real Worker runtime
+        if: matrix.node-version == 22
+        run: npm run test:worker:runtime
+
+      - name: Install browser for OAuth regression
+        if: matrix.node-version == 22
+        run: npx playwright install --with-deps chromium
+
+      - name: Test browser OAuth consent
+        if: matrix.node-version == 22
+        run: npm run test:worker:browser
+
+      - name: Audit dependencies
+        if: matrix.node-version == 22
+        run: npm audit --audit-level=low
+
       - name: Check npm package contents
         run: npm run pack:check
 

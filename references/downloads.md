@@ -1,6 +1,10 @@
-# Local File Downloads
+# Moodle File Retrieval
 
 Read this file when the user wants one or more Moodle files saved locally. The canonical command is `moodle download`; `moodle dl` is an optional alias.
+
+## MCP File Content
+
+When Moodle is connected as an MCP server, call `get_file` with a positive resource activity ID, same-site resource URL, or a `pluginfile.php` URL from `file_entries`. The tool returns files up to 16 MiB directly as an embedded MCP resource, so do not ask the user to open an authenticated Moodle URL separately. For larger files or when the user names an exact local destination, use `moodle download` instead.
 
 ## One Resource
 

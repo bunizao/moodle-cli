@@ -1,0 +1,45 @@
+{
+  "worker": "moodle-fix-20260911-739c82",
+  "syntheticOnly": true,
+  "checks": {
+    "v1Session": 200,
+    "upgradeAlreadyActive": true,
+    "migratedSessionMcp": 200,
+    "preMigrationRollbackBlocked": true,
+    "canonicalDefaultResource": 200,
+    "retiredKeyRemoved": 200,
+    "staticAndOAuthRevoked": true,
+    "finalActiveMcp": 200,
+    "recoveryBridge": 200,
+    "compatibleRollback": 200
+  },
+  "endpoint": "https://moodle-fix-20260911-739c82.bunizao.workers.dev",
+  "legacy": {
+    "keys": [
+      "encrypted_cookie",
+      "cookie_name",
+      "revision",
+      "sesskey",
+      "moodle_user_id",
+      "last_verified_at",
+      "last_touch_at",
+      "last_error_code",
+      "next_alarm_at",
+      "expires_at",
+      "failure_count"
+    ],
+    "version": 1,
+    "containsPlaintext": true,
+    "generation": 1
+  },
+  "encrypted": {
+    "keys": [
+      "encrypted_session",
+      "version"
+    ],
+    "version": 2,
+    "containsPlaintext": false,
+    "generation": 2
+  },
+  "cleanedUp": true
+}

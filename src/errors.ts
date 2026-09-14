@@ -31,7 +31,7 @@ export class MoodleAPIError extends CliError {
 
   constructor(message: string, moodleErrorCode?: string) {
     const auth = isLoginErrorCode(moodleErrorCode);
-    const notFound = ["invalidrecord", "invalidcoursemodule"].includes(moodleErrorCode ?? "") || /^HTTP 404\b/.test(message);
+    const notFound = ["invalidrecord", "invalidcoursemodule"].includes(moodleErrorCode ?? "") || /\bHTTP 404\b/.test(message);
     super(auth ? "auth" : notFound ? "not_found" : "upstream", message, auth ? "Run `moodle auth login`." : undefined);
     this.moodleErrorCode = moodleErrorCode;
   }

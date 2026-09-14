@@ -49,6 +49,3 @@ export const ENV_MOODLE_CONFIG = "MOODLE_CONFIG";
 export const ENV_MOODLE_TOKEN = "MOODLE_TOKEN";
 
 export const MOODLE_SESSION_COOKIE_PREFIX = "MoodleSession";
-export const OKTA_AUTH_URL = "https://github.com/bunizao/okta-auth";
-export const OKTA_AUTH_INSTALL_COMMAND = "uv tool install okta-auth-cli";
-export const OKTA_AUTH_CONFIG_COMMAND = "okta config";

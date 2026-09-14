@@ -1,3 +1,4 @@
+import { runtimeCommand } from "../self-command.js";
 import { execFile as execFileCallback } from "node:child_process";
 import { chmod, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
@@ -46,6 +47,7 @@ export interface DefaultRenewalOptions {
   platform?: NodeJS.Platform;
   homeDirectory?: string;
   executable?: string;
+  executableArgs?: string[];
   uid?: number;
   intervalMinutes?: number;
   io?: RenewalInstallerIO;
@@ -59,10 +61,12 @@ export function createDefaultRenewalInstaller(
   if (!isSupportedPlatform(platform)) {
     throw new Error(`Moodle MCP renewal is not supported on ${platform}`);
   }
+  const runtime = runtimeCommand(options.executable, options.executableArgs);
   const plan = buildRenewalInstallPlan({
     platform,
     profile,
-    executable: options.executable ?? process.argv[1] ?? process.execPath,
+    executable: runtime.command,
+    executableArgs: runtime.args,
     homeDirectory: options.homeDirectory ?? homedir(),
     uid: options.uid ?? (typeof process.getuid === "function" ? process.getuid() : undefined),
     intervalMinutes: options.intervalMinutes,

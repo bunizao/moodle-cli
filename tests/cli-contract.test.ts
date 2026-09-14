@@ -54,6 +54,9 @@ describe("shared CLI contract", () => {
       "status",
       "login",
       "connect",
+      "clients",
+      "revoke",
+      "pair",
       "remove",
       "serve",
       "bridge",
@@ -103,7 +106,7 @@ describe("shared CLI contract", () => {
       "--json",
     ], { stdout, stderr: buffer(false), mcpService: service })).resolves.toBe(0);
 
-    expect(received).toEqual({ dryRun: true, repair: true, rotateToken: true, rollback: true, yes: true });
+    expect(received).toEqual({ dryRun: true, repair: true, rotateToken: true, rotateKey: false, rollback: true, yes: true });
     expect(JSON.parse(stdout.text())).toEqual({ status: "planned" });
   });
 
@@ -129,6 +132,30 @@ describe("shared CLI contract", () => {
     expect(received).toEqual({ verbose: true, logs: true });
   });
 
+  it("includes the pairing code in structured output", async () => {
+    const stdout = buffer(false);
+    const service = mcpService({
+      pair: async () => ({
+        data: {
+          profile: "lms-example",
+          endpoint: "https://moodle-example.workers.dev/mcp",
+          code: "ABCD2345",
+          expiresAt: "2026-09-04T14:00:00.000Z",
+          authorizationServer: "https://moodle-example.workers.dev",
+        },
+        text: "Pairing code\n  ABCD-2345",
+      }),
+    });
+
+    await expect(runCli(["node", "moodle", "mcp", "pair", "--json"], {
+      stdout,
+      stderr: buffer(false),
+      mcpService: service,
+    })).resolves.toBe(0);
+
+    expect(JSON.parse(stdout.text())).toMatchObject({ code: "ABCD2345" });
+  });
+
   it("rejects unsupported managed MCP connection modes", async () => {
     const stderr = buffer(false);
     await expect(runCli(["node", "moodle", "mcp", "connect", "codex", "--mode", "tunnel", "--json"], {
@@ -147,6 +174,7 @@ function mcpService(overrides: Partial<McpCommandService> = {}): McpCommandServi
     status: output,
     login: output,
     connect: output,
+    pair: output,
     remove: output,
     serveStdio: async () => undefined,
     bridge: async () => undefined,

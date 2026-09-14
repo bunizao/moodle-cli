@@ -685,6 +685,25 @@ describe("MoodleClient course/activity modules", () => {
     expect(parseActivityReference("32", { label: "Quiz", path: "/mod/quiz/view.php" })).toBe(32);
   });
 
+  it.each(["page", "resource"])("surfaces Moodle's %s error message in structured CLI output", async (moduleType) => {
+    const url = `${BASE_URL}/mod/${moduleType}/view.php?id=1477656`;
+    const fetchImpl = cliFetch([
+      dashboardRoute,
+      (request) => (request.url === url ? htmlResponse(fixture("moodle-error.html"), 404) : undefined),
+    ]);
+
+    const result = await runJsonCommand([url, "--json"], fetchImpl);
+
+    expect(result).toMatchObject({ code: 4, stdout: "" });
+    expect(JSON.parse(result.stderr)).toMatchObject({
+      error: {
+        code: "not_found",
+        message: `Invalid unit module ID (HTTP 404 loading ${url})`,
+      },
+      exit_code: 4,
+    });
+  });
+
   it("resolves top-level Moodle URLs and rejects unsupported paths", () => {
     expect(resolveTopLevelUrl({ baseUrl: BASE_URL, target: `${BASE_URL}/mod/assign/view.php?id=31` })).toEqual({
       commandName: "assign",

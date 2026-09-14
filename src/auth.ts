@@ -1,3 +1,4 @@
+import { fetchWithSession } from "./session-fetch.js";
 import { ALL_PROFILES, getCookies } from "@steipete/sweet-cookie";
 import { execFile as execFileCallback } from "node:child_process";
 import { readdir } from "node:fs/promises";
@@ -9,9 +10,6 @@ import {
   ENV_MOODLE_SESSION,
   LOGIN_PATH,
   MOODLE_SESSION_COOKIE_PREFIX,
-  OKTA_AUTH_CONFIG_COMMAND,
-  OKTA_AUTH_INSTALL_COMMAND,
-  OKTA_AUTH_URL,
 } from "./constants.js";
 import { AuthError } from "./errors.js";
 import {
@@ -55,7 +53,6 @@ export interface AuthOptions {
   fetch?: typeof fetch;
   validateSession?: SessionValidator;
   browserCookieProvider?: CookieProvider;
-  oktaCookieProvider?: CookieProvider;
   execFile?: ExecFile;
   homeDir?: string;
   platform?: NodeJS.Platform;
@@ -63,6 +60,7 @@ export interface AuthOptions {
   cacheTtlMs?: number;
   now?: () => number;
   nonInteractive?: boolean;
+  onCookieWarnings?: (warnings: string[]) => void;
 }
 
 export interface BrowserLoginOptions extends AuthOptions {
@@ -97,42 +95,42 @@ export async function getAuthenticatedSession(
     return cached;
   }
 
+  const cookieWarnings: string[] = [];
+  const providerOptions: AuthOptions = {
+    ...options,
+    onCookieWarnings: (warnings) => {
+      cookieWarnings.push(...warnings);
+      options.onCookieWarnings?.(warnings);
+    },
+  };
   const browserProvider = options.browserCookieProvider ?? defaultBrowserCookieProvider;
-  const browserCookies = matchingMoodleSessionCookies(await browserProvider(baseUrl, options), baseUrl);
+  const browserCookies = matchingMoodleSessionCookies(await browserProvider(baseUrl, providerOptions), baseUrl);
   const browserSession = await firstValidSession(baseUrl, browserCookies, validate);
   if (browserSession) {
     await refreshSessionCache(baseUrl, browserSession.cookie, browserSession.context, options);
     return { baseUrl, cookie: browserSession.cookie, ...browserSession.context, fromCache: false };
   }
 
-  const oktaProvider = options.oktaCookieProvider ?? loadSessionsFromOktaCli;
-  const oktaCookies = matchingMoodleSessionCookies(await oktaProvider(baseUrl, options), baseUrl);
-  const oktaSession = await firstValidSession(baseUrl, oktaCookies, validate);
-  if (oktaSession) {
-    await refreshSessionCache(baseUrl, oktaSession.cookie, oktaSession.context, options);
-    return { baseUrl, cookie: oktaSession.cookie, ...oktaSession.context, fromCache: false };
-  }
-
-  if (!options.oktaCookieProvider && oktaCookies.length && !options.nonInteractive) {
-    const refreshed = matchingMoodleSessionCookies(
-      await loadSessionsFromOktaCli(baseUrl, { ...options, oktaCookieProvider: undefined, noCache: true }, true),
-      baseUrl,
-    );
-    const refreshedSession = await firstValidSession(baseUrl, refreshed, validate);
-    if (refreshedSession) {
-      await refreshSessionCache(baseUrl, refreshedSession.cookie, refreshedSession.context, options);
-      return { baseUrl, cookie: refreshedSession.cookie, ...refreshedSession.context, fromCache: false };
-    }
-  }
-
-  throw new AuthError(`No usable MoodleSession found for ${baseUrl}.`, authFailureHint(baseUrl));
+  throw new AuthError(
+    `No usable MoodleSession found for ${baseUrl}.`,
+    authFailureHint(baseUrl, cookieWarnings, options.platform),
+  );
 }
 
 export async function getAuthenticatedSessionWithBrowserFallback(
   baseUrl: string,
   options: BrowserLoginOptions = {},
 ): Promise<AuthenticatedSession> {
-  const authOptions: AuthOptions = { ...options, noCache: true, nonInteractive: true };
+  const cookieWarnings: string[] = [];
+  const authOptions: AuthOptions = {
+    ...options,
+    noCache: true,
+    nonInteractive: true,
+    onCookieWarnings: (warnings) => {
+      cookieWarnings.push(...warnings);
+      options.onCookieWarnings?.(warnings);
+    },
+  };
   const browserAuthOptions: AuthOptions = {
     ...authOptions,
     env: { ...(options.env ?? process.env), [ENV_MOODLE_SESSION]: undefined },
@@ -155,6 +153,15 @@ export async function getAuthenticatedSessionWithBrowserFallback(
     }
   }
 
+  // A browser login writes a cookie we still would not be allowed to read, so
+  // the poll loop below would spin until it times out. Fail with the real cause.
+  if (cookieAccessBlocked(cookieWarnings)) {
+    throw new AuthError(
+      `Cannot read browser cookies for ${baseUrl}.`,
+      cookieAccessHint(cookieWarnings, options.platform),
+    );
+  }
+
   const url = loginUrl(baseUrl);
   await (options.openBrowser ?? ((target) => openSystemBrowser(target, options)))(url);
   options.onBrowserOpened?.(url);
@@ -163,7 +170,7 @@ export async function getAuthenticatedSessionWithBrowserFallback(
   const timeoutMs = options.browserLoginTimeoutMs ?? 120_000;
   const attempts = Math.max(1, Math.ceil(timeoutMs / pollIntervalMs));
   const sleep = options.sleep ?? ((milliseconds) => new Promise<void>((resolve) => setTimeout(resolve, milliseconds)));
-  const pollOptions: AuthOptions = { ...browserAuthOptions, oktaCookieProvider: async () => [] };
+  const pollOptions: AuthOptions = browserAuthOptions;
 
   for (let attempt = 0; attempt < attempts; attempt += 1) {
     await sleep(pollIntervalMs);
@@ -229,7 +236,14 @@ export async function defaultBrowserCookieProvider(
   const braveProfiles = await braveProfilePaths(options);
   const brave = braveProfiles.length
     ? await getCookies({ url: baseUrl, browsers: ["chrome"], chromeProfile: braveProfiles, mode: "merge" })
-    : { cookies: [] };
+    : { cookies: [], warnings: [] as string[] };
+
+  // sweet-cookie reports unreadable stores here and documents that warnings never
+  // contain cookie values, so they are safe to relay to the user verbatim.
+  const warnings = [...(primary.warnings ?? []), ...(brave.warnings ?? [])];
+  if (warnings.length) {
+    options.onCookieWarnings?.(warnings);
+  }
 
   return [...primary.cookies, ...brave.cookies].map((cookie) => ({
     name: cookie.name,
@@ -250,7 +264,9 @@ export async function braveProfilePaths(options: AuthOptions = {}): Promise<stri
       ]
     : platform === "win32"
       ? [join(home, "AppData/Local/BraveSoftware/Brave-Browser/User Data")]
-      : [];
+      : platform === "darwin"
+        ? [join(home, "Library/Application Support/BraveSoftware/Brave-Browser")]
+        : [];
 
   const profiles: string[] = [];
   for (const root of roots) {
@@ -270,37 +286,62 @@ export async function braveProfilePaths(options: AuthOptions = {}): Promise<stri
   return profiles;
 }
 
-export async function loadSessionsFromOktaCli(
-  baseUrl: string,
-  options: AuthOptions = {},
-  forceLogin = false,
-): Promise<MoodleSessionCookie[]> {
-  const execFile = options.execFile ?? defaultExecFile;
-  const executable = await findExecutable("okta", execFile, options.platform);
-  if (!executable) {
-    return [];
-  }
+const COOKIE_ACCESS_DENIED = /EPERM|EACCES|operation not permitted|permission denied/i;
+// Chromium cookie stores are read through node:sqlite, which Node only ships
+// unflagged from 22.13. Older runtimes cannot read any browser cookie.
+const COOKIE_SQLITE_UNAVAILABLE = /No such built-in module: node:sqlite/i;
+export const MINIMUM_NODE_FOR_BROWSER_COOKIES = "22.13.0";
 
-  const stored = await readOktaCookies(executable, baseUrl, execFile);
-  if ((stored.length && !forceLogin) || options.nonInteractive) {
-    return stored;
-  }
-
-  const login = await runOktaJson(executable, ["login", baseUrl], execFile);
-  if (!login) {
-    return stored;
-  }
-  const refreshed = await readOktaCookies(executable, baseUrl, execFile);
-  return refreshed.length ? refreshed : stored;
+/**
+ * True when the cookie store could not be read at all. Logging in again cannot
+ * fix this, so callers must not fall back to a browser login loop.
+ */
+export function cookieAccessBlocked(warnings: readonly string[]): boolean {
+  return warnings.some((warning) => COOKIE_ACCESS_DENIED.test(warning) || COOKIE_SQLITE_UNAVAILABLE.test(warning));
 }
 
-export function authFailureHint(baseUrl: string): string {
+export function cookieAccessHint(
+  warnings: readonly string[],
+  platform: NodeJS.Platform = process.platform,
+): string {
+  const grant = platform === "darwin"
+    ? "Grant Full Disk Access to the application running this command (System Settings > Privacy & Security > Full Disk Access), then restart it."
+    : "Run this command as the user that owns the browser profile, or grant it read access to the browser cookie store.";
+  const remedy = warnings.some((warning) => COOKIE_SQLITE_UNAVAILABLE.test(warning))
+    ? [
+        `This Node.js runtime has no node:sqlite, which is needed to read browser cookies. Use Node.js ${MINIMUM_NODE_FOR_BROWSER_COOKIES} or newer, or run the CLI with Bun (bunx --bun moodle-cli).`,
+      ]
+    : [
+        "If this runs inside a sandboxed app (an IDE or agent terminal), rerun it from a regular terminal first.",
+        grant,
+      ];
   return [
-    `Log in to ${loginUrl(baseUrl)} in your browser, then rerun the command.`,
-    `Or set ${ENV_MOODLE_SESSION} to a valid MoodleSession cookie value.`,
-    `For automatic login, install okta-auth: ${OKTA_AUTH_INSTALL_COMMAND}, then run ${OKTA_AUTH_CONFIG_COMMAND}.`,
-    `okta-auth: ${OKTA_AUTH_URL}`,
+    "The browser cookie store could not be read, so the session could not be detected.",
+    ...remedy,
+    `Alternatively set ${ENV_MOODLE_SESSION} to a valid MoodleSession cookie value.`,
+    "",
+    "Cookie store diagnostics:",
+    ...warnings.map((warning) => `  - ${warning}`),
   ].join("\n");
+}
+
+export function authFailureHint(
+  baseUrl: string,
+  cookieWarnings: readonly string[] = [],
+  platform: NodeJS.Platform = process.platform,
+): string {
+  if (cookieAccessBlocked(cookieWarnings)) {
+    return cookieAccessHint(cookieWarnings, platform);
+  }
+  const lines = [
+    `Log in to ${loginUrl(baseUrl)} in your browser, then rerun the command.`,
+    "Or run `moodle auth login` to sign in through a browser window this command controls.",
+    `Or set ${ENV_MOODLE_SESSION} to a valid MoodleSession cookie value.`,
+  ];
+  if (cookieWarnings.length) {
+    lines.push("", "Cookie store diagnostics:", ...cookieWarnings.map((warning) => `  - ${warning}`));
+  }
+  return lines.join("\n");
 }
 
 export async function invalidateCachedSession(baseUrl: string, options: AuthOptions = {}): Promise<void> {
@@ -336,10 +377,7 @@ function validateSessionWithFetch(options: AuthOptions): SessionValidator {
 
     let response: Response;
     try {
-      response = await fetcher(`${baseUrl}${DASHBOARD_PATH}`, {
-        redirect: "follow",
-        headers: { cookie: `${cookie.name}=${cookie.value}` },
-      });
+      response = await fetchWithSession(`${baseUrl}${DASHBOARD_PATH}`, {}, baseUrl, cookie, fetcher);
     } catch {
       return null;
     }
@@ -354,43 +392,6 @@ function validateSessionWithFetch(options: AuthOptions): SessionValidator {
     }
     return parseSessionContext(html);
   };
-}
-
-async function readOktaCookies(
-  executable: string,
-  baseUrl: string,
-  execFile: ExecFile,
-): Promise<MoodleSessionCookie[]> {
-  const payload = await runOktaJson(executable, ["cookies", baseUrl], execFile);
-  if (!payload) {
-    return [];
-  }
-
-  const cookies = Array.isArray(payload.cookies) ? payload.cookies : Array.isArray(payload) ? payload : [];
-  return cookies.filter(isRecord).map((cookie) => ({
-    name: String(cookie.name ?? ""),
-    value: String(cookie.value ?? ""),
-    domain: typeof cookie.domain === "string" ? cookie.domain : undefined,
-    path: typeof cookie.path === "string" ? cookie.path : undefined,
-    source: "okta",
-  }));
-}
-
-async function runOktaJson(
-  executable: string,
-  args: string[],
-  execFile: ExecFile,
-): Promise<Record<string, unknown> | null> {
-  const result = await execFile(executable, [...args, "--json"]);
-  if (result.exitCode !== 0 || !result.stdout.trim()) {
-    return null;
-  }
-  try {
-    const payload = JSON.parse(result.stdout) as unknown;
-    return isRecord(payload) ? payload : null;
-  } catch {
-    return null;
-  }
 }
 
 async function findExecutable(

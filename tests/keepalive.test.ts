@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   buildKeepalivePlist,
   getAuthStatus,
+  installKeepalive,
   keepAliveOnce,
   keepaliveProgramArguments,
   touchMoodleSession,
@@ -151,4 +152,46 @@ describe("keepalive launch agent", () => {
       "--json",
     ]);
   });
+
+  it("refuses to install a launch agent pinned to a runtime that cannot read cookies", async () => {
+    const home = await mkdtemp(join(tmpdir(), "keepalive-guard-"));
+    const runCommand = vi.fn();
+
+    await expect(installKeepalive({
+      homeDir: home,
+      platform: "darwin",
+      canReadBrowserCookies: false,
+      runCommand: runCommand as never,
+    })).rejects.toThrow(/cannot read browser cookies/);
+    expect(runCommand).not.toHaveBeenCalled();
+  });
+
+  it("installs when the runtime can read cookies", async () => {
+    const home = await mkdtemp(join(tmpdir(), "keepalive-ok-"));
+    const runCommand = vi.fn(() => ({ status: 0 })) as never;
+
+    const result = await installKeepalive({
+      homeDir: home,
+      platform: "darwin",
+      canReadBrowserCookies: true,
+      execPath: "/opt/node/bin/node",
+      argv1: "",
+      uid: 501,
+      runCommand,
+    });
+
+    expect(result.command[0]).toBe("/opt/node/bin/node");
+    await expect(readFile(result.plist_path, "utf8")).resolves.toContain("com.moodle-cli.keepalive");
+  });
+});
+
+vi.mock("../src/session-cache.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../src/session-cache.js")>();
+  const encryptionKey = async () => "synthetic-test-cache-encryption-key";
+  return {
+    ...actual,
+    readCachedSession: (baseUrl: string, options = {}) => actual.readCachedSession(baseUrl, { ...options, encryptionKey }),
+    writeCachedSession: (session: import("../src/session-cache.js").CachedSession, options = {}) => actual.writeCachedSession(session, { ...options, encryptionKey }),
+    deleteCachedSession: (baseUrl: string, options = {}) => actual.deleteCachedSession(baseUrl, { ...options, encryptionKey }),
+  };
 });

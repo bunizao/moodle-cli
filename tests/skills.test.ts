@@ -161,6 +161,6 @@ describe("skill generation", () => {
     expect(downloadsReference).toContain("Validate the receipt");
     expect(outputReference).toContain("`--fields a,b,c` keeps only listed top-level fields");
     expect(agentMetadata).toContain('display_name: "Moodle CLI"');
-    expect(agentMetadata).toContain("local Moodle files");
+    expect(agentMetadata).toContain("retrieve authenticated course files");
   });
 });

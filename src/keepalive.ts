@@ -1,9 +1,10 @@
+import { fetchWithSession } from "./session-fetch.js";
 import { spawnSync, type SpawnSyncReturns } from "node:child_process";
 import { realpathSync } from "node:fs";
 import { mkdir, rm, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import { getAuthenticatedSession } from "./auth.js";
+import { getAuthenticatedSession, MINIMUM_NODE_FOR_BROWSER_COOKIES } from "./auth.js";
 import {
   AJAX_SERVICE_PATH,
   CACHE_DIR_NAME,
@@ -63,6 +64,7 @@ export interface KeepaliveInstallOptions {
   argv1?: string;
   uid?: number;
   runCommand?: typeof spawnSync;
+  canReadBrowserCookies?: boolean;
 }
 
 export async function touchMoodleSession(
@@ -76,14 +78,14 @@ export async function touchMoodleSession(
   const url = `${baseUrl.replace(/\/$/, "")}${AJAX_SERVICE_PATH}?sesskey=${encodeURIComponent(sesskey)}&info=${methods.join(",")}`;
   let response: Response;
   try {
-    response = await fetchImpl(url, {
+    response = await fetchWithSession(url, {
       method: "POST",
       headers: {
         "content-type": "application/json",
         cookie: `${cookie.name}=${cookie.value}`,
       },
       body: JSON.stringify(methods.map((methodname, index) => ({ index, methodname, args: {} }))),
-    });
+    }, baseUrl, cookie, fetchImpl);
   } catch {
     return { alive: null, timeRemainingSeconds: null };
   }
@@ -154,7 +156,7 @@ export async function keepAliveOnce(baseUrl: string, options: KeepaliveOptions =
         fetch: options.fetchImpl,
         noCache: true,
         now: options.now,
-        // Background runs must never block on an interactive Okta login.
+        // Background runs must never block on an interactive browser login.
         nonInteractive: true,
       }));
   try {
@@ -247,11 +249,36 @@ export function buildKeepalivePlist(programArguments: string[], intervalMinutes:
   ].join("\n");
 }
 
+/**
+ * Bun reads browser cookies through its own APIs; Node needs node:sqlite, which
+ * it only ships unflagged from 22.13.
+ */
+async function runtimeReadsBrowserCookies(): Promise<boolean> {
+  if (process.versions.bun) return true;
+  try {
+    await import("node:sqlite");
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export async function installKeepalive(options: KeepaliveInstallOptions = {}): Promise<KeepaliveInstallResult> {
   const platform = options.platform ?? process.platform;
   if (platform !== "darwin") {
     throw new Error(
       "Automatic keepalive install requires macOS launchd. Add a cron entry instead: */30 * * * * moodle auth keepalive --json",
+    );
+  }
+
+  // The plist bakes in the runtime that installed it. A runtime that cannot read
+  // browser cookies still renews a live session, so the install looks healthy and
+  // only fails once the session expires and there is nothing left to renew from.
+  const readsCookies = options.canReadBrowserCookies ?? (await runtimeReadsBrowserCookies());
+  if (!readsCookies) {
+    throw new Error(
+      `This runtime (${process.version}) cannot read browser cookies, and the launch agent would be pinned to it. `
+        + `Reinstall with Node.js ${MINIMUM_NODE_FOR_BROWSER_COOKIES} or newer, or with Bun.`,
     );
   }
 

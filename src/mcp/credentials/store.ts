@@ -2,6 +2,7 @@ export interface DeploymentCredentials {
   mcpAccessToken: string;
   sessionSyncToken: string;
   sessionEncryptionKey: string;
+  previousSessionEncryptionKey?: string;
   previousMcpAccessToken?: string;
   previousSessionSyncToken?: string;
   previousTokensExpireAt?: number;
@@ -27,6 +28,7 @@ export class SafeCredentialStore {
   constructor(
     private readonly preferred: CredentialBackend,
     private readonly fallback: CredentialBackend,
+    private readonly protectedOnly = false,
   ) {}
 
   async read(profile: string): Promise<DeploymentCredentials | null> {
@@ -37,10 +39,21 @@ export class SafeCredentialStore {
       if (!isUnavailable(error)) {
         throw error;
       }
+      if (this.protectedOnly) throw error;
       return this.fallback.read(profile);
     }
 
-    return preferredValue ?? this.fallback.read(profile);
+    if (preferredValue) {
+      if (this.protectedOnly) await this.fallback.delete(profile);
+      return preferredValue;
+    }
+    const legacy = await this.fallback.read(profile);
+    if (legacy && this.protectedOnly) {
+      await this.preferred.write(profile, legacy);
+      if (JSON.stringify(await this.preferred.read(profile)) !== JSON.stringify(legacy)) throw new Error("Credential migration could not be verified.");
+      await this.fallback.delete(profile);
+    }
+    return legacy;
   }
 
   async write(profile: string, credentials: DeploymentCredentials): Promise<void> {
@@ -50,6 +63,7 @@ export class SafeCredentialStore {
       if (!isUnavailable(error)) {
         throw error;
       }
+      if (this.protectedOnly) throw error;
       await this.fallback.write(profile, credentials);
       return;
     }
@@ -89,9 +103,7 @@ export function rotateCredentials(
     mcpAccessToken: createToken(),
     sessionSyncToken: createToken(),
     sessionEncryptionKey: current.sessionEncryptionKey,
-    previousMcpAccessToken: current.mcpAccessToken,
-    previousSessionSyncToken: current.sessionSyncToken,
-    previousTokensExpireAt: now() + TOKEN_OVERLAP_MS,
+    ...(current.previousSessionEncryptionKey ? { previousSessionEncryptionKey: current.previousSessionEncryptionKey } : {}),
   };
 }
 

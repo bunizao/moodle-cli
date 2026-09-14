@@ -1,3 +1,4 @@
+import { runtimeCommand } from "../self-command.js";
 import { spawn } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { chmod, copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
@@ -29,6 +30,7 @@ import {
   type RemoteWorker,
   type WranglerDeploymentAdapter,
   type WorkerReadiness,
+  type WorkerPairing,
   type WorkerSmokeResult,
 } from "./managed-deployment.js";
 
@@ -75,9 +77,21 @@ export class WranglerCommandError extends Error {
     public readonly stdout: string,
     public readonly stderr: string,
   ) {
-    super("Packaged Wrangler command failed");
+    super(wranglerFailureMessage(stderr, stdout));
     this.name = "WranglerCommandError";
   }
+}
+
+// Surface the Cloudflare API error Wrangler printed so a failed deploy explains
+// itself. Wrangler never echoes secret values here, only API problem text.
+function wranglerFailureMessage(stderr: string, stdout: string): string {
+  const lines = `${stderr}\n${stdout}`.replace(/\u001B\[[0-9;]*m/gu, "").split(/\r?\n/u).map((line) => line.trim());
+  const errorIndex = lines.findIndex((line) => line.includes("[ERROR]"));
+  const detail = errorIndex >= 0
+    ? lines.slice(errorIndex).filter((line) => line && !/^(To learn more|If you think this is a bug|Logs were written)/u.test(line))
+      .slice(0, 3).join(" ").replace(/^.*\[ERROR\]\s*/u, "")
+    : "";
+  return detail ? `Packaged Wrangler command failed: ${detail.slice(0, 600)}` : "Packaged Wrangler command failed";
 }
 
 export interface NodeWranglerOptions {
@@ -91,6 +105,7 @@ export interface WranglerAccount {
 }
 
 export class NodeWranglerDeploymentAdapter implements WranglerDeploymentAdapter {
+  readonly atomicSecrets = true;
   private readonly wranglerBinPath: string;
   private readonly runner: DeploymentCommandRunner;
 
@@ -136,8 +151,8 @@ export class NodeWranglerDeploymentAdapter implements WranglerDeploymentAdapter 
       throw error;
     }
     const document = parseJsonOutput(result.stdout);
-    const versionIds = deploymentVersionIds(document);
-    if (!versionIds.length) {
+    const [current, previous] = deploymentHistory(document);
+    if (!current) {
       return null;
     }
     const productionEndpoint = firstWorkersDevUrl(document) ?? `https://${workerName}.workers.dev`;
@@ -148,33 +163,17 @@ export class NodeWranglerDeploymentAdapter implements WranglerDeploymentAdapter 
       deploymentId,
       ownershipTag: deploymentId,
       productionEndpoint,
-      productionVersionId: versionIds[0]!,
-      previousHealthyVersionId: versionIds[1] ?? null,
-      releaseDigest: releaseDigestFromDocument(document) ?? "",
+      productionVersionId: current.versionId,
+      previousHealthyVersionId: previous?.versionId ?? null,
+      releaseDigest: releaseDigestFromMessage(current.message) ?? "",
     };
-  }
-
-  async uploadSecrets(input: {
-    accountId: string;
-    workerName: string;
-    configPath: string;
-    secretsFilePath: string;
-  }): Promise<void> {
-    await this.wrangler([
-      "secret",
-      "bulk",
-      input.secretsFilePath,
-      "--name",
-      input.workerName,
-      "--config",
-      input.configPath,
-    ], input.accountId);
   }
 
   async initializeWorker(input: {
     accountId: string;
     workerName: string;
     configPath: string;
+    secretsFilePath?: string;
     releaseDigest: string;
   }): Promise<RemoteWorker> {
     let result: CommandResult | null = null;
@@ -187,13 +186,16 @@ export class NodeWranglerDeploymentAdapter implements WranglerDeploymentAdapter 
         input.configPath,
         "--message",
         `moodle-cli-bootstrap:${input.releaseDigest}`,
+        ...(input.secretsFilePath ? ["--secrets-file", input.secretsFilePath] : []),
       ], input.accountId);
       const worker = await this.inspect(input.accountId, input.workerName);
       if (!worker) {
         throw new DeploymentApplyError("INITIAL_WORKER_INVALID", "Wrangler did not return the initialized Worker");
       }
       const productionEndpoint = firstWorkersDevUrl([result.stdout, result.stderr]);
-      return productionEndpoint ? { ...worker, productionEndpoint } : worker;
+      const initialized = productionEndpoint ? { ...worker, productionEndpoint } : worker;
+      await pinExpectedHosts(input.configPath, input.workerName, initialized.productionEndpoint);
+      return initialized;
     } catch (error) {
       const worker = await this.inspect(input.accountId, input.workerName).catch(() => null);
       if (worker || result) {
@@ -207,47 +209,43 @@ export class NodeWranglerDeploymentAdapter implements WranglerDeploymentAdapter 
     }
   }
 
+  async uploadSecrets(): Promise<void> {
+    throw new DeploymentApplyError("ATOMIC_DEPLOY_REQUIRED", "Secrets must be deployed atomically with the Worker");
+  }
+
   async uploadCandidate(input: {
     accountId: string;
     workerName: string;
     configPath: string;
+    secretsFilePath?: string;
     releaseDigest: string;
     productionEndpoint: string;
   }): Promise<CandidateRelease> {
-    const outputFilePath = join(dirname(input.configPath), "wrangler-version-upload.jsonl");
-    await rm(outputFilePath, { force: true });
-    try {
-      await this.wrangler([
-        "versions",
-        "upload",
-        "--name",
-        input.workerName,
-        "--config",
-        input.configPath,
-        "--preview-alias",
-        "moodle-cli-candidate",
-        "--message",
-        `moodle-cli-release:${input.releaseDigest}`,
-      ], input.accountId, { WRANGLER_OUTPUT_FILE_PATH: outputFilePath });
-      const document = await readWranglerVersionUpload(outputFilePath, input.workerName);
-      const versionId = typeof document.version_id === "string" ? document.version_id : null;
-      const previewEndpoint = firstWorkersDevUrl(document.preview_alias_url)
-        ?? firstWorkersDevUrl(document.preview_url);
-      if (!versionId) {
-        throw new DeploymentApplyError("CANDIDATE_UPLOAD_INVALID", "Wrangler did not return a candidate version");
-      }
-      return {
-        versionId,
-        previewEndpoint: previewEndpoint ?? null,
-        productionEndpoint: input.productionEndpoint,
-        deploymentId: ownershipId(input.accountId, input.workerName),
-      };
-    } finally {
-      await rm(outputFilePath, { force: true });
-    }
+    // Durable Object lifecycle changes require an atomic deploy, never versions upload.
+    const result = await this.wrangler([
+      "deploy", "--name", input.workerName, "--config", input.configPath,
+      "--message", `moodle-cli-release:${input.releaseDigest}`,
+      ...(input.secretsFilePath ? ["--secrets-file", input.secretsFilePath] : []),
+    ], input.accountId);
+    const versionFromOutput = result.stdout.match(/Current Version ID:\s*([a-f0-9-]{36})/iu)?.[1];
+    const active = versionFromOutput ? null : await this.inspect(input.accountId, input.workerName);
+    if (!versionFromOutput && !active) throw new DeploymentApplyError("CANDIDATE_UPLOAD_INVALID", "The deployed Worker version could not be verified");
+    return {
+      versionId: versionFromOutput ?? active!.productionVersionId,
+      previewEndpoint: null,
+      alreadyDeployed: true,
+      productionEndpoint: firstWorkersDevUrl([result.stdout, result.stderr]) ?? input.productionEndpoint,
+      deploymentId: ownershipId(input.accountId, input.workerName),
+    };
   }
 
-  async promote(input: { accountId: string; workerName: string; versionId: string }): Promise<void> {
+  async deployRecovery(input: { accountId: string; workerName: string; configPath: string; secretsFilePath: string; releaseDigest: string; productionEndpoint: string }): Promise<CandidateRelease> {
+    return this.uploadCandidate(input);
+  }
+
+  // restoreProduction re-deploys an older version whose digest is unknown, so the
+  // release annotation is only written when the caller knows it.
+  async promote(input: { accountId: string; workerName: string; versionId: string; releaseDigest?: string }): Promise<void> {
     await this.wrangler([
       "versions",
       "deploy",
@@ -255,6 +253,7 @@ export class NodeWranglerDeploymentAdapter implements WranglerDeploymentAdapter 
       "--name",
       input.workerName,
       "--yes",
+      ...(input.releaseDigest ? ["--message", `moodle-cli-release:${input.releaseDigest}`] : []),
     ], input.accountId);
   }
 
@@ -264,6 +263,29 @@ export class NodeWranglerDeploymentAdapter implements WranglerDeploymentAdapter 
     previousVersionId: string | null;
   }): Promise<void> {
     if (input.previousVersionId) {
+      const result = await this.wrangler(["versions", "view", input.previousVersionId, "--name", input.workerName, "--json"], input.accountId);
+      const document = parseJsonOutput(result.stdout);
+      const binding = (value: unknown, name: string): string | null => {
+        let result: string | null = null;
+        visit(value, (_key, item) => {
+          if (isRecord(item) && item.name === name && typeof item.text === "string") result = item.text;
+        });
+        return result;
+      };
+      let compatible = binding(document, "SESSION_SCHEMA_VERSION") === "2";
+      if (compatible) {
+        const active = await this.inspect(input.accountId, input.workerName);
+        if (!active) compatible = false;
+        else {
+          const current = await this.wrangler(["versions", "view", active.productionVersionId, "--name", input.workerName, "--json"], input.accountId);
+          const currentKey = binding(parseJsonOutput(current.stdout), "SESSION_KEY_ID");
+          const currentDocument = parseJsonOutput(current.stdout);
+          const currentCredentials = binding(currentDocument, "SESSION_CREDENTIAL_ID");
+          compatible = Boolean(currentKey && currentKey === binding(document, "SESSION_KEY_ID")
+            && currentCredentials && currentCredentials === binding(document, "SESSION_CREDENTIAL_ID"));
+        }
+      }
+      if (!compatible) throw new DeploymentApplyError("ROLLBACK_INCOMPATIBLE", "The previous version cannot read the encrypted session schema. Use deploy --repair to recover without losing session data.");
       await this.promote({
         accountId: input.accountId,
         workerName: input.workerName,
@@ -316,23 +338,35 @@ export class NodeReleaseMaterializer implements ReleaseMaterializer {
     await copyFile(this.options.workerBundlePath, workerFile);
     const wranglerConfigPath = join(artifactDirectory, "wrangler.json");
     const secretsFilePath = join(artifactDirectory, "secrets.json");
+    const expectedHosts = endpointHosts(plan.intent.workerName, plan.existing?.productionEndpoint);
     const config = {
       $schema: "node_modules/wrangler/config-schema.json",
       name: plan.intent.workerName,
       account_id: plan.intent.accountId,
       main: `./${basename(workerFile)}`,
       compatibility_date: this.options.compatibilityDate,
-      preview_urls: true,
-      vars: { MOODLE_ORIGIN: plan.intent.moodleOrigin },
+      preview_urls: false,
+      observability: { enabled: false },
+      vars: { MOODLE_ORIGIN: plan.intent.moodleOrigin, ...(expectedHosts.length ? { EXPECTED_HOSTS: expectedHosts.join(",") } : {}), SESSION_SCHEMA_VERSION: "2", SESSION_KEY_ID: digest(credentials.sessionEncryptionKey).slice(0, 16), SESSION_CREDENTIAL_ID: digest(`${credentials.mcpAccessToken}:${credentials.sessionSyncToken}`).slice(0, 16) },
       durable_objects: {
-        bindings: [{ name: "SESSION_BROKER", class_name: "SessionBroker" }],
+        bindings: [
+          { name: "SESSION_BROKER", class_name: "SessionBroker" },
+          { name: "AUTH_BROKER", class_name: "AuthBroker" },
+        ],
       },
-      migrations: [{ tag: "v1", new_sqlite_classes: ["SessionBroker"] }],
+      migrations: [
+        { tag: "v1", new_sqlite_classes: ["SessionBroker"] },
+        { tag: "v2", new_sqlite_classes: ["AuthBroker"] },
+      ],
     };
     const secrets: Record<string, string> = {
       MCP_ACCESS_TOKEN_DIGEST: digest(credentials.mcpAccessToken),
       SESSION_SYNC_TOKEN_DIGEST: digest(credentials.sessionSyncToken),
       SESSION_ENCRYPTION_KEY: credentials.sessionEncryptionKey,
+      SESSION_ENCRYPTION_KEY_PREVIOUS: credentials.previousSessionEncryptionKey ?? "",
+      MCP_ACCESS_TOKEN_PREVIOUS_DIGEST: "",
+      SESSION_SYNC_TOKEN_PREVIOUS_DIGEST: "",
+      TOKEN_OVERLAP_EXPIRES_AT: "0",
     };
     if (credentials.previousMcpAccessToken) {
       secrets.MCP_ACCESS_TOKEN_PREVIOUS_DIGEST = digest(credentials.previousMcpAccessToken);
@@ -350,7 +384,16 @@ export class NodeReleaseMaterializer implements ReleaseMaterializer {
     await writeFile(secretsFilePath, `${JSON.stringify(secrets)}\n`, { mode: 0o600 });
     await chmod(wranglerConfigPath, 0o600);
     await chmod(secretsFilePath, 0o600);
-    return { artifactDirectory, wranglerConfigPath, secretsFilePath };
+    let recoveryConfigPath: string | undefined;
+    try {
+      const recoveryBundle = join(dirname(this.options.workerBundlePath), "recovery.js");
+      await copyFile(recoveryBundle, join(artifactDirectory, "recovery.js"));
+      recoveryConfigPath = join(artifactDirectory, "wrangler-recovery.json");
+      await writeFile(recoveryConfigPath, `${JSON.stringify({ ...config, main: "./recovery.js" })}\n`, { mode: 0o600 });
+    } catch (error) {
+      if (!isMissing(error) || plan.existing) throw error;
+    }
+    return { artifactDirectory, wranglerConfigPath, secretsFilePath, recoveryConfigPath, encryptionKeyId: config.vars.SESSION_KEY_ID, credentialId: config.vars.SESSION_CREDENTIAL_ID };
   }
 
   async cleanup(release: PreparedRelease): Promise<void> {
@@ -366,8 +409,10 @@ export class DefaultMoodleSessionSource implements MoodleSessionSource {
   constructor(private readonly options: DefaultMoodleSessionSourceOptions = {}) {}
 
   async loadValidated(_profile: string, moodleOrigin: string): Promise<MoodleSessionMaterial> {
+    // Renewal runs because the remote session died, and the local cache usually holds
+    // that same cookie. Skip it so the replacement is a freshly validated browser cookie.
     const session = this.options.interactive === false
-      ? await getAuthenticatedSession(moodleOrigin, { ...this.options, nonInteractive: true })
+      ? await getAuthenticatedSession(moodleOrigin, { ...this.options, nonInteractive: true, noCache: true })
       : await getAuthenticatedSessionWithBrowserFallback(moodleOrigin, this.options);
     return {
       moodleOrigin,
@@ -398,7 +443,8 @@ export class FetchManagedWorkerClient implements ManagedWorkerClient {
     fetchImpl?: typeof fetch,
     private readonly sleep: (milliseconds: number) => Promise<void> = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)),
   ) {
-    this.fetchImpl = fetchImpl ?? ((input, init) => fetch(input, init));
+    const fetcher = fetchImpl ?? ((input: RequestInfo | URL, init?: RequestInit) => fetch(input, init));
+    this.fetchImpl = (input, init) => fetcher(input, { ...init, redirect: "error", signal: init?.signal ?? AbortSignal.timeout(30_000) });
   }
 
   async putSession(input: {
@@ -425,13 +471,13 @@ export class FetchManagedWorkerClient implements ManagedWorkerClient {
       return { revision: body.revision };
     }
     const code = isRecord(body) && typeof body.code === "string" ? body.code : "SESSION_UPLOAD_FAILED";
-    throw new DeploymentApplyError(code, "The Worker rejected the Moodle session update");
+    throw new DeploymentApplyError(code, `The Worker rejected the Moodle session update (${code})`);
   }
 
   async getReadiness(input: { endpoint: string; sessionSyncToken: string }): Promise<WorkerReadiness> {
     const response = await this.fetchWithRetry(endpointUrl(input.endpoint, "/readyz"), {
       headers: { authorization: `Bearer ${input.sessionSyncToken}` },
-    }, isRetryableWorkerPropagation);
+    }, isRetryableSessionUpload);
     const body = await safeJson(response);
     if (isRecord(body) && (body.status === "pass" || body.status === "warn" || body.status === "fail")) {
       const session = firstHealthCheck(body, "moodle:session");
@@ -444,15 +490,31 @@ export class FetchManagedWorkerClient implements ManagedWorkerClient {
             ? session.code
             : null,
         revision: typeof session?.revision === "number" ? session.revision : null,
+        ...(typeof body.sessionSchemaVersion === "number" ? { sessionSchemaVersion: body.sessionSchemaVersion } : {}),
+        ...(typeof body.encryptionKeyId === "string" ? { encryptionKeyId: body.encryptionKeyId } : {}),
+        ...(typeof body.credentialId === "string" ? { credentialId: body.credentialId } : {}),
       };
     }
     return { status: "fail", reasonCode: null, revision: null };
+  }
+
+  async touchSession(input: { endpoint: string; sessionSyncToken: string }): Promise<void> {
+    // The verdict lands in the Worker's stored session state and is read back through
+    // getReadiness, so 409 (expired/missing) and 503 (Moodle unreachable) are outcomes
+    // here, not failures.
+    await this.fetchWithRetry(endpointUrl(input.endpoint, "/session/touch"), {
+      method: "POST",
+      headers: { authorization: `Bearer ${input.sessionSyncToken}` },
+    }, isRetryableWorkerRouting);
   }
 
   async runSmoke(input: {
     endpoint: string;
     mcpAccessToken: string;
     sessionSyncToken: string;
+    expectedSessionSchemaVersion?: number;
+    expectedEncryptionKeyId?: string;
+    expectedCredentialId?: string;
   }): Promise<WorkerSmokeResult> {
     const health = await this.fetchWithRetry(
       endpointUrl(input.endpoint, "/healthz"),
@@ -463,7 +525,15 @@ export class FetchManagedWorkerClient implements ManagedWorkerClient {
     if (!health.ok || !isRecord(healthBody) || healthBody.status !== "pass") {
       throw new DeploymentApplyError("HEALTH_CHECK_FAILED", "Worker liveness check failed");
     }
-    const readiness = await this.getReadiness(input);
+    let readiness = await this.getReadiness(input);
+    const matchesRelease = () => (input.expectedSessionSchemaVersion === undefined || readiness.sessionSchemaVersion === input.expectedSessionSchemaVersion)
+      && (input.expectedEncryptionKeyId === undefined || readiness.encryptionKeyId === input.expectedEncryptionKeyId)
+      && (input.expectedCredentialId === undefined || readiness.credentialId === input.expectedCredentialId);
+    for (let attempt = 0; !matchesRelease() && attempt < 12; attempt += 1) {
+      await this.sleep(1_000);
+      readiness = await this.getReadiness(input);
+    }
+    if (!matchesRelease()) throw new DeploymentApplyError("STATE_PROPAGATION_FAILED", "The expected encrypted session and credentials are not active yet");
     if (readiness.status === "fail") {
       throw new DeploymentApplyError("READINESS_CHECK_FAILED", "Moodle session readiness check failed");
     }
@@ -481,6 +551,37 @@ export class FetchManagedWorkerClient implements ManagedWorkerClient {
       throw new DeploymentApplyError("MCP_SMOKE_FAILED", "MCP get_user check returned no Moodle user");
     }
     return { moodleUser };
+  }
+
+  async manageClients(input: { endpoint: string; sessionSyncToken: string; revoke?: boolean; clientId?: string }): Promise<unknown> {
+    const url = new URL(endpointUrl(input.endpoint, "/clients"));
+    if (input.clientId) url.searchParams.set("client_id", input.clientId);
+    const response = await this.fetchImpl(url.toString(), {
+      method: input.revoke ? "DELETE" : "GET",
+      headers: { authorization: `Bearer ${input.sessionSyncToken}` },
+      redirect: "error",
+      signal: AbortSignal.timeout(30_000),
+    });
+    if (!response.ok) throw new DeploymentApplyError("OAUTH_MANAGEMENT_FAILED", "The Worker could not manage its OAuth clients");
+    return input.revoke ? { status: "revoked", clientId: input.clientId ?? null } : response.json();
+  }
+
+  async createPairing(input: { endpoint: string; sessionSyncToken: string }): Promise<WorkerPairing> {
+    const response = await this.fetchImpl(endpointUrl(input.endpoint, "/pair"), {
+      method: "POST",
+      headers: { authorization: `Bearer ${input.sessionSyncToken}` },
+    });
+    const body = await safeJson(response);
+    if (!response.ok || !isRecord(body) || typeof body.code !== "string" || typeof body.expiresAt !== "string") {
+      throw new DeploymentApplyError("PAIRING_UNAVAILABLE", "The Worker could not open a pairing window");
+    }
+    return {
+      code: body.code,
+      expiresAt: body.expiresAt,
+      authorizationServer: typeof body.authorizationServer === "string"
+        ? body.authorizationServer
+        : new URL(endpointUrl(input.endpoint, "/pair")).origin,
+    };
   }
 
   private async mcpCall(
@@ -515,7 +616,7 @@ export class FetchManagedWorkerClient implements ManagedWorkerClient {
           },
         },
       }),
-    }, isRetryableWorkerPropagation);
+    }, isRetryableSessionUpload);
     const body = await safeJson(response);
     if (
       !response.ok
@@ -587,18 +688,19 @@ export interface DefaultManagedDeploymentOptions {
   homeDirectory?: string;
   platform?: NodeJS.Platform;
   executable?: string;
+  executableArgs?: string[];
   uid?: number;
   fetch?: typeof fetch;
   auth?: BrowserLoginOptions;
-  connector?: Omit<DefaultConnectorOptions, "homeDirectory" | "platform" | "command">;
-  renewal?: Omit<DefaultRenewalOptions, "homeDirectory" | "platform" | "executable" | "uid">;
+  connector?: Omit<DefaultConnectorOptions, "homeDirectory" | "platform" | "command" | "commandArgs">;
+  renewal?: Omit<DefaultRenewalOptions, "homeDirectory" | "platform" | "executable" | "executableArgs" | "uid">;
   dependencies?: Partial<ManagedMcpDeploymentDependencies>;
 }
 
 export function createDefaultManagedDeployment(options: DefaultManagedDeploymentOptions): ManagedMcpDeployment {
   const homeDirectory = options.homeDirectory ?? homedir();
   const platform = options.platform ?? process.platform;
-  const executable = options.executable ?? process.argv[1] ?? process.execPath;
+  const runtime = runtimeCommand(options.executable, options.executableArgs);
   const defaults: ManagedMcpDeploymentDependencies = {
     wrangler: new NodeWranglerDeploymentAdapter({ wranglerBinPath: options.wranglerBinPath }),
     materializer: new NodeReleaseMaterializer({
@@ -612,14 +714,16 @@ export function createDefaultManagedDeployment(options: DefaultManagedDeployment
       ...options.renewal,
       platform,
       homeDirectory,
-      executable,
+      executable: runtime.command,
+      executableArgs: runtime.args,
       uid: options.uid,
     }),
     clients: new DefaultClientIntegration({
       ...options.connector,
       platform,
       homeDirectory,
-      command: executable,
+      command: runtime.command,
+      commandArgs: runtime.args,
     }),
     receipts: new PrivateDeploymentReceiptStore(join(homeDirectory, ".config", "moodle-cli", "mcp", "deployments")),
     createToken: () => randomBytes(32).toString("base64url"),
@@ -648,12 +752,52 @@ function endpointUrl(endpoint: string, path: string): string {
   return `${endpoint.replace(/\/$/u, "")}${path}`;
 }
 
+async function pinExpectedHosts(
+  configPath: string,
+  workerName: string,
+  productionEndpoint: string,
+): Promise<void> {
+  let config: unknown;
+  try {
+    config = JSON.parse(await readFile(configPath, "utf8"));
+  } catch {
+    throw new DeploymentApplyError("RELEASE_CONFIG_INVALID", "The generated Wrangler configuration is invalid");
+  }
+  if (!isRecord(config) || !isRecord(config.vars)) {
+    throw new DeploymentApplyError("RELEASE_CONFIG_INVALID", "The generated Wrangler configuration is invalid");
+  }
+  const hosts = endpointHosts(workerName, productionEndpoint);
+  if (!hosts.length) {
+    throw new DeploymentApplyError("MISSING_ENDPOINT", "The Worker production endpoint is invalid");
+  }
+  config.vars.EXPECTED_HOSTS = hosts.join(",");
+  await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`, { mode: 0o600 });
+}
+
+function endpointHosts(workerName: string, endpoint: string | undefined): string[] {
+  if (!endpoint) return [];
+  try {
+    const productionHost = new URL(endpoint).host.toLowerCase();
+    const workerPrefix = `${workerName.toLowerCase()}.`;
+    const previewHost = productionHost.startsWith(workerPrefix)
+      ? `moodle-cli-candidate-${productionHost}`
+      : undefined;
+    return [productionHost, ...(previewHost ? [previewHost] : [])];
+  } catch {
+    return [];
+  }
+}
+
 function isRetryableSessionUpload(status: number): boolean {
   return status === 401 || isRetryableWorkerPropagation(status);
 }
 
 function isRetryableWorkerPropagation(status: number): boolean {
   return status === 404 || status === 429 || status >= 500;
+}
+
+function isRetryableWorkerRouting(status: number): boolean {
+  return status === 404 || status === 429;
 }
 
 async function safeJson(response: Response): Promise<unknown> {
@@ -695,31 +839,6 @@ function parseJsonOutput(output: string): unknown {
   throw new DeploymentApplyError("WRANGLER_OUTPUT_INVALID", "Wrangler returned an unsupported response");
 }
 
-async function readWranglerVersionUpload(outputFilePath: string, workerName: string): Promise<Record<string, unknown>> {
-  let output: string;
-  try {
-    output = await readFile(outputFilePath, "utf8");
-  } catch {
-    throw new DeploymentApplyError("CANDIDATE_UPLOAD_INVALID", "Wrangler did not write candidate metadata");
-  }
-  for (const line of output.trim().split(/\r?\n/u).reverse()) {
-    try {
-      const entry: unknown = JSON.parse(line);
-      if (
-        isRecord(entry)
-        && entry.type === "version-upload"
-        && entry.version === 1
-        && entry.worker_name === workerName
-      ) {
-        return entry;
-      }
-    } catch {
-      continue;
-    }
-  }
-  throw new DeploymentApplyError("CANDIDATE_UPLOAD_INVALID", "Wrangler wrote unsupported candidate metadata");
-}
-
 function collectStrings(value: unknown, keys: Set<string>): string[] {
   const result: string[] = [];
   visit(value, (key, item) => {
@@ -734,22 +853,47 @@ function firstStringForKeys(value: unknown, keys: Set<string>): string | null {
   return collectStrings(value, keys)[0] ?? null;
 }
 
-function deploymentVersionIds(value: unknown): string[] {
-  const ids = collectStrings(value, new Set(["version_id", "versionId"]));
-  return [...new Set(ids)];
+interface DeploymentHistoryEntry {
+  versionId: string;
+  message: string | null;
 }
 
-function releaseDigestFromDocument(value: unknown): string | null {
-  let digestValue: string | null = null;
+// Wrangler's `deployments list --json` is oldest-first and the release annotation
+// belongs to one deployment, so the current release is the newest entry, not the
+// first version id or the first digest found anywhere in the document.
+function deploymentHistory(value: unknown): DeploymentHistoryEntry[] {
+  const entries: Array<DeploymentHistoryEntry & { createdOn: number; index: number }> = [];
   visit(value, (_key, item) => {
-    if (!digestValue && typeof item === "string") {
-      const match = item.match(/moodle-cli-release:([a-zA-Z0-9._-]+)/u);
-      if (match?.[1]) {
-        digestValue = match[1];
-      }
+    if (!isRecord(item) || !Array.isArray(item.versions)) {
+      return;
     }
+    const versionId = activeVersionId(item.versions);
+    if (!versionId) {
+      return;
+    }
+    const createdOn = typeof item.created_on === "string" ? Date.parse(item.created_on) : Number.NaN;
+    const message = isRecord(item.annotations) ? item.annotations["workers/message"] : undefined;
+    entries.push({
+      versionId,
+      message: typeof message === "string" ? message : null,
+      createdOn: Number.isNaN(createdOn) ? 0 : createdOn,
+      index: entries.length,
+    });
   });
-  return digestValue;
+  return entries
+    .sort((a, b) => b.createdOn - a.createdOn || b.index - a.index)
+    .map(({ versionId, message }) => ({ versionId, message }));
+}
+
+function activeVersionId(versions: unknown[]): string | null {
+  const records = versions.filter(isRecord);
+  const active = records.find((version) => version.percentage === 100) ?? records[0];
+  const id = active?.version_id ?? active?.versionId;
+  return typeof id === "string" ? id : null;
+}
+
+function releaseDigestFromMessage(message: string | null): string | null {
+  return message?.match(/moodle-cli-release:([a-zA-Z0-9._-]+)/u)?.[1] ?? null;
 }
 
 function collectAccountObjects(value: unknown): WranglerAccount[] {

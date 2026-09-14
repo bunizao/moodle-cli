@@ -109,6 +109,37 @@ describe("remote MCP credential bridge", () => {
     });
     expect(output.raw()).not.toContain(TOKEN);
   });
+
+  it("forwards the bounded unsupported-version negotiation error", async () => {
+    const output = outputBuffer();
+    const fetchImpl = vi.fn(async () => Response.json({
+      jsonrpc: "2.0",
+      id: "version",
+      error: {
+        code: -32_022,
+        message: "Unsupported protocol version",
+        data: { supported: ["2026-07-28", "2025-11-25"], requested: "1900-01-01" },
+      },
+    }, { status: 400 }));
+
+    await bridgeRemoteMcp({
+      endpoint: "https://moodle.example.workers.dev/mcp",
+      accessToken: TOKEN,
+      input: chunks(`${JSON.stringify(modernRequest("version", "tools/list"))}\n`),
+      output,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+
+    expect(output.lines()).toEqual([{
+      jsonrpc: "2.0",
+      id: "version",
+      error: {
+        code: -32_022,
+        message: "Unsupported protocol version",
+        data: { supported: ["2026-07-28", "2025-11-25"], requested: "1900-01-01" },
+      },
+    }]);
+  });
 });
 
 function modernRequest(id: string | number, method: string) {
