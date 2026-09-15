@@ -23,8 +23,8 @@ Resources and folders return `files` with names and URLs. Pass a selected file U
 | moodle completion | Print shell completion for zsh, bash or fish. | <shell> |  |
 | moodle doctor | Diagnose runtime, browser access, session, background jobs and MCP setup. |  | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required) |
 | moodle download | Download one authenticated Moodle file. | <source> | --dest (value required)<br>--force<br>--pretty<br>--json<br>--yaml<br>--table<br>--fields (value required) |
-| moodle due | Items due in a date window. Use when: deadlines. Not for: item for submission details. Refs: unit code, name, id or URL. Then: item with activity_id. Cost: up to 20 rows by default. | [unit] | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required)<br>--limit (value required)<br>--days (value required) |
-| moodle find | Ranked sections, activities and discussion subjects. Use when: find slides or a task. Not for: search_forums for post text; due for deadlines. Refs: query and optional unit code, name, id or URL. Then: item or file with id. Cost: up to 20 rows by default. | <query> [unit] | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required)<br>--limit (value required)<br>--types (value required) |
+| moodle due | Items due in a date window. | [unit] | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required)<br>--limit (value required)<br>--days (value required) |
+| moodle find | Ranked sections, activities and discussion subjects. | <query> [unit] | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required)<br>--limit (value required)<br>--types (value required) |
 | moodle forums | Inspect forums. |  |  |
 | moodle forums list | List forum activities in a unit. | <unit> | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required)<br>--limit (value required) |
 | moodle forums search | Search forum discussion titles and post text. | <query> | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required)<br>--unit (value required)<br>--course (value required)<br>--forum (value required)<br>--titles-only<br>--unread-only<br>--recent<br>--limit-forums (value required)<br>--limit-discussions (value required)<br>--limit (value required) |
@@ -43,11 +43,11 @@ Resources and folders return `files` with names and URLs. Pass a selected file U
 | moodle mcp renewal | Run the installed managed-session renewal job. |  |  |
 | moodle mcp renewal run | Check and renew one managed Moodle session. |  | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required)<br>--profile (value required) |
 | moodle mcp revoke | Revoke an OAuth client or all OAuth access. | [client-id] | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required)<br>--all |
-| moodle mcp serve | Run the local Moodle MCP server. |  | --stdio |
+| moodle mcp serve | Run the local Moodle MCP server over stdio. |  | --stdio |
 | moodle mcp session | Advanced managed-session operations. |  |  |
 | moodle mcp session push | Upload a Moodle cookie from standard input. |  | --stdin<br>--pretty<br>--json<br>--yaml<br>--table<br>--fields (value required) |
 | moodle mcp status | Show local and remote Moodle MCP readiness. |  | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required)<br>--verbose<br>--logs |
-| moodle news | Latest announcement threads with first-post text. Use when: announcements. Not for: search_forums for other discussions. Refs: optional unit code, name, id or URL. Then: thread with discussion id. Cost: up to 5 announcements by default. | [unit] | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required)<br>--limit (value required)<br>--days (value required) |
+| moodle news | Latest announcement threads with first-post text. | [unit] | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required)<br>--limit (value required)<br>--days (value required) |
 | moodle open | Open a unit or activity reference in the browser. | <ref> | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required) |
 | moodle overview | Show a compact multi-source overview. |  | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required)<br>--todo-limit (value required)<br>--todo-days (value required)<br>--alerts-limit (value required) |
 | moodle skills | Show skill metadata or delegate to the shared skills CLI. |  |  |
