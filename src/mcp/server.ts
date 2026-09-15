@@ -155,7 +155,7 @@ const TOOL_REGISTRATIONS = [
   },
   {
     name: "get_overview",
-    description: "Get a bounded dashboard overview with courses, deadlines, and alerts.",
+    description: "Get courses, deadlines and alerts. Course IDs can be used as courseId in other tools; todo due_at values are Unix timestamps in seconds.",
     input: z.object({
       todoLimit: z.number().int().min(1).max(100).optional().default(5),
       todoDays: z.number().int().min(1).max(365).optional(),
@@ -172,7 +172,7 @@ const TOOL_REGISTRATIONS = [
   },
   {
     name: "list_courses",
-    description: "List the authenticated user's Moodle courses.",
+    description: "List the authenticated user's Moodle courses with IDs and names. Use a returned id as courseId for get_course, list_activities, get_grades or list_forums.",
     input: z.object({ limit: z.number().int().min(1).max(200).optional().default(100) }).strict(),
     output: z.object({ courses: z.array(courseValue) }),
   },
@@ -393,7 +393,7 @@ async function callTool(
     const payload = await runGatewayTool(gateway, name, input);
     const structuredContent = registration.output.parse(wrapToolOutput(name, payload));
     return {
-      content: toolContent(name, payload),
+      content: toolContent(name, payload, structuredContent),
       structuredContent,
       resultType: "complete",
       _meta: RESULT_META,
@@ -404,7 +404,7 @@ async function callTool(
     }
     const mapped = mapMoodleError(error);
     return {
-      content: [{ type: "text", text: mapped.message }],
+      content: [{ type: "text", text: JSON.stringify({ error: mapped }) }],
       structuredContent: { error: mapped },
       isError: true,
       resultType: "complete",
@@ -492,8 +492,10 @@ function wrapToolOutput(name: string, payload: unknown): Record<string, unknown>
   return { [keys[name] ?? "result"]: payload };
 }
 
-function toolContent(name: string, payload: unknown): Array<Record<string, unknown>> {
-  const text = { type: "text", text: summarizeToolOutput(name, payload) };
+function toolContent(name: string, payload: unknown, structuredContent: unknown): Array<Record<string, unknown>> {
+  // Some hosted clients only expose content to the model. Serialize the validated
+  // result here too, so IDs and details remain available for follow-up calls.
+  const text = { type: "text", text: JSON.stringify(structuredContent) };
   if (name !== "get_file" || !isMoodleFile(payload)) return [text];
   return [
     text,
@@ -506,43 +508,6 @@ function toolContent(name: string, payload: unknown): Array<Record<string, unkno
       },
     },
   ];
-}
-
-function summarizeToolOutput(name: string, payload: unknown): string {
-  if (Array.isArray(payload)) {
-    const labels: Record<string, [string, string]> = {
-      list_courses: ["Moodle course", "Moodle courses"],
-      list_activities: ["activity", "activities"],
-      list_forums: ["forum", "forums"],
-      search_forums: ["forum result", "forum results"],
-    };
-    const [singular, plural] = labels[name] ?? ["result", "results"];
-    return `Found ${payload.length} ${payload.length === 1 ? singular : plural}.`;
-  }
-  if (name === "get_user" && isRecord(payload)) {
-    return `Authenticated as ${stringValue(payload.fullname)}.`;
-  }
-  if (name === "get_overview" && isRecord(payload)) {
-    const courses = Array.isArray(payload.courses) ? payload.courses.length : 0;
-    const todo = Array.isArray(payload.todo) ? payload.todo.length : 0;
-    return `Overview includes ${courses} courses and ${todo} upcoming items.`;
-  }
-  if (name === "get_course" && isRecord(payload) && isRecord(payload.course)) {
-    return `Loaded course ${stringValue(payload.course.fullname) || numberValue(payload.course.id)}.`;
-  }
-  if (name === "get_activity" && isRecord(payload)) {
-    return `Loaded activity ${stringValue(payload.name) || numberValue(payload.id)}.`;
-  }
-  if (name === "get_grades" && isRecord(payload)) {
-    return `Loaded grades for ${stringValue(payload.course_name) || numberValue(payload.course_id)}.`;
-  }
-  if (name === "get_thread" && isRecord(payload)) {
-    return `Loaded forum thread ${stringValue(payload.subject) || numberValue(payload.id)}.`;
-  }
-  if (name === "get_file" && isMoodleFile(payload)) {
-    return `Loaded Moodle file ${payload.name} (${payload.bytes} bytes).`;
-  }
-  return "Moodle request completed.";
 }
 
 function mapMoodleError(error: unknown): { type: string; message: string; moodleCode?: string } {

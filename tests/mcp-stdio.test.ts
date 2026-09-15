@@ -29,6 +29,8 @@ describe("Moodle MCP stdio transport", () => {
     });
 
     expect(output.lines()).toHaveLength(1);
+    const result = output.lines()[0]!.result as { content: Array<{ text: string }>; structuredContent: unknown };
+    expect(JSON.parse(result.content[0]!.text)).toEqual(result.structuredContent);
     expect(output.lines()[0]).toMatchObject({
       id: 1,
       result: { structuredContent: { user: { fullname: "Ada Lovelace" } } },

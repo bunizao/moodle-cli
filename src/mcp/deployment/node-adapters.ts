@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from "node:util";
 import { runtimeCommand } from "../self-command.js";
 import { spawn } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
@@ -550,6 +551,19 @@ export class FetchManagedWorkerClient implements ManagedWorkerClient {
     if (!moodleUser) {
       throw new DeploymentApplyError("MCP_SMOKE_FAILED", "MCP get_user check returned no Moodle user");
     }
+    const coursesResult = await this.mcpCall(input.endpoint, input.mcpAccessToken, "tools/call", { name: "list_courses", arguments: { limit: 1 } }, 4);
+    const courses = readableToolResult(coursesResult).courses;
+    if (!Array.isArray(courses)) throw new DeploymentApplyError("MCP_SMOKE_FAILED", "MCP list_courses returned no course list");
+    if (courses.length) {
+      const first = courses[0];
+      if (!isRecord(first) || !Number.isSafeInteger(first.id) || Number(first.id) <= 0) {
+        throw new DeploymentApplyError("MCP_SMOKE_FAILED", "MCP list_courses returned no usable course ID");
+      }
+      const detail = readableToolResult(await this.mcpCall(input.endpoint, input.mcpAccessToken, "tools/call", { name: "get_course", arguments: { courseId: first.id } }, 5));
+      if (!isRecord(detail.course) || !isRecord(detail.course.course) || detail.course.course.id !== first.id || !Array.isArray(detail.course.sections)) {
+        throw new DeploymentApplyError("MCP_SMOKE_FAILED", "MCP course lookup did not match the listed course");
+      }
+    }
     return { moodleUser };
   }
 
@@ -628,6 +642,7 @@ export class FetchManagedWorkerClient implements ManagedWorkerClient {
     ) {
       throw new DeploymentApplyError("MCP_SMOKE_FAILED", `MCP ${method} check failed`);
     }
+    if (method === "tools/call") readableToolResult(body.result);
     return body.result;
   }
 
@@ -817,11 +832,22 @@ function firstHealthCheck(body: Record<string, unknown>, name: string): Record<s
   return isRecord(check) ? check : null;
 }
 
-function mcpUserFullname(result: unknown): string | null {
-  if (!isRecord(result) || !isRecord(result.structuredContent)) {
-    return null;
+function readableToolResult(result: unknown): Record<string, unknown> {
+  if (isRecord(result) && result.isError !== true && Array.isArray(result.content)) {
+    try {
+      const text = result.content.filter((block) => isRecord(block) && block.type === "text")
+        .map((block) => block.text).join("\n");
+      const parsed: unknown = JSON.parse(text);
+      if (isRecord(parsed) && isDeepStrictEqual(parsed, result.structuredContent)) return parsed;
+    } catch {
+      // A summary-only response cannot support a text-only client's next call.
+    }
   }
-  const user = result.structuredContent.user;
+  throw new DeploymentApplyError("MCP_CONTENT_INCOMPLETE", "MCP text content is missing the complete structured result");
+}
+
+function mcpUserFullname(result: unknown): string | null {
+  const user = readableToolResult(result).user;
   return isRecord(user) && typeof user.fullname === "string" && user.fullname.trim()
     ? user.fullname.trim()
     : null;

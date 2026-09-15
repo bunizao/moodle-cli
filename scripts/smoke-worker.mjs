@@ -37,6 +37,8 @@ const moodle = createServer(async (req, res) => {
     const calls = JSON.parse(raw);
     res.writeHead(200, { 'content-type': 'application/json' });
     res.end(JSON.stringify(calls.map((call, index) => ({ index, error: false, data:
+      call.methodname === 'core_enrol_get_users_courses' ? [{ id: 301, shortname: 'TEST301', fullname: 'Synthetic Course' }] :
+      call.methodname === 'core_course_get_contents' ? [{ id: 401, name: 'Week 1', section: 1, modules: [{ id: 501, name: 'Assignment', modname: 'assign', url: 'https://synthetic.example/mod/assign/view.php?id=501' }] }] :
       call.methodname === 'core_course_get_course_module' ? { cm: { modname: 'url', course: 1 } } :
       call.methodname === 'core_webservice_get_site_info' ? { userid, fullname: `Synthetic Account ${accountB ? 'B' : 'A'}`, username: `account-${userid}`, siteurl: 'https://synthetic.example', sitename: 'Synthetic Moodle' } :
       { timeremaining: 3600 }
@@ -89,6 +91,25 @@ try {
   const initialBody = await initial.json();
   evidence.oauthFlow = { authorization: approval.status, token: tokenResponse.status, mcp: initial.status, accountBefore: initialBody.result?.structuredContent?.user?.userid };
   assert.equal(evidence.oauthFlow.accountBefore, 101);
+  const textData = async (name, args = {}) => {
+    const response = await mcp(tokens.access_token, name, args);
+    assert.equal(response.status, 200);
+    const body = await response.json();
+    assert.notEqual(body.result?.isError, true);
+    const data = JSON.parse(body.result.content.filter(block => block.type === 'text').map(block => block.text).join('\n'));
+    assert.deepEqual(data, body.result.structuredContent);
+    return data;
+  };
+  const listed = await textData('list_courses');
+  assert.equal(listed.courses[0].fullname, 'Synthetic Course');
+  const courseId = listed.courses[0].id;
+  const course = await textData('get_course', { courseId });
+  assert.equal(course.course.course.id, courseId);
+  assert.equal(course.course.sections[0].activities[0].id, 501);
+  const activities = await textData('list_activities', { courseId });
+  assert.equal(activities.activities[0].id, 501);
+  evidence.textOnlyClient = { courseIdAvailable: true, courseLookupMatched: true, activityIdAvailable: true };
+
   assert.equal((await upload(cookies.b, 1)).status, 409);
   const switched = await mcp(tokens.access_token);
   const switchedBody = await switched.json();

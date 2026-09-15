@@ -101,7 +101,7 @@ describe("Moodle MCP server", () => {
       id: "file",
       result: {
         content: [
-          { type: "text", text: "Loaded Moodle file slides.pdf (6 bytes)." },
+          { type: "text", text: expect.any(String) },
           {
             type: "resource",
             resource: {
@@ -139,7 +139,7 @@ describe("Moodle MCP server", () => {
     expect(response).toMatchObject({
       id: 2,
       result: {
-        content: [{ type: "text", text: "Found 1 Moodle course." }],
+        content: [{ type: "text", text: expect.any(String) }],
         structuredContent: {
           courses: [{ id: 101, shortname: "COMP101", fullname: "Computing" }],
         },
@@ -147,7 +147,7 @@ describe("Moodle MCP server", () => {
         _meta: { cacheScope: "private" },
       },
     });
-    expect(JSON.stringify((response as { result: { content: unknown } }).result.content)).not.toContain("Computing");
+    expect(textResult(response)).toMatchObject({ courses: [{ id: 101, fullname: "Computing" }] });
   });
 
   it.each([
@@ -351,7 +351,7 @@ describe("Moodle MCP server", () => {
     ["search_forums", { query: "exam" }, "results"],
     ["get_thread", { discussionId: 701 }, "thread"],
     ["get_file", { source: 91234 }, "file"],
-  ])("dispatches %s through its public result shape", async (name, args, resultKey) => {
+  ])("exposes the complete %s result to text-only clients", async (name, args, resultKey) => {
     const server = createMoodleMcpServer(fakeGateway());
     const response = await server.handle({
       jsonrpc: "2.0",
@@ -367,8 +367,49 @@ describe("Moodle MCP server", () => {
         resultType: "complete",
       },
     });
+    const result = (response as { result: { structuredContent: unknown } }).result;
+    expect(textResult(response)).toEqual(result.structuredContent);
+    if (name === "get_file") expect(JSON.stringify(textResult(response))).not.toContain("c2xpZGVz");
+  });
+
+  it("includes overview deadlines and forum IDs in model-visible content", async () => {
+    const gateway = fakeGateway();
+    const overview = await gateway.getOverview({ todoLimit: 5, alertsLimit: 5 });
+    overview.courses = await gateway.listCourses();
+    overview.todo = [{ id: 501, name: "Assignment", course_id: 101, course_name: "Computing", due_at: 1800000000, url: "https://moodle.example.edu/mod/assign/view.php?id=501" }] as typeof overview.todo;
+    gateway.getOverview = async () => overview;
+    gateway.listForums = async () => [{ id: 601, name: "Questions", course_id: 101, course_name: "Computing", url: "https://moodle.example.edu/mod/forum/view.php?id=601" }];
+    const server = createMoodleMcpServer(gateway);
+    const call = async (name: string) => textResult(await server.handle({ jsonrpc: "2.0", id: name, method: "tools/call", params: modernParams({ name }) }));
+    expect(await call("get_overview")).toMatchObject({ overview: { courses: [{ id: 101 }, { id: 102 }], todo: [{ due_at: 1800000000, course_id: 101 }] } });
+    expect(await call("list_forums")).toMatchObject({ forums: [{ id: 601, course_id: 101, name: "Questions" }] });
+  });
+
+  it("chains course, activity and grade calls using only text content", async () => {
+    const gateway = fakeGateway();
+    const getCourse = vi.spyOn(gateway, "getCourse");
+    const listActivities = vi.spyOn(gateway, "listActivities");
+    const getGrades = vi.spyOn(gateway, "getGrades");
+    const server = createMoodleMcpServer(gateway);
+    const call = async (name: string, args = {}) => textResult(await server.handle({
+      jsonrpc: "2.0", id: name, method: "tools/call", params: { name, arguments: args },
+    }, { protocolVersion: "2025-06-18" }));
+    const courses = (await call("list_courses")).courses as Array<{ id: number; fullname: string }>;
+    expect(courses[0]).toMatchObject({ id: 101, fullname: "Computing" });
+    const courseId = courses[0]!.id;
+    expect(await call("get_course", { courseId })).toHaveProperty("course.sections");
+    expect(await call("list_activities", { courseId })).toHaveProperty("activities");
+    expect(await call("get_grades", { courseId })).toHaveProperty("grades.course_id", courseId);
+    for (const method of [getCourse, listActivities, getGrades]) {
+      expect(method).toHaveBeenCalledWith(expect.objectContaining({ courseId }));
+    }
   });
 });
+
+function textResult(response: unknown): Record<string, unknown> {
+  const result = (response as { result: { content: Array<{ type: string; text?: string }> } }).result;
+  return JSON.parse(result.content.filter((block) => block.type === "text").map((block) => block.text).join("\n"));
+}
 
 function modernParams(extra: Record<string, unknown> = {}) {
   return {

@@ -503,8 +503,9 @@ describe("FetchManagedWorkerClient", () => {
       .mockResolvedValueOnce(Response.json({
         jsonrpc: "2.0",
         id: 3,
-        result: { structuredContent: { user: { fullname: "Alice Example" } } },
-      }));
+        result: smokeToolResult({ user: { fullname: "Alice Example" } }),
+      }))
+      .mockResolvedValueOnce(Response.json({ jsonrpc: "2.0", id: 4, result: smokeToolResult({ courses: [] }) }));
     const sleep = vi.fn(async () => undefined);
     const client = new FetchManagedWorkerClient(fetchImpl as unknown as typeof fetch, sleep);
 
@@ -513,8 +514,21 @@ describe("FetchManagedWorkerClient", () => {
       mcpAccessToken: "mcp-token",
       sessionSyncToken: "sync-token",
     })).resolves.toEqual({ moodleUser: "Alice Example" });
-    expect(fetchImpl).toHaveBeenCalledTimes(6);
+    expect(fetchImpl).toHaveBeenCalledTimes(7);
     expect(sleep).toHaveBeenCalledWith(500);
+  });
+
+  it("rejects a summary-only tool result even when structured data is present", async () => {
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (!String(input).endsWith("/mcp")) return Response.json({ status: "pass" });
+      const request = JSON.parse(String(init?.body));
+      return Response.json({ jsonrpc: "2.0", id: request.id, result: request.method === "tools/call"
+        ? { content: [{ type: "text", text: "Authenticated as Alice Example." }], structuredContent: { user: { fullname: "Alice Example" } } }
+        : {} });
+    });
+    const client = new FetchManagedWorkerClient(fetchImpl as unknown as typeof fetch);
+    await expect(client.runSmoke({ endpoint: "https://worker.example", mcpAccessToken: "mcp-token", sessionSyncToken: "sync-token" }))
+      .rejects.toMatchObject({ code: "MCP_CONTENT_INCOMPLETE" });
   });
 
   it("uses the approved CAS session endpoint and full release smoke matrix", async () => {
@@ -531,12 +545,16 @@ describe("FetchManagedWorkerClient", () => {
       if (url.endsWith("/readyz")) {
         return Response.json({ status: "pass" });
       }
-      const request = JSON.parse(String(init?.body)) as { id: number; method: string };
+      const request = JSON.parse(String(init?.body)) as { id: number; method: string; params: { name?: string; arguments?: { courseId?: number } } };
       return Response.json({
         jsonrpc: "2.0",
         id: request.id,
         result: request.method === "tools/call"
-          ? { structuredContent: { user: { fullname: "Alice Example" } } }
+          ? smokeToolResult(request.params.name === "list_courses"
+            ? { courses: [{ id: 101, fullname: "Computing" }] }
+            : request.params.name === "get_course"
+              ? { course: { course: { id: request.params.arguments?.courseId }, sections: [] } }
+              : { user: { fullname: "Alice Example" } })
           : {},
       });
     });
@@ -566,6 +584,8 @@ describe("FetchManagedWorkerClient", () => {
       "/mcp",
       "/mcp",
       "/mcp",
+      "/mcp",
+      "/mcp",
     ]);
     expect(JSON.parse(String(requests[0]?.init?.body))).toEqual({
       moodleOrigin: "https://moodle.example.edu",
@@ -574,7 +594,8 @@ describe("FetchManagedWorkerClient", () => {
       expectedRevision: null,
     });
     const methods = requests.slice(3).map((request) => JSON.parse(String(request.init?.body)).method);
-    expect(methods).toEqual(["server/discover", "tools/list", "tools/call"]);
+    expect(methods).toEqual(["server/discover", "tools/list", "tools/call", "tools/call", "tools/call"]);
+    expect(JSON.parse(String(requests.at(-1)?.init?.body)).params).toMatchObject({ name: "get_course", arguments: { courseId: 101 } });
     expect(new Headers(requests[3]?.init?.headers).get("mcp-method")).toBe("server/discover");
     expect(new Headers(requests[3]?.init?.headers).get("mcp-name")).toBeNull();
     expect(new Headers(requests[5]?.init?.headers).get("mcp-method")).toBe("tools/call");
@@ -688,3 +709,7 @@ describe("deployment history and atomic credentials", () => {
     expect(runner.run).toHaveBeenCalledOnce();
   });
 });
+
+function smokeToolResult(data: unknown) {
+  return { content: [{ type: "text", text: JSON.stringify(data) }], structuredContent: data };
+}
