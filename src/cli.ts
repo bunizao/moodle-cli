@@ -13,7 +13,7 @@ import { ReferenceError, normalize, resolveSection, splitUnitPhrase } from "./re
 import { renderScreen } from "./screens.js";
 import { createInterface } from "node:readline/promises";
 import { spawn } from "node:child_process";
-import { Command, type Option } from "commander";
+import { Command } from "commander";
 import {
   confirm,
   createProgram,
@@ -127,8 +127,6 @@ export function buildProgram(io: CliIO = {}): Command {
   program.option("--pretty", "Indent JSON output.");
   program.option("--limit <number>", "Maximum returned rows.", parsePositiveInt);
   program.option("--days <number>", "Deadline window in days.", parsePositiveInt);
-  const quietIndex = program.options.findIndex(option => option.long === "--quiet");
-  if (quietIndex >= 0) (program.options as Option[]).splice(quietIndex, 1);
   const verbose = program.options.find(option => option.long === "--verbose");
   if (verbose) { verbose.short = "-v"; verbose.flags = "-v, --verbose"; }
   program.showSuggestionAfterError(true);
