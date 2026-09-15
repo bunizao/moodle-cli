@@ -32,9 +32,13 @@ const READ_ONLY_ANNOTATIONS = {
 
 const aliases: Partial<Record<string, Intent>> = { get_overview: "home", list_courses: "units", get_course: "unit", get_activity: "item", get_grades: "grades", get_thread: "thread", get_file: "file" };
 export const TOOL_CATALOG = Object.entries(intentContracts).map(([name, contract]) => ({
-  name, description: intentDescription(name as Intent), inputSchema: z.toJSONSchema(contract.input, { io: "input" }),
-  outputSchema: compactSchema(z.toJSONSchema(contract.output)), annotations: READ_ONLY_ANNOTATIONS,
+  name, description: intentDescription(name as Intent),
+  inputSchema: compactSchema(z.toJSONSchema(contract.input, { io: "input" })), annotations: READ_ONLY_ANNOTATIONS,
 }));
+
+// Results are parsed against the contract before they are sent, so publishing the
+// output schema only adds bytes to every tools/list a client ever reads.
+export const TOOL_OUTPUT_SCHEMAS = Object.fromEntries(Object.entries(intentContracts).map(([name, contract]) => [name, compactSchema(z.toJSONSchema(contract.output))]));
 
 function compactSchema(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(compactSchema);

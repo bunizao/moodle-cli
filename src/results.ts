@@ -7,8 +7,11 @@ export function stripEmpty(value: unknown): unknown {
 }
 
 export function timezoneFor(value?: string): { timezone: string; timezone_source: string } {
-  try { if (value && value !== "99") { new Intl.DateTimeFormat("en", { timeZone: value }).format(); return { timezone: value, timezone_source: "site" }; } } catch { /* Invalid site timezone uses an explicit fallback. */ }
-  return { timezone: "UTC", timezone_source: "fallback" };
+  try { if (value && value !== "99") { new Intl.DateTimeFormat("en", { timeZone: value }).format(); return { timezone: value, timezone_source: "site" }; } } catch { /* An invalid site timezone falls back to the host clock. */ }
+  // Most profiles leave the site timezone unset, so the machine clock is the honest
+  // default; a Worker resolves to UTC here and reports it as a fallback.
+  const host = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  return host && host !== "UTC" ? { timezone: host, timezone_source: "local" } : { timezone: "UTC", timezone_source: "fallback" };
 }
 
 export function isoTime(epoch: number | undefined, timezone = "UTC"): string | undefined {

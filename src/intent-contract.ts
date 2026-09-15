@@ -11,7 +11,7 @@ const activityFields = { id, name: s, type: s, unit_id: n, section_id: n, hidden
 const activityListSchema = z.object({ ...activityFields, section: s, unit_code: s, description: s });
 export const activitySchema = z.object({ ...activityFields, ...fields(["url", "target_url", "section", "unit_code", "description", "submission_status", "grading_status", "grade", "due_pretty", "opens_pretty", "closes_pretty", "attempts_allowed", "availability", "time_remaining", "content_text"]), files: z.array(file).optional() });
 const sectionSchema = z.object({ id, name: s, activity_count: id, hidden: z.boolean().optional(), positional: z.boolean().optional(), activities: z.array(activityListSchema).optional() });
-const current = z.object({ id, name: s, estimated: z.boolean().optional(), range_estimated: z.boolean().optional(), start: s, end: s, start_at: n, end_at: n });
+const current = z.object({ id, name: s, estimated: z.boolean().optional() });
 const unitSchema = z.object({ id, code: s, name: s, start: s, end: s, start_at: n, end_at: n, hidden: z.boolean().optional(), current_section: current.optional() });
 const dueSchema = z.object({ id, activity_id: n, name: s, type: s, unit_id: id, unit_code: s, event: s, due: s, due_at: id, actionable: z.boolean().optional(), status: s });
 const counts = z.object(Object.fromEntries(["notification_count", "unread_notification_count", "starred_message_count", "direct_message_count", "group_message_count", "self_message_count", "unread_starred_message_count", "unread_direct_message_count", "unread_group_message_count", "unread_self_message_count"].map(key => [key, n])));
@@ -22,7 +22,7 @@ const input = (shape: z.ZodRawShape) => z.object(shape).strict();
 const list = (key: string, value: z.ZodType) => z.object({ [key]: z.array(value).optional(), total: id });
 
 export const intentContracts = {
-  home: { when: "dashboard", command: "moodle", what: "Today, timezone, current sections, due items and unread counts.", instead: "due for longer deadline lists", refs: "days defaults to 14", then: "unit or item", cost: "small dashboard", input: input({ days: z.number().int().min(1).max(365).default(14) }), output: z.object({ home: z.object({ today: z.string(), timezone: z.string(), timezone_source: s, name: s, siteurl: s, units: z.array(unitSchema).optional(), due: z.array(dueSchema).optional(), total: id, unread: counts.optional(), errors: z.array(z.string()).optional() }) }) },
+  home: { when: "dashboard", command: "moodle", what: "Today, timezone, due items and unread counts.", instead: "due for longer deadline lists", refs: "days defaults to 14", then: "unit or item", cost: "small dashboard", input: input({ days: z.number().int().min(1).max(365).default(14) }), output: z.object({ home: z.object({ today: z.string(), timezone: z.string(), timezone_source: s, name: s, siteurl: s, units: z.array(unitSchema).optional(), due: z.array(dueSchema).optional(), total: id, unread: counts.optional(), errors: z.array(z.string()).optional() }) }) },
   due: { when: "deadlines", command: "moodle due [UNIT] --days 14", what: "Items due in a date window.", instead: "item for submission details", refs: "unit code, name, id or URL", then: "item with activity_id", cost: "up to 20 rows by default", input: input({ unit: ref.optional(), days: z.number().int().min(1).max(365).default(14), limit }), output: list("due", dueSchema) },
   units: { when: "unit names", command: "moodle units", what: "Enrolled units with ids, codes and names.", instead: "unit for sections", refs: "none", then: "unit with a name or id", cost: "small list", input: input({ limit: limit.default(200) }), output: list("units", unitSchema) },
   unit: { when: "a unit or section", command: "moodle UNIT [SECTION]", what: "Section index and current section; section argument returns activities and files.", instead: "find for a named item", refs: "unit code, name, id or URL; section number or name", then: "item or file with activity id", cost: "index about 4 KB; section about 0.5 KB", input: input({ unit: ref, section: ref.optional() }), output: z.object({ unit: unitSchema, sections: z.array(sectionSchema).optional(), total: id }) },
@@ -35,6 +35,10 @@ export const intentContracts = {
   file: { when: "download a file", command: 'moodle get "UNIT TASK" --to DIR', what: "One authenticated file as embedded content, at most 16 MiB.", instead: "item for file choices", refs: "resource id, same-site URL, or UNIT TASK phrase", then: "read the returned resource", cost: "binary content up to 16 MiB", input: input({ ref }), output: z.object({ file: z.object({ name: z.string(), mime_type: z.string(), bytes: id, uri: z.string() }) }) },
 } as const;
 export type Intent = keyof typeof intentContracts;
+// Humans get the plain sentence; the agent contract is only useful in a tool catalog.
+export function humanDescription(name: Intent): string {
+  return intentContracts[name].what;
+}
 export function intentDescription(name: Intent): string {
   const c = intentContracts[name];
   return `${c.what} Use when: ${c.when}. Not for: ${c.instead}. Refs: ${c.refs}. Then: ${c.then}. Cost: ${c.cost}.`;

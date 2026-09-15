@@ -182,6 +182,7 @@ const AjaxEnvelopeSchema = z.array(
 
 export class MoodleClientCore {
   readonly baseUrl: string;
+  private coursesCache?: { at: number; courses: Promise<Course[]> };
   private fetchImpl: typeof fetch;
   private cookie: MoodleSessionCookie;
   private sesskey: string | null;
@@ -253,7 +254,22 @@ export class MoodleClientCore {
     return context.user_info;
   }
 
+  // Resolution, forum listing and every screen ask for the unit list, and sites that
+  // disable the enrolment service pay three requests for each answer. A short memo
+  // keeps one command to one round trip without pinning a server to stale enrolments.
   async getCourses(): Promise<Course[]> {
+    if (!this.coursesCache || Date.now() - this.coursesCache.at > 60_000) {
+      this.coursesCache = { at: Date.now(), courses: this.fetchCourses() };
+    }
+    try {
+      return await this.coursesCache.courses;
+    } catch (error) {
+      this.coursesCache = undefined;
+      throw error;
+    }
+  }
+
+  private async fetchCourses(): Promise<Course[]> {
     await this.ensureSession();
     try {
       const data = await this.call(FUNC_GET_COURSES, { userid: this.userid });

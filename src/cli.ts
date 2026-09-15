@@ -7,8 +7,8 @@ import { DefaultRenewalIntegration } from "./mcp/renewal/index.js";
 import { CACHE_DIR_NAME, CONFIG_DIR_NAME } from "./constants.js";
 import { runtimeSupportsCookies } from "./mcp/self-command.js";
 import { createMoodleGateway } from "./mcp/gateway.js";
-import { createIntentService } from "./intents.js";
-import { intentDescription, type Intent } from "./intent-contract.js";
+import { createIntentService, type IntentService } from "./intents.js";
+import { humanDescription, type Intent } from "./intent-contract.js";
 import { ReferenceError, normalize, resolveSection, splitUnitPhrase } from "./resolve.js";
 import { renderScreen } from "./screens.js";
 import { createInterface } from "node:readline/promises";
@@ -84,6 +84,8 @@ interface Runtime {
   getClient: () => Promise<MoodleClient>;
   baseUrl: () => Promise<string>;
   output: (data: unknown, formatter: () => string, options: OutputCommandOptions) => Promise<void>;
+  screen: (data: Record<string, unknown>, options?: OutputCommandOptions) => string;
+  count: (key: "limit" | "days", local?: number, fallback?: number) => number | undefined;
 }
 
 interface OutputCommandOptions {
@@ -131,8 +133,23 @@ export function buildProgram(io: CliIO = {}): Command {
   if (verbose) { verbose.short = "-v"; verbose.flags = "-v, --verbose"; }
   program.showSuggestionAfterError(true);
 
+  // Screens are the only place the terminal's real width matters; one helper keeps
+  // every call site honest about it.
+  const screen = (data: Record<string, unknown>, options: OutputCommandOptions = {}) => renderScreen(data, {
+    // Terminals without a size report 0 columns; the default is better than 40.
+    width: (stdout as Partial<NodeJS.WriteStream>).columns || undefined,
+    color: !process.env.NO_COLOR && program.opts().color !== false && outputFormat({ ...program.opts(), ...options }, stdout) === "table",
+  });
+
+  // Commander hands a flag declared on both the program and a subcommand to the
+  // program, so a local --limit or --days never arrives. What the user typed wins,
+  // then the command's own default.
+  const count = (key: "limit" | "days", local?: number, fallback?: number) => (program.opts()[key] as number | undefined) ?? local ?? fallback;
+
   const runtime: Runtime = {
     client: null,
+    screen,
+    count,
     baseUrl: async () => (await loadConfig({ env: io.env, cwd: io.cwd, homeDir: io.homeDir, stdin: io.stdin, stderr: stderr as NodeJS.WritableStream, fetch: io.fetchImpl })).baseUrl,
     getClient: async () => {
       if (!runtime.client) {
@@ -191,11 +208,10 @@ export function buildProgram(io: CliIO = {}): Command {
     return mcpService;
   };
 
-  const execute = async (name: Intent, args: Record<string, unknown>, options: OutputCommandOptions = {}) => {
-    const client = await runtime.getClient();
-    const service = createIntentService(createMoodleGateway(client));
-    const result = await service.run(name, args);
-    await runtime.output(result, () => renderScreen(result, { color: !process.env.NO_COLOR && program.opts().color !== false && outputFormat({ ...program.opts(), ...options }, stdout) === "table" }), options);
+  const execute = async (name: Intent, args: Record<string, unknown>, options: OutputCommandOptions = {}, service?: IntentService) => {
+    const runner = service ?? createIntentService(createMoodleGateway(await runtime.getClient()));
+    const result = await runner.run(name, args);
+    await runtime.output(result, () => screen(result, options), options);
   };
 
   const choose = async <T>(action: () => Promise<T>, retry: (id: number) => Promise<T>): Promise<T> => {
@@ -220,7 +236,16 @@ export function buildProgram(io: CliIO = {}): Command {
     const client = await runtime.getClient();
     const courses = await client.getCourses();
     const parsed = await choose(async () => splitUnitPhrase(targets.join(" "), courses), async id => ({ course: courses.find(c => c.id === id)!, query: targets.slice(1).join(" ") }));
-    if (!parsed) return execute("find", { query: targets.join(" "), limit: program.opts().limit }, merged);
+    if (!parsed) {
+      const service = createIntentService(createMoodleGateway(client));
+      // A bare target is a place to go, not a forum search: an unmatched one is an
+      // error with the site's own unit list, not an empty result and exit 0.
+      const query = targets.join(" ");
+      if (!(await service.find(query, undefined, undefined, false)).length) {
+        throw new ReferenceError("not_found", `No unit or item matches '${query}'. Your units: ${courses.map(c => c.shortname || c.fullname).join(", ")}.`, courses.map(c => ({ id: c.id, name: c.fullname || c.shortname, code: c.shortname || undefined })));
+      }
+      return execute("find", { query, limit: program.opts().limit }, merged, service);
+    }
     const unit = parsed.course.id;
     const query = parsed.query;
     if (["grades", "news", "due"].includes(query)) return execute(query as Intent, { unit, ...(query !== "grades" ? { limit: program.opts().limit } : {}) }, merged);
@@ -238,7 +263,7 @@ export function buildProgram(io: CliIO = {}): Command {
         }
         data = { ...data, ...await service.run("due", { unit }), ...await service.run("news", { unit, limit: 1 }) };
       }
-      return runtime.output(data, () => renderScreen(data), merged);
+      return runtime.output(data, () => screen(data), merged);
     }
     const sections = await client.getCourseContents(unit);
     try {
@@ -252,7 +277,7 @@ export function buildProgram(io: CliIO = {}): Command {
         return choose(async () => { throw error; }, async id => {
           const chosen = sections.find(section => section.id === id)!;
           const result = await createIntentService({ ...createMoodleGateway(client), getCourse: async () => ({ course: parsed.course, sections: [chosen] }) }).run("unit", { unit, section: chosen.name });
-          await runtime.output(result, () => renderScreen(result), merged);
+          await runtime.output(result, () => screen(result), merged);
         });
       }
     }
@@ -260,15 +285,15 @@ export function buildProgram(io: CliIO = {}): Command {
   });
 
   for (const name of ["due", "news"] as const) {
-    addOutputOptions(program.command(name).description(intentDescription(name)).argument("[unit]", "Unit code, name, id or URL"))
+    addOutputOptions(program.command(name).description(humanDescription(name)).argument("[unit]", "Unit code, name, id or URL"))
       .option("--limit <number>", "Maximum returned rows.", parsePositiveInt)
       .option("--days <number>", "Deadline window in days.", parsePositiveInt)
-      .action(async (unit: string | undefined, options: OutputCommandOptions & { days?: number; limit?: number }) => execute(name, { unit, limit: options.limit, ...(name === "due" ? { days: options.days } : {}) }, options));
+      .action(async (unit: string | undefined, options: OutputCommandOptions & { days?: number; limit?: number }) => execute(name, { unit, limit: count("limit", options.limit), ...(name === "due" ? { days: count("days", options.days) } : {}) }, options));
   }
-  addOutputOptions(program.command("find").description(intentDescription("find")).argument("<query>").argument("[unit]"))
+  addOutputOptions(program.command("find").description(humanDescription("find")).argument("<query>").argument("[unit]"))
     .option("--limit <number>", "Maximum returned rows.", parsePositiveInt)
     .option("--types <types>", "Comma-separated activity types.")
-    .action(async (query: string, unit: string | undefined, options: OutputCommandOptions & { limit?: number; types?: string }) => execute("find", { query, unit, limit: options.limit, types: options.types?.split(",") }, options));
+    .action(async (query: string, unit: string | undefined, options: OutputCommandOptions & { limit?: number; types?: string }) => execute("find", { query, unit, limit: count("limit", options.limit), types: options.types?.split(",") }, options));
   addOutputOptions(program.command("get").description("Download a resource by id, URL, or UNIT TASK phrase.").argument("<ref>"))
     .option("--to <directory>", "Destination directory.")
     .option("--force", "Replace an existing file atomically.")
@@ -316,13 +341,13 @@ export function buildProgram(io: CliIO = {}): Command {
     .option("--limit <number>", "Maximum number of items.", parsePositiveInt, 20)
     .option("--days <number>", "Only include items due within the next N days.", parsePositiveInt)
     .action(async (options: OutputCommandOptions & { limit: number; days?: number }) => {
-      await execute("due", { limit: options.limit, days: options.days }, options);
+      await execute("due", { limit: count("limit", options.limit), days: count("days", options.days) }, options);
     });
 
   addOutputOptions(program.command("alerts").description("List notifications and message counts."))
     .option("--limit <number>", "Maximum number of notifications.", parsePositiveInt, 20)
     .action(async (options: OutputCommandOptions & { limit: number }) => {
-      const alerts = await (await runtime.getClient()).getAlerts(options.limit);
+      const alerts = await (await runtime.getClient()).getAlerts(count("limit", options.limit)!);
       await runtime.output(stripEmpty({ alerts }), () => formatAlerts(alerts), options);
     });
 
@@ -345,8 +370,8 @@ export function buildProgram(io: CliIO = {}): Command {
       const sections = await client.getCourseContents(courseId);
       const chosen = options.section ? [resolveSection(options.section, sections).section] : sections;
       const rows = chosen.flatMap(section => section.activities.filter(a => options.includeLabels || a.modname !== "label").map(a => activitySchema.parse(stripEmpty(activityRow(a, section)))));
-      const result = stripEmpty({ activities: rows.slice(0, options.limit), total: rows.length }) as Record<string, unknown>;
-      await runtime.output(result, () => renderScreen(result), options);
+      const result = stripEmpty({ activities: rows.slice(0, count("limit", options.limit)), total: rows.length }) as Record<string, unknown>;
+      await runtime.output(result, () => runtime.screen(result, options), options);
     });
   addOutputOptions(activities.command("show").description("Show activity details; resource and folder files can be passed to moodle get or download.").argument("<id>", "Course-module ID")).action(
     async (id: string, options: OutputCommandOptions) => {
@@ -390,7 +415,7 @@ export function buildProgram(io: CliIO = {}): Command {
       const postId = options.post ?? parsed.postId;
       const thread = filterDiscussionToPost(await (await runtime.getClient()).getForumDiscussion(parsed.discussionId), postId);
       if (postId) await runtime.output(stripEmpty({ thread: { id: thread.id, name: thread.subject, unit_id: thread.course_id, forum_id: thread.forum_id, url: thread.url, posts: thread.posts.map(p => postRow(p, thread.subject)), posts_total: thread.posts.length, offset: 0 } }), () => formatForumDiscussion(thread, { showBody: options.body }), options);
-      else await execute("thread", { discussion_id: parsed.discussionId, limit: options.limit, offset: options.offset }, options);
+      else await execute("thread", { discussion_id: parsed.discussionId, limit: count("limit", options.limit), offset: options.offset }, options);
     });
 
   const forums = program.command("forums").description("Inspect forums.");
@@ -405,7 +430,7 @@ export function buildProgram(io: CliIO = {}): Command {
         refs = refs.filter((ref) => queryMatches(ref.subject, options.query!));
       }
       const total = refs.length;
-      refs = refs.slice(0, options.limit);
+      refs = refs.slice(0, count("limit", options.limit));
       await runtime.output(stripEmpty({ threads: refs.map(t => ({ id: t.id, name: t.subject })), total }), () => formatForumDiscussionRefs(forumId, refs), options);
     });
 
@@ -416,7 +441,7 @@ export function buildProgram(io: CliIO = {}): Command {
       const courseId = await client.resolveCourseReference(unit);
       let forums = await client.getForums(courseId);
       const total = forums.length;
-      forums = forums.slice(0, options.limit);
+      forums = forums.slice(0, count("limit", options.limit));
       await runtime.output(stripEmpty({ forums: forums.map(f => ({ id: f.id, name: f.name, unit_id: f.course_id })), total }), () => formatForumActivities(forums), options);
     });
 
@@ -619,9 +644,10 @@ export function buildProgram(io: CliIO = {}): Command {
     },
   );
 
-  mcp.command("serve").description("Run the local Moodle MCP server.").option("--stdio", "Use JSON messages over stdio.").action(
-    async (options: { stdio?: boolean }) => {
-      if (!options.stdio) throw new UsageError("moodle mcp serve currently requires --stdio.");
+  // stdio is the only transport, so asking for it is ceremony; the flag stays for
+  // client configurations that already pass it.
+  mcp.command("serve").description("Run the local Moodle MCP server over stdio.").option("--stdio", "Use JSON messages over stdio (the default).").action(
+    async () => {
       await getMcpService().serveStdio();
     },
   );
@@ -725,7 +751,7 @@ async function dispatchUrl(runtime: Runtime, target: string, options: OutputComm
     }
     default: throw new UsageError("Unsupported Moodle URL.");
   }
-  await runtime.output(result, () => renderScreen(result), options);
+  await runtime.output(result, () => runtime.screen(result, options), options);
 }
 
 function addForumSearchCommand(command: Command, runtime: Runtime, defaultLimit: number): void {
@@ -745,8 +771,8 @@ function addForumSearchCommand(command: Command, runtime: Runtime, defaultLimit:
       const forumCmid = options.forum
         ? await parseForumReference(options.forum, (discussionId) => client.getForumViewCmid(discussionId))
         : undefined;
-      const result = await createIntentService(createMoodleGateway(client)).run("search_forums", { query, courseId, forumId: forumCmid, limit: options.limit, includePostText: true, titlesOnly: options.titlesOnly, unreadOnly: options.unreadOnly, sortBy: options.recent ? "recent" : "relevance", maxForums: options.limitForums, maxDiscussionsPerForum: options.limitDiscussions });
-      await runtime.output(result, () => renderScreen(result), options);
+      const result = await createIntentService(createMoodleGateway(client)).run("search_forums", { query, courseId, forumId: forumCmid, limit: runtime.count("limit", options.limit), includePostText: true, titlesOnly: options.titlesOnly, unreadOnly: options.unreadOnly, sortBy: options.recent ? "recent" : "relevance", maxForums: options.limitForums, maxDiscussionsPerForum: options.limitDiscussions });
+      await runtime.output(result, () => runtime.screen(result, options), options);
     });
 }
 

@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 import { runCli } from "../src/cli.js";
 import { siteUser, units, sections } from "./fixtures/intent-site.js";
 
+const calls: string[] = [];
 function fixtureFetch(label: string): typeof fetch {
   return async (input, init) => {
     const url = new URL(String(input));
@@ -12,8 +13,9 @@ function fixtureFetch(label: string): typeof fetch {
     if (url.pathname.includes("/pluginfile.php/")) return new Response("slides", { headers: { "content-type": "application/pdf", "content-disposition": 'attachment; filename="slides.pdf"' } });
     if (url.pathname === "/mod/resource/view.php") return new Response('<html><h1>Slides</h1><div class="resourceworkaround"><a href="/pluginfile.php/1/slides.pdf">slides.pdf</a></div></html>', { headers: { "content-type": "text/html" } });
     if (url.pathname === "/lib/ajax/service.php") {
-      const calls = JSON.parse(String(init?.body)) as { methodname: string; args: Record<string, number> }[];
-      return Response.json(calls.map(c => {
+      const batch = JSON.parse(String(init?.body)) as { methodname: string; args: Record<string, number> }[];
+      calls.push(...batch.map(c => c.methodname));
+      return Response.json(batch.map(c => {
         let data: unknown;
         switch (c.methodname) {
           case "core_webservice_get_site_info": data = siteUser; break;
@@ -31,6 +33,7 @@ function fixtureFetch(label: string): typeof fetch {
   };
 }
 async function command(args: string[], options: { label?: string; tty?: boolean; directory?: string } = {}) {
+  calls.length = 0;
   const home = await mkdtemp(join(tmpdir(), "moodle-porcelain-"));
   let stdout = "", stderr = "";
   try {
@@ -79,6 +82,23 @@ describe("porcelain through the real Commander and HTTP boundary", () => {
       expect(await readFile(join(directory, "slides.pdf"), "utf8")).toBe("slides");
       expect(JSON.parse(result.stdout).bytes_written).toBe(6);
     } finally { await rm(directory, { recursive: true, force: true }); }
+  });
+  it("applies --limit after the command name and counts the unit list once", async () => {
+    // Commander gives a flag declared on both the program and a subcommand to the
+    // program, so the value has to be read from there as well.
+    const limited = await command(["find", "week", "--limit", "1"]);
+    expect(limited.code, limited.stderr).toBe(0);
+    expect(JSON.parse(limited.stdout).results).toHaveLength(1);
+    expect(JSON.parse((await command(["--limit", "1", "find", "week"])).stdout).results).toHaveLength(1);
+    expect(calls.filter(name => name === "core_enrol_get_users_courses")).toHaveLength(1);
+  });
+  it("reports an unmatched target instead of an empty search", async () => {
+    const result = await command(["zzz-no-such-unit"]);
+    expect(result.code).toBe(4);
+    const error = JSON.parse(result.stderr).error;
+    expect(error.code).toBe("not_found");
+    expect(error.message).toContain("algo-2");
+    expect(error.candidates).toHaveLength(units.length);
   });
   it("honors explicit pretty formatting and concise human errors", async () => {
     const pretty = await command(["units", "--pretty"]);

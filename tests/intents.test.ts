@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import { createIntentService } from "../src/intents.js";
 import { intentContracts, intentDescription, type Intent } from "../src/intent-contract.js";
-import { createMoodleMcpServer, TOOL_CATALOG } from "../src/mcp/server.js";
+import { createMoodleMcpServer, TOOL_CATALOG, TOOL_OUTPUT_SCHEMAS } from "../src/mcp/server.js";
 import { fixtureGateway, intentCalls } from "./fixtures/intent-site.js";
 import { renderScreen } from "../src/screens.js";
 
@@ -27,9 +27,12 @@ describe("shared intent contract", () => {
       expect(tool.description).toBe(intentDescription(tool.name as Intent));
       const input = tool.inputSchema as { properties: Record<string, { default?: unknown }>; required?: string[] };
       for (const key of input.required ?? []) expect(input.properties[key]).not.toHaveProperty("default");
-      walk(tool.outputSchema, node => { if (node && typeof node === "object" && (node as { type?: string }).type === "object" && "properties" in node) expect(node).toHaveProperty("additionalProperties", false); });
+      expect(tool).not.toHaveProperty("outputSchema");
+      walk(TOOL_OUTPUT_SCHEMAS[tool.name], node => { if (node && typeof node === "object" && (node as { type?: string }).type === "object" && "properties" in node) expect(node).toHaveProperty("additionalProperties", false); });
     }
     expect(TOOL_CATALOG).toHaveLength(11);
+    // The catalog is read once per session before any data flows; keep it under budget.
+    expect(JSON.stringify(TOOL_CATALOG).length).toBeLessThan(7500);
   });
   it("makes ambiguous names actionable, and resolves a complete phrase in one call", async () => {
     expect(await call("item", { ref: "algo-2 mini test" })).toMatchObject({ isError: true, structuredContent: { error: { code: "ambiguous", candidates: [{ id: 201 }, { id: 211 }] } } });
@@ -70,7 +73,26 @@ describe("shared intent contract", () => {
   it("pins honest fixture payload budgets independently from catalog cost", async () => {
     const budgets = { home: 2000, due: 300, units: 600, unit: 600, find: 500, item: 500, grades: 1500, news: 500, thread: 600, search_forums: 600, file: 250 };
     for (const [name, args] of intentCalls) expect(JSON.stringify((await call(name, args)).structuredContent).length, name).toBeLessThanOrEqual(budgets[name]);
-    expect(JSON.stringify(TOOL_CATALOG).length).toBeLessThanOrEqual(20000);
+    expect(JSON.stringify(TOOL_CATALOG).length).toBeLessThanOrEqual(7500);
+  });
+  it("reads only the announcements it can show, and one unit detail per unit", async () => {
+    const base = fixtureGateway();
+    let threadReads = 0, courseReads = 0;
+    const gateway = {
+      ...base,
+      getCourse: async (input: { courseId: number }) => { courseReads += 1; return base.getCourse(input); },
+      listThreads: async (forumId: number) => Array.from({ length: 40 }, (_, i) => ({ id: 60 + i, subject: `Announcement ${i}`, group_id: 0, group_name: "", url: `https://moodle.example.edu/mod/forum/discuss.php?d=${60 + i}` })),
+      getThread: async (input: { discussionId: number }) => { threadReads += 1; return base.getThread(input); },
+    };
+    const news = await createIntentService(gateway).run("news", { limit: 3 });
+    expect(news).toMatchObject({ total: 160 });
+    expect((news.news as unknown[]).length).toBe(3);
+    // Forum views are newest first, so a page of three never costs forty reads.
+    expect(threadReads).toBe(12);
+    const service = createIntentService(gateway);
+    await service.run("unit", { unit: "algo-2" });
+    await service.run("find", { query: "slides", unit: "algo-2" });
+    expect(courseReads).toBe(1);
   });
   it("strips undeclared source properties before emitting", () => {
     const value = { item: { id: 1, type: "resource", secret: "should not survive" } };

@@ -51,23 +51,15 @@ export function resolveSection(ref: string | number, sections: readonly Section[
   throw new ReferenceError("not_found", `No section matches '${ref}'.`, sections.map(s => ({ id: s.id, name: s.name })));
 }
 
-export function currentSection(course: Course, sections: readonly Section[], now = Date.now()): { section: Section; estimated?: boolean; range_estimated?: boolean; start_at?: number; end_at?: number } | undefined {
+// Only the site's own marker is authoritative. Course start dates are enrolment
+// open dates on many sites, so counting weeks from them names the wrong section;
+// unfinished work is the one remaining signal and is reported as a guess.
+export function currentSection(sections: readonly Section[]): { section: Section; estimated?: boolean } | undefined {
   const marked = sections.filter(s => s.current);
   if (marked.length > 1) return undefined;
-  const elapsed = Math.floor(now / 1000) - course.startdate;
-  const week = Math.floor(elapsed / 604800) + 1;
-  const range = course.startdate > 0 && elapsed >= 0 ? { start_at: course.startdate + (week - 1) * 604800, end_at: course.startdate + week * 604800 - 1 } : {};
-  if (marked.length === 1) {
-    const number = marked[0].name.match(/\b\d+\b/gu);
-    const sectionWeek = number?.length === 1 ? Number(number[0]) : undefined;
-    return { section: marked[0], ...(course.startdate > 0 && sectionWeek && sectionWeek > 0 ? { start_at: course.startdate + (sectionWeek - 1) * 604800, end_at: course.startdate + sectionWeek * 604800 - 1, range_estimated: true } : {}) };
-  }
-  if (course.startdate > 0 && elapsed >= 0 && (!course.enddate || now / 1000 <= course.enddate)) {
-    const matching = sections.filter(s => (s.name.match(/\b\d+\b/gu) ?? []).some(n => Number(n) === week));
-    if (matching.length === 1) return { section: matching[0], estimated: true, ...range };
-  }
+  if (marked.length === 1) return { section: marked[0] };
   const unfinished = sections.find(s => s.activities.some(a => a.completion === 0));
-  return unfinished ? { section: unfinished } : undefined;
+  return unfinished ? { section: unfinished, estimated: true } : undefined;
 }
 
 export interface SearchMatch extends Candidate { unit_id: number; unit_code: string; section_id: number; section: string; score: number; activity?: Activity }

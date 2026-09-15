@@ -17,7 +17,7 @@ recommendation. This is a branch implementation, not an npm release or productio
 | Resource correctness | Resource views that redirect directly to file content return usable metadata; iframe/object embeds and missing page titles are supported. A live resource returned its name and one authenticated file. |
 | Forum correctness | `includePostText=false` affects the snippet field only. Explicit `titlesOnly` remains a separate scope control. Node and Worker share one search implementation. News identifies Moodle's actual news forum type, not an English-name heuristic. |
 | Calendar correctness | Real Moodle enforces a 50-event page cap. All-result calls now page at 50 with an event cursor, deduplicate ids, and filter units before applying the requested output limit. Regression fixture spans 73 events. |
-| Terminal | Explicit fixed/flexible table widths replace tty-table; narrow screens use key/value rows. IDs and grades do not split. Screens have next-step hints, human errors use two lines, piped JSON is compact and `--pretty` is explicit. |
+| Terminal | Explicit fixed/flexible table widths replace tty-table; narrow screens use key/value rows. IDs and grades do not split. Screens take the terminal's own width, wrap with a hanging indent, print weekday-and-time rather than ISO strings, and count unread items in words. Human errors use two lines, piped JSON is compact and `--pretty` is explicit. |
 | Runtime | One pin resolver: standalone, Bun on PATH, supported current Node. Doctor checks SQLite, browser access/stores, cache liveness, job pins and local deployment receipts. Auth status carries cookie-source provenance. |
 | Packaging | Wrangler is a development dependency and resolves on demand: PATH, private pinned cache, then confirmed download. No Wrangler is needed by CLI reads, bridge or local MCP. Binary builds embed both Worker bundles. |
 | Installation/removal | Standalone installer, documented footprints for six install paths, completion for three shells, previewable uninstall with explicit remote/purge options and protection against orphaning deployment receipts. |
@@ -34,10 +34,10 @@ text payload characters, not transport bytes (MCP also carries structuredContent
 
 | Intent | Characters |
 | --- | ---: |
-| home | 1,775 |
+| home | 1,235 |
 | due, one unit | 201 |
 | units | 423 |
-| unit index | 410 |
+| unit index | 275 |
 | find, one resource | 279 |
 | item | 248 |
 | grades, four units | 1,145 |
@@ -45,13 +45,13 @@ text payload characters, not transport bytes (MCP also carries structuredContent
 | thread, one post | 324 |
 | search_forums | 346 |
 | file receipt | 133 |
-| tools/list catalog | 19,277 |
+| tools/list catalog | 7,203 |
 
 Real authenticated read-only checks on 2026-09-15, with five enrolled units:
 
 | Check | Result |
 | --- | --- |
-| home | 1,844 characters, no source errors |
+| home | 1,858 characters, no source errors |
 | due over 30 days | 15 items, 3,469 characters |
 | large unit index | 63 sections, 3,921 characters; baseline full result was 41,843 |
 | one unit's grades | 794 characters |
@@ -66,17 +66,19 @@ are committed as fixtures.
 
 ## Budget differences and scope limits
 
-The original **11,500-byte catalog target is not met**: the expanded v2 typed catalog
-is 19,277 characters. The original target estimated the older tool shapes; the new
-catalog includes current-section dates, all-unit grades, news and phrase resolution.
-Output schemas remain present and enforce the emitted fields. Do not report the
-catalog as a token reduction. The four-unit home fixture is also above the old 1,300-byte
-overview budget because it includes current-section metadata and ISO dates. Data-call
-savings, catalog cost and complete-session cost must be reported separately.
+The catalog meets the 11,500-byte target at 7,203 characters, down from 19,277 when
+it published an output schema per tool. Results are still parsed against the contract
+before they are sent, so the schemas are enforced; they are simply not billed to every
+session that lists the tools. `TOOL_OUTPUT_SCHEMAS` exports them for tests and clients
+that want them. Data-call savings, catalog cost and complete-session cost are still
+reported separately.
 
-Section date ranges are estimates when derived from the unit start date and numeric
-section label. A site-provided current marker takes priority; absent site timezone
-information uses UTC with `timezone_source: fallback`. `find` searches thread subjects
+A section is current only when the site marks it. Counting weeks from the unit start
+date named the wrong section on real sites, where that date is the enrolment open
+date months before teaching starts, so the derived dates and the week guess are gone;
+an unfinished section is offered instead and flagged. Absent a site timezone the host
+clock is used and reported as `timezone_source: local`; a Worker has no host clock and
+reports `fallback`. `find` searches thread subjects
 only when section/activity names do not produce results, avoiding a forum crawl for
 ordinary file queries. Forum-search totals describe the declared scan budget, not all
 historical site discussions. Unavailable calendar enrichment does not discard an
@@ -98,6 +100,20 @@ be materialized, in addition to version, a successful undeployed-profile status 
 The Miniflare/workerd smoke covers MCP text/structured parity, OAuth authorization and
 refresh, account-switch rejection, cross-origin cookie isolation, credential rotation,
 pairing races and redaction. Browser OAuth smoke exercises the real consent page.
+
+## Review fixes
+
+A dogfooding pass over the built CLI and the stdio server found seven defects, all fixed here:
+
+| Defect | Fix |
+| --- | --- |
+| `--limit` and `--days` were silently ignored on every command | Commander gives a flag declared on both the program and a subcommand to the program, so the value is read from there first; covered by a porcelain test. |
+| The unit list was fetched up to eleven times per command, three requests each on sites without the enrolment service | The client memoizes it for 60 seconds; `news` dropped from about 70 requests to 39. |
+| `moodle news` took 19.3 s | Only the newest `limit` discussions per forum are read, forum listings and posts run a few at a time, and `total` still counts every discussion. 5.3 s on the same account. |
+| An unmatched target printed an empty search and exited 0 | It now exits 4 with the site's own unit list and skips the forum crawl. |
+| Screens printed `2026-09-19T13:55:00+00:00` and yesterday's date | The host timezone is the fallback and screens print `Sat 19 Sep, 23:55`. |
+| Human `--help` showed the agent contract (`Use when:`, `Not for:`, `Cost:`) | Commander gets the plain sentence; the full template stays in the tool catalog. |
+| `moodle mcp serve` refused to run without `--stdio` | stdio is the only transport, so it is the default. |
 
 The first remote CI run found that undeployed-profile status still required Linux
 Secret Service. Status now checks for a deployment receipt first and returns

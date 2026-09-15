@@ -41,10 +41,12 @@ describe("site vocabulary resolution", () => {
     expect(searchSections(fixtureUnits[1], fixtureSections(), "mini test").map(r => r.id)).toEqual([101, 111]);
     expect(splitUnitPhrase("Ethics in Computing week 7 slides", fixtureUnits)).toMatchObject({ course: { id: 4 }, query: "week 7 slides" });
   });
-  it("prefers a marker and visibly tags estimates; never invents an unfinished section", () => {
-    expect(currentSection(fixtureUnits[0], fixtureSections())?.section.id).toBe(70);
-    const sections = fixtureSections().map(s => ({ ...s, current: false }));
-    expect(currentSection(fixtureUnits[0], sections, (fixtureUnits[0].startdate + 6 * 604800) * 1000)).toMatchObject({ section: { id: 70 }, estimated: true });
-    expect(currentSection({ ...fixtureUnits[0], startdate: 0 }, sections)).toBeUndefined();
+  it("uses the site marker, never week arithmetic, and tags an unfinished guess", () => {
+    expect(currentSection(fixtureSections())?.section.id).toBe(70);
+    const unmarked = fixtureSections().map(s => ({ ...s, current: false }));
+    // A course start date is often the enrolment date, so it must not pick a section.
+    expect(currentSection(unmarked)).toBeUndefined();
+    const unfinished = unmarked.map((s, index) => index === 1 ? { ...s, activities: s.activities.map(a => ({ ...a, completion: 0 })) } : s);
+    expect(currentSection(unfinished)).toMatchObject({ section: { id: unfinished[1].id }, estimated: true });
   });
 });

@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 
 import type { MoodleGateway } from "../src/mcp/gateway.js";
 import { LEGACY_PROTOCOL_VERSION, MODERN_PROTOCOL_VERSION, SUPPORTED_PROTOCOL_VERSIONS } from "../src/mcp/protocol.js";
-import { createMoodleMcpServer } from "../src/mcp/server.js";
+import { createMoodleMcpServer, TOOL_OUTPUT_SCHEMAS } from "../src/mcp/server.js";
 
 describe("Moodle MCP server", () => {
   it("discovers the modern stateless server without advertising unsupported capabilities", async () => {
@@ -59,10 +59,10 @@ describe("Moodle MCP server", () => {
       (tool.annotations as Record<string, unknown>).readOnlyHint === true
       && (tool.annotations as Record<string, unknown>).destructiveHint === false
       && typeof tool.inputSchema === "object"
-      && typeof tool.outputSchema === "object"
+      && tool.outputSchema === undefined
     ))).toBe(true);
     for (const tool of tools) {
-      const output = tool.outputSchema as { properties?: Record<string, { properties?: Record<string, unknown>; items?: unknown }> };
+      const output = TOOL_OUTPUT_SCHEMAS[String(tool.name)] as { properties?: Record<string, { properties?: Record<string, unknown>; items?: unknown }> };
       const [result] = Object.values(output.properties ?? {});
       expect(result, `${String(tool.name)} should describe its structured result`).toSatisfy((schema: unknown) => {
         if (!schema || typeof schema !== "object") return false;
@@ -70,10 +70,8 @@ describe("Moodle MCP server", () => {
         return Object.keys(value.properties ?? {}).length > 0 || value.items !== undefined;
       });
     }
-    const getActivity = tools.find((tool) => tool.name === "item") as {
-      outputSchema: { properties: { item: { properties: Record<string, unknown> } } };
-    };
-    expect(getActivity.outputSchema.properties.item.properties).toHaveProperty("files");
+    const item = TOOL_OUTPUT_SCHEMAS.item as { properties: { item: { properties: Record<string, unknown> } } };
+    expect(item.properties.item.properties).toHaveProperty("files");
   });
 
   it("returns an authenticated file as an embedded MCP resource", async () => {
