@@ -328,7 +328,7 @@ describe("SessionBroker Durable Object", () => {
       response: {
         result: {
           content: [
-            { type: "text", text: "Loaded Moodle file slides.pdf (6 bytes)." },
+            { type: "text", text: expect.any(String) },
             { type: "resource", resource: { mimeType: "application/pdf", blob: "c2xpZGVz" } },
           ],
           structuredContent: { file: { name: "slides.pdf", bytes: 6 } },

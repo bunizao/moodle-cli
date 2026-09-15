@@ -633,7 +633,7 @@ Tool requirements:
 
 - Stable names and ordering.
 - Zod input validation.
-- Concise text content.
+- Complete validated JSON in text content, identical to `structuredContent`, so text-only clients can read IDs and chain tool calls.
 - Typed `structuredContent`.
 - `resultType: "complete"`.
 - `cacheScope: "private"`.
