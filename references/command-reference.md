@@ -23,7 +23,7 @@ Resources and folders return `files` with names and URLs. Pass a selected file U
 | moodle completion | Print shell completion for zsh, bash or fish. | <shell> |  |
 | moodle doctor | Diagnose runtime, browser access, session, background jobs and MCP setup. |  | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required) |
 | moodle download | Download one authenticated Moodle file. | <source> | --dest (value required)<br>--force<br>--pretty<br>--json<br>--yaml<br>--table<br>--fields (value required) |
-| moodle due | Items due in a date window. | [unit] | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required)<br>--limit (value required)<br>--days (value required) |
+| moodle due | Items due in a date window. | [unit] | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required)<br>--days (value required)<br>--limit (value required) |
 | moodle find | Ranked sections, activities and discussion subjects. | <query> [unit] | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required)<br>--limit (value required)<br>--types (value required) |
 | moodle forums | Inspect forums. |  |  |
 | moodle forums list | List forum activities in a unit. | <unit> | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required)<br>--limit (value required) |
@@ -47,7 +47,7 @@ Resources and folders return `files` with names and URLs. Pass a selected file U
 | moodle mcp session | Advanced managed-session operations. |  |  |
 | moodle mcp session push | Upload a Moodle cookie from standard input. |  | --stdin<br>--pretty<br>--json<br>--yaml<br>--table<br>--fields (value required) |
 | moodle mcp status | Show local and remote Moodle MCP readiness. |  | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required)<br>--verbose<br>--logs |
-| moodle news | Latest announcement threads with first-post text. | [unit] | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required)<br>--limit (value required)<br>--days (value required) |
+| moodle news | Latest announcement threads with first-post text. | [unit] | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required)<br>--limit (value required) |
 | moodle open | Open a unit or activity reference in the browser. | <ref> | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required) |
 | moodle overview | Show a compact multi-source overview. |  | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required)<br>--todo-limit (value required)<br>--todo-days (value required)<br>--alerts-limit (value required) |
 | moodle skills | Show skill metadata or delegate to the shared skills CLI. |  |  |

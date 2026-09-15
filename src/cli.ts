@@ -285,9 +285,10 @@ export function buildProgram(io: CliIO = {}): Command {
   });
 
   for (const name of ["due", "news"] as const) {
-    addOutputOptions(program.command(name).description(humanDescription(name)).argument("[unit]", "Unit code, name, id or URL"))
+    const command = addOutputOptions(program.command(name).description(humanDescription(name)).argument("[unit]", "Unit code, name, id or URL"));
+    if (name === "due") command.option("--days <number>", "Deadline window in days.", parsePositiveInt);
+    command
       .option("--limit <number>", "Maximum returned rows.", parsePositiveInt)
-      .option("--days <number>", "Deadline window in days.", parsePositiveInt)
       .action(async (unit: string | undefined, options: OutputCommandOptions & { days?: number; limit?: number }) => execute(name, { unit, limit: count("limit", options.limit), ...(name === "due" ? { days: count("days", options.days) } : {}) }, options));
   }
   addOutputOptions(program.command("find").description(humanDescription("find")).argument("<query>").argument("[unit]"))
