@@ -5,6 +5,7 @@ export interface UserInfo {
   sitename: string;
   siteurl: string;
   lang?: string;
+  timezone?: string;
 }
 
 export interface PageContext {
@@ -29,6 +30,8 @@ export interface Activity {
   url: string;
   visible: boolean;
   description: string;
+  completion?: number;
+  file_entries?: FileEntry[];
 }
 
 export interface Section {
@@ -37,6 +40,7 @@ export interface Section {
   section: number;
   visible: boolean;
   summary: string;
+  current?: boolean;
   activities: Activity[];
 }
 

@@ -1,3 +1,4 @@
+import { resolveUnit } from "./resolve.js";
 import { fetchWithSession } from "./session-fetch.js";
 import { z } from "zod";
 import {
@@ -137,12 +138,14 @@ const DEFAULT_ERROR_ADAPTER: MoodleClientErrorAdapter = {
 };
 
 export interface MoodleSessionCookie {
+  source?: string;
   name: string;
   value: string;
 }
 
 export interface MoodleClientSessionSnapshot {
   baseUrl: string;
+  cookieSource?: string;
   cookieName: string;
   cookieValue: string;
   sesskey: string;
@@ -236,7 +239,7 @@ export class MoodleClientCore {
         throw error;
       }
     }
-    // Sites like Monash disable core_webservice_get_site_info; scrape the dashboard instead.
+    // Some sites disable the service; use the authenticated dashboard context.
     if (this.userInfo?.fullname) {
       return this.userInfo;
     }
@@ -264,19 +267,7 @@ export class MoodleClientCore {
   }
 
   async resolveCourseReference(value: string): Promise<number> {
-    const raw = value.trim();
-    if (/^\d+$/.test(raw)) {
-      return Number(raw);
-    }
-    const courses = await this.getCourses();
-    const matches = courses.filter((course) => queryMatches(course.fullname, raw) || queryMatches(course.shortname, raw));
-    if (matches.length === 1) {
-      return matches[0].id;
-    }
-    if (!matches.length) {
-      throw this.errors.notFound(`Could not find a course matching '${raw}'. Run 'moodle courses' to inspect course IDs.`);
-    }
-    throw this.errors.notFound(`Course '${raw}' is ambiguous. Matches: ${matches.slice(0, 5).map((course) => `${course.id}:${course.fullname || course.shortname}`).join(", ")}`);
+    return resolveUnit(value, await this.getCourses()).id;
   }
 
   async getCourseContents(courseId: number): Promise<Section[]> {
@@ -343,15 +334,24 @@ export class MoodleClientCore {
   async getTodo(limit = 20, days?: number): Promise<TodoItem[]> {
     await this.ensureSession();
     const now = Math.floor(Date.now() / 1000);
-    const data = await this.call(FUNC_GET_ACTION_EVENTS, {
-      limitnum: limit,
-      timesortfrom: now,
-      timesortto: days ? now + days * 24 * 60 * 60 : 0,
-      aftereventid: 0,
-      limittononsuspendedevents: true,
-    });
-    const events = isRecord(data) && Array.isArray(data.events) ? data.events : [];
-    return parseTodoItems(events);
+    const items: TodoItem[] = [];
+    let aftereventid = 0;
+    const seen = new Set<number>();
+    while (items.length < limit) {
+      const batchSize = Math.min(200, limit - items.length);
+      const data = await this.call(FUNC_GET_ACTION_EVENTS, {
+        limitnum: batchSize, timesortfrom: now, timesortto: days ? now + days * 86400 : 0,
+        aftereventid, limittononsuspendedevents: true,
+      });
+      const events = isRecord(data) && Array.isArray(data.events) ? data.events : [];
+      const page = parseTodoItems(events);
+      for (const item of page) if (!seen.has(item.id)) { seen.add(item.id); items.push(item); }
+      const next = page.at(-1)?.id;
+      if (events.length < batchSize) break;
+      if (!next || next === aftereventid) throw this.errors.api("Moodle repeated a calendar page; refine the date window.");
+      aftereventid = next;
+    }
+    return items;
   }
 
   async getAlerts(limit = 20): Promise<AlertSummary> {
@@ -366,6 +366,11 @@ export class MoodleClientCore {
 
   async getOverview(todoLimit = 5, todoDays?: number, alertsLimit = 5): Promise<Overview> {
     await this.ensureSession();
+    if (todoLimit > 200) {
+      const snapshot = await this.getOverview(200, todoDays, alertsLimit);
+      if (snapshot.todo.length === 200) snapshot.todo = await this.getTodo(todoLimit, todoDays);
+      return snapshot;
+    }
     const now = Math.floor(Date.now() / 1000);
     const results = await this.callBatch([
       { methodname: FUNC_GET_COURSES, args: { userid: this.userid } },
@@ -493,7 +498,22 @@ export class MoodleClientCore {
   }
 
   async getResource(id: number): Promise<Resource> {
-    return parseResourceHtml(await this.get(RESOURCE_VIEW_PATH, { id }), id, this.baseUrl);
+    const url = `${this.baseUrl}${RESOURCE_VIEW_PATH}?id=${id}`;
+    const response = await this.requestAbsolute(url);
+    const type = response.headers.get("content-type") ?? "";
+    if (type && !/html/iu.test(type)) {
+      const finalUrl = response.url || url;
+      const filename = decodeURIComponent(new URL(finalUrl).pathname.split("/").at(-1) || `resource-${id}`);
+      await response.body?.cancel();
+      return { id, name: filename, course_id: 0, course_name: "", section_name: "", target_name: filename, target_url: finalUrl, file_entries: [{ name: filename, url: finalUrl, requires_authentication: true }], url };
+    }
+    const resource = parseResourceHtml(await response.text(), id, this.baseUrl);
+    if (!resource.name) {
+      const activity = await this.findActivity(id);
+      resource.name = activity.name;
+      if (!resource.file_entries.length && activity.file_entries?.length) resource.file_entries = activity.file_entries;
+    }
+    return resource;
   }
 
   async getLink(id: number): Promise<Link> {
@@ -510,6 +530,28 @@ export class MoodleClientCore {
 
   async requestAbsolute(url: string, init: RequestInit = {}): Promise<Response> {
     return this.requestAbsoluteInternal(url, init, true);
+  }
+
+  async getNewsForums(courseId?: number): Promise<ForumActivityRef[]> {
+    const units = courseId === undefined ? await this.getCourses() : (await this.getCourses()).filter(c => c.id === courseId);
+    const forums: ForumActivityRef[] = [];
+    try {
+      await this.ensureSession();
+      const data = await this.call("mod_forum_get_forums_by_courses", { courseids: units.map(c => c.id) });
+      for (const f of Array.isArray(data) ? data : []) {
+        if (!isRecord(f) || f.type !== "news" || typeof f.cmid !== "number") continue;
+        const c = units.find(c => c.id === f.course);
+        forums.push({ id: f.cmid, name: String(f.name || ""), course_id: Number(f.course), course_name: c?.fullname || "", url: `${this.baseUrl}/mod/forum/view.php?id=${f.cmid}` });
+      }
+      return forums;
+    } catch (error) {
+      if (!this.errors.isApi(error) || error.moodleErrorCode !== "servicenotavailable") throw error;
+    }
+    for (const forum of await this.getForums(courseId)) {
+      const html = await this.get("/mod/forum/view.php", { id: forum.id });
+      if (/\bforumtype-news\b|data-forumtype=["']news["']/u.test(html)) forums.push(forum);
+    }
+    return forums;
   }
 
   async getForumDiscussion(discussionId: number): Promise<ForumDiscussion> {
@@ -808,6 +850,7 @@ export class MoodleClientCore {
         await this.writeSessionCache({
           baseUrl: this.baseUrl,
           cookieName: this.cookie.name,
+          cookieSource: this.cookie.source,
           cookieValue: this.cookie.value,
           sesskey: this.sesskey,
           userid: this.userid,
