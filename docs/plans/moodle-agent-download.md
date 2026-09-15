@@ -70,7 +70,7 @@ Numeric input always means a course-module ID. A numeric activity that does not 
 `--dest` is the exact local file path:
 
 ```bash
-moodle download 91234 --dest './FIT2014/Week 03/slides.pdf'
+moodle download 91234 --dest './UNIT/Week 03/slides.pdf'
 ```
 
 When `--dest` is omitted, the command writes to the current directory using the upstream filename. It must not promise a particular extension before Moodle returns the response metadata.
@@ -355,7 +355,6 @@ Revisit larger-file support only if one of these becomes true:
 | 4 | `download` command and `dl` alias | `src/cli.ts`, CLI contract tests | Canonical and alias invocations produce the same receipt |
 | 5 | MCP file retrieval and compatibility proof | MCP gateway/server tests | `get_file` returns a bounded embedded resource and `get_activity` exposes file entries |
 | 6 | Generated skill and documentation | skill sources, generated bundle, README | Skill drift check and package smoke pass |
-| 7 | Real Moodle smoke | Temporary local destination | A small authenticated Monash resource downloads as a non-HTML, non-empty file |
 
 Logical commits:
 
@@ -480,7 +479,6 @@ The first release will not include:
 
 ## References
 
-- [Monash Moodle Downloader](https://github.com/Zetanegative1/Monash-Moodle-Downloader)
 - [OnTrack CLI download commands](https://github.com/bunizao/ontrack-cli/blob/main/src/cli-app.ts)
 - [OnTrack CLI atomic file writer](https://github.com/bunizao/ontrack-cli/blob/main/src/resources.ts)
 - [Existing Moodle MCP release plan](./moodle-mcp-cloudflare-v0.7.0.md)

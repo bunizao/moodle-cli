@@ -3,7 +3,7 @@
 **Status:** Proposed
 
 **Baseline:** `fix/mcp-readable-results` @ `b8555aa` (0.7.1 prep), measured live against
-`learning.monash.edu` on 2026-09-15 with a 5-course student account.
+`moodle.example.edu` on 2026-09-15 with a 5-course student account.
 
 **Token estimate:** `tokens = chars / 3.6`. Compact JSON tokenizes at roughly 3.3–3.8
 chars/token on Claude; the ratio is held constant so relative savings are exact even if
@@ -40,7 +40,7 @@ Every number below is the exact character count of the JSON that reached the mod
 | Session | Calls | Chars | Est. tokens |
 |---|---|---:|---:|
 | S1 "What's due this week?" | catalog + get_overview | 19,295 | 5,360 |
-| S2 "Find the week 7 slides in FIT2014" | catalog + list_courses + get_course + get_activity | 45,880 | 12,744 |
+| S2 "Find the week 7 slides in UNIT" | catalog + list_courses + get_course + get_activity | 45,880 | 12,744 |
 | S3 "Summarise the AT1 announcement" | catalog + search_forums + get_thread | 20,652 | 5,737 |
 
 ## 2. Where the bytes go (findings)
@@ -140,7 +140,7 @@ New shape:
 
 ```json
 {"overview":{
-  "courses":[{"id":46381,"code":"FIT2014_S2_2026"}],
+  "courses":[{"id":46381,"code":"UNIT"}],
   "todo":[{"id":2420544,"activity_id":6030863,"name":"Week 7 - Mini Test","modname":"assign",
            "course_id":46381,"event":"due","due_at":1789826100,"actionable":false}],
   "alerts":{"direct_message_count":2,"starred_message_count":1},

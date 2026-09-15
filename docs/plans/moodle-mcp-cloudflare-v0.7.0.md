@@ -101,8 +101,8 @@ If the CLI finds several profiles:
 ```text
 Choose a Moodle site:
 
-  1. Monash University
-     https://lms.monash.edu
+  1. Example learning site
+     https://moodle.example.edu
 
   2. Test Moodle
      https://moodle.example.net
@@ -135,7 +135,7 @@ Valid cached session:
 ```text
 ✓ Found a valid Moodle session.
   User: Alice Example
-  Site: Monash University
+  Site: Example learning site
 ```
 
 Valid browser session:
