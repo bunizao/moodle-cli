@@ -552,11 +552,11 @@ export class ManagedMcpDeployment {
       return {
         profile,
         worker: null,
-        credentialsStored: (await this.dependencies.credentials.read(profile)) !== null,
+        credentialsStored: false,
         renewalInstalled: await this.dependencies.renewal.inspect(profile),
         clientsConnected: await this.dependencies.clients.inspect(profile),
         readiness: "unknown",
-        readinessReasonCode: null,
+        readinessReasonCode: "NOT_DEPLOYED",
         sessionRevision: null,
       };
     }

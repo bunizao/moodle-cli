@@ -517,6 +517,16 @@ describe("ManagedMcpDeployment transaction", () => {
 });
 
 describe("ManagedMcpDeployment lifecycle", () => {
+  it("reports an undeployed profile without requiring a credential backend", async () => {
+    const deps = dependencies();
+    vi.mocked(deps.receipts.read).mockResolvedValue(null);
+    vi.mocked(deps.credentials.read).mockRejectedValue(new Error("Secret Service unavailable"));
+    const status = await new ManagedMcpDeployment(deps).inspect(INTENT.profile);
+    expect(status).toMatchObject({ worker: null, credentialsStored: false, readinessReasonCode: "NOT_DEPLOYED" });
+    expect(deps.credentials.read).not.toHaveBeenCalled();
+    expect(deps.wrangler.inspect).not.toHaveBeenCalled();
+  });
+
   it("inspects remote and local readiness through the session sync credential", async () => {
     const deps = dependencies();
     const status = await new ManagedMcpDeployment(deps).inspect(INTENT.profile);

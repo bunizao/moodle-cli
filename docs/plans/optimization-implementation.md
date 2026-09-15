@@ -89,7 +89,7 @@ readiness follow-up is `moodle mcp status`; its own MCP check inspects local rec
 
 ## Verification
 
-Node and Bun regression suites (414 passing checks plus one intentional skip), 80-column screen snapshots, real Commander/HTTP
+Node and Bun regression suites (415 passing checks plus one intentional skip), 80-column screen snapshots, real Commander/HTTP
 porcelain fixtures, a named local download, schema/empty omission checks, first-use
 Wrangler resolution, 73-event calendar pagination, skill drift and shipped-vocabulary
 checks are covered. Standalone smoke verifies both embedded Worker assets can actually
@@ -98,3 +98,8 @@ be materialized, in addition to version, a successful undeployed-profile status 
 The Miniflare/workerd smoke covers MCP text/structured parity, OAuth authorization and
 refresh, account-switch rejection, cross-origin cookie isolation, credential rotation,
 pairing races and redaction. Browser OAuth smoke exercises the real consent page.
+
+The first remote CI run found that undeployed-profile status still required Linux
+Secret Service. Status now checks for a deployment receipt first and returns
+`NOT_DEPLOYED` without touching credentials or Wrangler when none exists. A regression
+test injects an unavailable credential backend and verifies neither dependency runs.
