@@ -11,6 +11,7 @@ export interface ForumSearchOptions {
   courseId?: number;
   forumCmid?: number;
   includePostText?: boolean;
+  titlesOnly?: boolean;
   unreadOnly?: boolean;
   sortBy?: "relevance" | "recent";
   maxForums?: number;
@@ -28,6 +29,7 @@ export async function searchForumContent(
   }
 
   const includePostText = options.includePostText ?? true;
+  const titlesOnly = options.titlesOnly ?? false;
   const unreadOnly = options.unreadOnly ?? false;
   const sortBy = options.sortBy ?? "relevance";
   let forumRefs = await source.getForums(options.courseId);
@@ -64,7 +66,7 @@ export async function searchForumContent(
       let discussionHasUnread = false;
       const matchingPostHits: Array<[number, ForumSearchHit]> = [];
 
-      if (includePostText || unreadOnly || sortBy === "recent") {
+      if (!titlesOnly || unreadOnly || sortBy === "recent") {
         discussion = await source.getForumDiscussion(ref.id);
         if (discussion.posts.length) {
           latestPost = discussion.posts.reduce((latest, post) => ((post.time_created || 0) > (latest.time_created || 0) ? post : latest));
@@ -72,7 +74,7 @@ export async function searchForumContent(
         }
       }
 
-      if (!includePostText) {
+      if (titlesOnly) {
         addSubjectHit({
           hits,
           seen,
@@ -149,7 +151,7 @@ export async function searchForumContent(
   }
 
   hits.sort(sortBy === "recent" ? sortRecent : sortRelevant);
-  return hits.slice(0, options.limit ?? 20).map(([, hit]) => hit);
+  return hits.slice(0, options.limit ?? 20).map(([, hit]) => includePostText ? hit : { ...hit, snippet: "" });
 }
 export function normalizeQuery(value: string): { normalized: string; tokens: string[] } {
   const normalized = value.toLowerCase().split(/\s+/).filter(Boolean).join(" ");

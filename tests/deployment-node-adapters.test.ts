@@ -13,7 +13,6 @@ import {
   WranglerCommandError,
   createBackgroundMoodleSessionSource,
   createDefaultManagedDeployment,
-  resolvePackagedWranglerBin,
   type DeploymentCommandRunner,
   type DeploymentPlan,
   type DeploymentReceipt,
@@ -125,9 +124,6 @@ describe("NodeWranglerDeploymentAdapter", () => {
     expect(result).toEqual({ stdout: "account-test", stderr: "" });
   });
 
-  it("resolves the executable from the installed Wrangler package", () => {
-    expect(resolvePackagedWranglerBin()).toMatch(/node_modules[/\\]wrangler[/\\]bin[/\\]wrangler\.js$/u);
-  });
 
   it("atomically deploys lifecycle migrations and verifies the active version", async () => {
     const runner: DeploymentCommandRunner = { run: vi.fn(async (_command, args) => ({

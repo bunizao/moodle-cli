@@ -1,11 +1,11 @@
+import { resolveWrangler } from "../wrangler.js";
 import { isDeepStrictEqual } from "node:util";
 import { runtimeCommand } from "../self-command.js";
 import { spawn } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
-import { chmod, copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
-import { createRequire } from "node:module";
 import {
   getAuthenticatedSession,
   getAuthenticatedSessionWithBrowserFallback,
@@ -92,7 +92,7 @@ function wranglerFailureMessage(stderr: string, stdout: string): string {
     ? lines.slice(errorIndex).filter((line) => line && !/^(To learn more|If you think this is a bug|Logs were written)/u.test(line))
       .slice(0, 3).join(" ").replace(/^.*\[ERROR\]\s*/u, "")
     : "";
-  return detail ? `Packaged Wrangler command failed: ${detail.slice(0, 600)}` : "Packaged Wrangler command failed";
+  return detail ? `Wrangler command failed: ${detail.slice(0, 600)}` : "Wrangler command failed";
 }
 
 export interface NodeWranglerOptions {
@@ -107,11 +107,11 @@ export interface WranglerAccount {
 
 export class NodeWranglerDeploymentAdapter implements WranglerDeploymentAdapter {
   readonly atomicSecrets = true;
-  private readonly wranglerBinPath: string;
+  private readonly wranglerBinPath?: string;
   private readonly runner: DeploymentCommandRunner;
 
   constructor(options: NodeWranglerOptions = {}) {
-    this.wranglerBinPath = options.wranglerBinPath ?? resolvePackagedWranglerBin();
+    this.wranglerBinPath = options.wranglerBinPath;
     this.runner = options.runner ?? new NodeDeploymentCommandRunner();
   }
 
@@ -304,7 +304,7 @@ export class NodeWranglerDeploymentAdapter implements WranglerDeploymentAdapter 
     await this.wrangler(["delete", input.workerName, "--force"], input.accountId);
   }
 
-  private wrangler(
+  private async wrangler(
     args: string[],
     accountId?: string,
     environmentOverrides: NodeJS.ProcessEnv = {},
@@ -313,12 +313,18 @@ export class NodeWranglerDeploymentAdapter implements WranglerDeploymentAdapter 
     if (accountId) {
       environment.CLOUDFLARE_ACCOUNT_ID = accountId;
     }
+    const executable = this.wranglerBinPath ? { command: process.execPath, args: [this.wranglerBinPath] } : await resolveWrangler(this.runner);
     return this.runner.run(
-      process.execPath,
-      [this.wranglerBinPath, ...args],
+      executable.command,
+      [...executable.args, ...args],
       Object.keys(environment).length ? environment : undefined,
     );
   }
+}
+
+export async function copyReleaseBundle(source: string, destination: string): Promise<void> {
+  // Bun's virtual asset filesystem supports readFile, but not copyFile.
+  await writeFile(destination, await readFile(source));
 }
 
 export interface NodeReleaseMaterializerOptions {
@@ -336,7 +342,7 @@ export class NodeReleaseMaterializer implements ReleaseMaterializer {
     const artifactDirectory = await mkdtemp(join(temporaryRoot, "moodle-mcp-"));
     await chmod(artifactDirectory, 0o700);
     const workerFile = join(artifactDirectory, basename(this.options.workerBundlePath));
-    await copyFile(this.options.workerBundlePath, workerFile);
+    await copyReleaseBundle(this.options.workerBundlePath, workerFile);
     const wranglerConfigPath = join(artifactDirectory, "wrangler.json");
     const secretsFilePath = join(artifactDirectory, "secrets.json");
     const expectedHosts = endpointHosts(plan.intent.workerName, plan.existing?.productionEndpoint);
@@ -387,8 +393,8 @@ export class NodeReleaseMaterializer implements ReleaseMaterializer {
     await chmod(secretsFilePath, 0o600);
     let recoveryConfigPath: string | undefined;
     try {
-      const recoveryBundle = join(dirname(this.options.workerBundlePath), "recovery.js");
-      await copyFile(recoveryBundle, join(artifactDirectory, "recovery.js"));
+      const recoveryBundle = process.env.MOODLE_BUNDLED_RECOVERY ?? join(dirname(this.options.workerBundlePath), "recovery.js");
+      await copyReleaseBundle(recoveryBundle, join(artifactDirectory, "recovery.js"));
       recoveryConfigPath = join(artifactDirectory, "wrangler-recovery.json");
       await writeFile(recoveryConfigPath, `${JSON.stringify({ ...config, main: "./recovery.js" })}\n`, { mode: 0o600 });
     } catch (error) {
@@ -746,14 +752,6 @@ export function createDefaultManagedDeployment(options: DefaultManagedDeployment
   return new ManagedMcpDeployment({ ...defaults, ...options.dependencies });
 }
 
-export function resolvePackagedWranglerBin(): string {
-  const require = createRequire(import.meta.url);
-  try {
-    return join(dirname(require.resolve("wrangler/package.json")), "bin", "wrangler.js");
-  } catch {
-    throw new Error("The packaged Wrangler binary is unavailable. Reinstall moodle-cli.");
-  }
-}
 
 function digest(value: string): string {
   return createHash("sha256").update(value).digest("hex");

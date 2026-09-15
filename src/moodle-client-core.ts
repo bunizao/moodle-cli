@@ -338,7 +338,7 @@ export class MoodleClientCore {
     let aftereventid = 0;
     const seen = new Set<number>();
     while (items.length < limit) {
-      const batchSize = Math.min(200, limit - items.length);
+      const batchSize = Math.min(50, limit - items.length);
       const data = await this.call(FUNC_GET_ACTION_EVENTS, {
         limitnum: batchSize, timesortfrom: now, timesortto: days ? now + days * 86400 : 0,
         aftereventid, limittononsuspendedevents: true,
@@ -366,9 +366,9 @@ export class MoodleClientCore {
 
   async getOverview(todoLimit = 5, todoDays?: number, alertsLimit = 5): Promise<Overview> {
     await this.ensureSession();
-    if (todoLimit > 200) {
-      const snapshot = await this.getOverview(200, todoDays, alertsLimit);
-      if (snapshot.todo.length === 200) snapshot.todo = await this.getTodo(todoLimit, todoDays);
+    if (todoLimit > 50) {
+      const snapshot = await this.getOverview(50, todoDays, alertsLimit);
+      if (snapshot.todo.length === 50) snapshot.todo = await this.getTodo(todoLimit, todoDays);
       return snapshot;
     }
     const now = Math.floor(Date.now() / 1000);
@@ -503,9 +503,14 @@ export class MoodleClientCore {
     const type = response.headers.get("content-type") ?? "";
     if (type && !/html/iu.test(type)) {
       const finalUrl = response.url || url;
-      const filename = decodeURIComponent(new URL(finalUrl).pathname.split("/").at(-1) || `resource-${id}`);
+      const disposition = response.headers.get("content-disposition") ?? "";
+      const encodedName = disposition.match(/filename\*\s*=\s*UTF-8''([^;]+)/iu)?.[1];
+      const plainName = disposition.match(/filename\s*=\s*"([^"\r\n]+)"/iu)?.[1] || disposition.match(/filename\s*=\s*([^;\r\n]+)/iu)?.[1];
+      let filename = plainName || new URL(finalUrl).pathname.split("/").at(-1) || `resource-${id}`;
+      try { filename = decodeURIComponent(encodedName || filename); } catch { /* Keep the server's undecoded filename. */ }
+      filename = filename.split(/[\\/]/u).at(-1) || `resource-${id}`;
       await response.body?.cancel();
-      return { id, name: filename, course_id: 0, course_name: "", section_name: "", target_name: filename, target_url: finalUrl, file_entries: [{ name: filename, url: finalUrl, requires_authentication: true }], url };
+      return { id, name: filename, course_id: 0, course_name: "", section_name: "", target_name: filename, target_url: url, file_entries: [{ name: filename, url, requires_authentication: true }], url };
     }
     const resource = parseResourceHtml(await response.text(), id, this.baseUrl);
     if (!resource.name) {
@@ -580,6 +585,7 @@ export class MoodleClientCore {
     courseId?: number;
     forumCmid?: number;
     includePostText?: boolean;
+    titlesOnly?: boolean;
     unreadOnly?: boolean;
     sortBy?: "relevance" | "recent";
     maxForums?: number;

@@ -35,7 +35,7 @@ try {
       assert.match(output, /Package Smoke User/);
       assert.match(output, /┌/);
     } else {
-      assert.equal(JSON.parse(output).userid, user.userid);
+      assert.equal(JSON.parse(output).user.id, user.userid);
     }
   }
   console.log("Installed CLI table and JSON output passed");

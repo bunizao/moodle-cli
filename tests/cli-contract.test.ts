@@ -6,7 +6,7 @@ import { describeProgram } from "../src/command-contract.js";
 import type { McpCommandService } from "../src/mcp/cli.js";
 
 const NOUNS: readonly NounSpec[] = [
-  { name: "units", aliases: ["courses", "projects"], verbs: ["list", "show"], defaultByArity: { 0: "list", 1: "show" } },
+  { name: "units", aliases: ["courses"], verbs: ["list", "show"], defaultByArity: { 0: "list", 1: "show" } },
 ];
 
 describe("shared CLI contract", () => {
@@ -21,7 +21,7 @@ describe("shared CLI contract", () => {
   it("returns one structured usage error for an unknown command", async () => {
     const stdout = buffer(false);
     const stderr = buffer(false);
-    await expect(runCli(["node", "moodle", "bogus"], { stdout, stderr })).resolves.toBe(2);
+    await expect(runCli(["node", "moodle", "unit"], { stdout, stderr })).resolves.toBe(2);
     expect(stdout.text()).toBe("");
     expect(JSON.parse(stderr.text())).toMatchObject({ ok: false, error: { code: "usage" }, exit_code: 2 });
   });
@@ -30,7 +30,7 @@ describe("shared CLI contract", () => {
     const tree = describeProgram(buildProgram({ stdout: buffer(false), stderr: buffer(false) }));
     const commands = flatten(tree.commands);
 
-    expect(commands.find((command) => command.name === "units")).toMatchObject({ aliases: ["courses", "projects"] });
+    expect(commands.find((command) => command.name === "units")).toMatchObject({ aliases: ["courses"] });
     expect(commands.every((command) => typeof command.mutating === "boolean")).toBe(true);
     expect(commands.filter((command) => command.verb).every((command) => VERBS.includes(command.verb as never))).toBe(true);
 
@@ -41,8 +41,8 @@ describe("shared CLI contract", () => {
 
   it("normalizes all enrolment nouns to units", () => {
     expect(insertDefaultVerb(["units"], NOUNS)).toEqual(["units", "list"]);
-    expect(insertDefaultVerb(["courses", "FIT1045"], NOUNS)).toEqual(["units", "show", "FIT1045"]);
-    expect(insertDefaultVerb(["projects", "show", "FIT1045"], NOUNS)).toEqual(["units", "show", "FIT1045"]);
+    expect(insertDefaultVerb(["courses", "UNIT"], NOUNS)).toEqual(["units", "show", "UNIT"]);
+
   });
 
   it("exposes the managed MCP command contract", () => {

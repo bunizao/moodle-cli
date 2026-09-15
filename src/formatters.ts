@@ -200,10 +200,9 @@ export function formatForumDiscussionRefs(forumCmid: number, refs: ForumDiscussi
       { label: "ID" },
       { label: "Subject" },
       { label: "Group" },
-      { label: "URL" },
     ],
     refs.length
-      ? refs.map((ref) => [String(ref.id), ref.subject, ref.group_name, ref.url])
+      ? refs.map((ref) => [String(ref.id), ref.subject, ref.group_name])
       : [["No discussions", "", "", ""]],
     { title: `Forum ${forumCmid} · Discussions` },
   );
@@ -215,10 +214,9 @@ export function formatForumActivities(forums: ForumActivityRef[]): string {
       { label: "ID" },
       { label: "Forum" },
       { label: "Unit" },
-      { label: "URL" },
     ],
     forums.length
-      ? forums.map((forum) => [String(forum.id), forum.name, forum.course_name, forum.url])
+      ? forums.map((forum) => [String(forum.id), forum.name, forum.course_name])
       : [["No forums", "", "", ""]],
     { title: "Forums" },
   );
@@ -235,7 +233,6 @@ export function formatForumSearchHits(hits: ForumSearchHit[]): string {
       { label: "Author" },
       { label: "Match" },
       { label: "Snippet" },
-      { label: "URL" },
     ],
     hits.length ? hits.map((hit) => [
       String(hit.discussion_id),
@@ -246,7 +243,6 @@ export function formatForumSearchHits(hits: ForumSearchHit[]): string {
       hit.author_name,
       hit.matched_in,
       hit.snippet || hit.discussion_subject,
-      hit.url,
     ]) : [["No matches", "", "", "", "", "", "", "", ""]],
     { title: "Forum Search" },
   );

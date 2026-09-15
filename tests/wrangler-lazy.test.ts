@@ -1,0 +1,31 @@
+import { chmod, mkdir, mkdtemp, rm, writeFile, realpath } from "node:fs/promises";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { expect, it, vi } from "vitest";
+import { resolveWrangler } from "../src/mcp/wrangler.js";
+import { WRANGLER_VERSION } from "../src/constants.js";
+
+it("resolves PATH, cached and first-use Wrangler without installing for construction", async () => {
+  const home = await realpath(await mkdtemp(join(tmpdir(), "moodle-wrangler-")));
+  const bin = join(home, "bin");
+  await mkdir(bin);
+  const executable = async (name: string) => { const file = join(bin, name); await writeFile(file, "#!/bin/sh\nexit 0\n"); await chmod(file, 0o755); return file; };
+  const node = await executable("node");
+  const wrangler = await executable("wrangler");
+  const run = vi.fn(async () => ({ stdout: "", stderr: "" }));
+  try {
+    expect(await resolveWrangler({ run }, { homeDir: home, env: { PATH: bin } })).toEqual({ command: wrangler, args: [] });
+    expect(run).not.toHaveBeenCalled();
+    await rm(wrangler);
+    const cached = join(home, ".config", "moodle-cli", "tools", `wrangler@${WRANGLER_VERSION}`, "node_modules", "wrangler", "bin", "wrangler.js");
+    await mkdir(join(cached, ".."), { recursive: true }); await writeFile(cached, "");
+    expect(await resolveWrangler({ run }, { homeDir: home, env: { PATH: bin } })).toEqual({ command: node, args: [cached] });
+    expect(run).not.toHaveBeenCalled();
+    await rm(cached); const npm = await executable("npm");
+    run.mockImplementationOnce(async () => { await writeFile(cached, ""); return { stdout: "", stderr: "" }; });
+    const notice = vi.fn();
+    expect(await resolveWrangler({ run }, { homeDir: home, env: { PATH: bin }, yes: true, notice })).toEqual({ command: node, args: [cached] });
+    expect(run).toHaveBeenCalledWith(npm, expect.arrayContaining([`wrangler@${WRANGLER_VERSION}`, "--prefix"]));
+    expect(notice).toHaveBeenCalledOnce();
+  } finally { await rm(home, { recursive: true, force: true }); }
+});

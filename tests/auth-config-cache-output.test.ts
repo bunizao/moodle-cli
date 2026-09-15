@@ -362,7 +362,7 @@ describe("agent output contract", () => {
 
     const stdout = buffer();
     const stderr = buffer();
-    const code = await runCli(["node", "moodle", "user", "--fields", "userid,fullname"], {
+    const code = await runCli(["node", "moodle", "user", "--fields", "user"], {
       env: { [ENV_MOODLE_BASE_URL]: BASE_URL, [ENV_MOODLE_SESSION]: "cookie" },
       homeDir: await mkdtemp(join(tmpdir(), "moodle-cli-json-pipe-")),
       fetchImpl,
@@ -372,12 +372,13 @@ describe("agent output contract", () => {
     });
 
     expect(code).toBe(0);
-    expect(stdout.text()).toBe('{\n  "userid": 7,\n  "fullname": "Alice"\n}\n');
+    expect(JSON.parse(stdout.text())).toMatchObject({ user: { id: 7, name: "Alice" } });
+    expect(stdout.text().trim()).not.toContain("\n");
     expect(stderr.text()).toBe("");
 
     const errorStdout = buffer();
     const errorStderr = buffer();
-    const errorCode = await runCli(["node", "moodle", "not-a-command"], {
+    const errorCode = await runCli(["node", "moodle", "unit"], {
       stdout: errorStdout,
       stderr: errorStderr,
       stdin: { isTTY: false } as NodeJS.ReadStream,

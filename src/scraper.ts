@@ -69,6 +69,7 @@ export function parsePageContext(html: string, baseUrl: string): PageContext {
       fullname: cleanNodeText(root.querySelector(".userfullname")),
       sitename: extractSitename(root),
       siteurl: baseUrl,
+      ...(config.timezone ? { timezone: stringValue(config.timezone) } : {}),
       lang: stringValue(config.language) || root.querySelector("html")?.getAttribute("lang") || "",
     },
   };

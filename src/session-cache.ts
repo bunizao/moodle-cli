@@ -12,6 +12,7 @@ import {
 
 export interface CachedSession {
   baseUrl: string;
+  cookieSource?: string;
   cookieName: string;
   cookieValue: string;
   sesskey: string;
@@ -157,6 +158,7 @@ function parseCachedSession(raw: string): CachedSession | null {
     sesskey: session.sesskey,
     userid: session.userid,
     savedAt: session.savedAt,
+    ...(typeof session.cookieSource === "string" ? { cookieSource: session.cookieSource } : {}),
   };
 }
 

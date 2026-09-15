@@ -13,15 +13,10 @@ export type OnboardingStageId = (typeof ONBOARDING_STAGES)[number]["id"];
 
 export const ONBOARDING_COPY = {
   introduction: [
-    "Moodle MCP setup",
-    "",
-    "This command will:",
-    "  • verify your Moodle sign-in",
-    "  • deploy a private MCP server to your Cloudflare account",
-    "  • install session renewal on this computer",
-    "  • connect supported MCP clients",
-    "",
-    "Your Moodle password and session cookie will not be printed or stored in this project.",
+    "Creates a private Moodle MCP Worker in your Cloudflare account.",
+    "Uploads your Moodle session over HTTPS; the Worker stores it encrypted.",
+    "Installs local session renewal and connects supported MCP clients.",
+    "Cloudflare's free tier costs $0 within its limits; paid usage follows your account plan.",
   ].join("\n"),
   credentials: [
     "Moodle MCP will create two private credentials:",

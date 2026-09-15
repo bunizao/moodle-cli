@@ -4,7 +4,7 @@ Read this file for installation, first-run configuration, browser-session reuse,
 
 ## Install
 
-Prefer the published npm package:
+Use the standalone installer from the repository for a bundled runtime, or install the npm package:
 
 ```bash
 npm install -g moodle-cli
@@ -95,3 +95,22 @@ After upgrading from the original OAuth release, run `moodle mcp pair` again bec
 `moodle mcp deploy --rotate-token` invalidates previous static credentials and OAuth grants immediately. `moodle mcp deploy --rotate-key` re-encrypts and verifies the active session before retiring the previous encryption key. `moodle mcp deploy --repair` reconciles interrupted uploads using the live session revision. Rollback requires a compatible session schema and matching current keys/credentials; updates retain a static-bridge recovery release.
 
 The Worker is pinned to its Moodle account. Do not reuse it for another account. Session records and local caches are encrypted; OS-protected credential storage is required. `--no-cache` bypasses reads and writes. Existing plaintext caches migrate when read, and managed removal deletes the matching authentication cache. Keep the owner's device and Cloudflare account trusted: the running Worker must decrypt the cookie to call Moodle.
+
+## Runtime and removal
+
+`moodle doctor` checks SQLite support, browser access, cached session liveness and local job pins.
+Pinned commands prefer a standalone binary, then Bun, then a supported Node runtime.
+Browser access denied on macOS: System Settings > Privacy & Security > Full Disk Access.
+Allow the application running the command and restart it. Changing runtimes does not bypass this.
+
+Wrangler is downloaded only for Cloudflare management and cached under
+`~/.config/moodle-cli/tools/wrangler@VERSION`. A Wrangler already on PATH takes precedence.
+The CLI, local MCP server and bridge do not require Wrangler.
+
+`moodle uninstall --dry-run` shows local cleanup. `moodle uninstall` removes background jobs.
+Add `--remote` to remove the configured Worker, and `--purge` to remove local configuration
+and session cache after removing deployments. Use `--yes` for unattended cleanup.
+Then remove the package with its package manager, or remove `~/.local/bin/moodle` for a binary install.
+Other sites' Workers must be removed from their own configured profiles before purging receipts.
+
+`moodle completion zsh`, `moodle completion bash` or `moodle completion fish` prints shell setup.

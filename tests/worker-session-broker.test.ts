@@ -273,7 +273,7 @@ describe("SessionBroker Durable Object", () => {
       response: {
         jsonrpc: "2.0",
         id: 1,
-        result: { structuredContent: { user: { userid: 42, fullname: "Ada Lovelace" } } },
+        result: { structuredContent: { user: { id: 42, name: "Ada Lovelace" } } },
       },
     });
     expect(JSON.stringify(body)).not.toContain(OLD_COOKIE);

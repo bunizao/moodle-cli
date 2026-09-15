@@ -7,10 +7,12 @@ import type {
   CourseGrades,
   ForumActivityRef,
   ForumDiscussion,
+  ForumDiscussionRef,
   ForumSearchHit,
   Overview,
   Section,
   UserInfo,
+  TodoItem,
 } from "../models.js";
 
 export interface OverviewInput {
@@ -49,6 +51,7 @@ export interface ForumSearchInput {
   courseId?: number;
   forumId?: number;
   includePostText?: boolean;
+  titlesOnly?: boolean;
   unreadOnly?: boolean;
   sortBy?: "relevance" | "recent";
   maxForums?: number;
@@ -76,6 +79,7 @@ export const MAX_MCP_FILE_BYTES = 16 * 1024 * 1024;
 export interface MoodleGateway {
   getUser(): Promise<UserInfo>;
   getOverview(input: OverviewInput): Promise<Overview>;
+  getDue?(days: number): Promise<TodoItem[]>;
   listCourses(): Promise<Course[]>;
   getCourse(input: CourseInput): Promise<CourseDetail>;
   listActivities(input: ActivityListInput): Promise<Activity[]>;
@@ -85,12 +89,15 @@ export interface MoodleGateway {
   searchForums(input: ForumSearchInput): Promise<ForumSearchHit[]>;
   getThread(input: ThreadInput): Promise<ForumDiscussion>;
   getFile(input: FileInput): Promise<MoodleFile>;
+  listThreads?(forumId: number): Promise<ForumDiscussionRef[]>;
+  listNewsForums?(courseId?: number): Promise<ForumActivityRef[]>;
 }
 
 export interface MoodleClientPort {
   readonly baseUrl: string;
   getSiteInfo(): Promise<UserInfo>;
   getOverview(todoLimit?: number, todoDays?: number, alertsLimit?: number): Promise<Overview>;
+  getTodo?(limit?: number, days?: number): Promise<TodoItem[]>;
   getCourses(): Promise<Course[]>;
   getCourseContents(courseId: number): Promise<Section[]>;
   getActivities(courseId: number): Promise<Activity[]>;
@@ -103,12 +110,15 @@ export interface MoodleClientPort {
     courseId?: number;
     forumCmid?: number;
     includePostText?: boolean;
+    titlesOnly?: boolean;
     unreadOnly?: boolean;
     sortBy?: "relevance" | "recent";
     maxForums?: number;
     maxDiscussionsPerForum?: number;
   }): Promise<ForumSearchHit[]>;
   getForumDiscussion(discussionId: number): Promise<ForumDiscussion>;
+  getForumDiscussionRefs?(forumId: number): Promise<ForumDiscussionRef[]>;
+  getNewsForums?(courseId?: number): Promise<ForumActivityRef[]>;
   requestAbsolute(url: string, init?: RequestInit): Promise<Response>;
 }
 
@@ -125,7 +135,10 @@ export class MoodleGatewayError extends Error {
 export function createMoodleGateway(client: MoodleClientPort): MoodleGateway {
   return {
     getUser: () => client.getSiteInfo(),
+    listThreads: (id) => client.getForumDiscussionRefs ? client.getForumDiscussionRefs(id) : Promise.resolve([]),
+    listNewsForums: (id) => client.getNewsForums ? client.getNewsForums(id) : Promise.resolve([]),
     getOverview: (input) => client.getOverview(input.todoLimit, input.todoDays, input.alertsLimit),
+    ...(client.getTodo ? { getDue: (days: number) => client.getTodo!(Number.MAX_SAFE_INTEGER, days) } : {}),
     listCourses: () => client.getCourses(),
     async getCourse({ courseId }) {
       const [courses, sections] = await Promise.all([

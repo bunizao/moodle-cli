@@ -621,7 +621,7 @@ describe("stable managed MCP surface", () => {
       touch: "/session/touch",
     });
     expect(ONBOARDING_STAGES).toHaveLength(8);
-    expect(ONBOARDING_COPY.introduction).toContain("Moodle MCP setup");
+    expect(ONBOARDING_COPY.introduction).toContain("Cloudflare account");
     expect(JSON.stringify(ONBOARDING_COPY)).not.toMatch(/cookieValue|Bearer [A-Za-z0-9]/);
   });
 });

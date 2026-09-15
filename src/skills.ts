@@ -1,15 +1,14 @@
 import { spawnSync, type SpawnSyncReturns } from "node:child_process";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync, rmSync } from "node:fs";
 import path from "node:path";
 import type { Command } from "commander";
 import type { CommandDescription } from "@bunizao/cli-kit";
-import { describeProgram } from "./command-contract.js";
+import { describeProgram, intentContracts } from "./command-contract.js";
 
 export const SKILL_NAME = "moodle-cli";
 export const SKILL_SOURCE = "https://github.com/bunizao/moodle-cli";
 export const SKILLS_SPEC_URL = "https://github.com/vercel-labs/skills";
-export const SKILL_DESCRIPTION =
-  "Read Moodle data, download local files, and manage a private Moodle MCP deployment with the `moodle` CLI. Use for authenticated profile, unit discovery, deadlines, alerts, sections, activities, grades, forum workflows, local file downloads, supported Moodle URLs, authentication diagnostics, or MCP deploy, status, login, connection, and removal.";
+export const SKILL_DESCRIPTION = "Read Moodle units, deadlines, grades, announcements and files; diagnose sign-in and manage a private MCP server.";
 
 export interface SkillFlag {
   name: string;
@@ -44,13 +43,6 @@ type RunCommand = typeof spawnSync;
 const SKILL_BUNDLE_TEMPLATES = [
   ["SKILL.md", "skill.template.md"],
   ["references/setup-and-auth.md", "skill-references/setup-and-auth.md"],
-  ["references/profile-and-courses.md", "skill-references/profile-and-courses.md"],
-  ["references/deadlines-and-alerts.md", "skill-references/deadlines-and-alerts.md"],
-  ["references/coursework-and-grades.md", "skill-references/coursework-and-grades.md"],
-  ["references/downloads.md", "skill-references/downloads.md"],
-  ["references/forums.md", "skill-references/forums.md"],
-  ["references/output-and-errors.md", "skill-references/output-and-errors.md"],
-  ["references/maintenance.md", "skill-references/maintenance.md"],
   ["references/command-reference.md", "skill-references/command-reference.md"],
   ["agents/openai.yaml", "skill-agents/openai.yaml"],
 ] as const;
@@ -144,6 +136,7 @@ export function generateSkillMarkdown(input: Command | GenerateOptions): string 
 export function writeGeneratedSkill(program: Command, target = "SKILL.md"): void {
   const commands = extractCommanderCommands(program);
   const targetDir = path.dirname(target);
+  for (const obsolete of ["profile-and-courses", "deadlines-and-alerts", "coursework-and-grades", "downloads", "forums", "output-and-errors", "maintenance"]) rmSync(path.join(targetDir, "references", `${obsolete}.md`), { force: true });
   for (const [relativeTarget, relativeTemplate] of SKILL_BUNDLE_TEMPLATES) {
     const outputPath = relativeTarget === "SKILL.md" ? target : path.join(targetDir, relativeTarget);
     mkdirSync(path.dirname(outputPath), { recursive: true });
@@ -177,31 +170,7 @@ function renderFrontmatter(): string {
 }
 
 function renderIntentTable(): string {
-  return renderMarkdownTable(
-    ["User intent", "Command"],
-    [
-      ["Show my profile or account info", "moodle user --json"],
-      ["List my units", "moodle units --json"],
-      ["Find nearest deadlines or upcoming actions", "moodle todo --limit 5 --days 14 --json"],
-      ["List alerts or unread notifications", "moodle alerts --limit 10 --json"],
-      ["Show a compact dashboard", "moodle overview --todo-limit 5 --alerts-limit 5 --json"],
-      ["Show activities in a unit", "moodle activities UNIT_ID --json"],
-      ["Show activity details", "moodle activities show ACTIVITY_ID --json"],
-      ["Download one Moodle file locally", "moodle download SOURCE --dest PATH --json"],
-      ["Show unit sections", "moodle units show UNIT_ID --json"],
-      ["Show grades for a unit", "moodle grades UNIT_ID --json"],
-      ["Search forums", "moodle forums search QUERY --json"],
-      ["Open a forum discussion URL or ID", "moodle threads show DISCUSSION_OR_URL --json"],
-      ["Check session freshness or authentication state", "moodle auth status --json"],
-      ["Keep the session alive to avoid repeated logins", "moodle auth keepalive install"],
-      ["Deploy or update the private Moodle MCP server", "moodle mcp deploy"],
-      ["Check managed MCP and Moodle readiness", "moodle mcp status --json"],
-      ["Restore an expired remote Moodle session", "moodle mcp login"],
-      ["Connect a supported MCP client without embedding a token", "moodle mcp connect"],
-      ["Remove the selected managed MCP deployment", "moodle mcp remove"],
-      ["Install this agent skill", "moodle skills add"],
-    ],
-  );
+  return renderMarkdownTable(["Intent", "Run"], Object.values(intentContracts).filter(c => c.command !== "moodle threads show ID").map(c => [c.when, c.command]));
 }
 
 function renderCommandReference(commands: SkillCommand[]): string {
@@ -221,11 +190,11 @@ function renderOutputContract(): string {
   return [
     "### Output Contract",
     "",
-    "- `--json` writes JSON to stdout.",
+    "- `--json` and piped output write compact JSON. `--pretty` indents it.",
     "- `--yaml` writes YAML to stdout when supported.",
     "- `--table` forces human-readable table/tree output.",
     "- When stdout is not a TTY, commands default to JSON unless `--table` is set.",
-    "- `--fields a,b,c` keeps only listed top-level fields. Arrays apply the field filter to each item.",
+    "- `--fields a,b,c` keeps only listed top-level fields. Use envelope keys such as `units`, `due`, `item`, and `total`.",
     "- Invalid `--fields` values are usage errors and list valid fields.",
     "- Structured errors use `{ok:false,error:{code,message,hint},exit_code}` on stderr.",
     "",

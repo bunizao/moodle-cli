@@ -56,7 +56,7 @@ describe("forum search paths", () => {
     };
 
     const hits = await searchForumContent(source, "deadline", {
-      includePostText: false,
+      titlesOnly: true,
       maxForums: 2,
       maxDiscussionsPerForum: 2,
     });
@@ -73,7 +73,7 @@ describe("forum search paths", () => {
       refs: [ref(9001, "deadline alpha", { group_id: 10, group_name: "Tutorial A" })],
     });
 
-    const hits = await searchForumContent(source, "deadline", { includePostText: false });
+    const hits = await searchForumContent(source, "deadline", { titlesOnly: true });
 
     expect(hits.map((hit) => [hit.group_id, hit.group_name])).toEqual([[10, "Tutorial A"]]);
   });

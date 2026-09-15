@@ -107,6 +107,7 @@ export async function promptForBaseUrl(options: ConfigOptions = {}): Promise<str
   const output = options.stderr ?? process.stderr;
   output.write("Configuration required\n");
   output.write("Moodle base URL is not configured yet.\n");
+  output.write(`Runtime: ${process.versions.bun ? `bun ${process.versions.bun}` : `node ${process.versions.node}`}. Browser SQLite needs Bun or Node 22.13+. Run moodle doctor for diagnostics.\n`);
   output.write("Required format: https://school.example.edu\n");
   output.write("Use the site root only. Do not include paths like /login/index.php or /my/.\n");
 

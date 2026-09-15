@@ -49,3 +49,5 @@ export const ENV_MOODLE_CONFIG = "MOODLE_CONFIG";
 export const ENV_MOODLE_TOKEN = "MOODLE_TOKEN";
 
 export const MOODLE_SESSION_COOKIE_PREFIX = "MoodleSession";
+
+export const WRANGLER_VERSION = "4.131.0";

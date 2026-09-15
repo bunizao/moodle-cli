@@ -114,10 +114,10 @@ describe("MoodleClient course/activity modules", () => {
       { id: 202, shortname: "MATH102", fullname: "Mathematics 102", category: 4, visible: false, startdate: 1700000100 },
     ]);
     expect(resolveCourseReference("101", courses)).toBe(101);
-    expect(resolveCourseReference("102", courses)).toBe(102);
+    expect(resolveCourseReference("202", courses)).toBe(202);
     expect(resolveCourseReference("MATH101", courses)).toBe(101);
-    expect(() => resolveCourseReference("Mathematics", courses)).toThrow(/ambiguous/i);
-    expect(() => resolveCourseReference("Physics", courses)).toThrow(/Could not find/);
+    expect(() => resolveCourseReference("Mathematics", courses)).toThrow(/Several units match/i);
+    expect(() => resolveCourseReference("Physics", courses)).toThrow(/No unit matches/);
   });
 
   it("falls back to the timeline courses API when the primary course API is unavailable", async () => {
@@ -723,33 +723,34 @@ describe("MoodleClient course/activity modules", () => {
       dashboardRoute,
       ajaxRoute("core_enrol_get_users_courses", jsonFixture("courses.json")),
       ajaxRoute("core_course_get_contents", jsonFixture("course-contents.json")),
+      ajaxRoute("core_webservice_get_site_info", { userid: 7, fullname: "Alice", siteurl: BASE_URL }),
     ]);
 
-    const courses = await runJsonCommand(["courses", "--json", "--fields", "id,shortname"], fetchImpl);
+    const courses = await runJsonCommand(["courses", "--json", "--fields", "units,total"], fetchImpl);
     expect(courses.code).toBe(0);
-    expect(JSON.parse(courses.stdout)).toEqual([
-      { id: 101, shortname: "MATH101" },
-      { id: 202, shortname: "MATH102" },
-    ]);
+    expect(JSON.parse(courses.stdout)).toMatchObject({ units: [{ id: 101, code: "MATH101" }, { id: 202, code: "MATH102" }], total: 2 });
 
     const course = await runJsonCommand(["units", "show", "101", "--json"], fetchImpl);
     expect(course.code).toBe(0);
     const courseJson = JSON.parse(course.stdout);
-    expect(courseJson[0].id).toBe(11);
-    expect(courseJson[0].name).toBe("Introduction");
-    expect(courseJson[0].activities[0]).toMatchObject({ id: 21, name: "Syllabus" });
+    expect(courseJson.sections[0].id).toBe(11);
+    expect(courseJson.sections[0].name).toBe("Introduction");
+    expect(courseJson.sections[0]).toMatchObject({ activity_count: 2 });
+    expect(courseJson.sections[0]).not.toHaveProperty("activities");
 
     const activities = await runJsonCommand(["activities", "101", "--json"], fetchImpl);
     expect(activities.code).toBe(0);
-    expect(JSON.parse(activities.stdout)).toEqual([
-      { id: 21, name: "Syllabus", modname: "resource", url: `${BASE_URL}/mod/resource/view.php?id=21`, visible: true, description: "Read first" },
-      { id: 22, name: "Quiz 1", modname: "quiz", url: `${BASE_URL}/mod/quiz/view.php?id=22`, visible: false, description: "" },
-    ]);
+    expect(JSON.parse(activities.stdout)).toEqual({ activities: [
+      { id: 21, name: "Syllabus", type: "resource", section_id: 11, description: "Read first" },
+      { id: 22, name: "Quiz 1", type: "quiz", section_id: 11, hidden: true },
+    ], total: 2 });
   });
 
   it("prints CLI JSON parity for todo, alerts, and overview", async () => {
     const fetchImpl = cliFetch([
       dashboardRoute,
+      ajaxRoute("core_enrol_get_users_courses", jsonFixture("courses.json")),
+      ajaxRoute("core_webservice_get_site_info", { userid: 7, fullname: "Alice", siteurl: BASE_URL }),
       (request) => {
         if (request.init?.method !== "POST") {
           return undefined;
@@ -769,21 +770,21 @@ describe("MoodleClient course/activity modules", () => {
       },
     ]);
 
-    const todo = await runJsonCommand(["todo", "--limit", "5", "--json", "--fields", "id,name"], fetchImpl);
+    const todo = await runJsonCommand(["todo", "--limit", "5", "--json", "--fields", "due,total"], fetchImpl);
     expect(todo.code).toBe(0);
-    expect(JSON.parse(todo.stdout)).toEqual([{ id: 301, name: "Quiz 1 is due" }]);
+    expect(JSON.parse(todo.stdout)).toMatchObject({ due: [{ id: 301, name: "Quiz 1" }], total: 1 });
 
     const alerts = await runJsonCommand(["alerts", "--json"], fetchImpl);
     expect(alerts.code).toBe(0);
-    expect(JSON.parse(alerts.stdout)).toMatchObject({ notification_count: 1, direct_message_count: 2, unread_direct_message_count: 1 });
+    expect(JSON.parse(alerts.stdout)).toMatchObject({ alerts: { notification_count: 1, direct_message_count: 2, unread_direct_message_count: 1 } });
 
     const overview = await runJsonCommand(["overview", "--json"], fetchImpl);
     expect(overview.code).toBe(0);
     const overviewJson = JSON.parse(overview.stdout);
-    expect(overviewJson.user.userid).toBe(7);
-    expect(overviewJson.courses[0].id).toBe(101);
-    expect(overviewJson.todo[0].id).toBe(301);
-    expect(overviewJson.alerts.notification_count).toBe(1);
+    expect(overviewJson.home.name).toBeTruthy();
+    expect(overviewJson.home.units[0].id).toBe(101);
+    expect(overviewJson.home.due[0].id).toBe(301);
+    expect(overviewJson.home.unread.notification_count).toBe(1);
   });
 
   it("routes top-level URLs with structured output options", async () => {
@@ -792,10 +793,10 @@ describe("MoodleClient course/activity modules", () => {
       (request) => (request.url === `${BASE_URL}/mod/assign/view.php?id=31` ? htmlResponse(fixture("assign.html")) : undefined),
     ]);
 
-    const result = await runJsonCommand([`${BASE_URL}/mod/assign/view.php?id=31`, "--json", "--fields", "id,name"], fetchImpl);
+    const result = await runJsonCommand([`${BASE_URL}/mod/assign/view.php?id=31`, "--json", "--fields", "item"], fetchImpl);
 
     expect(result).toMatchObject({ code: 0, stderr: "" });
-    expect(JSON.parse(result.stdout)).toEqual({ id: 31, name: "Essay 1" });
+    expect(JSON.parse(result.stdout)).toMatchObject({ item: { id: 31, name: "Essay 1" } });
   });
 
   it("resolves the activity type for activities show", async () => {
@@ -808,7 +809,7 @@ describe("MoodleClient course/activity modules", () => {
     const result = await runJsonCommand(["activities", "show", "31", "--json"], fetchImpl);
 
     expect(result).toMatchObject({ code: 0, stderr: "" });
-    expect(JSON.parse(result.stdout)).toMatchObject({ id: 31, name: "Essay 1", type: "assign" });
+    expect(JSON.parse(result.stdout)).toMatchObject({ item: { id: 31, name: "Essay 1", type: "assign" } });
   });
 
   it("returns usage errors for invalid URL --fields", async () => {
@@ -876,11 +877,11 @@ describe("MoodleClient course/activity modules", () => {
       "1",
       "--json",
       "--fields",
-      "discussion_id,discussion_subject",
+      "results",
     ], fetchImpl);
 
     expect(result).toMatchObject({ code: 0, stderr: "" });
-    expect(JSON.parse(result.stdout)).toEqual([{ discussion_id: 9001, discussion_subject: "Exam deadline questions" }]);
+    expect(JSON.parse(result.stdout)).toMatchObject({ results: [{ discussion_id: 9001, name: "Exam deadline questions" }] });
   });
 });
 

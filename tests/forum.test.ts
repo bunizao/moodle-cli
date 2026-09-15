@@ -208,7 +208,7 @@ describe("forum read paths", () => {
     expect(output).not.toContain("\u0000");
   });
 
-  it("includes post IDs and URLs in forum search tables", () => {
+  it("keeps post IDs intact and omits derivable URLs in tables", () => {
     const hit: ForumSearchHit = {
       course_id: 101,
       course_name: "Mathematics 101",
@@ -229,14 +229,10 @@ describe("forum read paths", () => {
 
     const output = formatForumSearchHits([hit]);
 
-    expect(output).toMatch(/│ Po │/u);
-    expect(output).toMatch(/│ st │/u);
-    expect(output).toMatch(/│ 91 │/u);
-    expect(output).toMatch(/│ 01 │/u);
-    expect(output).toContain("Alice");
-    expect(output).toContain("Example");
-    expect(output).toContain("https://");
-    expect(output).toContain("x/1");
+    expect(output).toContain("Post");
+    expect(output).toContain("9101");
+    expect(output).toContain("Alice Example");
+    expect(output).not.toContain("https://x/1");
   });
 
   it("keeps empty forum results in bordered tables", () => {

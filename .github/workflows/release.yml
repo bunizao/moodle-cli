@@ -110,8 +110,8 @@ jobs:
       - name: Build standalone binaries
         run: |
           mkdir -p dist/bin
-          bun build ./src/cli.ts --compile --target=bun-darwin-arm64 --outfile dist/bin/moodle-darwin-arm64
-          bun build ./src/cli.ts --compile --target=bun-linux-x64 --outfile dist/bin/moodle-linux-x64
+          bun scripts/build-standalone.mjs dist/bin/moodle-darwin-arm64 bun-darwin-arm64
+          bun scripts/build-standalone.mjs dist/bin/moodle-linux-x64 bun-linux-x64
           chmod +x dist/bin/moodle-*
 
       - name: Resolve release notes file

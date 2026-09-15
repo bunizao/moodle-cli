@@ -53,19 +53,7 @@ describe("Moodle MCP server", () => {
       },
     });
     const tools = (response as { result: { tools: Array<Record<string, unknown>> } }).result.tools;
-    expect(tools.map((tool) => tool.name)).toEqual([
-      "get_user",
-      "get_overview",
-      "list_courses",
-      "get_course",
-      "list_activities",
-      "get_activity",
-      "get_grades",
-      "list_forums",
-      "search_forums",
-      "get_thread",
-      "get_file",
-    ]);
+    expect(tools.map((tool) => tool.name)).toEqual(["home", "due", "units", "unit", "find", "item", "grades", "news", "thread", "search_forums", "file"]);
     expect(tools).toHaveLength(11);
     expect(tools.every((tool) => (
       (tool.annotations as Record<string, unknown>).readOnlyHint === true
@@ -82,10 +70,10 @@ describe("Moodle MCP server", () => {
         return Object.keys(value.properties ?? {}).length > 0 || value.items !== undefined;
       });
     }
-    const getActivity = tools.find((tool) => tool.name === "get_activity") as {
-      outputSchema: { properties: { activity: { properties: Record<string, unknown> } } };
+    const getActivity = tools.find((tool) => tool.name === "item") as {
+      outputSchema: { properties: { item: { properties: Record<string, unknown> } } };
     };
-    expect(getActivity.outputSchema.properties.activity.properties).toHaveProperty("file_entries");
+    expect(getActivity.outputSchema.properties.item.properties).toHaveProperty("files");
   });
 
   it("returns an authenticated file as an embedded MCP resource", async () => {
@@ -141,13 +129,13 @@ describe("Moodle MCP server", () => {
       result: {
         content: [{ type: "text", text: expect.any(String) }],
         structuredContent: {
-          courses: [{ id: 101, shortname: "COMP101", fullname: "Computing" }],
+          units: [{ id: 101, code: "COMP101", name: "Computing" }],
         },
         resultType: "complete",
         _meta: { cacheScope: "private" },
       },
     });
-    expect(textResult(response)).toMatchObject({ courses: [{ id: 101, fullname: "Computing" }] });
+    expect(textResult(response)).toMatchObject({ units: [{ id: 101, name: "Computing" }] });
   });
 
   it.each([
@@ -171,7 +159,7 @@ describe("Moodle MCP server", () => {
     expect(response).toMatchObject({
       result: {
         structuredContent: {
-          activity: { type, file_entries: fileEntries },
+          item: { type, files: fileEntries },
         },
       },
     });
@@ -183,7 +171,7 @@ describe("Moodle MCP server", () => {
       jsonrpc: "2.0",
       id: 3,
       method: "tools/call",
-      params: modernParams({ name: "get_course", arguments: { courseId: "101" } }),
+      params: modernParams({ name: "get_course", arguments: { courseId: -1 } }),
     });
 
     expect(response).toMatchObject({
@@ -310,7 +298,7 @@ describe("Moodle MCP server", () => {
       },
     });
     expect(listed).toMatchObject({ result: { tools: expect.any(Array) } });
-    expect(called).toMatchObject({ result: { structuredContent: { user: { userid: 7 } } } });
+    expect(called).toMatchObject({ result: { structuredContent: { user: { id: 7 } } } });
     expect(notification).toBeNull();
   });
 
@@ -341,14 +329,14 @@ describe("Moodle MCP server", () => {
 
   it.each([
     ["get_user", {}, "user"],
-    ["get_overview", {}, "overview"],
-    ["list_courses", {}, "courses"],
-    ["get_course", { courseId: 101 }, "course"],
-    ["list_activities", { courseId: 101 }, "activities"],
-    ["get_activity", { activityId: 501 }, "activity"],
+    ["get_overview", {}, "home"],
+    ["list_courses", {}, "units"],
+    ["get_course", { courseId: 101 }, "unit"],
+    ["list_activities", { courseId: 101 }, "total"],
+    ["get_activity", { activityId: 501 }, "item"],
     ["get_grades", { courseId: 101 }, "grades"],
-    ["list_forums", { courseId: 101 }, "forums"],
-    ["search_forums", { query: "exam" }, "results"],
+    ["list_forums", { courseId: 101 }, "total"],
+    ["search_forums", { query: "exam" }, "total"],
     ["get_thread", { discussionId: 701 }, "thread"],
     ["get_file", { source: 91234 }, "file"],
   ])("exposes the complete %s result to text-only clients", async (name, args, resultKey) => {
@@ -381,26 +369,26 @@ describe("Moodle MCP server", () => {
     gateway.listForums = async () => [{ id: 601, name: "Questions", course_id: 101, course_name: "Computing", url: "https://moodle.example.edu/mod/forum/view.php?id=601" }];
     const server = createMoodleMcpServer(gateway);
     const call = async (name: string) => textResult(await server.handle({ jsonrpc: "2.0", id: name, method: "tools/call", params: modernParams({ name }) }));
-    expect(await call("get_overview")).toMatchObject({ overview: { courses: [{ id: 101 }, { id: 102 }], todo: [{ due_at: 1800000000, course_id: 101 }] } });
-    expect(await call("list_forums")).toMatchObject({ forums: [{ id: 601, course_id: 101, name: "Questions" }] });
+    expect(await call("get_overview")).toMatchObject({ home: { units: [{ id: 101 }, { id: 102 }], due: [{ due_at: 1800000000, unit_id: 101 }] } });
+    expect(await call("list_forums")).toMatchObject({ forums: [{ id: 601, unit_id: 101, name: "Questions" }] });
   });
 
   it("chains course, activity and grade calls using only text content", async () => {
     const gateway = fakeGateway();
     const getCourse = vi.spyOn(gateway, "getCourse");
-    const listActivities = vi.spyOn(gateway, "listActivities");
+
     const getGrades = vi.spyOn(gateway, "getGrades");
     const server = createMoodleMcpServer(gateway);
     const call = async (name: string, args = {}) => textResult(await server.handle({
       jsonrpc: "2.0", id: name, method: "tools/call", params: { name, arguments: args },
     }, { protocolVersion: "2025-06-18" }));
-    const courses = (await call("list_courses")).courses as Array<{ id: number; fullname: string }>;
-    expect(courses[0]).toMatchObject({ id: 101, fullname: "Computing" });
+    const courses = (await call("list_courses")).units as Array<{ id: number; name: string }>;
+    expect(courses[0]).toMatchObject({ id: 101, name: "Computing" });
     const courseId = courses[0]!.id;
-    expect(await call("get_course", { courseId })).toHaveProperty("course.sections");
-    expect(await call("list_activities", { courseId })).toHaveProperty("activities");
-    expect(await call("get_grades", { courseId })).toHaveProperty("grades.course_id", courseId);
-    for (const method of [getCourse, listActivities, getGrades]) {
+    expect(await call("get_course", { courseId })).toHaveProperty("unit.id", courseId);
+    expect(await call("list_activities", { courseId })).toHaveProperty("total", 0);
+    expect(await call("get_grades", { courseId })).toHaveProperty("grades.0.unit_id", courseId);
+    for (const method of [getCourse, getGrades]) {
       expect(method).toHaveBeenCalledWith(expect.objectContaining({ courseId }));
     }
   });
