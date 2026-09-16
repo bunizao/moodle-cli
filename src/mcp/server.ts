@@ -1,3 +1,7 @@
+import { createIntentService } from "../intents.js";
+import { activitySchema, intentContracts, intentDescription, type Intent } from "../intent-contract.js";
+import { ReferenceError } from "../resolve.js";
+import { activityRow, stripEmpty } from "../results.js";
 import { z, ZodError } from "zod";
 
 import { VERSION } from "../version.js";
@@ -26,243 +30,21 @@ const READ_ONLY_ANNOTATIONS = {
   openWorldHint: true,
 } as const;
 
-const emptyInput = z.object({}).strict();
-const positiveId = z.number().int().positive();
-const integer = z.number().int();
-const userValue = z.looseObject({
-  userid: integer,
-  username: z.string(),
-  fullname: z.string(),
-  sitename: z.string(),
-  siteurl: z.string(),
-  lang: z.string().optional(),
-});
-const courseValue = z.looseObject({
-  id: integer,
-  shortname: z.string(),
-  fullname: z.string(),
-  category: z.number().int(),
-  visible: z.boolean(),
-  startdate: z.number(),
-  enddate: z.number().optional(),
-});
-const activityValue = z.looseObject({
-  id: integer,
-  name: z.string(),
-  modname: z.string(),
-  url: z.string(),
-  visible: z.boolean(),
-  description: z.string(),
-});
-const fileEntryValue = z.looseObject({
-  name: z.string(),
-  url: z.string(),
-  requires_authentication: z.boolean(),
-});
-const activityDetailValue = z.looseObject({
-  id: positiveId,
-  name: z.string(),
-  type: z.string(),
-  url: z.string().optional(),
-  target_name: z.string().optional(),
-  target_url: z.string().optional(),
-  file_entries: z.array(fileEntryValue).optional(),
-});
-const sectionValue = z.looseObject({
-  id: z.number().int(),
-  name: z.string(),
-  section: z.number().int(),
-  visible: z.boolean(),
-  summary: z.string(),
-  activities: z.array(activityValue),
-});
-const todoValue = z.looseObject({
-  id: z.number().int(),
-  name: z.string(),
-  course_id: z.number().int(),
-  course_name: z.string(),
-  due_at: z.number(),
-  url: z.string(),
-});
-const gradeItemValue = z.looseObject({
-  name: z.string(),
-  item_type: z.string(),
-  grade: z.string(),
-  range: z.string(),
-  percentage: z.string(),
-  feedback: z.string(),
-  url: z.string(),
-});
-const gradesValue = z.looseObject({
-  course_id: integer,
-  course_name: z.string(),
-  learner_name: z.string(),
-  total_grade: z.string(),
-  total_range: z.string(),
-  total_percentage: z.string(),
-  items: z.array(gradeItemValue),
-});
-const forumValue = z.looseObject({
-  id: integer,
-  name: z.string(),
-  course_id: integer,
-  course_name: z.string(),
-  url: z.string(),
-});
-const forumSearchValue = z.looseObject({
-  course_id: integer,
-  course_name: z.string(),
-  forum_id: integer,
-  forum_name: z.string(),
-  discussion_id: integer,
-  discussion_subject: z.string(),
-  post_id: integer,
-  snippet: z.string(),
-  url: z.string(),
-});
-const forumPostValue = z.looseObject({
-  id: integer,
-  discussion_id: integer,
-  subject: z.string(),
-  message_text: z.string(),
-  author: z.looseObject({ id: integer, fullname: z.string() }),
-  url: z.string(),
-});
-const threadValue = z.looseObject({
-  id: integer,
-  subject: z.string(),
-  course_id: integer,
-  forum_id: integer,
-  group_id: z.number().int(),
-  group_name: z.string(),
-  url: z.string(),
-  posts: z.array(forumPostValue),
-});
-
-interface ToolRegistration {
-  name: string;
-  description: string;
-  input: z.ZodType;
-  output: z.ZodType;
-}
-
-const TOOL_REGISTRATIONS = [
-  {
-    name: "get_user",
-    description: "Get the authenticated Moodle user and site.",
-    input: emptyInput,
-    output: z.object({ user: userValue }),
-  },
-  {
-    name: "get_overview",
-    description: "Get courses, deadlines and alerts. Course IDs can be used as courseId in other tools; todo due_at values are Unix timestamps in seconds.",
-    input: z.object({
-      todoLimit: z.number().int().min(1).max(100).optional().default(5),
-      todoDays: z.number().int().min(1).max(365).optional(),
-      alertsLimit: z.number().int().min(1).max(100).optional().default(5),
-    }).strict(),
-    output: z.object({
-      overview: z.looseObject({
-        user: userValue,
-        courses: z.array(courseValue),
-        todo: z.array(todoValue),
-        errors: z.array(z.string()),
-      }),
-    }),
-  },
-  {
-    name: "list_courses",
-    description: "List the authenticated user's Moodle courses with IDs and names. Use a returned id as courseId for get_course, list_activities, get_grades or list_forums.",
-    input: z.object({ limit: z.number().int().min(1).max(200).optional().default(100) }).strict(),
-    output: z.object({ courses: z.array(courseValue) }),
-  },
-  {
-    name: "get_course",
-    description: "Get one Moodle course and its sections.",
-    input: z.object({ courseId: positiveId }).strict(),
-    output: z.object({
-      course: z.looseObject({
-        course: courseValue,
-        sections: z.array(sectionValue),
-      }),
-    }),
-  },
-  {
-    name: "list_activities",
-    description: "List a bounded set of activities in a Moodle course.",
-    input: z.object({
-      courseId: positiveId,
-      limit: z.number().int().min(1).max(200).optional().default(100),
-    }).strict(),
-    output: z.object({ activities: z.array(activityValue) }),
-  },
-  {
-    name: "get_activity",
-    description: "Get the supported details for one Moodle activity.",
-    input: z.object({ activityId: positiveId }).strict(),
-    output: z.object({ activity: activityDetailValue }),
-  },
-  {
-    name: "get_grades",
-    description: "Get the authenticated user's grades for one Moodle course.",
-    input: z.object({ courseId: positiveId }).strict(),
-    output: z.object({ grades: gradesValue }),
-  },
-  {
-    name: "list_forums",
-    description: "List a bounded set of Moodle forums, optionally for one course.",
-    input: z.object({
-      courseId: positiveId.optional(),
-      limit: z.number().int().min(1).max(100).optional().default(50),
-    }).strict(),
-    output: z.object({ forums: z.array(forumValue) }),
-  },
-  {
-    name: "search_forums",
-    description: "Search a bounded set of Moodle forum discussions and posts.",
-    input: z.object({
-      query: z.string().trim().min(1).max(200),
-      limit: z.number().int().min(1).max(50).optional().default(20),
-      courseId: positiveId.optional(),
-      forumId: positiveId.optional(),
-      includePostText: z.boolean().optional().default(true),
-      unreadOnly: z.boolean().optional().default(false),
-      sortBy: z.enum(["relevance", "recent"]).optional().default("relevance"),
-      maxForums: z.number().int().min(1).max(50).optional(),
-      maxDiscussionsPerForum: z.number().int().min(1).max(100).optional(),
-    }).strict(),
-    output: z.object({ results: z.array(forumSearchValue) }),
-  },
-  {
-    name: "get_thread",
-    description: "Get one Moodle forum discussion and its posts.",
-    input: z.object({ discussionId: positiveId }).strict(),
-    output: z.object({ thread: threadValue }),
-  },
-  {
-    name: "get_file",
-    description: "Fetch one authenticated Moodle file and return its content directly (maximum 16 MiB).",
-    input: z.object({
-      source: z.union([positiveId, z.string().trim().min(1).max(2_048)]),
-    }).strict(),
-    output: z.object({
-      file: z.object({
-        name: z.string(),
-        mime_type: z.string(),
-        bytes: z.number().int().nonnegative(),
-        uri: z.string(),
-      }),
-    }),
-  },
-] as const satisfies readonly ToolRegistration[];
-
-const TOOL_CATALOG = TOOL_REGISTRATIONS.map(({ name, description, input, output }) => ({
-  name,
-  description,
-  inputSchema: z.toJSONSchema(input),
-  outputSchema: z.toJSONSchema(output),
-  annotations: READ_ONLY_ANNOTATIONS,
+const aliases: Partial<Record<string, Intent>> = { get_overview: "home", list_courses: "units", get_course: "unit", get_activity: "item", get_grades: "grades", get_thread: "thread", get_file: "file" };
+export const TOOL_CATALOG = Object.entries(intentContracts).map(([name, contract]) => ({
+  name, description: intentDescription(name as Intent),
+  inputSchema: compactSchema(z.toJSONSchema(contract.input, { io: "input" })), annotations: READ_ONLY_ANNOTATIONS,
 }));
+
+// Results are parsed against the contract before they are sent, so publishing the
+// output schema only adds bytes to every tools/list a client ever reads.
+export const TOOL_OUTPUT_SCHEMAS = Object.fromEntries(Object.entries(intentContracts).map(([name, contract]) => [name, compactSchema(z.toJSONSchema(contract.output))]));
+
+function compactSchema(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(compactSchema);
+  if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).filter(([key, item]) => key !== "$schema" && !(key === "minimum" && item === Number.MIN_SAFE_INTEGER) && !(key === "maximum" && item === Number.MAX_SAFE_INTEGER)).map(([key, item]) => [key, compactSchema(item)]));
+  return value;
+}
 
 export interface MoodleMcpServerOptions {
   name?: string;
@@ -369,127 +151,59 @@ export function createMoodleMcpServer(
   };
 }
 
-async function callTool(
-  gateway: MoodleGateway,
-  params: Record<string, unknown> | undefined,
-): Promise<Record<string, unknown>> {
-  const name = typeof params?.name === "string" ? params.name : "";
-  const registration = TOOL_REGISTRATIONS.find((tool) => tool.name === name);
-  if (!registration) {
-    throw new McpCallError("TOOL_NOT_FOUND", `Unknown Moodle tool: ${name || "<missing>"}`);
+async function callTool(gateway: MoodleGateway, params: Record<string, unknown> | undefined): Promise<Record<string, unknown>> {
+  const requested = typeof params?.name === "string" ? params.name : "";
+  const name = Object.hasOwn(aliases, requested) ? aliases[requested]! : requested;
+  if (!Object.hasOwn(intentContracts, name) && !["get_user", "list_activities", "list_forums"].includes(name)) throw new McpCallError("TOOL_NOT_FOUND", `Unknown Moodle tool: ${requested || "<missing>"}`);
+  const raw = params?.arguments ?? {};
+  if (!isRecord(raw)) throw new McpCallError("INVALID_TOOL_ARGUMENTS", "Tool arguments must be an object.");
+  const args = { ...raw };
+  if (Object.hasOwn(aliases, requested)) {
+    const renames: Record<string, string> = { courseId: "unit", activityId: "ref", discussionId: "discussion_id", source: "ref", todoDays: "days", gradedOnly: "graded_only" };
+    for (const [old, key] of Object.entries(renames)) if (old in args) { args[key] = args[old]; delete args[old]; }
+    delete args.alertsLimit; delete args.todoLimit;
   }
-
-  let input: Record<string, unknown>;
+  const contract = intentContracts[name as Intent];
+  if (contract) {
+    const checked = contract.input.safeParse(args);
+    if (!checked.success) throw new McpCallError("INVALID_TOOL_ARGUMENTS", `Invalid arguments for ${requested}.`, checked.error.issues);
+  }
   try {
-    input = registration.input.parse(params?.arguments ?? {}) as Record<string, unknown>;
+    const service = createIntentService(gateway);
+    let structuredContent: Record<string, unknown>;
+    let payload: unknown;
+    if (name === "file") {
+      const input = intentContracts.file.input.parse(args);
+      payload = await gateway.getFile({ source: await service.fileSource(input.ref as string | number) });
+      const file = payload as MoodleFile;
+      structuredContent = intentContracts.file.output.parse({ file: { name: file.name, mime_type: file.mimeType, bytes: file.bytes, uri: file.uri } });
+    } else if (name === "get_user") {
+      z.object({}).strict().parse(args);
+      const u = await gateway.getUser();
+      structuredContent = stripEmpty({ user: { id: u.userid, name: u.fullname, siteurl: u.siteurl, timezone: u.timezone } }) as Record<string, unknown>;
+    } else if (name === "list_activities") {
+      const input = z.object({ courseId: z.number().int().positive(), sectionId: z.number().int().optional(), includeLabels: z.boolean().default(false), limit: z.number().int().min(1).max(200).default(200) }).strict().parse(args);
+      const { sections } = await gateway.getCourse({ courseId: input.courseId });
+      const rows = sections.filter(s => input.sectionId === undefined || s.id === input.sectionId).flatMap(s => s.activities.filter(a => input.includeLabels || a.modname !== "label").map(a => activityRow(a, s)));
+      structuredContent = stripEmpty({ activities: rows.slice(0, input.limit).map(r => activitySchema.parse(stripEmpty(r))), total: rows.length }) as Record<string, unknown>;
+    } else if (name === "list_forums") {
+      const input = z.object({ courseId: z.number().int().positive().optional(), limit: z.number().int().min(1).max(200).default(50) }).strict().parse(args);
+      const rows = await gateway.listForums({ courseId: input.courseId });
+      structuredContent = stripEmpty({ forums: rows.slice(0, input.limit).map(f => ({ id: f.id, name: f.name, unit_id: f.course_id })), total: rows.length }) as Record<string, unknown>;
+    } else {
+      structuredContent = await service.run(name as Intent, args);
+    }
+    return { content: toolContent(name === "file" ? "get_file" : name, payload, structuredContent), structuredContent, resultType: "complete", _meta: RESULT_META };
   } catch (error) {
+    if (error instanceof ZodError && !contract) throw new McpCallError("INVALID_TOOL_ARGUMENTS", `Invalid arguments for ${requested}.`, error.issues);
     if (error instanceof ZodError) {
-      throw new McpCallError("INVALID_TOOL_ARGUMENTS", `Invalid arguments for ${name}.`, error.issues);
+      // Inputs were already validated, so this is the site's data failing the result contract; say so instead of blaming Moodle.
+      const mapped = { type: "MOODLE_RESULT_INVALID", message: `Moodle returned ${name} data in an unexpected shape.`, hint: "Retry once; if it persists, run the same command locally with --verbose and report the tool name.", issues: error.issues.slice(0, 5).map(issue => ({ path: issue.path.join("."), message: issue.message })) };
+      return { content: [{ type: "text", text: JSON.stringify({ error: mapped }) }], structuredContent: { error: mapped }, isError: true, resultType: "complete", _meta: RESULT_META };
     }
-    throw error;
+    const mapped = error instanceof ReferenceError ? { type: error.code, code: error.code, message: error.message, hint: error.hint, candidates: error.candidates } : mapMoodleError(error);
+    return { content: [{ type: "text", text: JSON.stringify({ error: mapped }) }], structuredContent: { error: mapped }, isError: true, resultType: "complete", _meta: RESULT_META };
   }
-
-  try {
-    const payload = await runGatewayTool(gateway, name, input);
-    const structuredContent = registration.output.parse(wrapToolOutput(name, payload));
-    return {
-      content: toolContent(name, payload, structuredContent),
-      structuredContent,
-      resultType: "complete",
-      _meta: RESULT_META,
-    };
-  } catch (error) {
-    if (error instanceof McpCallError) {
-      throw error;
-    }
-    const mapped = mapMoodleError(error);
-    return {
-      content: [{ type: "text", text: JSON.stringify({ error: mapped }) }],
-      structuredContent: { error: mapped },
-      isError: true,
-      resultType: "complete",
-      _meta: RESULT_META,
-    };
-  }
-}
-
-async function runGatewayTool(
-  gateway: MoodleGateway,
-  name: string,
-  input: Record<string, unknown>,
-): Promise<unknown> {
-  switch (name) {
-    case "get_user":
-      return gateway.getUser();
-    case "get_overview":
-      return gateway.getOverview({
-        todoLimit: numberValue(input.todoLimit),
-        todoDays: optionalNumber(input.todoDays),
-        alertsLimit: numberValue(input.alertsLimit),
-      });
-    case "list_courses":
-      return (await gateway.listCourses()).slice(0, numberValue(input.limit));
-    case "get_course":
-      return gateway.getCourse({ courseId: numberValue(input.courseId) });
-    case "list_activities":
-      return gateway.listActivities({
-        courseId: numberValue(input.courseId),
-        limit: numberValue(input.limit),
-      });
-    case "get_activity":
-      return gateway.getActivity({ activityId: numberValue(input.activityId) });
-    case "get_grades":
-      return gateway.getGrades({ courseId: numberValue(input.courseId) });
-    case "list_forums":
-      return gateway.listForums({
-        courseId: optionalNumber(input.courseId),
-        limit: numberValue(input.limit),
-      });
-    case "search_forums":
-      return gateway.searchForums({
-        query: stringValue(input.query),
-        limit: numberValue(input.limit),
-        courseId: optionalNumber(input.courseId),
-        forumId: optionalNumber(input.forumId),
-        includePostText: booleanValue(input.includePostText),
-        unreadOnly: booleanValue(input.unreadOnly),
-        sortBy: enumValue(input.sortBy, ["relevance", "recent"]),
-        maxForums: optionalNumber(input.maxForums),
-        maxDiscussionsPerForum: optionalNumber(input.maxDiscussionsPerForum),
-      });
-    case "get_thread":
-      return gateway.getThread({ discussionId: numberValue(input.discussionId) });
-    case "get_file":
-      return gateway.getFile({ source: fileSource(input.source) });
-    default:
-      throw new McpCallError("TOOL_NOT_FOUND", `Unknown Moodle tool: ${name}`);
-  }
-}
-
-function wrapToolOutput(name: string, payload: unknown): Record<string, unknown> {
-  const keys: Record<string, string> = {
-    get_user: "user",
-    get_overview: "overview",
-    list_courses: "courses",
-    get_course: "course",
-    list_activities: "activities",
-    get_activity: "activity",
-    get_grades: "grades",
-    list_forums: "forums",
-    search_forums: "results",
-    get_thread: "thread",
-  };
-  if (name === "get_file" && isMoodleFile(payload)) {
-    return {
-      file: {
-        name: payload.name,
-        mime_type: payload.mimeType,
-        bytes: payload.bytes,
-        uri: payload.uri,
-      },
-    };
-  }
-  return { [keys[name] ?? "result"]: payload };
 }
 
 function toolContent(name: string, payload: unknown, structuredContent: unknown): Array<Record<string, unknown>> {
@@ -510,7 +224,7 @@ function toolContent(name: string, payload: unknown, structuredContent: unknown)
   ];
 }
 
-function mapMoodleError(error: unknown): { type: string; message: string; moodleCode?: string } {
+function mapMoodleError(error: unknown): { type: string; message: string; hint: string; recovery?: Record<string, string>; moodleCode?: string } {
   const record = isRecord(error) ? error : {};
   const code = typeof record.code === "string" ? record.code : "";
   const typeByCode: Record<string, string> = {
@@ -525,7 +239,7 @@ function mapMoodleError(error: unknown): { type: string; message: string; moodle
     : type === "MOODLE_INVALID_REQUEST" ? "The Moodle request is invalid."
     : "Moodle could not complete the request.";
   const moodleCode = typeof record.moodleErrorCode === "string" && /^[a-z][a-z0-9_]{0,63}$/u.test(record.moodleErrorCode) ? record.moodleErrorCode : undefined;
-  return { type, message, ...(moodleCode ? { moodleCode } : {}) };
+  return { type, message, hint: type === "MOODLE_AUTH_REQUIRED" ? "Run moodle mcp login for a remote server, or moodle auth login locally; then retry." : "Run moodle doctor, or refine the request using units and find.", ...(type === "MOODLE_AUTH_REQUIRED" ? { recovery: { action: "moodle mcp login", where: "machine running moodle-cli", then: "retry this tool" } } : {}), ...(moodleCode ? { moodleCode } : {}) };
 }
 
 class McpCallError extends Error {
@@ -538,30 +252,6 @@ class McpCallError extends Error {
     this.type = type;
     this.details = details;
   }
-}
-
-function numberValue(value: unknown): number {
-  return typeof value === "number" ? value : 0;
-}
-
-function optionalNumber(value: unknown): number | undefined {
-  return typeof value === "number" ? value : undefined;
-}
-
-function stringValue(value: unknown): string {
-  return typeof value === "string" ? value : "";
-}
-
-function fileSource(value: unknown): number | string {
-  return typeof value === "number" || typeof value === "string" ? value : "";
-}
-
-function booleanValue(value: unknown): boolean {
-  return value === true;
-}
-
-function enumValue<const T extends string>(value: unknown, values: readonly T[]): T {
-  return typeof value === "string" && values.includes(value as T) ? value as T : values[0];
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

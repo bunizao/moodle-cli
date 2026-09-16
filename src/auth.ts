@@ -318,6 +318,7 @@ export function cookieAccessHint(
   return [
     "The browser cookie store could not be read, so the session could not be detected.",
     ...remedy,
+    "Run moodle doctor for runtime and browser diagnostics.",
     `Alternatively set ${ENV_MOODLE_SESSION} to a valid MoodleSession cookie value.`,
     "",
     "Cookie store diagnostics:",
@@ -439,12 +440,20 @@ async function refreshSessionCache(
   const session: CachedSession = {
     baseUrl,
     cookieName: cookie.name,
+    cookieSource: cookie.source,
     cookieValue: cookie.value,
     sesskey: context.sesskey,
     userid: context.userid,
     savedAt: (options.now ?? Date.now)(),
   };
   try {
+    // Keep what the previous session learned about this account: the services
+    // the site disables and the dashboard profile survive an expired cookie.
+    const previous = await readCachedSession(baseUrl, { ...cacheOptions(options), ttlMs: Number.MAX_SAFE_INTEGER });
+    if (previous?.userid === context.userid) {
+      if (previous.unavailable?.length) session.unavailable = previous.unavailable;
+      if (previous.user) session.user = previous.user;
+    }
     await writeCachedSession(session, cacheOptions(options));
   } catch {
     return;
@@ -454,7 +463,7 @@ async function refreshSessionCache(
 function cachedSessionToAuth(baseUrl: string, cached: CachedSession): AuthenticatedSession {
   return {
     baseUrl,
-    cookie: { name: cached.cookieName, value: cached.cookieValue, source: "cache" },
+    cookie: { name: cached.cookieName, value: cached.cookieValue, source: cached.cookieSource ?? "cache" },
     sesskey: cached.sesskey,
     userid: cached.userid,
     fromCache: true,

@@ -1,3 +1,4 @@
+import { runtimeCommand, selfCommand, runtimeSupportsCookies } from "./mcp/self-command.js";
 import { fetchWithSession } from "./session-fetch.js";
 import { spawnSync, type SpawnSyncReturns } from "node:child_process";
 import { realpathSync } from "node:fs";
@@ -28,6 +29,7 @@ export interface KeepaliveRunResult {
 
 export interface AuthStatus {
   base_url: string;
+  cookie_source?: string;
   session_cached: boolean;
   cache_age_minutes: number | null;
   session_alive: boolean | null;
@@ -197,6 +199,7 @@ export async function getAuthStatus(baseUrl: string, options: KeepaliveOptions =
   return {
     base_url: baseUrl,
     session_cached: true,
+    cookie_source: session.cookieSource ?? "unknown",
     cache_age_minutes: Math.max(0, Math.round((now() - session.savedAt) / 60000)),
     session_alive: touch.alive,
     session_time_remaining_seconds: touch.timeRemainingSeconds,
@@ -214,12 +217,8 @@ export function keepaliveLogPath(homeDir = homedir()): string {
 }
 
 export function keepaliveProgramArguments(execPath = process.execPath, argv1 = process.argv[1] ?? ""): string[] {
-  const resolvedArgv1 = argv1 ? safeRealpath(argv1) : "";
-  const tail = ["auth", "keepalive", "--json"];
-  if (!resolvedArgv1 || resolvedArgv1 === safeRealpath(execPath)) {
-    return [execPath, ...tail];
-  }
-  return [execPath, resolvedArgv1, ...tail];
+  const selected = arguments.length ? selfCommand([execPath, argv1 ? safeRealpath(argv1) : ""], execPath) : runtimeCommand();
+  return [selected.command, ...selected.args, "auth", "keepalive", "--json"];
 }
 
 export function buildKeepalivePlist(programArguments: string[], intervalMinutes: number, logPath: string): string {
@@ -249,20 +248,6 @@ export function buildKeepalivePlist(programArguments: string[], intervalMinutes:
   ].join("\n");
 }
 
-/**
- * Bun reads browser cookies through its own APIs; Node needs node:sqlite, which
- * it only ships unflagged from 22.13.
- */
-async function runtimeReadsBrowserCookies(): Promise<boolean> {
-  if (process.versions.bun) return true;
-  try {
-    await import("node:sqlite");
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 export async function installKeepalive(options: KeepaliveInstallOptions = {}): Promise<KeepaliveInstallResult> {
   const platform = options.platform ?? process.platform;
   if (platform !== "darwin") {
@@ -274,7 +259,8 @@ export async function installKeepalive(options: KeepaliveInstallOptions = {}): P
   // The plist bakes in the runtime that installed it. A runtime that cannot read
   // browser cookies still renews a live session, so the install looks healthy and
   // only fails once the session expires and there is nothing left to renew from.
-  const readsCookies = options.canReadBrowserCookies ?? (await runtimeReadsBrowserCookies());
+  const selectedRuntime = options.execPath ? selfCommand([options.execPath, options.argv1 ?? ""], options.execPath) : runtimeCommand();
+  const readsCookies = options.canReadBrowserCookies ?? (!selectedRuntime.args.length || runtimeSupportsCookies(selectedRuntime.command));
   if (!readsCookies) {
     throw new Error(
       `This runtime (${process.version}) cannot read browser cookies, and the launch agent would be pinned to it. `
@@ -286,7 +272,7 @@ export async function installKeepalive(options: KeepaliveInstallOptions = {}): P
   const intervalMinutes = options.intervalMinutes ?? KEEPALIVE_DEFAULT_INTERVAL_MINUTES;
   const plistPath = keepalivePlistPath(homeDir);
   const logPath = keepaliveLogPath(homeDir);
-  const command = keepaliveProgramArguments(options.execPath, options.argv1);
+  const command = [selectedRuntime.command, ...selectedRuntime.args, "auth", "keepalive", "--json"];
 
   await mkdir(dirname(plistPath), { recursive: true });
   await mkdir(dirname(logPath), { recursive: true, mode: 0o700 });

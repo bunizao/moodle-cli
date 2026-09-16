@@ -1,0 +1,56 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`shared intent contract > pins the home, section, item and grades screens at 80 columns > grades 1`] = `
+"algo-2 · 1 of 2 graded
+┌───────────┬───────┬───────┬───────────────────────────────┐
+│ Name      │ Grade │ Range │ Feedback                      │
+├───────────┼───────┼───────┼───────────────────────────────┤
+│ Mini Test │ -     │ 0–10  │ in 5 days · Sat 19 Sep, 15:55 │
+│ Quiz      │ 8     │ 0–10  │ Well done                     │
+└───────────┴───────┴───────┴───────────────────────────────┘
+
+Try  moodle due --days 30 · moodle grades"
+`;
+
+exports[`shared intent contract > pins the home, section, item and grades screens at 80 columns > home 1`] = `
+"Alex · Tue 15 Sep · Europe/Berlin
+https://moodle.example.edu
+
+Due soon
+  DB240  Mini Test  in 5 days · Sat 19 Sep, 15:55  #1
+  algo-2  Mini Test  in 5 days · Sat 19 Sep, 15:55  #2
+  STATS  Mini Test  in 5 days · Sat 19 Sep, 15:55  #3
+  assign  Mini Test  in 5 days · Sat 19 Sep, 15:55  #4
+
+Unread  nothing
+
+Units  DB240 · algo-2 · STATS · Ethics in Computing
+  DB240 · Week 7
+  algo-2 · Week 7
+  STATS · Week 7
+  Ethics in Computing · Week 7
+
+Try  moodle due --days 30 · moodle grades"
+`;
+
+exports[`shared intent contract > pins the home, section, item and grades screens at 80 columns > item 1`] = `
+"Mini Test · assign · #201
+unit id: 2
+due: Sat 19 Sep, 15:55
+url: https://moodle.example.edu/mod/assign/view.php?id=201
+submission status: Not submitted
+grading status: Not graded
+
+Try  moodle get 201 --to DIR"
+`;
+
+exports[`shared intent contract > pins the home, section, item and grades screens at 80 columns > unit 1`] = `
+"algo-2 · Algorithms
+Current · Week 7
+
+Week 7
+  resource  Week 7 Lecture slides  #200
+  assign  Mini Test  #201
+
+Try  moodle "algo-2" "TASK" · moodle get "UNIT TASK" --to ."
+`;

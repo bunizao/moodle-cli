@@ -24,7 +24,11 @@ export class ForumModule {
   private readonly loadCourses?: () => Promise<Course[]>;
   private readonly loadCourseContents?: (courseId: number) => Promise<Section[]>;
   private readonly forumDiscussionCache = new Map<number, ForumDiscussion>();
+  private readonly groupResolved = new Set<number>();
   private readonly forumDiscussionRefsCache = new Map<number, ForumDiscussionRef[]>();
+  // The forum view page answers both "what type is this forum" and "which
+  // discussions does it list"; load it once per forum.
+  private readonly forumViewCache = new Map<number, Promise<string>>();
 
   constructor(options: ForumAdapter) {
     this.baseUrl = options.baseUrl.replace(/\/$/, "");
@@ -34,9 +38,13 @@ export class ForumModule {
     this.loadCourseContents = options.getCourseContents;
   }
 
-  async getForumDiscussion(discussionId: number): Promise<ForumDiscussion> {
+  // The posts service does not name the discussion's group; that costs a page load,
+  // so callers that never show groups (announcements, thread pages) opt out.
+  async getForumDiscussion(discussionId: number, options: { group?: boolean } = {}): Promise<ForumDiscussion> {
+    const wantGroup = options.group !== false;
     const cached = this.forumDiscussionCache.get(discussionId);
     if (cached) {
+      if (wantGroup && cached.group_id <= 0 && !this.groupResolved.has(discussionId)) await this.resolveGroup(cached);
       return cached;
     }
 
@@ -48,14 +56,7 @@ export class ForumModule {
         includeinlineattachments: true,
       });
       const discussion = parseForumDiscussion(data, discussionId, this.baseUrl);
-      if (discussion.group_id <= 0) {
-        const html = await this.loadPage(FORUM_DISCUSS_PATH, { d: discussionId }).catch(() => "");
-        if (html) {
-          const [groupId, groupName] = parseForumDiscussionGroupHtml(html);
-          discussion.group_id = groupId;
-          discussion.group_name = groupName;
-        }
-      }
+      if (wantGroup && discussion.group_id <= 0) await this.resolveGroup(discussion);
       this.forumDiscussionCache.set(discussionId, discussion);
       return discussion;
     } catch (error) {
@@ -66,8 +67,18 @@ export class ForumModule {
 
     const html = await this.loadPage(FORUM_DISCUSS_PATH, { d: discussionId });
     const discussion = parseForumDiscussionHtml(html, this.baseUrl, discussionId);
+    this.groupResolved.add(discussionId);
     this.forumDiscussionCache.set(discussionId, discussion);
     return discussion;
+  }
+
+  private async resolveGroup(discussion: ForumDiscussion): Promise<void> {
+    this.groupResolved.add(discussion.id);
+    const html = await this.loadPage(FORUM_DISCUSS_PATH, { d: discussion.id }).catch(() => "");
+    if (!html) return;
+    const [groupId, groupName] = parseForumDiscussionGroupHtml(html);
+    discussion.group_id = groupId;
+    discussion.group_name = groupName;
   }
 
   async getForumViewCmid(discussionId: number): Promise<number | null> {
@@ -81,7 +92,7 @@ export class ForumModule {
       return cached;
     }
 
-    const html = await this.loadPage(FORUM_VIEW_PATH, { id: forumCmid });
+    const html = await this.forumViewHtml(forumCmid);
     const groups = parseForumGroupsHtml(html);
     const refs = groups.length ? [] : parseForumDiscussionRefsHtml(html, this.baseUrl);
     const seenIds = new Set(refs.map((ref) => ref.id));
@@ -99,6 +110,17 @@ export class ForumModule {
 
     this.forumDiscussionRefsCache.set(forumCmid, refs);
     return refs;
+  }
+
+  private forumViewHtml(forumCmid: number): Promise<string> {
+    const pending = this.forumViewCache.get(forumCmid) ?? this.loadPage(FORUM_VIEW_PATH, { id: forumCmid });
+    this.forumViewCache.set(forumCmid, pending);
+    pending.catch(() => this.forumViewCache.delete(forumCmid));
+    return pending;
+  }
+
+  async isNewsForum(forumCmid: number): Promise<boolean> {
+    return /\bforumtype-news\b|data-forumtype=["']news["']/u.test(await this.forumViewHtml(forumCmid));
   }
 
   private async getCourseForums(courseId: number, courseName = ""): Promise<ForumActivityRef[]> {
@@ -127,9 +149,12 @@ export class ForumModule {
     if (!this.loadCourses) {
       throw new Error("getCourses loader is required to list all forums");
     }
+    // Units are independent; list a few at a time instead of one after another.
+    const courses = await this.loadCourses();
     const forums: ForumActivityRef[] = [];
-    for (const course of await this.loadCourses()) {
-      forums.push(...(await this.getCourseForums(course.id, course.fullname || course.shortname)));
+    for (let index = 0; index < courses.length; index += 4) {
+      const batch = await Promise.all(courses.slice(index, index + 4).map((course) => this.getCourseForums(course.id, course.fullname || course.shortname)));
+      forums.push(...batch.flat());
     }
     return forums;
   }

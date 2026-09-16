@@ -39,6 +39,7 @@ export function parseUserInfo(value: unknown): UserInfo {
     sitename: stringValue(data.sitename),
     siteurl: stringValue(data.siteurl),
     lang: stringValue(data.lang),
+    ...(data.timezone ? { timezone: String(data.timezone) } : {}),
   };
 }
 
@@ -53,7 +54,7 @@ export function parseCourse(value: unknown, nowSeconds = Math.floor(Date.now() /
     startdate: numberValue(data.startdate),
   };
   const enddate = numberValue(data.enddate);
-  if (enddate > nowSeconds) {
+  if (enddate > 0) {
     course.enddate = enddate;
   }
   return course;
@@ -72,6 +73,8 @@ export function parseActivity(value: unknown): Activity {
     url: stringValue(data.url),
     visible: booleanValue(data.visible, true),
     description: stringValue(data.description),
+    ...(data.completiondata && typeof data.completiondata === "object" ? { completion: numberValue(asRecord(data.completiondata).state) } : {}),
+    ...(Array.isArray(data.contents) ? { file_entries: data.contents.filter((f: unknown) => asRecord(f).fileurl).map((f: unknown) => ({ name: stringValue(asRecord(f).filename), url: stringValue(asRecord(f).fileurl), requires_authentication: true })) } : {}),
   };
 }
 
@@ -83,6 +86,7 @@ export function parseSection(value: unknown): Section {
     section: numberValue(data.section),
     visible: booleanValue(data.visible, true),
     summary: stringValue(data.summary),
+    ...(data.current !== undefined ? { current: booleanValue(data.current) } : {}),
     activities: asArray(data.modules).map((item) => parseActivity(item)),
   };
 }
@@ -111,6 +115,7 @@ export function parseCourseFormatState(value: unknown, baseUrl: string): Section
         && booleanValue(data.uservisible, true)
         && !booleanValue(data.stealth),
       description: htmlText(data.content ?? data.description, baseUrl),
+      ...(data.completionstate !== undefined && data.completionstate !== null ? { completion: numberValue(data.completionstate) } : {}),
     };
     activities.set(String(id), activity);
     const sectionActivities = activitiesBySection.get(sectionId) ?? [];
@@ -131,6 +136,7 @@ export function parseCourseFormatState(value: unknown, baseUrl: string): Section
       section: numberValue(data.section ?? data.number),
       visible: booleanValue(data.visible, true),
       summary: htmlText(data.summary, baseUrl),
+      ...(data.current !== undefined ? { current: booleanValue(data.current) } : {}),
       activities: hasActivityList ? listedActivities : activitiesBySection.get(String(id)) ?? [],
     };
   });

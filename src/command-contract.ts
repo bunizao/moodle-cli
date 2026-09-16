@@ -58,3 +58,5 @@ function isMutating(command: Command): boolean {
   }
   return ["install", "uninstall", "login", "deploy", "connect", "pair", "revoke", "remove", "push"].includes(command.name());
 }
+
+export { intentContracts, intentDescription } from "./intent-contract.js";

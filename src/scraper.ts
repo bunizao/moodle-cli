@@ -69,6 +69,7 @@ export function parsePageContext(html: string, baseUrl: string): PageContext {
       fullname: cleanNodeText(root.querySelector(".userfullname")),
       sitename: extractSitename(root),
       siteurl: baseUrl,
+      ...(config.timezone ? { timezone: stringValue(config.timezone) } : {}),
       lang: stringValue(config.language) || root.querySelector("html")?.getAttribute("lang") || "",
     },
   };
@@ -296,8 +297,10 @@ export function parseQuizHtml(html: string, quizId: number, baseUrl: string): Qu
 export function parseResourceHtml(html: string, resourceId: number, baseUrl: string): Resource {
   const root = parse(html);
   const link = root.querySelector(".resourceworkaround a[href], .resourcecontent a[href], a.resourceworkaround[href]");
-  const targetName = cleanNodeText(link);
-  const targetUrl = link ? resolveUrl(baseUrl, link.getAttribute("href") ?? "") : "";
+  const embed = root.querySelector(".resourcecontent iframe[src], .resourcecontent object[data], .resourcecontent embed[src]");
+  const rawUrl = link?.getAttribute("href") || embed?.getAttribute("src") || embed?.getAttribute("data") || "";
+  const targetUrl = rawUrl ? resolveUrl(baseUrl, rawUrl) : "";
+  const targetName = cleanNodeText(link) || (targetUrl ? decodeURIComponent(new URL(targetUrl).pathname.split("/").at(-1) || "file") : "");
   return {
     id: resourceId,
     name: pageTitle(html),

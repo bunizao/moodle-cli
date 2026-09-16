@@ -742,7 +742,7 @@ class DefaultMcpCommandService implements McpCommandService {
   }
 
   private workerBundlePath(): string {
-    return this.options.workerBundlePath ?? fileURLToPath(new URL("./worker/worker.js", import.meta.url));
+    return this.options.workerBundlePath ?? process.env.MOODLE_BUNDLED_WORKER ?? fileURLToPath(new URL("./worker/worker.js", import.meta.url));
   }
 
   private wrangler(): NodeWranglerDeploymentAdapter {

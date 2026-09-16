@@ -62,17 +62,26 @@ export async function createMoodleClient(
         cookie: { name: cached.cookieName, value: cached.cookieValue },
         sesskey: cached.sesskey,
         userid: cached.userid,
+        userInfo: cached.user,
+        unavailable: cached.unavailable,
         ...persistence,
         onLoginRequired,
       });
     }
   }
 
+  // A stale cache still knows which services the site disables and, for the same
+  // account, the dashboard profile; a fresh sign-in should not relearn either.
+  // Read it before signing in, because sign-in overwrites the cache file.
+  const stale = options.noCache ? null : await readCachedSession(baseUrl, { ...cacheOptions, ttlMs: Number.MAX_SAFE_INTEGER }).catch(() => null);
   const session = authToClientSession(await getAuthenticatedSession(baseUrl, authOptions));
   return new MoodleClient(baseUrl, {
     fetchImpl: options.fetchImpl,
     cookie: session.cookie,
-    pageContext: session.pageContext,
+    pageContext: stale?.user && stale.userid === session.pageContext.user_info.userid
+      ? { ...session.pageContext, user_info: stale.user }
+      : session.pageContext,
+    unavailable: stale?.unavailable,
     ...persistence,
     onLoginRequired,
   });

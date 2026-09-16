@@ -32,7 +32,14 @@ Your agent asks for your Moodle URL and opens your university's sign-in page whe
 
 ### Install and sign in manually
 
-Use Node.js 22.13+ (needed for `node:sqlite`, which reads browser cookies) or Bun:
+For macOS arm64 or Linux x64, install the standalone binary with its bundled runtime:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/bunizao/moodle-cli/main/install.sh | sh
+moodle doctor
+```
+
+Or use Node.js 22.13+ (for SQLite browser stores) or Bun:
 
 ```bash
 # npm
@@ -55,7 +62,7 @@ Sign in and open your dashboard:
 
 ```bash
 moodle auth login
-moodle overview
+moodle
 ```
 
 On first use, enter your Moodle site origin, such as `https://moodle.example.edu`. `moodle-cli` validates it and saves it to `~/.config/moodle-cli/config.yaml`. If the CLI cannot find an active session, it opens your university's sign-in page and waits for you to finish.
@@ -70,13 +77,27 @@ Ask your agent in plain language or run the matching command:
 
 | Student request | CLI command |
 | --- | --- |
-| “Give me a quick Moodle dashboard.” | `moodle overview` |
-| “What is due in the next 14 days?” | `moodle todo --days 14` |
-| “Show my grades and feedback for FIT1045.” | `moodle grades FIT1045` |
-| “Find forum posts about the exam in FIT1045.” | `moodle forums search "exam" --course FIT1045` |
+| “Give me a quick Moodle dashboard.” | `moodle` |
+| “What is due in the next 14 days?” | `moodle due --days 14` |
+| “Show my grades and feedback for UNIT.” | `moodle grades UNIT` |
+| “Find forum posts about the exam in UNIT.” | `moodle forums search "exam" --course UNIT` |
 | “Download the slides from this Moodle link.” | `moodle download '<Moodle URL>' --dest './slides.pdf'` |
 
-Unit arguments accept a Moodle course ID or a unique course name.
+Unit arguments accept the site's code or name, an id or URL. No code format is assumed.
+
+```bash
+moodle UNIT
+moodle UNIT 7
+moodle UNIT "TASK"
+moodle find "week 7 slides" UNIT
+moodle get "UNIT week 7 slides" --to ./downloads
+moodle grades
+moodle news UNIT
+```
+
+Ambiguous references list candidates. JSON callers receive `error.code: "ambiguous"`;
+TTY users can select a numbered match. A bare number in a section reference matches
+that number in the site's section name, so 7 never matches 17.
 
 #### Paste Moodle links directly
 
@@ -92,7 +113,7 @@ You can paste the same links into your agent and ask it to inspect the page, fin
 
 #### Download course files
 
-`moodle download` accepts an activity ID or an authenticated Moodle URL. `--dest` sets the exact local path, and `--force` replaces an existing file after the download completes. Folder activities expose `file_entries` so you can choose which files to save.
+`moodle download` accepts an activity ID or an authenticated Moodle URL. `--dest` sets the exact local path, and `--force` replaces an existing file after the download completes. Folder activities expose `files` so you can choose which files to save.
 
 ### Remote MCP for web AI
 
@@ -128,9 +149,9 @@ moodle commands --json
 
 Commands support:
 
-- `--json` or `--yaml` for structured output
+- `--json` or `--yaml` for structured output; `--pretty` indents JSON
 - `--table` for human-readable output
-- `--fields a,b,c` to select fields
+- `--fields units,total` to select envelope fields
 - `-o, --output FILE` to write command output or a download receipt
 
 The CLI prints tables in an interactive terminal and JSON when stdout goes to a pipe or file. Structured errors use one JSON object on stderr:
@@ -244,3 +265,45 @@ The initial upgrade invalidates old OAuth grants; run `moodle mcp pair` again fo
 Deployment uses Cloudflare's atomic code/secrets operation, including Durable Object migrations. An update first verifies a compatible recovery release that supports the owner's static bridge; OAuth is temporarily unavailable in recovery mode. Rollback checks session schema, encryption-key identity and credential identity. It will not activate an incompatible pre-migration version or restore revoked credentials. `--repair` reconciles the live session revision after interrupted uploads.
 
 Pending OAuth registrations expire after ten minutes and can be reclaimed without evicting approved clients. The approved client limit is 20. Credential-bearing requests have bounded redirects and timeouts; foreign redirect destinations never receive the Moodle cookie. Worker request bodies are limited to 64 KiB. Managed deployment disables request observability by default to avoid retaining authentication form bodies or query data in logs.
+
+## Installation footprint and removal
+
+| Install path | Files left locally |
+| --- | --- |
+| Installer | `~/.local/bin/moodle`; configuration and cache after first use |
+| Manual binary | The chosen executable; configuration and cache after first use |
+| npm global | npm global package/bin; configuration and cache after first use |
+| Bun global | Bun global package/bin; configuration and cache after first use |
+| npx | npm execution cache; configuration and cache after first use |
+| bunx | Bun execution cache; configuration and cache after first use |
+
+The CLI, local MCP server and bridge do not install Wrangler. Cloudflare management
+uses Wrangler on PATH, or downloads the pinned version into
+`~/.config/moodle-cli/tools/wrangler@VERSION`. A binary install needs Bun or Node/npm
+only when managing Cloudflare. Worker payloads are included in the binary.
+Background jobs are opt-in: keepalive and managed MCP renewal.
+
+`moodle uninstall --dry-run` previews cleanup. `moodle uninstall` removes local jobs;
+`--remote` also removes the selected Worker; `--purge` removes local configuration/cache
+after deployments have been removed. Finish with `npm rm -g moodle-cli`,
+`bun remove -g moodle-cli`, or removal of the standalone executable. Package-manager
+execution caches are managed by npm/Bun themselves.
+
+## 0.8 structured output migration
+
+CLI JSON and MCP use compact envelopes: `units`, `unit` plus `sections`, `due`, `item`,
+`grades`, `news`, `thread`, `results`, or `file`. Empty strings and lists are omitted;
+`total: 0` identifies an empty result. List rows use `type`, `unit_id`, `section_id`
+and `name`. Dates include ISO offsets and epoch seconds. Unit detail defaults to a
+section index; pass a section for activities. `--fields` selects envelope keys.
+
+The 11 default MCP tools are home, due, units, unit, find, item, grades, news, thread,
+search_forums and file. Old names remain callable through 0.8 with the new envelopes;
+they are deprecated and omitted from default discovery to avoid duplicate catalog cost.
+The local command tree remains available, including courses as an alias for units.
+The unused projects/quiet aliases were removed. `--verbose` (`-v`) prints sanitized
+request paths and timing; it never logs URL queries or credentials.
+
+Run `npm run measure:mcp` to reproduce fixture payload measurements. See
+[implementation evidence](docs/plans/optimization-implementation.md) for live checks,
+measurement scope and remaining budget differences.

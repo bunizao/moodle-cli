@@ -14,6 +14,7 @@ import type { Resource } from "./models.js";
 export interface DownloadRequest {
   source: string;
   destination?: string;
+  directory?: string;
   force?: boolean;
 }
 
@@ -67,7 +68,7 @@ export async function downloadMoodleFile(
   const filename = explicitDestination
     ? path.basename(explicitDestination)
     : chooseUpstreamFilename(resolved);
-  const destination = explicitDestination ?? path.resolve(filename);
+  const destination = explicitDestination ?? path.resolve(request.directory ?? process.cwd(), filename);
   if (!explicitDestination && !request.force) {
     await ensureDestinationAvailable(destination);
   }

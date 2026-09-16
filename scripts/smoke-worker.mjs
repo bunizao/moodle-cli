@@ -89,7 +89,7 @@ try {
   const tokens = await tokenResponse.json();
   const initial = await mcp(tokens.access_token);
   const initialBody = await initial.json();
-  evidence.oauthFlow = { authorization: approval.status, token: tokenResponse.status, mcp: initial.status, accountBefore: initialBody.result?.structuredContent?.user?.userid };
+  evidence.oauthFlow = { authorization: approval.status, token: tokenResponse.status, mcp: initial.status, accountBefore: initialBody.result?.structuredContent?.user?.id };
   assert.equal(evidence.oauthFlow.accountBefore, 101);
   const textData = async (name, args = {}) => {
     const response = await mcp(tokens.access_token, name, args);
@@ -101,11 +101,11 @@ try {
     return data;
   };
   const listed = await textData('list_courses');
-  assert.equal(listed.courses[0].fullname, 'Synthetic Course');
-  const courseId = listed.courses[0].id;
+  assert.equal(listed.units[0].name, 'Synthetic Course');
+  const courseId = listed.units[0].id;
   const course = await textData('get_course', { courseId });
-  assert.equal(course.course.course.id, courseId);
-  assert.equal(course.course.sections[0].activities[0].id, 501);
+  assert.equal(course.unit.id, courseId);
+  assert.equal(course.sections[0].activity_count, 1);
   const activities = await textData('list_activities', { courseId });
   assert.equal(activities.activities[0].id, 501);
   evidence.textOnlyClient = { courseIdAvailable: true, courseLookupMatched: true, activityIdAvailable: true };
@@ -113,7 +113,7 @@ try {
   assert.equal((await upload(cookies.b, 1)).status, 409);
   const switched = await mcp(tokens.access_token);
   const switchedBody = await switched.json();
-  evidence.accountSwitch = { status: switched.status, accountAfter: switchedBody.result?.structuredContent?.user?.userid, previousGrantCanReadNewAccount: switchedBody.result?.structuredContent?.user?.userid === 202 };
+  evidence.accountSwitch = { status: switched.status, accountAfter: switchedBody.result?.structuredContent?.user?.id, previousGrantCanReadNewAccount: switchedBody.result?.structuredContent?.user?.id === 202 };
   assert.equal(evidence.accountSwitch.accountAfter, 101);
   await mcp(tokens.access_token, 'get_activity', { activityId: 999 });
   evidence.crossOriginRedirect = { requestsReceived: received.length, syntheticCookieForwarded: received.some((item) => item.cookie?.includes('MoodleSession=')) };

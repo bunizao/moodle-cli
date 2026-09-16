@@ -25,7 +25,7 @@ describe("selfCommand", () => {
 
   it("prefers an explicit command over the running runtime", () => {
     expect(runtimeCommand("/usr/local/bin/moodle")).toEqual({ command: "/usr/local/bin/moodle", args: [] });
-    expect(runtimeCommand(undefined, ["ignored"])).toEqual(selfCommand());
+    expect(runtimeCommand(undefined, ["ignored"])).toEqual(runtimeCommand());
   });
 });
 
@@ -73,7 +73,7 @@ describe("bridge connectors with an explicit runtime", () => {
     const registration = Object.values(JSON.parse(json) as Record<string, Record<string, { command: string; args: string[] }>>)
       .flatMap((container) => Object.values(container))
       .find((entry) => entry.args?.includes("bridge"));
-    expect(registration?.command).toBe(process.execPath);
+    expect(registration?.command).toBe(runtimeCommand().command);
     expect(registration?.args).toEqual([...selfCommand().args, "mcp", "bridge", "--profile", "school"]);
   });
 });

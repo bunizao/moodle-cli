@@ -17,15 +17,10 @@ function collectingStream(): { stream: NodeJS.WritableStream; written: () => str
 describe("managed deployment onboarding copy", () => {
   it("keeps first-run, login, and Cloudflare prompts stable", () => {
     expect(ONBOARDING_COPY.introduction).toMatchInlineSnapshot(`
-      "Moodle MCP setup
-
-      This command will:
-        • verify your Moodle sign-in
-        • deploy a private MCP server to your Cloudflare account
-        • install session renewal on this computer
-        • connect supported MCP clients
-
-      Your Moodle password and session cookie will not be printed or stored in this project."
+      "Creates a private Moodle MCP Worker in your Cloudflare account.
+      Uploads your Moodle session over HTTPS; the Worker stores it encrypted.
+      Installs local session renewal and connects supported MCP clients.
+      Cloudflare's free tier costs $0 within its limits; paid usage follows your account plan."
     `);
     expect(ONBOARDING_COPY.credentials).toContain("MCP access token");
     expect(ONBOARDING_COPY.credentials).toContain("Session sync token");

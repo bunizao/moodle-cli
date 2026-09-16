@@ -1,3 +1,4 @@
+import { resolveUnit } from "./resolve.js";
 import { UsageError } from "./errors.js";
 
 export interface ResolvedURLTarget {
@@ -144,22 +145,5 @@ export function parseActivityReference(value: string, labelOrOptions: string | {
 }
 
 export function resolveCourseReference(value: string, courses: Array<{ id: number; fullname: string; shortname: string }>): number {
-  const raw = value.trim();
-  if (/^\d+$/.test(raw)) {
-    return Number(raw);
-  }
-  const matches = courses.filter((course) => queryMatches(course.fullname, raw) || queryMatches(course.shortname, raw));
-  if (matches.length === 1) {
-    return matches[0].id;
-  }
-  if (!matches.length) {
-    throw new UsageError(`Could not find a course matching '${raw}'.`);
-  }
-  throw new UsageError(`Course '${raw}' is ambiguous. Matches: ${matches.map((course) => `${course.id}:${course.fullname || course.shortname}`).join(", ")}`);
-}
-
-function queryMatches(text: string, query: string): boolean {
-  const haystack = text.toLowerCase().split(/\s+/).join(" ");
-  const needle = query.toLowerCase().split(/\s+/).join(" ");
-  return needle ? haystack.includes(needle) || needle.split(" ").every((token) => haystack.includes(token)) : true;
+  return resolveUnit(value, courses.map(course => ({ ...course, category: 0, visible: true, startdate: 0 }))).id;
 }
