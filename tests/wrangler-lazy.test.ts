@@ -14,8 +14,16 @@ it("resolves PATH, cached and first-use Wrangler without installing for construc
   const wrangler = await executable("wrangler");
   const run = vi.fn(async () => ({ stdout: "", stderr: "" }));
   try {
+    run.mockImplementationOnce(async () => ({ stdout: ` ⛅️ wrangler ${WRANGLER_VERSION}\n`, stderr: "" }));
     expect(await resolveWrangler({ run }, { homeDir: home, env: { PATH: bin } })).toEqual({ command: wrangler, args: [] });
-    expect(run).not.toHaveBeenCalled();
+    expect(run).toHaveBeenCalledWith(wrangler, ["--version"]);
+    // A PATH Wrangler from another major line is ignored rather than trusted.
+    run.mockClear();
+    run.mockImplementationOnce(async () => ({ stdout: "wrangler 3.99.0\n", stderr: "" }));
+    const notice = vi.fn();
+    await expect(resolveWrangler({ run }, { homeDir: home, env: { PATH: bin }, notice })).rejects.toThrow(/Install Bun or npm/);
+    expect(notice).toHaveBeenCalledWith(expect.stringContaining("3.99.0"));
+    run.mockClear();
     await rm(wrangler);
     const cached = join(home, ".config", "moodle-cli", "tools", `wrangler@${WRANGLER_VERSION}`, "node_modules", "wrangler", "bin", "wrangler.js");
     await mkdir(join(cached, ".."), { recursive: true }); await writeFile(cached, "");
@@ -23,9 +31,9 @@ it("resolves PATH, cached and first-use Wrangler without installing for construc
     expect(run).not.toHaveBeenCalled();
     await rm(cached); const npm = await executable("npm");
     run.mockImplementationOnce(async () => { await writeFile(cached, ""); return { stdout: "", stderr: "" }; });
-    const notice = vi.fn();
-    expect(await resolveWrangler({ run }, { homeDir: home, env: { PATH: bin }, yes: true, notice })).toEqual({ command: node, args: [cached] });
+    const download = vi.fn();
+    expect(await resolveWrangler({ run }, { homeDir: home, env: { PATH: bin }, yes: true, notice: download })).toEqual({ command: node, args: [cached] });
     expect(run).toHaveBeenCalledWith(npm, expect.arrayContaining([`wrangler@${WRANGLER_VERSION}`, "--prefix"]));
-    expect(notice).toHaveBeenCalledOnce();
+    expect(download).toHaveBeenCalledOnce();
   } finally { await rm(home, { recursive: true, force: true }); }
 });

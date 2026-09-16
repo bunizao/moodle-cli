@@ -10,8 +10,15 @@ import { WRANGLER_VERSION } from "../constants.js";
 
 export async function resolveWrangler(runner: DeploymentCommandRunner, options: { homeDir?: string; env?: NodeJS.ProcessEnv; yes?: boolean; notice?: (text: string) => void } = {}): Promise<SelfCommand> {
   const env = options.env ?? process.env;
+  const notice = options.notice ?? (text => process.stderr.write(`${text}\n`));
   const existing = findExecutable("wrangler", env);
-  if (existing) return { command: existing, args: [] };
+  if (existing) {
+    // A PATH Wrangler is only trusted when it is the pinned major line; the Worker
+    // config and the deployment receipts are written against that.
+    const version = await runner.run(existing, ["--version"]).then(result => result.stdout.match(/\d+\.\d+\.\d+/u)?.[0], () => undefined);
+    if (version && sameMajorAtLeast(version, WRANGLER_VERSION)) return { command: existing, args: [] };
+    notice(`Ignoring ${existing} (${version ?? "unknown version"}); Cloudflare management needs Wrangler ${WRANGLER_VERSION.split(".")[0]}.x.`);
+  }
   const root = join(options.homeDir ?? homedir(), ".config", "moodle-cli", "tools", `wrangler@${WRANGLER_VERSION}`);
   const script = join(root, "node_modules", "wrangler", "bin", "wrangler.js");
   const bun = findExecutable("bun", env);
@@ -29,12 +36,19 @@ export async function resolveWrangler(runner: DeploymentCommandRunner, options: 
         if (answer.trim() && !/^y(?:es)?$/iu.test(answer.trim())) throw new UsageError("Wrangler download cancelled.", "Retry when ready to install Cloudflare's toolchain.");
       } finally { reader.close(); }
     }
-    (options.notice ?? (text => process.stderr.write(`${text}\n`)))(`Cloudflare management needs Wrangler ${WRANGLER_VERSION}; downloading once to ${root}.`);
+    notice(`Cloudflare management needs Wrangler ${WRANGLER_VERSION}; downloading once to ${root}.`);
     await mkdir(root, { recursive: true, mode: 0o700 });
     await runner.run(bun ?? npm!, bun
       ? ["install", "--cwd", root, "--no-save", `wrangler@${WRANGLER_VERSION}`]
       : ["install", "--prefix", root, "--no-save", "--package-lock=false", "--no-audit", "--no-fund", `wrangler@${WRANGLER_VERSION}`]);
     if (!existsSync(script)) throw new Error("Wrangler installation did not create the expected executable. Retry moodle mcp deploy.");
   }
-  return { command: bun ?? node!, args: [script] };
+  // Wrangler is tested by Cloudflare on Node; Bun only runs it when Node is absent.
+  return { command: node ?? bun!, args: [script] };
+}
+
+function sameMajorAtLeast(actual: string, pinned: string): boolean {
+  const [aMajor, aMinor = 0, aPatch = 0] = actual.split(".").map(Number);
+  const [pMajor, pMinor = 0, pPatch = 0] = pinned.split(".").map(Number);
+  return aMajor === pMajor && (aMinor > pMinor || (aMinor === pMinor && aPatch >= pPatch));
 }

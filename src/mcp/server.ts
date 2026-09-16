@@ -196,6 +196,11 @@ async function callTool(gateway: MoodleGateway, params: Record<string, unknown> 
     return { content: toolContent(name === "file" ? "get_file" : name, payload, structuredContent), structuredContent, resultType: "complete", _meta: RESULT_META };
   } catch (error) {
     if (error instanceof ZodError && !contract) throw new McpCallError("INVALID_TOOL_ARGUMENTS", `Invalid arguments for ${requested}.`, error.issues);
+    if (error instanceof ZodError) {
+      // Inputs were already validated, so this is the site's data failing the result contract; say so instead of blaming Moodle.
+      const mapped = { type: "MOODLE_RESULT_INVALID", message: `Moodle returned ${name} data in an unexpected shape.`, hint: "Retry once; if it persists, run the same command locally with --verbose and report the tool name.", issues: error.issues.slice(0, 5).map(issue => ({ path: issue.path.join("."), message: issue.message })) };
+      return { content: [{ type: "text", text: JSON.stringify({ error: mapped }) }], structuredContent: { error: mapped }, isError: true, resultType: "complete", _meta: RESULT_META };
+    }
     const mapped = error instanceof ReferenceError ? { type: error.code, code: error.code, message: error.message, hint: error.hint, candidates: error.candidates } : mapMoodleError(error);
     return { content: [{ type: "text", text: JSON.stringify({ error: mapped }) }], structuredContent: { error: mapped }, isError: true, resultType: "complete", _meta: RESULT_META };
   }
