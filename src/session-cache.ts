@@ -3,6 +3,7 @@ import { createDefaultCredentialStore } from "./mcp/credentials/node-store.js";
 import { createEncryptionKeyring, decryptValue, encryptValue } from "./worker/crypto.js";
 import { chmod, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
+import type { UserInfo } from "./models.js";
 import { dirname, join } from "node:path";
 import {
   CACHE_DIR_NAME,
@@ -18,6 +19,9 @@ export interface CachedSession {
   sesskey: string;
   userid: number;
   savedAt: number;
+  // Site services already reported as disabled, and the profile the dashboard gave us.
+  unavailable?: string[];
+  user?: UserInfo;
 }
 
 export interface SessionCacheOptions {
@@ -159,6 +163,8 @@ function parseCachedSession(raw: string): CachedSession | null {
     userid: session.userid,
     savedAt: session.savedAt,
     ...(typeof session.cookieSource === "string" ? { cookieSource: session.cookieSource } : {}),
+    ...(Array.isArray(session.unavailable) && session.unavailable.every((name) => typeof name === "string") ? { unavailable: session.unavailable } : {}),
+    ...(isRecord(session.user) && typeof session.user.fullname === "string" && typeof session.user.userid === "number" ? { user: session.user as unknown as UserInfo } : {}),
   };
 }
 

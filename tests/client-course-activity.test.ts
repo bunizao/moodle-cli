@@ -144,7 +144,53 @@ describe("MoodleClient course/activity modules", () => {
     const courses = await client.getCourses();
 
     expect(courses).toHaveLength(2);
-    expect(seen.filter((request) => request.init?.method === "POST")).toHaveLength(3);
+    // A short timeline page ends the listing without asking for an empty one.
+    expect(seen.filter((request) => request.init?.method === "POST")).toHaveLength(2);
+  });
+
+  it("remembers disabled services, answers them locally, and keeps batches whole", async () => {
+    const { seen } = installFetch([
+      dashboardRoute,
+      (request) => {
+        if (request.init?.method !== "POST") return undefined;
+        const body = JSON.parse(String(request.init.body)) as AjaxCall[];
+        const methods = body.map((call) => call.methodname);
+        if (methods.includes("core_enrol_get_users_courses")) {
+          return jsonResponse([{ index: 0, error: true, exception: { message: "Web service is not available", errorcode: "servicenotavailable" } }]);
+        }
+        if (methods[0] === "core_course_get_enrolled_courses_by_timeline_classification") {
+          return jsonResponse([{ index: 0, error: false, data: { courses: jsonFixture("courses.json"), nextoffset: 100 } }]);
+        }
+        if (methods[0] === "core_calendar_get_action_events_by_timesort") {
+          return jsonResponse([
+            { index: 0, error: false, data: todoPayload() },
+            { index: 1, error: false, data: alertBatch()[0].data },
+            { index: 2, error: false, data: alertBatch()[1].data },
+            { index: 3, error: false, data: alertBatch()[2].data },
+          ]);
+        }
+        return undefined;
+      },
+    ]);
+    const snapshots: Array<Record<string, unknown>> = [];
+    const options = { cookie: { name: "MoodleSession", value: "session" }, sesskey: "sess", userid: 7, userInfo: { userid: 7, username: "", fullname: "Alice Example", sitename: "Example", siteurl: BASE_URL, lang: "" } };
+    const first = new MoodleClient(BASE_URL, { ...options, writeSessionCache: async (snapshot) => { snapshots.push(snapshot as unknown as Record<string, unknown>); } });
+    await first.getCourses();
+    expect(snapshots.at(-1)).toMatchObject({ unavailable: ["core_enrol_get_users_courses"], user: { fullname: "Alice Example" } });
+
+    seen.length = 0;
+    const second = new MoodleClient(BASE_URL, { ...options, unavailable: ["core_enrol_get_users_courses", "core_webservice_get_site_info"] });
+    const overview = await second.getOverview(5, 14, 5);
+    const posted = seen.filter((request) => request.init?.method === "POST").map((request) => new URL(request.url).searchParams.get("info"));
+    // The dead function never travels, so the remaining four ride in one batch and the profile comes from the cache.
+    expect(posted).toEqual([
+      "core_calendar_get_action_events_by_timesort,message_popup_get_popup_notifications,core_message_get_conversation_counts,core_message_get_unread_conversation_counts",
+      "core_course_get_enrolled_courses_by_timeline_classification",
+    ]);
+    expect(overview.user.fullname).toBe("Alice Example");
+    expect(overview.courses).toHaveLength(2);
+    expect(overview.todo.length).toBeGreaterThan(0);
+    expect(seen.some((request) => request.url === `${BASE_URL}/my/`)).toBe(false);
   });
 
   it("keeps overview sources independent when Moodle truncates a failed batch", async () => {

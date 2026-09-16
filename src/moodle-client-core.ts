@@ -8,6 +8,7 @@ import {
   DASHBOARD_PATH,
   FOLDER_VIEW_PATH,
   FUNC_GET_ACTION_EVENTS,
+  FUNC_GET_ACTION_EVENTS_BY_COURSE,
   FUNC_GET_CONVERSATION_COUNTS,
   FUNC_GET_COURSE_CONTENTS,
   FUNC_GET_COURSE_FORMAT_STATE,
@@ -150,6 +151,9 @@ export interface MoodleClientSessionSnapshot {
   cookieValue: string;
   sesskey: string;
   userid: number;
+  // Services the site has reported as disabled, so later commands skip the dead calls.
+  unavailable?: string[];
+  user?: UserInfo;
 }
 
 export interface MoodleClientCoreOptions {
@@ -159,6 +163,7 @@ export interface MoodleClientCoreOptions {
   sesskey?: string;
   userid?: number;
   userInfo?: UserInfo;
+  unavailable?: string[];
   errorAdapter?: MoodleClientErrorAdapter;
   clearSessionCache?: () => Promise<void>;
   writeSessionCache?: (session: MoodleClientSessionSnapshot) => Promise<void>;
@@ -183,6 +188,8 @@ const AjaxEnvelopeSchema = z.array(
 export class MoodleClientCore {
   readonly baseUrl: string;
   private coursesCache?: { at: number; courses: Promise<Course[]> };
+  private readonly contentsCache = new Map<number, Promise<Section[]>>();
+  private readonly unavailable: Set<string>;
   private fetchImpl: typeof fetch;
   private cookie: MoodleSessionCookie;
   private sesskey: string | null;
@@ -207,6 +214,7 @@ export class MoodleClientCore {
     this.userInfo = resolvedOptions.pageContext?.user_info
       ?? resolvedOptions.userInfo
       ?? (this.userid ? placeholderUserInfo(this.baseUrl, this.userid) : null);
+    this.unavailable = new Set(resolvedOptions.unavailable ?? []);
     this.clearSessionCache = resolvedOptions.clearSessionCache;
     this.writeSessionCache = resolvedOptions.writeSessionCache;
     this.errors = resolvedOptions.errorAdapter ?? DEFAULT_ERROR_ADAPTER;
@@ -226,6 +234,7 @@ export class MoodleClientCore {
   async getSiteInfo(): Promise<UserInfo> {
     await this.ensureSession();
     try {
+      if (this.unavailable.has(FUNC_GET_SITE_INFO) && this.userInfo?.fullname) return this.userInfo;
       const data = await this.call(FUNC_GET_SITE_INFO);
       if (isRecord(data) && "userid" in data) {
         const info = parseUserInfo(data);
@@ -286,7 +295,20 @@ export class MoodleClientCore {
     return resolveUnit(value, await this.getCourses()).id;
   }
 
+  // One command asks for the same unit's sections from several places (resolution,
+  // forum listing, screens); fetch once per client and let a failure retry next time.
   async getCourseContents(courseId: number): Promise<Section[]> {
+    const pending = this.contentsCache.get(courseId) ?? this.fetchCourseContents(courseId);
+    this.contentsCache.set(courseId, pending);
+    try {
+      return await pending;
+    } catch (error) {
+      if (this.contentsCache.get(courseId) === pending) this.contentsCache.delete(courseId);
+      throw error;
+    }
+  }
+
+  private async fetchCourseContents(courseId: number): Promise<Section[]> {
     await this.ensureSession();
     try {
       return parseCourseContents(await this.call(FUNC_GET_COURSE_CONTENTS, { courseid: courseId }));
@@ -347,27 +369,38 @@ export class MoodleClientCore {
     return { ...(await load()), type: type === "url" ? "link" : type };
   }
 
-  async getTodo(limit = 20, days?: number): Promise<TodoItem[]> {
+  async getTodo(limit = 20, days?: number, courseId?: number): Promise<TodoItem[]> {
     await this.ensureSession();
     const now = Math.floor(Date.now() / 1000);
     const items: TodoItem[] = [];
     let aftereventid = 0;
     const seen = new Set<number>();
+    // One unit's deadlines come from the per-course calendar service when the site
+    // offers it; otherwise the whole timeline is read and filtered.
+    const byCourse = courseId !== undefined && !this.unavailable.has(FUNC_GET_ACTION_EVENTS_BY_COURSE);
     while (items.length < limit) {
       const batchSize = Math.min(50, limit - items.length);
-      const data = await this.call(FUNC_GET_ACTION_EVENTS, {
-        limitnum: batchSize, timesortfrom: now, timesortto: days ? now + days * 86400 : 0,
-        aftereventid, limittononsuspendedevents: true,
-      });
+      const window = { timesortfrom: now, timesortto: days ? now + days * 86400 : 0, aftereventid, limitnum: batchSize };
+      let data: unknown;
+      if (byCourse) {
+        try {
+          data = await this.call(FUNC_GET_ACTION_EVENTS_BY_COURSE, { courseid: courseId, ...window });
+        } catch (error) {
+          if (!this.errors.isApi(error) || error.moodleErrorCode !== "servicenotavailable") throw error;
+          return (await this.getTodo(limit, days)).filter((item) => item.course_id === courseId);
+        }
+      } else {
+        data = await this.call(FUNC_GET_ACTION_EVENTS, { ...window, limittononsuspendedevents: true });
+      }
       const events = isRecord(data) && Array.isArray(data.events) ? data.events : [];
-      const page = parseTodoItems(events);
-      for (const item of page) if (!seen.has(item.id)) { seen.add(item.id); items.push(item); }
-      const next = page.at(-1)?.id;
+      for (const item of parseTodoItems(events)) if (!seen.has(item.id)) { seen.add(item.id); items.push(item); }
       if (events.length < batchSize) break;
+      const last = events.at(-1);
+      const next = isRecord(last) && typeof last.id === "number" ? last.id : undefined;
       if (!next || next === aftereventid) throw this.errors.api("Moodle repeated a calendar page; refine the date window.");
       aftereventid = next;
     }
-    return items;
+    return courseId === undefined ? items : items.filter((item) => item.course_id === courseId);
   }
 
   async getAlerts(limit = 20): Promise<AlertSummary> {
@@ -556,6 +589,7 @@ export class MoodleClientCore {
   async getNewsForums(courseId?: number): Promise<ForumActivityRef[]> {
     const units = courseId === undefined ? await this.getCourses() : (await this.getCourses()).filter(c => c.id === courseId);
     const forums: ForumActivityRef[] = [];
+    if (!units.length) return forums;
     try {
       await this.ensureSession();
       const data = await this.call("mod_forum_get_forums_by_courses", { courseids: units.map(c => c.id) });
@@ -568,15 +602,17 @@ export class MoodleClientCore {
     } catch (error) {
       if (!this.errors.isApi(error) || error.moodleErrorCode !== "servicenotavailable") throw error;
     }
-    for (const forum of await this.getForums(courseId)) {
-      const html = await this.get("/mod/forum/view.php", { id: forum.id });
-      if (/\bforumtype-news\b|data-forumtype=["']news["']/u.test(html)) forums.push(forum);
+    const candidates = await this.getForums(courseId);
+    // Bounded fan-out: the forum pages are cached for the discussion listing that follows.
+    const flags: boolean[] = [];
+    for (let index = 0; index < candidates.length; index += 4) {
+      flags.push(...await Promise.all(candidates.slice(index, index + 4).map((forum) => this.forum.isNewsForum(forum.id))));
     }
-    return forums;
+    return candidates.filter((_, index) => flags[index]);
   }
 
-  async getForumDiscussion(discussionId: number): Promise<ForumDiscussion> {
-    return this.forum.getForumDiscussion(discussionId);
+  async getForumDiscussion(discussionId: number, options: { group?: boolean } = {}): Promise<ForumDiscussion> {
+    return this.forum.getForumDiscussion(discussionId, options);
   }
 
   async getForumViewCmid(discussionId: number): Promise<number | null> {
@@ -635,7 +671,22 @@ export class MoodleClientCore {
     return completeResults.map((result) => (result.ok ? result.data : undefined));
   }
 
+  // Moodle stops a batch at its first failing function, so a service the site has
+  // disabled would void every call queued behind it. Known-disabled functions are
+  // answered locally and only the rest travel.
   private async callBatchInternal(requests: AjaxCall[], allowRetry: boolean): Promise<OptionalAjaxBatchResult[]> {
+    const live = requests.map((request, index) => ({ request, index })).filter(({ request }) => !this.unavailable.has(request.methodname));
+    if (live.length < requests.length) {
+      const results = Array<OptionalAjaxBatchResult>(requests.length).fill(undefined);
+      for (const [index, request] of requests.entries()) {
+        if (!live.some((entry) => entry.index === index)) results[index] = { ok: false, error: this.errors.api(`${request.methodname} is disabled on this site.`, "servicenotavailable") };
+      }
+      if (live.length) {
+        const sent = await this.callBatchInternal(live.map(({ request }) => request), allowRetry);
+        for (const [position, { index }] of live.entries()) results[index] = sent[position];
+      }
+      return results;
+    }
     const payload = requests.map((request, index) => ({ index, methodname: request.methodname, args: request.args ?? {} }));
     const response = await fetchWithSession(`${this.baseUrl}${AJAX_SERVICE_PATH}?sesskey=${encodeURIComponent(this.sesskey ?? "")}&info=${requests.map((request) => request.methodname).join(",")}`, {
       method: "POST",
@@ -665,6 +716,14 @@ export class MoodleClientCore {
         }
         : { ok: true, data: item.data ?? item };
     }
+    let learned = false;
+    for (const [position, item] of envelope.entries()) {
+      const name = requests[item.index ?? position]?.methodname;
+      if (!name || !item.error || item.exception?.errorcode !== "servicenotavailable" || this.unavailable.has(name)) continue;
+      this.unavailable.add(name);
+      learned = true;
+    }
+    if (learned) await this.writeCache();
     if (
       allowRetry &&
       !this.retryingLogin &&
@@ -729,7 +788,7 @@ export class MoodleClientCore {
       }
       courses.push(...data.courses);
       const nextOffset = typeof data.nextoffset === "number" ? data.nextoffset : offset;
-      if (nextOffset <= offset) {
+      if (nextOffset <= offset || data.courses.length < 100) {
         break;
       }
       offset = nextOffset;
@@ -876,6 +935,8 @@ export class MoodleClientCore {
           cookieValue: this.cookie.value,
           sesskey: this.sesskey,
           userid: this.userid,
+          ...(this.unavailable.size ? { unavailable: [...this.unavailable].sort() } : {}),
+          ...(this.userInfo?.fullname ? { user: this.userInfo } : {}),
         });
       } catch {
         return;

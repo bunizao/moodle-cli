@@ -115,6 +115,7 @@ export function parseCourseFormatState(value: unknown, baseUrl: string): Section
         && booleanValue(data.uservisible, true)
         && !booleanValue(data.stealth),
       description: htmlText(data.content ?? data.description, baseUrl),
+      ...(data.completionstate !== undefined && data.completionstate !== null ? { completion: numberValue(data.completionstate) } : {}),
     };
     activities.set(String(id), activity);
     const sectionActivities = activitiesBySection.get(sectionId) ?? [];

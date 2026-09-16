@@ -25,6 +25,7 @@ export const FUNC_GET_COURSE_CONTENTS = "core_course_get_contents";
 export const FUNC_GET_COURSE_FORMAT_STATE = "core_courseformat_get_state";
 export const FUNC_GET_COURSE_MODULE = "core_course_get_course_module";
 export const FUNC_GET_ACTION_EVENTS = "core_calendar_get_action_events_by_timesort";
+export const FUNC_GET_ACTION_EVENTS_BY_COURSE = "core_calendar_get_action_events_by_course";
 export const FUNC_GET_POPUP_NOTIFICATIONS = "message_popup_get_popup_notifications";
 export const FUNC_GET_CONVERSATION_COUNTS = "core_message_get_conversation_counts";
 export const FUNC_GET_UNREAD_CONVERSATION_COUNTS = "core_message_get_unread_conversation_counts";

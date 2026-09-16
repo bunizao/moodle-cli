@@ -62,6 +62,8 @@ export async function createMoodleClient(
         cookie: { name: cached.cookieName, value: cached.cookieValue },
         sesskey: cached.sesskey,
         userid: cached.userid,
+        userInfo: cached.user,
+        unavailable: cached.unavailable,
         ...persistence,
         onLoginRequired,
       });
