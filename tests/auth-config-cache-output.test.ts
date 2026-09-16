@@ -303,6 +303,25 @@ describe("config and session cache", () => {
     expect(validateSession).not.toHaveBeenCalled();
   });
 
+  it("keeps learned disabled services and the profile across an expired cache", async () => {
+    const homeDir = await mkdtemp(join(tmpdir(), "moodle-cli-expired-cache-"));
+    const user = { userid: 7, username: "alice", fullname: "Alice", sitename: "Campus", siteurl: BASE_URL, lang: "" };
+    await writeCachedSession(
+      { baseUrl: BASE_URL, cookieName: "MoodleSessionOld", cookieValue: "old-cookie", sesskey: "old-sess", userid: 7, savedAt: 0, unavailable: ["core_webservice_get_site_info"], user },
+      { homeDir },
+    );
+    const fetchImpl = vi.fn(async () => { throw new Error("no request expected"); });
+    const browserCookieProvider = vi.fn(async () => [{ name: "MoodleSession", value: "fresh-cookie", domain: "school.example.edu" }]);
+    const validateSession = vi.fn(async () => ({ sesskey: "fresh-sess", userid: 7 }));
+
+    const client = await createMoodleClient(BASE_URL, { homeDir, now: () => 48 * 60 * 60 * 1000, fetchImpl, browserCookieProvider, validateSession });
+
+    await expect(client.getSiteInfo()).resolves.toMatchObject({ userid: 7, fullname: "Alice" });
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(browserCookieProvider).toHaveBeenCalledTimes(1);
+    expect((await readCachedSession(BASE_URL, { homeDir, now: () => 48 * 60 * 60 * 1000 }))).toMatchObject({ cookieValue: "fresh-cookie", unavailable: ["core_webservice_get_site_info"], user: { fullname: "Alice" } });
+  });
+
   it("invalidates a stale cached AJAX session and retries once", async () => {
     const homeDir = await mkdtemp(join(tmpdir(), "moodle-cli-stale-cache-"));
     await writeCachedSession(

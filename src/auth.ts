@@ -447,6 +447,13 @@ async function refreshSessionCache(
     savedAt: (options.now ?? Date.now)(),
   };
   try {
+    // Keep what the previous session learned about this account: the services
+    // the site disables and the dashboard profile survive an expired cookie.
+    const previous = await readCachedSession(baseUrl, { ...cacheOptions(options), ttlMs: Number.MAX_SAFE_INTEGER });
+    if (previous?.userid === context.userid) {
+      if (previous.unavailable?.length) session.unavailable = previous.unavailable;
+      if (previous.user) session.user = previous.user;
+    }
     await writeCachedSession(session, cacheOptions(options));
   } catch {
     return;
