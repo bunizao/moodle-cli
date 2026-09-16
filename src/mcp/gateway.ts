@@ -79,7 +79,7 @@ export const MAX_MCP_FILE_BYTES = 16 * 1024 * 1024;
 export interface MoodleGateway {
   getUser(): Promise<UserInfo>;
   getOverview(input: OverviewInput): Promise<Overview>;
-  getDue?(days: number): Promise<TodoItem[]>;
+  getDue?(days: number, courseId?: number): Promise<TodoItem[]>;
   listCourses(): Promise<Course[]>;
   getCourse(input: CourseInput): Promise<CourseDetail>;
   listActivities(input: ActivityListInput): Promise<Activity[]>;
@@ -97,7 +97,7 @@ export interface MoodleClientPort {
   readonly baseUrl: string;
   getSiteInfo(): Promise<UserInfo>;
   getOverview(todoLimit?: number, todoDays?: number, alertsLimit?: number): Promise<Overview>;
-  getTodo?(limit?: number, days?: number): Promise<TodoItem[]>;
+  getTodo?(limit?: number, days?: number, courseId?: number): Promise<TodoItem[]>;
   getCourses(): Promise<Course[]>;
   getCourseContents(courseId: number): Promise<Section[]>;
   getActivities(courseId: number): Promise<Activity[]>;
@@ -116,7 +116,7 @@ export interface MoodleClientPort {
     maxForums?: number;
     maxDiscussionsPerForum?: number;
   }): Promise<ForumSearchHit[]>;
-  getForumDiscussion(discussionId: number): Promise<ForumDiscussion>;
+  getForumDiscussion(discussionId: number, options?: { group?: boolean }): Promise<ForumDiscussion>;
   getForumDiscussionRefs?(forumId: number): Promise<ForumDiscussionRef[]>;
   getNewsForums?(courseId?: number): Promise<ForumActivityRef[]>;
   requestAbsolute(url: string, init?: RequestInit): Promise<Response>;
@@ -138,7 +138,7 @@ export function createMoodleGateway(client: MoodleClientPort): MoodleGateway {
     listThreads: (id) => client.getForumDiscussionRefs ? client.getForumDiscussionRefs(id) : Promise.resolve([]),
     listNewsForums: (id) => client.getNewsForums ? client.getNewsForums(id) : Promise.resolve([]),
     getOverview: (input) => client.getOverview(input.todoLimit, input.todoDays, input.alertsLimit),
-    ...(client.getTodo ? { getDue: (days: number) => client.getTodo!(Number.MAX_SAFE_INTEGER, days) } : {}),
+    ...(client.getTodo ? { getDue: (days: number, courseId?: number) => client.getTodo!(Number.MAX_SAFE_INTEGER, days, courseId) } : {}),
     listCourses: () => client.getCourses(),
     async getCourse({ courseId }) {
       const [courses, sections] = await Promise.all([
@@ -162,7 +162,8 @@ export function createMoodleGateway(client: MoodleClientPort): MoodleGateway {
       return limit === undefined ? forums : forums.slice(0, limit);
     },
     searchForums: ({ forumId, ...input }) => client.searchForumContent({ ...input, forumCmid: forumId }),
-    getThread: ({ discussionId }) => client.getForumDiscussion(discussionId),
+    // Thread and news results never show groups, so the group page load is skipped.
+    getThread: ({ discussionId }) => client.getForumDiscussion(discussionId, { group: false }),
     async getFile({ source }) {
       let target = await resolveFileTarget(client, source);
       let response = await client.requestAbsolute(target.url);

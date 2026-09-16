@@ -40,6 +40,8 @@ export function createIntentService(gateway: MoodleGateway, now = () => Date.now
   };
   const selected = async (ref?: string | number) => ref === undefined ? courses() : [await course(ref)];
   const overview = async (days: number): Promise<Overview> => gateway.getOverview({ todoDays: days, todoLimit: Number.MAX_SAFE_INTEGER, alertsLimit: 1 });
+  // One unit's deadlines: the per-course calendar when the gateway offers it, else the whole timeline filtered.
+  const unitDeadlines = async (unitId: number, days: number) => gateway.getDue ? gateway.getDue(days, unitId) : (await overview(days)).todo.filter(t => t.course_id === unitId);
   const compactCurrent = (sections: CourseDetail["sections"]) => {
     const result = currentSection(sections);
     return result ? { id: result.section.id, name: result.section.name, estimated: result.estimated } : undefined;
@@ -77,7 +79,8 @@ export function createIntentService(gateway: MoodleGateway, now = () => Date.now
       throw new ReferenceError("not_found", "The activity URL has no valid id.", []);
     }
     const parsed = splitUnitPhrase(raw, await courses());
-    const matches = (await find(parsed?.query || raw, parsed?.course.id)).filter(r => r.type !== "section" && r.type !== "thread");
+    // Items are activities; a miss must not trigger the discussion-subject crawl.
+    const matches = (await find(parsed?.query || raw, parsed?.course.id, undefined, false)).filter(r => r.type !== "section");
     if (matches.length === 1) return matches[0].id;
     throw new ReferenceError(matches.length ? "ambiguous" : "not_found", `${matches.length ? "Several items match" : "No item matches"} '${raw}'.`, matches.map(({ id, name, type, unit_code }) => ({ id, name, type, code: unit_code })));
   }
@@ -105,9 +108,10 @@ export function createIntentService(gateway: MoodleGateway, now = () => Date.now
         const threads = activity.type === "forum" ? await gateway.listThreads?.(id) : undefined;
         let due: Record<string, unknown> = {};
         if (["assign", "quiz"].includes(activity.type)) {
-          const deadlines = await overview(365).catch(() => undefined);
-          const dates = deadlines?.todo.filter(t => dueRow(t, deadlines.courses).activity_id === id) ?? [];
-          if (dates.length === 1) due = { due_at: dates[0].due_at, due: isoTime(dates[0].due_at, timezoneFor(deadlines?.user?.timezone).timezone) };
+          const unitId = (activity as { course_id?: number }).course_id;
+          const todo = await (unitId ? unitDeadlines(unitId, 365) : overview(365).then(o => o.todo)).catch(() => []);
+          const dates = todo.filter(t => dueRow(t, []).activity_id === id);
+          if (dates.length === 1) due = { due_at: dates[0].due_at, due: isoTime(dates[0].due_at, await timezone()) };
         }
         result = { item: { ...itemRow(activity), ...due }, threads: threads?.slice(0, 20).map(t => ({ id: t.id, name: t.subject })), total: threads?.length };
         break;
@@ -133,12 +137,11 @@ export function createIntentService(gateway: MoodleGateway, now = () => Date.now
       case "grades": {
         const units = await selected(ref);
         const tz = await timezone();
-        const deadlines = await overview(365);
         const graded = (grade: string) => Boolean(grade && !/^[\s–—-]+$/u.test(grade));
         const rows = await inParallel(units, 5, async c => {
-          const g = await gateway.getGrades({ courseId: c.id });
+          const [g, todo] = await Promise.all([gateway.getGrades({ courseId: c.id }), unitDeadlines(c.id, 365)]);
           const items = g.items.filter(i => !input.graded_only || graded(i.grade)).map(i => {
-            const matches = deadlines.todo.filter(t => t.course_id === c.id && (t.activity_name || t.name) === i.name);
+            const matches = todo.filter(t => (t.activity_name || t.name) === i.name);
             const due = matches.length === 1 && !graded(i.grade) ? matches[0].due_at : undefined;
             return { ...i, type: i.item_type, due_at: due, due: isoTime(due, tz) };
           });
@@ -149,20 +152,33 @@ export function createIntentService(gateway: MoodleGateway, now = () => Date.now
       case "news": {
         const units = await selected(ref);
         const tz = await timezone();
-        const listings = (await inParallel(units, 5, async c => {
-          const forums = await gateway.listNewsForums?.(c.id) ?? [];
-          return inParallel(forums, 3, async forum => ({ c, forum, threads: await gateway.listThreads?.(forum.id) ?? [] }));
-        })).flat();
+        const byUnit = new Map(units.map(c => [c.id, c]));
+        // One forum listing call covers every unit; the site answers with an array.
+        const forums = (await gateway.listNewsForums?.(ref === undefined ? undefined : units[0].id) ?? []).filter(f => byUnit.has(f.course_id));
+        const listings = (await inParallel(forums, 3, async forum => ({ c: byUnit.get(forum.course_id)!, forum, threads: await gateway.listThreads?.(forum.id) ?? [] }))).filter(l => l.threads.length);
         const total = listings.reduce((sum, listing) => sum + listing.threads.length, 0);
-        // Forum views are newest first, so only the newest few per forum can reach the page.
-        const candidates = listings.flatMap(({ c, forum, threads }) => threads.slice(0, limit).map(t => ({ c, forum, t })));
-        const rows = await inParallel(candidates, 5, async ({ c, forum, t }) => {
+        // Forum views are newest first. Read one head per forum, then always take the
+        // newest head and advance only that forum, so a page costs about forums + limit
+        // thread reads instead of forums × limit. A pinned old thread delays its forum
+        // by one step, which is acceptable.
+        const load = async (listing: typeof listings[number], index: number) => {
+          const t = listing.threads[index];
           const thread = await gateway.getThread({ discussionId: t.id });
           const first = [...thread.posts].sort((a, b) => a.time_created - b.time_created)[0];
-          return { id: t.id, name: t.subject, unit_id: c.id, unit_code: c.shortname || c.fullname, forum_id: forum.id, post: first ? postRow(first, t.subject, tz) : undefined };
-        });
-        rows.sort((a, b) => (b.post?.time_created ?? 0) - (a.post?.time_created ?? 0));
-        result = { news: rows.slice(0, limit), total }; break;
+          return { time: first?.time_created ?? 0, row: { id: t.id, name: t.subject, unit_id: listing.c.id, unit_code: listing.c.shortname || listing.c.fullname, forum_id: listing.forum.id, post: first ? postRow(first, t.subject, tz) : undefined } };
+        };
+        const cursors = listings.map(() => 0);
+        const heads: Array<Awaited<ReturnType<typeof load>> | undefined> = await inParallel(listings, 5, l => load(l, 0));
+        const rows: Array<Awaited<ReturnType<typeof load>>["row"]> = [];
+        while (rows.length < limit) {
+          let best = -1;
+          for (let i = 0; i < heads.length; i++) if (heads[i] && (best < 0 || heads[i]!.time > heads[best]!.time)) best = i;
+          if (best < 0) break;
+          rows.push(heads[best]!.row);
+          cursors[best] += 1;
+          heads[best] = cursors[best] < listings[best].threads.length ? await load(listings[best], cursors[best]) : undefined;
+        }
+        result = { news: rows, total }; break;
       }
       case "thread": {
         const thread = await gateway.getThread({ discussionId: Number(input.discussion_id) });
@@ -187,5 +203,6 @@ export function createIntentService(gateway: MoodleGateway, now = () => Date.now
   async function fileSource(ref: string | number): Promise<string | number> {
     return String(ref).includes("://") ? ref : resolveItem(ref);
   }
-  return { run, resolveItem, fileSource, find };
+  const sections = async (unitId: number) => (await courseDetail(unitId)).sections;
+  return { run, resolveItem, fileSource, find, sections };
 }

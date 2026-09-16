@@ -152,17 +152,22 @@ export function buildProgram(io: CliIO = {}): Command {
     getClient: async () => {
       if (!runtime.client) {
         const baseUrl = await runtime.baseUrl();
+        // One indicator for the whole command, however many requests run at once.
+        let inflight = 0;
+        let displayed = false;
+        let timer: ReturnType<typeof setTimeout> | undefined;
         runtime.client = await createMoodleClient(baseUrl, {
           env: io.env,
           fetchImpl: async (input, init) => {
             const started = Date.now();
             const tty = Boolean("isTTY" in stderr && stderr.isTTY) && !program.opts().json && !io.rootArgs?.includes("--json");
-            let displayed = false;
-            const timer = tty ? setTimeout(() => { displayed = true; stderr.write("Loading Moodle…"); }, 300) : undefined;
+            if (tty && inflight++ === 0) timer = setTimeout(() => { displayed = true; stderr.write("Loading Moodle…"); }, 300);
             try { return await (io.fetchImpl ?? fetch)(input, init); }
             finally {
-              if (timer) clearTimeout(timer);
-              if (displayed) stderr.write("\r\x1b[2K");
+              if (tty && --inflight === 0) {
+                clearTimeout(timer);
+                if (displayed) { stderr.write("\r\x1b[2K"); displayed = false; }
+              }
               if (program.opts().verbose) {
                 const url = new URL(input instanceof Request ? input.url : String(input));
                 const methods = url.pathname.endsWith("/lib/ajax/service.php") ? url.searchParams.get("info") ?? "" : "";
@@ -233,9 +238,9 @@ export function buildProgram(io: CliIO = {}): Command {
     if (targets[0] === "unit") throw new UsageError("Unknown command 'unit'.", "Did you mean 'units'? Run moodle units.");
     const client = await runtime.getClient();
     const courses = await client.getCourses();
+    const service = createIntentService(createMoodleGateway(client));
     const parsed = await choose(async () => splitUnitPhrase(targets.join(" "), courses), async id => ({ course: courses.find(c => c.id === id)!, query: targets.slice(1).join(" ") }));
     if (!parsed) {
-      const service = createIntentService(createMoodleGateway(client));
       // A bare target is a place to go, not a forum search: an unmatched one is an
       // error with the site's own unit list, not an empty result and exit 0.
       const query = targets.join(" ");
@@ -246,30 +251,28 @@ export function buildProgram(io: CliIO = {}): Command {
     }
     const unit = parsed.course.id;
     const query = parsed.query;
-    if (["grades", "news", "due"].includes(query)) return execute(query as Intent, { unit, ...(query !== "grades" ? { limit: program.opts().limit } : {}) }, merged);
-    if (query === "files") return execute("find", { query: "*", unit, types: ["resource", "folder"], limit: program.opts().limit }, merged);
+    if (["grades", "news", "due"].includes(query)) return execute(query as Intent, { unit, ...(query !== "grades" ? { limit: program.opts().limit } : {}) }, merged, service);
+    if (query === "files") return execute("find", { query: "*", unit, types: ["resource", "folder"], limit: program.opts().limit }, merged, service);
     if (query === "forums") { const rows = await createMoodleGateway(client).listForums({ courseId: unit }); return runtime.output({ forums: rows.map(f => ({ id: f.id, name: f.name, unit_id: f.course_id })), total: rows.length }, () => formatForumActivities(rows), merged); }
     if (!query) {
-      const service = createIntentService(createMoodleGateway(client));
       let data = await service.run("unit", { unit });
       if (outputFormat(merged, stdout) === "table") {
         const current = (data.unit as { current_section?: { id: number } }).current_section;
         if (current) {
-          const detail = await client.getCourseContents(unit);
-          const section = detail.find(s => s.id === current.id);
+          const section = (await service.sections(unit)).find(s => s.id === current.id);
           if (section) data = await service.run("unit", { unit, section: section.name });
         }
         data = { ...data, ...await service.run("due", { unit }), ...await service.run("news", { unit, limit: 1 }) };
       }
       return runtime.output(data, () => screen(data), merged);
     }
-    const sections = await client.getCourseContents(unit);
+    const sections = await service.sections(unit);
     try {
       const namedSection = sections.some(section => normalize(section.name).includes(normalize(query)));
       const numberedSection = /^\d+$/u.test(query) || /^\S+\s+\d+$/u.test(query);
       if (!namedSection && !numberedSection) throw new ReferenceError("not_found", "Not a section reference.", []);
       resolveSection(query, sections);
-      return await execute("unit", { unit, section: query }, merged);
+      return await execute("unit", { unit, section: query }, merged, service);
     } catch (error) { if (!(error instanceof ReferenceError)) throw error;
       if (error.code === "ambiguous") {
         return choose(async () => { throw error; }, async id => {
@@ -279,7 +282,7 @@ export function buildProgram(io: CliIO = {}): Command {
         });
       }
     }
-    return choose(() => execute("item", { ref: `${parsed.course.shortname || parsed.course.fullname} ${query}` }, merged), id => execute("item", { ref: id }, merged));
+    return choose(() => execute("item", { ref: `${parsed.course.shortname || parsed.course.fullname} ${query}` }, merged, service), id => execute("item", { ref: id }, merged, service));
   });
 
   for (const name of ["due", "news"] as const) {

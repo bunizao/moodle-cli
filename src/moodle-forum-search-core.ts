@@ -53,12 +53,23 @@ export async function searchForumContent(
 
   const hits: Array<[number, ForumSearchHit]> = [];
   const seen = new Set<string>();
+  const needsPosts = !titlesOnly || unreadOnly || sortBy === "recent";
 
-  for (const forumRef of forumRefs) {
-    let refs = await source.getForumDiscussionRefs(forumRef.id);
-    if (options.maxDiscussionsPerForum !== undefined) {
-      refs = refs.slice(0, options.maxDiscussionsPerForum);
-    }
+  // Listings and discussions are fetched a few at a time; scoring below stays in
+  // forum-then-listing order so results are deterministic.
+  const listings = await inParallel(forumRefs, 3, async (forumRef) => {
+    const refs = await source.getForumDiscussionRefs(forumRef.id);
+    return options.maxDiscussionsPerForum !== undefined ? refs.slice(0, options.maxDiscussionsPerForum) : refs;
+  });
+  const discussions = new Map<number, ForumDiscussion>();
+  if (needsPosts) {
+    const refs = listings.flat();
+    const loaded = await inParallel(refs, 4, (ref) => source.getForumDiscussion(ref.id));
+    for (const [index, ref] of refs.entries()) discussions.set(ref.id, loaded[index]);
+  }
+
+  for (const [forumIndex, forumRef] of forumRefs.entries()) {
+    const refs = listings[forumIndex];
 
     for (const ref of refs) {
       let discussion: ForumDiscussion | null = null;
@@ -66,8 +77,8 @@ export async function searchForumContent(
       let discussionHasUnread = false;
       const matchingPostHits: Array<[number, ForumSearchHit]> = [];
 
-      if (!titlesOnly || unreadOnly || sortBy === "recent") {
-        discussion = await source.getForumDiscussion(ref.id);
+      if (needsPosts) {
+        discussion = discussions.get(ref.id) ?? await source.getForumDiscussion(ref.id);
         if (discussion.posts.length) {
           latestPost = discussion.posts.reduce((latest, post) => ((post.time_created || 0) > (latest.time_created || 0) ? post : latest));
           discussionHasUnread = discussion.posts.some((post) => post.unread);
@@ -152,6 +163,11 @@ export async function searchForumContent(
 
   hits.sort(sortBy === "recent" ? sortRecent : sortRelevant);
   return hits.slice(0, options.limit ?? 20).map(([, hit]) => includePostText ? hit : { ...hit, snippet: "" });
+}
+async function inParallel<T, R>(items: readonly T[], size: number, run: (item: T) => Promise<R>): Promise<R[]> {
+  const results: R[] = [];
+  for (let index = 0; index < items.length; index += size) results.push(...await Promise.all(items.slice(index, index + size).map(run)));
+  return results;
 }
 export function normalizeQuery(value: string): { normalized: string; tokens: string[] } {
   const normalized = value.toLowerCase().split(/\s+/).filter(Boolean).join(" ");

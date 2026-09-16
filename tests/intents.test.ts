@@ -87,12 +87,38 @@ describe("shared intent contract", () => {
     const news = await createIntentService(gateway).run("news", { limit: 3 });
     expect(news).toMatchObject({ total: 160 });
     expect((news.news as unknown[]).length).toBe(3);
-    // Forum views are newest first, so a page of three never costs forty reads.
-    expect(threadReads).toBe(12);
+    // Forum views are newest first: one head per forum, then one read per row shown.
+    expect(threadReads).toBe(7);
     const service = createIntentService(gateway);
     await service.run("unit", { unit: "algo-2" });
     await service.run("find", { query: "slides", unit: "algo-2" });
     expect(courseReads).toBe(1);
+  });
+  it("never crawls discussion subjects for an item that does not exist", async () => {
+    const base = fixtureGateway();
+    let forumReads = 0;
+    const gateway = { ...base, listForums: async (input: { courseId?: number }) => { forumReads += 1; return base.listForums(input); }, listThreads: async () => { forumReads += 1; return []; } };
+    await expect(createIntentService(gateway).resolveItem("algo-2 nothing like this")).rejects.toMatchObject({ code: "not_found" });
+    await expect(createIntentService(gateway).run("item", { ref: "nothing like this anywhere" })).rejects.toMatchObject({ code: "not_found" });
+    expect(forumReads).toBe(0);
+    // find still falls back to subjects, because that is its job.
+    expect(await createIntentService(gateway).find("nothing like this")).toEqual([]);
+    expect(forumReads).toBeGreaterThan(0);
+  });
+  it("reports a result that fails the contract as a shape problem, not a Moodle outage", async () => {
+    const base = fixtureGateway();
+    const gateway = { ...base, getThread: async () => ({ ...(await base.getThread({ discussionId: 60 })), course_id: undefined as unknown as number }) };
+    const result = await call("thread", { discussion_id: 60 }, gateway);
+    expect(result.isError).toBe(true);
+    expect(result.structuredContent).toMatchObject({ error: { type: "MOODLE_RESULT_INVALID", issues: [{ path: "thread.unit_id" }] } });
+  });
+  it("attaches an item's due date from its own unit when the gateway can read one unit", async () => {
+    const base = fixtureGateway();
+    const asked: number[] = [];
+    const gateway = { ...base, getDue: async (_days: number, courseId?: number) => { asked.push(courseId ?? 0); return (await base.getOverview({})).todo.filter(t => t.course_id === courseId); } };
+    const result = await createIntentService(gateway).run("item", { ref: 201 });
+    expect(result).toMatchObject({ item: { id: 201, due_at: 1789826100 } });
+    expect(asked).toEqual([2]);
   });
   it("strips undeclared source properties before emitting", () => {
     const value = { item: { id: 1, type: "resource", secret: "should not survive" } };
