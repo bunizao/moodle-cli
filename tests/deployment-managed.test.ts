@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { AuthError } from "../src/errors.js";
 import {
   DeploymentApplyError,
   DeploymentPlanError,
@@ -234,6 +235,19 @@ describe("ManagedMcpDeployment transaction", () => {
     }));
     expect(vi.mocked(deps.wrangler.initializeWorker).mock.invocationCallOrder[0])
       .toBeLessThan(vi.mocked(deps.wrangler.uploadCandidate).mock.invocationCallOrder[0]!);
+  });
+
+  it("surfaces the sign-in hint when the Moodle session cannot be read", async () => {
+    const deps = dependencies();
+    vi.mocked(deps.sessions.loadValidated).mockRejectedValueOnce(
+      new AuthError("Cannot read browser cookies for https://moodle.example.edu.", "Use Node.js 22.13 or newer."),
+    );
+    const manager = new ManagedMcpDeployment(deps);
+    const result = await consumeFailure(manager.apply(await manager.plan(INTENT)));
+
+    expect(result.error).toBeInstanceOf(AuthError);
+    expect(result.error).toMatchObject({ code: "auth", hint: "Use Node.js 22.13 or newer." });
+    expect(result.events.at(-1)).toMatchObject({ status: "failed", code: "auth" });
   });
 
   it("uploads a candidate, validates it, promotes it, and records stable stage events", async () => {
