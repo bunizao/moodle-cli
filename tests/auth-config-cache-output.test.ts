@@ -499,6 +499,36 @@ describe("config and session cache", () => {
     expect((await readCachedSession(BASE_URL, { homeDir, now: () => 48 * 60 * 60 * 1000 }))).toMatchObject({ cookieValue: "fresh-cookie", unavailable: ["core_webservice_get_site_info"], user: { fullname: "Alice" } });
   });
 
+  it("replaces an unrenewable stored mobile token with a fresh one on a new login", async () => {
+    const homeDir = await mkdtemp(join(tmpdir(), "moodle-cli-token-refetch-"));
+    // The prior token lacks a privatetoken, so it can never mint a session.
+    await writeCachedSession(
+      { baseUrl: BASE_URL, cookieName: "MoodleSession", cookieValue: "old-cookie", sesskey: "old-sess", userid: 7, savedAt: 0, mobileToken: { wstoken: "ws-old" } },
+      { homeDir },
+    );
+    const tokenValue = Buffer.from(["site", "ws-new", "private-new"].join(":::"), "utf8").toString("base64");
+    const launch = vi.fn(async () => new Response(null, { status: 302, headers: { location: `moodlecli://token=${tokenValue}` } }));
+
+    // now() is 48h out so the seeded cache is expired: the read misses and the
+    // browser cookie yields a genuinely new session, but noCache would also skip
+    // the write we are asserting on, so rely on expiry instead.
+    const now = () => 48 * 60 * 60 * 1000;
+    const session = await getAuthenticatedSession(BASE_URL, {
+      homeDir,
+      now,
+      fetch: launch as unknown as typeof fetch,
+      captureMobileToken: true,
+      browserCookieProvider: async () => [{ name: "MoodleSession", value: "new-cookie", domain: "school.example.edu" }],
+      validateSession: async () => ({ sesskey: "new-sess", userid: 7 }),
+    });
+
+    expect(session.cookie.value).toBe("new-cookie");
+    // The useless stored token must not suppress fetching a real one.
+    expect(launch).toHaveBeenCalled();
+    const cached = await readCachedSession(BASE_URL, { homeDir, now });
+    expect(cached?.mobileToken).toEqual({ wstoken: "ws-new", privatetoken: "private-new" });
+  });
+
   it("invalidates a stale cached AJAX session and retries once", async () => {
     const homeDir = await mkdtemp(join(tmpdir(), "moodle-cli-stale-cache-"));
     await writeCachedSession(

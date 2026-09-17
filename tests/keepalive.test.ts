@@ -131,6 +131,56 @@ describe("keepAliveOnce", () => {
     expect(cached).toMatchObject({ cookieValue: "renewed", sesskey: "new-sess", cookieSource: "mobile-token" });
   });
 
+  it("rejects an anonymous page from the mobile-token mint and falls back", async () => {
+    const homeDir = await mkdtemp(join(tmpdir(), "moodle-cli-keepalive-anon-"));
+    await writeCachedSession(
+      {
+        baseUrl: BASE_URL,
+        cookieName: COOKIE.name,
+        cookieValue: COOKIE.value,
+        sesskey: "old-sess",
+        userid: 7,
+        savedAt: 1000,
+        mobileToken: { wstoken: "ws-token", privatetoken: "private" },
+      },
+      { homeDir },
+    );
+
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("/lib/ajax/service.php")) {
+        return jsonResponse([{ error: true, exception: { errorcode: "servicerequireslogin" } }]);
+      }
+      if (url.includes("/webservice/rest/server.php")) {
+        return jsonResponse({ key: "login-key", autologinurl: `${BASE_URL}/admin/tool/mobile/autologin.php` });
+      }
+      if (url.includes("/admin/tool/mobile/autologin.php")) {
+        return new Response(null, { status: 303, headers: { location: `${BASE_URL}/my/`, "set-cookie": "MoodleSession=anon; path=/" } });
+      }
+      // The dashboard serves the login page: a sesskey but userid 0.
+      if (url.includes("/my/")) {
+        return new Response('<html><script>var M = {cfg: {"sesskey":"anon-sess","userid":0}};</script></html>', { status: 200 });
+      }
+      throw new Error(`unexpected ${url}`);
+    });
+
+    const authenticate = vi.fn(async () => ({}));
+    const result = await keepAliveOnce(BASE_URL, {
+      homeDir,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      authenticate,
+      now: () => 9000,
+    });
+
+    // The token mint was rejected, so the cookie-store path ran instead.
+    expect(result.status).toBe("reauthenticated");
+    expect(authenticate).toHaveBeenCalledWith(BASE_URL);
+    // The anonymous cookie must not have been cached.
+    const cached = await readCachedSession(BASE_URL, { homeDir, now: () => 9000 });
+    expect(cached?.cookieValue).toBe(COOKIE.value);
+    expect(cached?.sesskey).toBe("old-sess");
+  });
+
   it("reports expired when re-authentication fails and honors --no-renew", async () => {
     const homeDir = await cacheDir();
     const fetchImpl = vi.fn(async () => jsonResponse([{ error: true, exception: { errorcode: "servicerequireslogin" } }]));

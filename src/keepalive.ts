@@ -5,7 +5,7 @@ import { realpathSync } from "node:fs";
 import { mkdir, rm, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import { getAuthenticatedSession, parseSessionContext, MINIMUM_NODE_FOR_BROWSER_COOKIES } from "./auth.js";
+import { getAuthenticatedSession, isLoginRedirect, parseSessionContext, MINIMUM_NODE_FOR_BROWSER_COOKIES } from "./auth.js";
 import { mintSessionFromMobileToken } from "./mobile-login-core.js";
 import {
   AJAX_SERVICE_PATH,
@@ -201,9 +201,12 @@ async function renewViaMobileToken(
   } catch {
     return null;
   }
-  if (response.status >= 400) return null;
+  if (response.status >= 400 || isLoginRedirect(response.url, baseUrl)) return null;
   const context = parseSessionContext(await response.text());
-  if (!context) return null;
+  // A login/anonymous page also carries a sesskey but userid 0. Accept the mint
+  // only when it produced a genuine session for the same account we started
+  // from; otherwise fall back rather than caching an anonymous cookie.
+  if (!context || context.userid === 0 || context.userid !== session.userid) return null;
 
   await writeCachedSession(
     {

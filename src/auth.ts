@@ -623,7 +623,10 @@ async function refreshSessionCache(
     if (previous?.userid === context.userid) {
       if (previous.unavailable?.length) session.unavailable = previous.unavailable;
       if (previous.user) session.user = previous.user;
-      if (previous.mobileToken) session.mobileToken = previous.mobileToken;
+      // Only carry forward a token that can actually renew. A token without a
+      // privatetoken is useless for the autologin key, so dropping it lets the
+      // capture below fetch a real one instead of pinning the dead value.
+      if (previous.mobileToken?.privatetoken) session.mobileToken = previous.mobileToken;
     }
     // A genuinely new cookie is worth one attempt to obtain a durable mobile
     // token; steady-state re-validation of the same cookie must not re-ask.
@@ -688,7 +691,7 @@ function loginUrl(baseUrl: string): string {
   return new URL(LOGIN_PATH, `${baseUrl.replace(/\/+$/, "")}/`).toString();
 }
 
-function isLoginRedirect(responseUrl: string, baseUrl: string): boolean {
+export function isLoginRedirect(responseUrl: string, baseUrl: string): boolean {
   if (!responseUrl) {
     return false;
   }
