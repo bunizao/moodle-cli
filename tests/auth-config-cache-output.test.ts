@@ -1,6 +1,6 @@
-import { mkdir, mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import {
   authFailureHint,
@@ -11,6 +11,7 @@ import {
   loadSessionFromEnv,
   matchingMoodleSessionCookies,
 } from "../src/auth.js";
+import { browserCookieStores, cookieStoresBlocked, unreadableCookieStores } from "../src/cookie-stores.js";
 import { loadConfig, normalizeBaseUrl } from "../src/config.js";
 import { ENV_MOODLE_BASE_URL, ENV_MOODLE_CONFIG, ENV_MOODLE_SESSION, ENV_MOODLE_TOKEN, ENV_MOODLE_URL } from "../src/constants.js";
 import { readCachedSession, writeCachedSession } from "../src/session-cache.js";
@@ -166,6 +167,93 @@ describe("auth chain", () => {
 
     // A login cannot produce a cookie we are still not allowed to read.
     expect(openBrowser).not.toHaveBeenCalled();
+  });
+
+  it("fails fast when a store exists but cannot be opened, whatever the warning says", async () => {
+    const homeDir = await mkdtemp(join(tmpdir(), "moodle-cli-auth-denied-"));
+    const store = join(homeDir, "Library/Application Support/Google/Chrome/Default/Cookies");
+    await mkdir(dirname(store), { recursive: true });
+    await writeFile(store, "");
+    await chmod(store, 0o000);
+
+    const openBrowser = vi.fn(async () => undefined);
+    const sleep = vi.fn(async () => undefined);
+
+    // sweet-cookie reports a denied store as "not found", so the warning text
+    // alone would send the caller into the browser login poll loop.
+    const error = await getAuthenticatedSessionWithBrowserFallback(BASE_URL, {
+      homeDir,
+      platform: "darwin",
+      browserCookieProvider: async (_baseUrl, options) => {
+        options.onCookieWarnings?.(["Chrome cookies database not found."]);
+        return [];
+      },
+      validateSession: async () => null,
+      openBrowser,
+      sleep,
+    }).then(() => null, (caught: Error & { hint?: string }) => caught);
+
+    expect(error?.message).toMatch(/Cannot read browser cookies/);
+    expect(error?.hint).toContain(store);
+    expect(error?.hint).toContain("Full Disk Access");
+    expect(openBrowser).not.toHaveBeenCalled();
+    expect(sleep).not.toHaveBeenCalled();
+  });
+
+  it("lists a readable store and an unreadable one apart", async () => {
+    const homeDir = await mkdtemp(join(tmpdir(), "moodle-cli-stores-"));
+    const chrome = join(homeDir, "Library/Application Support/Google/Chrome/Default/Cookies");
+    const edge = join(homeDir, "Library/Application Support/Microsoft Edge/Default/Cookies");
+    for (const path of [chrome, edge]) {
+      await mkdir(dirname(path), { recursive: true });
+      await writeFile(path, "");
+    }
+    await chmod(chrome, 0o000);
+
+    const stores = await browserCookieStores({ homeDir, platform: "darwin" });
+    expect(stores).toEqual([
+      { browser: "Chrome", path: chrome, readable: false },
+      { browser: "Edge", path: edge, readable: true },
+    ]);
+    expect(unreadableCookieStores(stores).map((store) => store.path)).toEqual([chrome]);
+    // Safari is unreadable on every Mac without Full Disk Access, so one denied
+    // store must not block a login the user can still complete in Edge.
+    expect(cookieStoresBlocked(stores)).toBe(false);
+    expect(cookieStoresBlocked(stores.filter((store) => !store.readable))).toBe(true);
+    expect(cookieStoresBlocked([])).toBe(false);
+    // Only macOS withholds read access from a store the user owns.
+    await expect(browserCookieStores({ homeDir, platform: "linux" })).resolves.toEqual([]);
+  });
+
+  it("still opens the browser login when one readable store remains", async () => {
+    const homeDir = await mkdtemp(join(tmpdir(), "moodle-cli-auth-partial-"));
+    const denied = join(homeDir, "Library/Containers/com.apple.Safari/Data/Library/Cookies/Cookies.binarycookies");
+    const readable = join(homeDir, "Library/Application Support/Google/Chrome/Default/Cookies");
+    for (const path of [denied, readable]) {
+      await mkdir(dirname(path), { recursive: true });
+      await writeFile(path, "");
+    }
+    await chmod(denied, 0o000);
+
+    let reads = 0;
+    const openBrowser = vi.fn(async () => undefined);
+
+    const session = await getAuthenticatedSessionWithBrowserFallback(BASE_URL, {
+      homeDir,
+      platform: "darwin",
+      browserCookieProvider: async () => {
+        reads += 1;
+        return reads === 1 ? [] : [{ name: "MoodleSession", value: "fresh-cookie", domain: "school.example.edu" }];
+      },
+      validateSession: async (_baseUrl, cookie) => (cookie.value === "fresh-cookie" ? { sesskey: "s", userid: 9 } : null),
+      openBrowser,
+      sleep: async () => undefined,
+      browserLoginTimeoutMs: 1_000,
+      browserLoginPollIntervalMs: 100,
+    });
+
+    expect(openBrowser).toHaveBeenCalledOnce();
+    expect(session.userid).toBe(9);
   });
 
   it("separates an unreadable cookie store from a missing session", () => {

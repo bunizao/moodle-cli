@@ -11,6 +11,7 @@ import {
   LOGIN_PATH,
   MOODLE_SESSION_COOKIE_PREFIX,
 } from "./constants.js";
+import { browserCookieStores, cookieStoresBlocked, unreadableCookieStores, type CookieStore } from "./cookie-stores.js";
 import { AuthError } from "./errors.js";
 import {
   deleteCachedSession,
@@ -69,6 +70,7 @@ export interface BrowserLoginOptions extends AuthOptions {
   browserLoginTimeoutMs?: number;
   browserLoginPollIntervalMs?: number;
   onBrowserOpened?: (url: string) => void;
+  onLoginWait?: (secondsRemaining: number) => void;
 }
 
 export async function getAuthenticatedSession(
@@ -155,10 +157,11 @@ export async function getAuthenticatedSessionWithBrowserFallback(
 
   // A browser login writes a cookie we still would not be allowed to read, so
   // the poll loop below would spin until it times out. Fail with the real cause.
-  if (cookieAccessBlocked(cookieWarnings)) {
+  const stores = await browserCookieStores({ homeDir: options.homeDir, platform: options.platform });
+  if (cookieAccessBlocked(cookieWarnings) || cookieStoresBlocked(stores)) {
     throw new AuthError(
       `Cannot read browser cookies for ${baseUrl}.`,
-      cookieAccessHint(cookieWarnings, options.platform),
+      cookieAccessHint(cookieWarnings, options.platform, unreadableCookieStores(stores)),
     );
   }
 
@@ -173,6 +176,7 @@ export async function getAuthenticatedSessionWithBrowserFallback(
   const pollOptions: AuthOptions = browserAuthOptions;
 
   for (let attempt = 0; attempt < attempts; attempt += 1) {
+    options.onLoginWait?.(Math.round(((attempts - attempt) * pollIntervalMs) / 1_000));
     await sleep(pollIntervalMs);
     try {
       return await getAuthenticatedSession(baseUrl, pollOptions);
@@ -303,18 +307,25 @@ export function cookieAccessBlocked(warnings: readonly string[]): boolean {
 export function cookieAccessHint(
   warnings: readonly string[],
   platform: NodeJS.Platform = process.platform,
+  unreadable: readonly CookieStore[] = [],
 ): string {
   const grant = platform === "darwin"
     ? "Grant Full Disk Access to the application running this command (System Settings > Privacy & Security > Full Disk Access), then restart it."
     : "Run this command as the user that owns the browser profile, or grant it read access to the browser cookie store.";
-  const remedy = warnings.some((warning) => COOKIE_SQLITE_UNAVAILABLE.test(warning))
-    ? [
-        `This Node.js runtime has no node:sqlite, which is needed to read browser cookies. Use Node.js ${MINIMUM_NODE_FOR_BROWSER_COOKIES} or newer, or run the CLI with Bun (bunx --bun moodle-cli).`,
-      ]
-    : [
-        "If this runs inside a sandboxed app (an IDE or agent terminal), rerun it from a regular terminal first.",
-        grant,
-      ];
+  const remedy: string[] = [];
+  if (warnings.some((warning) => COOKIE_SQLITE_UNAVAILABLE.test(warning))) {
+    remedy.push(
+      `This Node.js runtime has no node:sqlite, which is needed to read browser cookies. Use Node.js ${MINIMUM_NODE_FOR_BROWSER_COOKIES} or newer, or run the CLI with Bun (bunx --bun moodle-cli).`,
+    );
+  }
+  // An unreadable store is a permission problem even when the runtime is also
+  // too old, so both remedies belong in the message.
+  if (unreadable.length || !remedy.length) {
+    remedy.push(
+      "If this runs inside a sandboxed app (an IDE or agent terminal), rerun it from a regular terminal first.",
+      grant,
+    );
+  }
   return [
     "The browser cookie store could not be read, so the session could not be detected.",
     ...remedy,
@@ -322,6 +333,7 @@ export function cookieAccessHint(
     `Alternatively set ${ENV_MOODLE_SESSION} to a valid MoodleSession cookie value.`,
     "",
     "Cookie store diagnostics:",
+    ...unreadable.map((store) => `  - ${store.browser} cookie store exists but cannot be opened: ${store.path}`),
     ...warnings.map((warning) => `  - ${warning}`),
   ].join("\n");
 }

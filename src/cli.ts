@@ -501,6 +501,7 @@ export function buildProgram(io: CliIO = {}): Command {
       const baseUrl = await runtime.baseUrl();
       await invalidateCachedSession(baseUrl, { homeDir: io.homeDir });
       const humanOutput = outputFormat(options, stdout) === "table";
+      const progress = humanOutput && Boolean("isTTY" in stderr && stderr.isTTY);
       const session = await getAuthenticatedSessionWithBrowserFallback(baseUrl, {
         env: io.env,
         fetch: io.fetchImpl,
@@ -508,7 +509,10 @@ export function buildProgram(io: CliIO = {}): Command {
         onBrowserOpened: humanOutput
           ? (url) => stderr.write(`No active Moodle session found. Complete login in your browser:\n${url}\n`)
           : undefined,
+        // Without this the command looks hung for the whole login window.
+        onLoginWait: progress ? (seconds) => stderr.write(`\rWaiting for the login to complete… ${seconds}s left `) : undefined,
       });
+      if (progress) stderr.write("\r[K");
       const result = { base_url: baseUrl, userid: session.userid, cookie_source: session.cookie.source ?? "unknown" };
       await runtime.output(result, () => `Authenticated as userid ${result.userid} via ${result.cookie_source}`, options);
     },
