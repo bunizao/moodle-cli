@@ -502,26 +502,23 @@ export function buildProgram(io: CliIO = {}): Command {
   addOutputOptions(
     auth
       .command("login")
-      .description("Extract a fresh session, opening the browser when needed.")
+      .description("Sign in through a browser the CLI controls, then capture the session.")
       .option("--paste", "Take the MoodleSession cookie from a prompt instead of the browser store."),
   ).action(
     async (options: OutputCommandOptions & { paste?: boolean }) => {
       const baseUrl = await runtime.baseUrl();
       const humanOutput = outputFormat(options, stdout) === "table";
-      const progress = humanOutput && !options.paste && Boolean("isTTY" in stderr && stderr.isTTY);
       const session = options.paste
         ? await pasteLogin(baseUrl, humanOutput)
         : await getAuthenticatedSessionWithBrowserFallback(baseUrl, {
           env: io.env,
           fetch: io.fetchImpl,
           homeDir: io.homeDir,
+          captureMobileToken: true,
           onBrowserOpened: humanOutput
-            ? (url) => stderr.write(`No active Moodle session found. Complete login in your browser:\n${url}\n`)
+            ? () => stderr.write("A browser window opened. Sign in there; I'll capture the session automatically.\n")
             : undefined,
-          // Without this the command looks hung for the whole login window.
-          onLoginWait: progress ? (seconds) => stderr.write(`\rWaiting for the login to complete… ${seconds}s left `) : undefined,
         });
-      if (progress) stderr.write("\r\x1b[2K");
       const result = { base_url: baseUrl, userid: session.userid, cookie_source: session.cookie.source ?? "unknown" };
       await runtime.output(result, () => `Authenticated as userid ${result.userid} via ${result.cookie_source}`, options);
     },
@@ -536,7 +533,7 @@ export function buildProgram(io: CliIO = {}): Command {
     if (raw === null) {
       throw new CliError("cancelled", "Login cancelled.");
     }
-    return authenticateWithPastedCookie(baseUrl, raw, { env: io.env, fetch: io.fetchImpl, homeDir: io.homeDir });
+    return authenticateWithPastedCookie(baseUrl, raw, { env: io.env, fetch: io.fetchImpl, homeDir: io.homeDir, captureMobileToken: true });
   }
 
   const keepalive = addOutputOptions(
@@ -562,7 +559,7 @@ export function buildProgram(io: CliIO = {}): Command {
       { yes: Boolean(globals.yes), dryRun: Boolean(globals.dryRun), interactive: Boolean(io.stdin?.isTTY ?? process.stdin.isTTY) },
     )) return;
     const baseUrl = await runtime.baseUrl();
-    await getAuthenticatedSessionWithBrowserFallback(baseUrl, { env: io.env, homeDir: io.homeDir, fetch: io.fetchImpl, noCache: true, nonInteractive: true });
+    await getAuthenticatedSessionWithBrowserFallback(baseUrl, { env: io.env, homeDir: io.homeDir, fetch: io.fetchImpl, noCache: true, nonInteractive: true, captureMobileToken: true });
     const result = await installKeepalive({ homeDir: io.homeDir, intervalMinutes: options.interval });
     await runtime.output(result, () => `Keepalive installed: renews every ${result.interval_minutes} min\nAgent: ${result.plist_path}\nLog: ${result.log_path}`, options);
   });

@@ -22,6 +22,9 @@ export interface CachedSession {
   // Site services already reported as disabled, and the profile the dashboard gave us.
   unavailable?: string[];
   user?: UserInfo;
+  // A durable Moodle mobile Web Service token, when the site offers one. It
+  // renews the session cookie without a browser; see mobile-login-core.ts.
+  mobileToken?: { wstoken: string; privatetoken?: string };
 }
 
 export interface SessionCacheOptions {
@@ -165,6 +168,9 @@ function parseCachedSession(raw: string): CachedSession | null {
     ...(typeof session.cookieSource === "string" ? { cookieSource: session.cookieSource } : {}),
     ...(Array.isArray(session.unavailable) && session.unavailable.every((name) => typeof name === "string") ? { unavailable: session.unavailable } : {}),
     ...(isRecord(session.user) && typeof session.user.fullname === "string" && typeof session.user.userid === "number" ? { user: session.user as unknown as UserInfo } : {}),
+    ...(isRecord(session.mobileToken) && typeof session.mobileToken.wstoken === "string"
+      ? { mobileToken: { wstoken: session.mobileToken.wstoken, ...(typeof session.mobileToken.privatetoken === "string" ? { privatetoken: session.mobileToken.privatetoken } : {}) } }
+      : {}),
   };
 }
 

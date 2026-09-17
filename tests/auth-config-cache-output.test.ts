@@ -15,6 +15,7 @@ import {
   loadSessionFromEnv,
   matchingMoodleSessionCookies,
 } from "../src/auth.js";
+import type { CdpCookie, CdpLoginOptions, CdpLoginResult } from "../src/cdp-login.js";
 import { browserCookieStores, cookieStoresBlocked, unreadableCookieStores } from "../src/cookie-stores.js";
 import { loadConfig, normalizeBaseUrl } from "../src/config.js";
 import { ENV_MOODLE_BASE_URL, ENV_MOODLE_CONFIG, ENV_MOODLE_SESSION, ENV_MOODLE_TOKEN, ENV_MOODLE_URL } from "../src/constants.js";
@@ -24,6 +25,27 @@ import { runCli } from "../src/cli.js";
 import { createMoodleClient } from "../src/client.js";
 
 const BASE_URL = "https://school.example.edu";
+
+/**
+ * Stand in for the CLI-owned Chromium: replay each cookie frame through the
+ * login's isDone check, the way a real browser's cookie jar changes as the user
+ * signs in, and stop on the frame that satisfies it.
+ */
+function fakeCdp(frames: CdpCookie[][]) {
+  return vi.fn(async (options: CdpLoginOptions): Promise<CdpLoginResult> => {
+    options.onOpened?.();
+    let last: CdpCookie[] = [];
+    for (const frame of frames) {
+      last = frame;
+      if (await options.isDone(frame)) return { cookies: frame, browserName: "Google Chrome" };
+    }
+    return { cookies: last, browserName: "Google Chrome" };
+  });
+}
+
+function cdpCookie(name: string, value: string, domain = "school.example.edu"): CdpCookie {
+  return { name, value, domain, secure: true, httpOnly: true };
+}
 
 describe("pasted cookie login", () => {
   it("accepts every shape a cookie panel hands out", () => {
@@ -104,8 +126,8 @@ describe("auth chain", () => {
     expect(matches.map((cookie) => [cookie.name, cookie.value])).toEqual([["MoodleSessionABC", "right"]]);
   });
 
-  it("does not open a browser when automatic extraction succeeds", async () => {
-    const openBrowser = vi.fn(async () => undefined);
+  it("does not drive a browser when automatic extraction succeeds", async () => {
+    const cdpLogin = fakeCdp([]);
 
     const session = await getAuthenticatedSessionWithBrowserFallback(BASE_URL, {
       homeDir: await mkdtemp(join(tmpdir(), "moodle-cli-auth-auto-")),
@@ -113,61 +135,46 @@ describe("auth chain", () => {
         { name: "MoodleSession", value: "browser-cookie", domain: "school.example.edu" },
       ],
       validateSession: async () => ({ sesskey: "sess", userid: 7 }),
-      openBrowser,
+      cdpLogin,
     });
 
     expect(session.cookie.value).toBe("browser-cookie");
-    expect(openBrowser).not.toHaveBeenCalled();
+    expect(cdpLogin).not.toHaveBeenCalled();
   });
 
-  it("opens Moodle login and retries extraction when no session is available", async () => {
-    let reads = 0;
-    const openBrowser = vi.fn(async () => undefined);
-    const sleep = vi.fn(async () => undefined);
+  it("signs in through the CLI browser when no session is available", async () => {
+    // The site hands out an anonymous MoodleSession before login; only the
+    // cookie that appears after sign-in validates.
+    const cdpLogin = fakeCdp([
+      [cdpCookie("MoodleSession", "anon")],
+      [cdpCookie("MoodleSessionSSO", "fresh-cookie", ".school.example.edu")],
+    ]);
 
     const session = await getAuthenticatedSessionWithBrowserFallback(BASE_URL, {
       homeDir: await mkdtemp(join(tmpdir(), "moodle-cli-auth-browser-")),
-      browserCookieProvider: async () => {
-        reads += 1;
-        return reads === 1
-          ? []
-          : [{ name: "MoodleSessionSSO", value: "fresh-cookie", domain: ".school.example.edu" }];
-      },
+      browserCookieProvider: async () => [],
       validateSession: async (_baseUrl, cookie) =>
         cookie.value === "fresh-cookie" ? { sesskey: "fresh-sess", userid: 9 } : null,
-      openBrowser,
-      sleep,
-      browserLoginTimeoutMs: 2_000,
-      browserLoginPollIntervalMs: 100,
+      cdpLogin,
     });
 
-    expect(openBrowser).toHaveBeenCalledWith(`${BASE_URL}/login/index.php`);
-    expect(sleep).toHaveBeenCalledWith(100);
+    expect(cdpLogin).toHaveBeenCalledOnce();
     expect(session).toMatchObject({ userid: 9, sesskey: "fresh-sess" });
   });
 
   it("ignores a stale environment session during browser fallback", async () => {
-    let browserReads = 0;
-    const openBrowser = vi.fn(async () => undefined);
+    const cdpLogin = fakeCdp([[cdpCookie("MoodleSession", "fresh-cookie")]]);
 
     const session = await getAuthenticatedSessionWithBrowserFallback(BASE_URL, {
       env: { [ENV_MOODLE_SESSION]: "stale-cookie" },
       homeDir: await mkdtemp(join(tmpdir(), "moodle-cli-auth-stale-env-")),
-      browserCookieProvider: async () => {
-        browserReads += 1;
-        return browserReads === 1
-          ? []
-          : [{ name: "MoodleSession", value: "fresh-cookie", domain: "school.example.edu" }];
-      },
+      browserCookieProvider: async () => [],
       validateSession: async (_baseUrl, cookie) =>
         cookie.value === "fresh-cookie" ? { sesskey: "fresh-sess", userid: 9 } : null,
-      openBrowser,
-      sleep: async () => undefined,
-      browserLoginTimeoutMs: 1_000,
-      browserLoginPollIntervalMs: 100,
+      cdpLogin,
     });
 
-    expect(openBrowser).toHaveBeenCalledOnce();
+    expect(cdpLogin).toHaveBeenCalledOnce();
     expect(session.cookie.value).toBe("fresh-cookie");
   });
 
@@ -199,8 +206,8 @@ describe("auth chain", () => {
     ]);
   });
 
-  it("reports a blocked cookie store instead of looping on a browser login", async () => {
-    const openBrowser = vi.fn(async () => undefined);
+  it("reports a blocked cookie store when no browser can be driven either", async () => {
+    const cdpLogin = fakeCdp([[cdpCookie("MoodleSession", "fresh")]]);
     const blocked = "Failed to read Safari cookies: EPERM: operation not permitted, open '/Users/x/Cookies.binarycookies'";
 
     await expect(
@@ -212,26 +219,26 @@ describe("auth chain", () => {
           return [];
         },
         validateSession: async () => null,
-        openBrowser,
+        findBrowser: async () => null,
+        cdpLogin,
       }),
     ).rejects.toThrow(/Cannot read browser cookies/);
 
-    // A login cannot produce a cookie we are still not allowed to read.
-    expect(openBrowser).not.toHaveBeenCalled();
+    // No installed browser to sign in with, so the store error is the honest one.
+    expect(cdpLogin).not.toHaveBeenCalled();
   });
 
-  it("fails fast when a store exists but cannot be opened, whatever the warning says", async () => {
+  it("fails fast when a store exists but cannot be opened and no browser is present", async () => {
     const homeDir = await mkdtemp(join(tmpdir(), "moodle-cli-auth-denied-"));
     const store = join(homeDir, "Library/Application Support/Google/Chrome/Default/Cookies");
     await mkdir(dirname(store), { recursive: true });
     await writeFile(store, "");
     await chmod(store, 0o000);
 
-    const openBrowser = vi.fn(async () => undefined);
-    const sleep = vi.fn(async () => undefined);
+    const cdpLogin = fakeCdp([[cdpCookie("MoodleSession", "fresh")]]);
 
     // sweet-cookie reports a denied store as "not found", so the warning text
-    // alone would send the caller into the browser login poll loop.
+    // alone must not hide a store we genuinely cannot read.
     const error = await getAuthenticatedSessionWithBrowserFallback(BASE_URL, {
       homeDir,
       platform: "darwin",
@@ -240,15 +247,14 @@ describe("auth chain", () => {
         return [];
       },
       validateSession: async () => null,
-      openBrowser,
-      sleep,
+      findBrowser: async () => null,
+      cdpLogin,
     }).then(() => null, (caught: Error & { hint?: string }) => caught);
 
     expect(error?.message).toMatch(/Cannot read browser cookies/);
     expect(error?.hint).toContain(store);
     expect(error?.hint).toContain("Full Disk Access");
-    expect(openBrowser).not.toHaveBeenCalled();
-    expect(sleep).not.toHaveBeenCalled();
+    expect(cdpLogin).not.toHaveBeenCalled();
   });
 
   it("lists a readable store and an unreadable one apart", async () => {
@@ -276,7 +282,7 @@ describe("auth chain", () => {
     await expect(browserCookieStores({ homeDir, platform: "linux" })).resolves.toEqual([]);
   });
 
-  it("still opens the browser login when one readable store remains", async () => {
+  it("still signs in through the CLI browser when one readable store remains", async () => {
     const homeDir = await mkdtemp(join(tmpdir(), "moodle-cli-auth-partial-"));
     const denied = join(homeDir, "Library/Containers/com.apple.Safari/Data/Library/Cookies/Cookies.binarycookies");
     const readable = join(homeDir, "Library/Application Support/Google/Chrome/Default/Cookies");
@@ -286,24 +292,18 @@ describe("auth chain", () => {
     }
     await chmod(denied, 0o000);
 
-    let reads = 0;
-    const openBrowser = vi.fn(async () => undefined);
+    const cdpLogin = fakeCdp([[cdpCookie("MoodleSession", "fresh-cookie")]]);
 
     const session = await getAuthenticatedSessionWithBrowserFallback(BASE_URL, {
       homeDir,
       platform: "darwin",
-      browserCookieProvider: async () => {
-        reads += 1;
-        return reads === 1 ? [] : [{ name: "MoodleSession", value: "fresh-cookie", domain: "school.example.edu" }];
-      },
+      browserCookieProvider: async () => [],
       validateSession: async (_baseUrl, cookie) => (cookie.value === "fresh-cookie" ? { sesskey: "s", userid: 9 } : null),
-      openBrowser,
-      sleep: async () => undefined,
-      browserLoginTimeoutMs: 1_000,
-      browserLoginPollIntervalMs: 100,
+      findBrowser: async () => ({ name: "Google Chrome", path: "/Applications/Google Chrome.app" }),
+      cdpLogin,
     });
 
-    expect(openBrowser).toHaveBeenCalledOnce();
+    expect(cdpLogin).toHaveBeenCalledOnce();
     expect(session.userid).toBe(9);
   });
 

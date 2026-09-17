@@ -1,6 +1,5 @@
 import { fetchWithSession } from "./session-fetch.js";
 import { ALL_PROFILES, getCookies } from "@steipete/sweet-cookie";
-import { execFile as execFileCallback } from "node:child_process";
 import { readdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -12,6 +11,8 @@ import {
   MOODLE_SESSION_COOKIE_PREFIX,
 } from "./constants.js";
 import { browserCookieStores, cookieStoresBlocked, unreadableCookieStores, type CookieStore } from "./cookie-stores.js";
+import { CdpError, cdpProfileDir, findChromiumBrowser, loginWithCdp, type CdpCookie, type CdpLoginOptions, type CdpLoginResult } from "./cdp-login.js";
+import { fetchMobileToken, type MobileToken } from "./mobile-login-core.js";
 import { AuthError, asNetworkError } from "./errors.js";
 import {
   deleteCachedSession,
@@ -39,13 +40,6 @@ export interface AuthenticatedSession extends SessionValidation {
   fromCache: boolean;
 }
 
-export interface CommandResult {
-  stdout: string;
-  stderr: string;
-  exitCode: number;
-}
-
-export type ExecFile = (file: string, args: string[]) => Promise<CommandResult>;
 export type CookieProvider = (baseUrl: string, options: AuthOptions) => Promise<MoodleSessionCookie[]>;
 export type SessionValidator = (baseUrl: string, cookie: MoodleSessionCookie) => Promise<SessionValidation | null>;
 
@@ -54,7 +48,6 @@ export interface AuthOptions {
   fetch?: typeof fetch;
   validateSession?: SessionValidator;
   browserCookieProvider?: CookieProvider;
-  execFile?: ExecFile;
   homeDir?: string;
   platform?: NodeJS.Platform;
   noCache?: boolean;
@@ -62,15 +55,22 @@ export interface AuthOptions {
   now?: () => number;
   nonInteractive?: boolean;
   onCookieWarnings?: (warnings: string[]) => void;
+  // Trade a genuinely new session for a durable mobile token, when the site
+  // offers one. Opt-in so ordinary cold reads never make the extra call; the
+  // login commands set it.
+  captureMobileToken?: boolean;
 }
 
 export interface BrowserLoginOptions extends AuthOptions {
-  openBrowser?: (url: string) => Promise<void>;
-  sleep?: (milliseconds: number) => Promise<void>;
-  browserLoginTimeoutMs?: number;
-  browserLoginPollIntervalMs?: number;
   onBrowserOpened?: (url: string) => void;
-  onLoginWait?: (secondsRemaining: number) => void;
+  // Drive sign-in through a CLI-owned Chromium over CDP instead of the cookie
+  // store. Injected in tests; defaults to the real browser launcher.
+  cdpLogin?: (options: CdpLoginOptions) => Promise<CdpLoginResult>;
+  // Probe for an installed Chromium; injected in tests to simulate its absence.
+  findBrowser?: (options: CdpLoginOptions) => Promise<{ path: string; name: string } | null>;
+  // Render no browser window; only usable when the CLI profile already holds a
+  // live identity-provider session. Used by unattended renewal.
+  headlessCdp?: boolean;
 }
 
 export async function getAuthenticatedSession(
@@ -157,42 +157,77 @@ export async function getAuthenticatedSessionWithBrowserFallback(
     }
   }
 
-  // A browser login writes a cookie we still would not be allowed to read, so
-  // the poll loop below would spin until it times out. Fail with the real cause.
-  const stores = await browserCookieStores({ homeDir: options.homeDir, platform: options.platform });
-  if (cookieAccessBlocked(cookieWarnings) || cookieStoresBlocked(stores)) {
-    throw new AuthError(
-      `Cannot read browser cookies for ${baseUrl}.`,
-      cookieAccessHint(cookieWarnings, options.platform, unreadableCookieStores(stores), options.env),
-    );
-  }
-
-  const url = loginUrl(baseUrl);
-  await (options.openBrowser ?? ((target) => openSystemBrowser(target, options)))(url);
-  options.onBrowserOpened?.(url);
-
-  const pollIntervalMs = options.browserLoginPollIntervalMs ?? 1_000;
-  const timeoutMs = options.browserLoginTimeoutMs ?? 120_000;
-  const attempts = Math.max(1, Math.ceil(timeoutMs / pollIntervalMs));
-  const sleep = options.sleep ?? ((milliseconds) => new Promise<void>((resolve) => setTimeout(resolve, milliseconds)));
-  const pollOptions: AuthOptions = browserAuthOptions;
-
-  for (let attempt = 0; attempt < attempts; attempt += 1) {
-    options.onLoginWait?.(Math.round(((attempts - attempt) * pollIntervalMs) / 1_000));
-    await sleep(pollIntervalMs);
-    try {
-      return await getAuthenticatedSession(baseUrl, pollOptions);
-    } catch (error) {
-      if (!(error instanceof AuthError)) {
-        throw error;
-      }
+  // The old fallback opened the system browser and polled the cookie store,
+  // which is exactly what fails inside a sandboxed terminal or a locked store.
+  // Instead, sign in through a Chromium the CLI drives over CDP and read the
+  // cookie straight from that live browser. When no browser exists to drive and
+  // the store is also unreadable, the store error is still the honest cause.
+  const probeBrowser = options.findBrowser ?? findChromiumBrowser;
+  const hasBrowser = Boolean(await probeBrowser({ ...(options as CdpLoginOptions) }));
+  if (!hasBrowser) {
+    const stores = await browserCookieStores({ homeDir: options.homeDir, platform: options.platform });
+    if (cookieAccessBlocked(cookieWarnings) || cookieStoresBlocked(stores)) {
+      throw new AuthError(
+        `Cannot read browser cookies for ${baseUrl}.`,
+        cookieAccessHint(cookieWarnings, options.platform, unreadableCookieStores(stores), options.env),
+      );
     }
   }
+  return loginViaCdp(baseUrl, { ...options, ...browserAuthOptions });
+}
 
-  throw new AuthError(
-    `Timed out waiting for browser login at ${baseUrl}.`,
-    `Complete the login in your browser, then rerun: moodle auth login`,
-  );
+function toSessionCookie(cookie: CdpCookie): MoodleSessionCookie {
+  return { name: cookie.name, value: cookie.value, domain: cookie.domain, path: cookie.path, source: "cdp" };
+}
+
+/**
+ * Sign in through a CLI-owned Chromium and read the resulting session over CDP.
+ * A fresh MoodleSession appears before login on many sites (an anonymous
+ * session), so presence alone is not enough: we validate a candidate only when
+ * its value changes, which keeps the login to one dashboard check per real
+ * cookie rather than one per poll.
+ */
+async function loginViaCdp(baseUrl: string, options: BrowserLoginOptions): Promise<AuthenticatedSession> {
+  const validate = options.validateSession ?? validateSessionWithFetch(options);
+  const runCdp = options.cdpLogin ?? loginWithCdp;
+  const url = loginUrl(baseUrl);
+  let resolved: { cookie: MoodleSessionCookie; context: SessionValidation } | null = null;
+  let lastChecked = "";
+
+  try {
+    await runCdp({
+      url,
+      headless: options.headlessCdp ?? false,
+      homeDir: options.homeDir,
+      platform: options.platform,
+      env: options.env,
+      onOpened: () => options.onBrowserOpened?.(url),
+      isDone: async (cookies) => {
+        if (resolved) return true;
+        const top = matchingMoodleSessionCookies(cookies.map(toSessionCookie), baseUrl)[0];
+        if (!top || top.value === lastChecked) return false;
+        lastChecked = top.value;
+        const context = await validate(baseUrl, top);
+        if (context) {
+          resolved = { cookie: top, context };
+          return true;
+        }
+        return false;
+      },
+    });
+  } catch (error) {
+    if (error instanceof CdpError) {
+      throw new AuthError(error.message, error.hint ?? authFailureHint(baseUrl, [], options.platform, [], options.env));
+    }
+    throw error;
+  }
+
+  const session = resolved as { cookie: MoodleSessionCookie; context: SessionValidation } | null;
+  if (!session) {
+    throw new AuthError(`Sign-in did not complete for ${baseUrl}.`, `Run: moodle auth login`);
+  }
+  await refreshSessionCache(baseUrl, session.cookie, session.context, { ...options, noCache: false });
+  return { baseUrl, cookie: session.cookie, ...session.context, fromCache: false };
 }
 
 /**
@@ -504,19 +539,6 @@ function validateSessionWithFetch(options: AuthOptions): SessionValidator {
   };
 }
 
-async function findExecutable(
-  name: string,
-  execFile: ExecFile,
-  platform: NodeJS.Platform = process.platform,
-): Promise<string | null> {
-  const command = platform === "win32" ? "where" : "which";
-  const result = await execFile(command, [name]);
-  if (result.exitCode !== 0) {
-    return null;
-  }
-  return result.stdout.split(/\r?\n/, 1)[0]?.trim() || null;
-}
-
 async function firstValidSession(
   baseUrl: string,
   cookies: MoodleSessionCookie[],
@@ -557,15 +579,37 @@ async function refreshSessionCache(
   };
   try {
     // Keep what the previous session learned about this account: the services
-    // the site disables and the dashboard profile survive an expired cookie.
+    // the site disables, the dashboard profile, and the durable mobile token all
+    // survive an expired cookie.
     const previous = await readCachedSession(baseUrl, { ...cacheOptions(options), ttlMs: Number.MAX_SAFE_INTEGER });
     if (previous?.userid === context.userid) {
       if (previous.unavailable?.length) session.unavailable = previous.unavailable;
       if (previous.user) session.user = previous.user;
+      if (previous.mobileToken) session.mobileToken = previous.mobileToken;
+    }
+    // A genuinely new cookie is worth one attempt to obtain a durable mobile
+    // token; steady-state re-validation of the same cookie must not re-ask.
+    const newCookie = !previous || previous.cookieValue !== cookie.value;
+    if (!session.mobileToken && newCookie && options.captureMobileToken) {
+      const token = await captureMobileToken(baseUrl, cookie, options);
+      if (token) session.mobileToken = token;
     }
     await writeCachedSession(session, cacheOptions(options));
   } catch {
     return;
+  }
+}
+
+/** One best-effort attempt to trade the session for a durable mobile token. */
+async function captureMobileToken(
+  baseUrl: string,
+  cookie: MoodleSessionCookie,
+  options: AuthOptions,
+): Promise<MobileToken | undefined> {
+  try {
+    return (await fetchMobileToken(baseUrl, cookie, options.fetch ?? globalThis.fetch)) ?? undefined;
+  } catch {
+    return undefined;
   }
 }
 
@@ -637,34 +681,3 @@ function decodeHtml(value: string): string {
     .replace(/&gt;/g, ">");
 }
 
-async function openSystemBrowser(url: string, options: AuthOptions): Promise<void> {
-  const platform = options.platform ?? process.platform;
-  const command = platform === "darwin"
-    ? { file: "open", args: [url] }
-    : platform === "win32"
-      ? { file: "cmd", args: ["/c", "start", "", url] }
-      : { file: "xdg-open", args: [url] };
-  const result = await (options.execFile ?? defaultExecFile)(command.file, command.args);
-  if (result.exitCode !== 0) {
-    throw new AuthError(
-      `Could not open the browser for Moodle login.`,
-      `Open ${url} manually, then rerun: moodle auth login`,
-    );
-  }
-}
-
-const defaultExecFile: ExecFile = (file: string, args: string[]) =>
-  new Promise((resolve) => {
-    execFileCallback(file, args, { encoding: "utf8" }, (error, stdout, stderr) => {
-      const errorWithCode = error as (Error & { code?: number | string }) | null;
-      resolve({
-        stdout: String(stdout ?? ""),
-        stderr: String(stderr ?? ""),
-        exitCode: errorWithCode ? Number(errorWithCode.code) || 1 : 0,
-      });
-    });
-  });
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return !!value && typeof value === "object" && !Array.isArray(value);
-}
