@@ -19,7 +19,7 @@ import type { CdpCookie, CdpLoginOptions, CdpLoginResult } from "../src/cdp-logi
 import { browserCookieStores, cookieStoresBlocked, unreadableCookieStores } from "../src/cookie-stores.js";
 import { loadConfig, normalizeBaseUrl } from "../src/config.js";
 import { ENV_MOODLE_BASE_URL, ENV_MOODLE_CONFIG, ENV_MOODLE_SESSION, ENV_MOODLE_TOKEN, ENV_MOODLE_URL } from "../src/constants.js";
-import { readCachedSession, writeCachedSession } from "../src/session-cache.js";
+import { deleteCachedSession, readCachedSession, writeCachedSession } from "../src/session-cache.js";
 import { render, resolveFormat } from "@bunizao/cli-kit";
 import { runCli } from "../src/cli.js";
 import { createMoodleClient } from "../src/client.js";
@@ -610,6 +610,122 @@ describe("config and session cache", () => {
     expect(session.cookie).toMatchObject({ value: "minted", source: "mobile-token" });
     expect(session.userid).toBe(7);
     expect(browserCookieProvider).not.toHaveBeenCalled();
+  });
+
+  it("preserves mobile credentials when a normal user command updates the cache", async () => {
+    const homeDir = await mkdtemp(join(tmpdir(), "moodle-cli-token-user-"));
+    const mobileToken = { wstoken: "ws", privatetoken: "private" };
+    await writeCachedSession({ baseUrl: BASE_URL, cookieName: "MoodleSession", cookieValue: "cookie", sesskey: "sess", userid: 7, savedAt: 1000, mobileToken, mobileServiceEnabled: true }, { homeDir });
+    const client = await createMoodleClient(BASE_URL, {
+      homeDir, now: () => 1000, env: {},
+      fetchImpl: async () => jsonResponse([{ error: false, data: { userid: 7, username: "alice", fullname: "Alice", siteurl: BASE_URL } }]),
+    });
+
+    await client.getSiteInfo();
+
+    expect(await readCachedSession(BASE_URL, { homeDir, now: () => 1000 })).toMatchObject({ mobileToken, mobileServiceEnabled: true });
+  });
+
+  it("does not carry another account's mobile credentials into a client snapshot", async () => {
+    const homeDir = await mkdtemp(join(tmpdir(), "moodle-cli-token-account-"));
+    await writeCachedSession({ baseUrl: BASE_URL, cookieName: "MoodleSession", cookieValue: "cookie", sesskey: "sess", userid: 7, savedAt: 1000, mobileToken: { wstoken: "old", privatetoken: "old-private" }, mobileServiceEnabled: true }, { homeDir });
+    const client = await createMoodleClient(BASE_URL, {
+      homeDir, now: () => 1000, env: {},
+      fetchImpl: async () => jsonResponse([{ error: false, data: { userid: 8, username: "bob", fullname: "Bob", siteurl: BASE_URL } }]),
+    });
+
+    await client.getSiteInfo();
+
+    const cached = await readCachedSession(BASE_URL, { homeDir, now: () => 1000 });
+    expect(cached?.userid).toBe(8);
+    expect(cached?.mobileToken).toBeUndefined();
+  });
+
+  it("renews a server-expired cached cookie using its mobile token before consulting a browser", async () => {
+    const homeDir = await mkdtemp(join(tmpdir(), "moodle-cli-token-server-expired-"));
+    const mobileToken = { wstoken: "ws", privatetoken: "private" };
+    await writeCachedSession({ baseUrl: BASE_URL, cookieName: "MoodleSession", cookieValue: "old-cookie", sesskey: "old-sess", userid: 7, savedAt: 1000, mobileToken, mobileServiceEnabled: true }, { homeDir });
+    const browserCookieProvider = vi.fn(async () => []);
+    let ajaxCalls = 0;
+    let mintCalls = 0;
+    const client = await createMoodleClient(BASE_URL, {
+      homeDir, now: () => 1000, env: {}, browserCookieProvider,
+      fetchImpl: async (input, init) => {
+        const url = String(input);
+        if (url.includes("/webservice/rest/")) {
+          mintCalls += 1;
+          return jsonResponse({ key: "key" });
+        }
+        if (url.includes("/autologin.php")) return new Response(null, { status: 303, headers: { "set-cookie": "MoodleSession=new-cookie; Path=/" } });
+        if (url.endsWith("/my/")) return new Response('<script>M.cfg = {"sesskey":"new-sess","userid":7};</script>');
+        ajaxCalls += 1;
+        if (ajaxCalls === 1) return jsonResponse([{ error: true, exception: { errorcode: "servicerequireslogin", message: "Expired" } }]);
+        expect(new Headers(init?.headers).get("cookie")).toBe("MoodleSession=new-cookie");
+        return jsonResponse([{ error: false, data: { userid: 7, fullname: "Alice", username: "alice", siteurl: BASE_URL } }]);
+      },
+    });
+
+    await expect(client.getSiteInfo()).resolves.toMatchObject({ userid: 7 });
+    expect(mintCalls).toBe(1);
+    expect(ajaxCalls).toBe(2);
+    expect(browserCookieProvider).not.toHaveBeenCalled();
+    expect(await readCachedSession(BASE_URL, { homeDir, now: () => 1000 })).toMatchObject({ cookieValue: "new-cookie", mobileToken });
+  });
+
+  it("retains renewal credentials across failed reauthentication without reusing the invalid cookie", async () => {
+    const homeDir = await mkdtemp(join(tmpdir(), "moodle-cli-token-retry-"));
+    const mobileToken = { wstoken: "ws", privatetoken: "private" };
+    await writeCachedSession({ baseUrl: BASE_URL, cookieName: "MoodleSession", cookieValue: "old-cookie", sesskey: "old-sess", userid: 7, savedAt: 1000, mobileToken }, { homeDir });
+    const options = { homeDir, now: () => 1000, env: {}, platform: "linux" as const, browserCookieProvider: async () => [] };
+    const failedClient = await createMoodleClient(BASE_URL, {
+      ...options,
+      fetchImpl: async (input) => String(input).includes("/webservice/")
+        ? jsonResponse({ exception: "unavailable" })
+        : jsonResponse([{ error: true, exception: { errorcode: "servicerequireslogin" } }]),
+    });
+    await expect(failedClient.getSiteInfo()).rejects.toThrow(/No usable MoodleSession/);
+    expect(await readCachedSession(BASE_URL, options)).toBeNull();
+    expect(await readCachedSession(BASE_URL, { ...options, allowExpired: true })).toMatchObject({ mobileToken, cookieInvalidated: true });
+    expect(await readCachedSession(BASE_URL, { ...options, allowExpired: true, noCache: true })).toBeNull();
+
+    const recovered = await createMoodleClient(BASE_URL, {
+      ...options,
+      fetchImpl: async (input, init) => {
+        const url = String(input);
+        if (url.includes("/webservice/")) return jsonResponse({ key: "key" });
+        if (url.includes("/autologin.php")) return new Response(null, { status: 303, headers: { "set-cookie": "MoodleSession=new-cookie; Path=/" } });
+        expect(new Headers(init?.headers).get("cookie")).toBe("MoodleSession=new-cookie");
+        if (url.endsWith("/my/")) return new Response('<script>M.cfg = {"sesskey":"new-sess","userid":7};</script>');
+        return jsonResponse([{ error: false, data: { userid: 7, fullname: "Alice", siteurl: BASE_URL } }]);
+      },
+    });
+    await expect(recovered.getSiteInfo()).resolves.toMatchObject({ userid: 7 });
+    expect(await readCachedSession(BASE_URL, options)).toMatchObject({ mobileToken, cookieValue: "new-cookie" });
+
+    // Explicit deletion must still remove all credentials, even for an invalid cookie.
+    const cached = await readCachedSession(BASE_URL, options);
+    await writeCachedSession({ ...cached!, cookieInvalidated: true }, { homeDir });
+    await deleteCachedSession(BASE_URL, options);
+    expect(await readCachedSession(BASE_URL, { ...options, allowExpired: true })).toBeNull();
+  });
+
+  it("retries mobile capability discovery after a temporary outage", async () => {
+    const homeDir = await mkdtemp(join(tmpdir(), "moodle-cli-mobile-outage-"));
+    let offline = true;
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL) => {
+      if (offline) throw new Error("Temporary outage");
+      if (String(input).includes("service-nologin.php")) return jsonResponse([{ error: false, data: { enablemobilewebservice: 1 } }]);
+      const token = Buffer.from("site:::ws:::private").toString("base64");
+      return new Response(null, { status: 302, headers: { location: `moodlecli://token=${token}` } });
+    });
+    const options = { homeDir, env: {}, fetch: fetchImpl, captureMobileToken: true, validateSession: async () => ({ userid: 7, sesskey: "sess" }) };
+    await authenticateWithPastedCookie(BASE_URL, "first-cookie", options);
+    expect((await readCachedSession(BASE_URL, { homeDir }))?.mobileServiceEnabled).toBeUndefined();
+
+    offline = false;
+    await authenticateWithPastedCookie(BASE_URL, "second-cookie", options);
+    expect(await readCachedSession(BASE_URL, { homeDir })).toMatchObject({ mobileServiceEnabled: true, mobileToken: { wstoken: "ws", privatetoken: "private" } });
+    expect(fetchImpl).toHaveBeenCalledTimes(4);
   });
 
   it("invalidates a stale cached AJAX session and retries once", async () => {

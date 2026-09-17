@@ -83,7 +83,7 @@ describe("keepAliveOnce", () => {
     expect(authenticate).toHaveBeenCalledWith(BASE_URL);
   });
 
-  it("renews an expired session from a stored mobile token, no browser", async () => {
+  it.each([false, true])("renews from a mobile token with cookieInvalidated=%s", async (cookieInvalidated) => {
     const homeDir = await mkdtemp(join(tmpdir(), "moodle-cli-keepalive-mobile-"));
     await writeCachedSession(
       {
@@ -93,6 +93,7 @@ describe("keepAliveOnce", () => {
         sesskey: "old-sess",
         userid: 7,
         savedAt: 1000,
+        cookieInvalidated,
         mobileToken: { wstoken: "ws-token", privatetoken: "private" },
       },
       { homeDir },
@@ -125,6 +126,7 @@ describe("keepAliveOnce", () => {
     });
 
     expect(result.status).toBe("reauthenticated");
+    expect(fetchImpl.mock.calls.some(([url]) => String(url).includes("/lib/ajax/service.php"))).toBe(!cookieInvalidated);
     // The browser/cookie-store path must not be reached when the token works.
     expect(authenticate).not.toHaveBeenCalled();
     const cached = await readCachedSession(BASE_URL, { homeDir, now: () => 9000 });

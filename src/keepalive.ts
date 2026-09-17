@@ -127,19 +127,21 @@ export async function touchMoodleSession(
 export async function keepAliveOnce(baseUrl: string, options: KeepaliveOptions = {}): Promise<KeepaliveRunResult> {
   const session = await readCachedSession(baseUrl, {
     homeDir: options.homeDir,
-    ttlMs: Number.MAX_SAFE_INTEGER,
+    allowExpired: true,
     now: options.now,
   });
   if (!session) {
     return { status: "no_session", time_remaining_seconds: null };
   }
 
-  const touch = await touchMoodleSession(
-    baseUrl,
-    { name: session.cookieName, value: session.cookieValue },
-    session.sesskey,
-    options.fetchImpl ?? fetch,
-  );
+  const touch = session.cookieInvalidated
+    ? { alive: false, timeRemainingSeconds: null }
+    : await touchMoodleSession(
+        baseUrl,
+        { name: session.cookieName, value: session.cookieValue },
+        session.sesskey,
+        options.fetchImpl ?? fetch,
+      );
   if (touch.alive === true) {
     await writeCachedSession({ ...session, savedAt: (options.now ?? Date.now)() }, { homeDir: options.homeDir });
     return { status: "renewed", time_remaining_seconds: touch.timeRemainingSeconds };
@@ -195,6 +197,7 @@ async function renewViaMobileToken(
   await writeCachedSession(
     {
       ...session,
+      cookieInvalidated: false,
       cookieName: result.cookie.name,
       cookieValue: result.cookie.value,
       cookieSource: result.cookie.source,
@@ -211,7 +214,7 @@ export async function getAuthStatus(baseUrl: string, options: KeepaliveOptions =
   const keepalive = await keepaliveStatus(options.homeDir);
   const session = await readCachedSession(baseUrl, {
     homeDir: options.homeDir,
-    ttlMs: Number.MAX_SAFE_INTEGER,
+    allowExpired: true,
     now: options.now,
   });
   if (!session) {
@@ -226,13 +229,15 @@ export async function getAuthStatus(baseUrl: string, options: KeepaliveOptions =
     };
   }
 
-  const touch = await touchMoodleSession(
-    baseUrl,
-    { name: session.cookieName, value: session.cookieValue },
-    session.sesskey,
-    options.fetchImpl ?? fetch,
-    false,
-  );
+  const touch = session.cookieInvalidated
+    ? { alive: false, timeRemainingSeconds: null }
+    : await touchMoodleSession(
+        baseUrl,
+        { name: session.cookieName, value: session.cookieValue },
+        session.sesskey,
+        options.fetchImpl ?? fetch,
+        false,
+      );
   return {
     base_url: baseUrl,
     session_cached: true,

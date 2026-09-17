@@ -628,7 +628,7 @@ async function refreshSessionCache(
     // Keep what the previous session learned about this account: the services
     // the site disables, the dashboard profile, and the durable mobile token all
     // survive an expired cookie.
-    const previous = await readCachedSession(baseUrl, { ...cacheOptions(options), ttlMs: Number.MAX_SAFE_INTEGER });
+    const previous = await readCachedSession(baseUrl, { ...cacheOptions(options), allowExpired: true });
     // Mobile-service support is a property of the instance, not the account, so
     // carry it across a login even when the user changed.
     if (typeof previous?.mobileServiceEnabled === "boolean") session.mobileServiceEnabled = previous.mobileServiceEnabled;
@@ -664,7 +664,7 @@ async function captureMobileToken(
   baseUrl: string,
   cookie: MoodleSessionCookie,
   options: AuthOptions,
-): Promise<{ supported: boolean; token?: MobileToken }> {
+): Promise<{ supported?: boolean; token?: MobileToken }> {
   const fetchImpl = options.fetch ?? globalThis.fetch;
   try {
     const config = await readMobilePublicConfig(baseUrl, fetchImpl);
@@ -672,9 +672,9 @@ async function captureMobileToken(
     const token = (await fetchMobileToken(baseUrl, cookie, fetchImpl)) ?? undefined;
     // With a readable config, trust its flag; otherwise a minted token is itself
     // proof of support, and no token leaves support undetermined for next time.
-    return { supported: config?.mobileServiceEnabled ?? Boolean(token), token };
+    return { supported: config?.mobileServiceEnabled ?? (token ? true : undefined), token };
   } catch {
-    return { supported: false };
+    return {};
   }
 }
 
@@ -710,7 +710,7 @@ async function mintFromStoredToken(
   let stored: CachedSession | null;
   try {
     // Honours noCache: a forced fresh login never silently reuses the token.
-    stored = await readCachedSession(baseUrl, { ...cacheOptions(options), ttlMs: Number.MAX_SAFE_INTEGER });
+    stored = await readCachedSession(baseUrl, { ...cacheOptions(options), allowExpired: true });
   } catch {
     return null;
   }
