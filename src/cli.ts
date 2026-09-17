@@ -32,7 +32,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createMoodleClient, type MoodleClient } from "./client.js";
 import { loadConfig } from "./config.js";
-import { MoodleAPIError, UsageError } from "./errors.js";
+import { MoodleAPIError, UsageError, asNetworkError } from "./errors.js";
 import {
   formatActivityDetail,
   formatActivityList,
@@ -59,7 +59,7 @@ import {
   keepaliveStatus,
   uninstallKeepalive,
 } from "./keepalive.js";
-import { getAuthenticatedSessionWithBrowserFallback, invalidateCachedSession } from "./auth.js";
+import { getAuthenticatedSessionWithBrowserFallback } from "./auth.js";
 import { VERSION } from "./version.js";
 import { filterDiscussionToPost, parseDiscussionReference, parseForumReference } from "./forum.js";
 import { looksLikeUrl, resolveTopLevelUrl } from "./url-resolver.js";
@@ -451,7 +451,9 @@ export function buildProgram(io: CliIO = {}): Command {
 
   addOutputOptions(program.command("doctor").description("Diagnose runtime, browser access, session, background jobs and MCP setup.")).action(async (options: OutputCommandOptions) => {
     const result = await doctor(io);
-    await runtime.output(result, () => result.checks.map(c => `${c.status.toUpperCase()} ${c.name}: ${c.detail}${c.hint ? `\n  ${c.hint}` : ""}`).join("\n") + "\n\nTry  moodle auth login · moodle mcp status", options);
+    await runtime.output(result, () => result.checks.map(c => `${c.status.toUpperCase()} ${c.name}: ${c.detail}${c.hint ? `\n  ${c.hint}` : ""}`).join("\n") + `\n\nTry  ${doctorNextSteps(result.checks).join(" · ")}`, options);
+    // A health check that always succeeds cannot be scripted against.
+    if (result.checks.some(c => c.status === "fail")) process.exitCode = 3;
   });
   program.command("completion").description("Print shell completion for zsh, bash or fish.").argument("<shell>").action((shell: string) => {
     const names = program.commands.filter(c => c.name() !== "help").flatMap(c => [c.name(), ...c.aliases()]);
@@ -499,7 +501,6 @@ export function buildProgram(io: CliIO = {}): Command {
   addOutputOptions(auth.command("login").description("Extract a fresh session, opening the browser when needed.")).action(
     async (options: OutputCommandOptions) => {
       const baseUrl = await runtime.baseUrl();
-      await invalidateCachedSession(baseUrl, { homeDir: io.homeDir });
       const humanOutput = outputFormat(options, stdout) === "table";
       const progress = humanOutput && Boolean("isTTY" in stderr && stderr.isTTY);
       const session = await getAuthenticatedSessionWithBrowserFallback(baseUrl, {
@@ -512,7 +513,7 @@ export function buildProgram(io: CliIO = {}): Command {
         // Without this the command looks hung for the whole login window.
         onLoginWait: progress ? (seconds) => stderr.write(`\rWaiting for the login to complete… ${seconds}s left `) : undefined,
       });
-      if (progress) stderr.write("\r[K");
+      if (progress) stderr.write("\r\x1b[2K");
       const result = { base_url: baseUrl, userid: session.userid, cookie_source: session.cookie.source ?? "unknown" };
       await runtime.output(result, () => `Authenticated as userid ${result.userid} via ${result.cookie_source}`, options);
     },
@@ -711,9 +712,9 @@ export async function runCli(argv = process.argv, io: CliIO = {}): Promise<numbe
       return 0;
     }
     const format = errorOutputFormat(args, stdout);
-    const normalized = normalizeError(error);
+    const normalized = normalizeError(asNetworkError(error) ?? error);
     const reference = error instanceof ReferenceError ? error : undefined;
-    const reported = reportError(error, "json");
+    const reported = reportError(asNetworkError(error) ?? error, "json");
     const envelope = JSON.parse(reported.text);
     const hint = reference?.hint || normalized.hint || ({ auth: "Run moodle auth login, or moodle doctor.", config: "Run moodle doctor to check configuration.", not_found: "Run moodle units or moodle find QUERY.", usage: "Run moodle --help or moodle commands --json.", upstream: "Run moodle doctor, then retry.", network: "Check the connection, then retry.", unexpected: "Run moodle doctor; use --verbose for request timings.", cancelled: "Retry when ready." }[normalized.code]);
     envelope.error.hint = hint;
@@ -721,6 +722,22 @@ export async function runCli(argv = process.argv, io: CliIO = {}): Promise<numbe
     stderr.write(format === "table" ? `✗ ${String(envelope.error.message).replace(/\s+/gu, " ")}\n${hint}\n` : `${JSON.stringify(envelope)}\n`);
     return envelope.exit_code;
   }
+}
+
+/**
+ * Suggest the command that clears the worst check, not a fixed pair. Telling a
+ * user to run `moodle auth login` when the cookie store is unreadable sends
+ * them straight back into the failure they just reported.
+ */
+function doctorNextSteps(checks: ReadonlyArray<{ name: string; status: string }>): string[] {
+  const failing = new Set(checks.filter(c => c.status !== "pass").map(c => c.name));
+  const steps: string[] = [];
+  if (failing.has("browser")) steps.push("grant Full Disk Access, then rerun moodle doctor");
+  else if (failing.has("session")) steps.push("moodle auth login");
+  if (failing.has("sqlite")) steps.push("install Node 22.13+ or Bun");
+  if (failing.has("config")) steps.push("moodle units");
+  if (failing.has("job")) steps.push("moodle auth keepalive install");
+  return steps.length ? steps : ["moodle todo", "moodle mcp status"];
 }
 
 async function dispatchUrl(runtime: Runtime, target: string, options: OutputCommandOptions): Promise<void> {
@@ -881,6 +898,7 @@ function pathsReferToSameFile(moduleUrl: string, executable: string | undefined)
 const isMain = (import.meta as ImportMeta & { main?: boolean }).main === true || pathsReferToSameFile(import.meta.url, process.argv[1]);
 if (isMain) {
   runCli().then((code) => {
-    process.exitCode = code;
+    // A command that ran fine but reported a failure (doctor) sets its own code.
+    process.exitCode = code || process.exitCode;
   });
 }

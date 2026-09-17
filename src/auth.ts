@@ -12,7 +12,7 @@ import {
   MOODLE_SESSION_COOKIE_PREFIX,
 } from "./constants.js";
 import { browserCookieStores, cookieStoresBlocked, unreadableCookieStores, type CookieStore } from "./cookie-stores.js";
-import { AuthError } from "./errors.js";
+import { AuthError, asNetworkError } from "./errors.js";
 import {
   deleteCachedSession,
   readCachedSession,
@@ -113,9 +113,11 @@ export async function getAuthenticatedSession(
     return { baseUrl, cookie: browserSession.cookie, ...browserSession.context, fromCache: false };
   }
 
+  // Every command lands here, so it must name the same cause as auth login does.
+  const stores = await browserCookieStores({ homeDir: options.homeDir, platform: options.platform });
   throw new AuthError(
     `No usable MoodleSession found for ${baseUrl}.`,
-    authFailureHint(baseUrl, cookieWarnings, options.platform),
+    authFailureHint(baseUrl, cookieWarnings, options.platform, unreadableCookieStores(stores)),
   );
 }
 
@@ -331,30 +333,42 @@ export function cookieAccessHint(
     ...remedy,
     "Run moodle doctor for runtime and browser diagnostics.",
     `Alternatively set ${ENV_MOODLE_SESSION} to a valid MoodleSession cookie value.`,
-    "",
-    "Cookie store diagnostics:",
-    ...unreadable.map((store) => `  - ${store.browser} cookie store exists but cannot be opened: ${store.path}`),
-    ...warnings.map((warning) => `  - ${warning}`),
+    ...cookieDiagnostics(warnings, unreadable),
   ].join("\n");
+}
+
+/**
+ * Only the stores that could have held a session are worth printing. "Edge
+ * cookies database not found" on a machine without Edge is noise, and every
+ * command used to print four such lines on every auth failure.
+ */
+function cookieDiagnostics(warnings: readonly string[], unreadable: readonly CookieStore[]): string[] {
+  const probed = unreadable.map((store) => store.path);
+  const lines = [
+    ...unreadable.map((store) => `  - ${store.browser} cookie store exists but cannot be opened: ${store.path}`),
+    ...warnings
+      .filter((warning) => COOKIE_ACCESS_DENIED.test(warning) || COOKIE_SQLITE_UNAVAILABLE.test(warning))
+      .filter((warning) => !probed.some((path) => warning.includes(path)))
+      .map((warning) => `  - ${warning}`),
+  ];
+  return lines.length ? ["", "Cookie store diagnostics:", ...lines] : [];
 }
 
 export function authFailureHint(
   baseUrl: string,
   cookieWarnings: readonly string[] = [],
   platform: NodeJS.Platform = process.platform,
+  unreadable: readonly CookieStore[] = [],
 ): string {
-  if (cookieAccessBlocked(cookieWarnings)) {
-    return cookieAccessHint(cookieWarnings, platform);
+  if (cookieAccessBlocked(cookieWarnings) || unreadable.length) {
+    return cookieAccessHint(cookieWarnings, platform, unreadable);
   }
-  const lines = [
+  return [
     `Log in to ${loginUrl(baseUrl)} in your browser, then rerun the command.`,
     "Or run `moodle auth login` to sign in through a browser window this command controls.",
     `Or set ${ENV_MOODLE_SESSION} to a valid MoodleSession cookie value.`,
-  ];
-  if (cookieWarnings.length) {
-    lines.push("", "Cookie store diagnostics:", ...cookieWarnings.map((warning) => `  - ${warning}`));
-  }
-  return lines.join("\n");
+    ...cookieDiagnostics(cookieWarnings, unreadable),
+  ].join("\n");
 }
 
 export async function invalidateCachedSession(baseUrl: string, options: AuthOptions = {}): Promise<void> {
@@ -391,7 +405,13 @@ function validateSessionWithFetch(options: AuthOptions): SessionValidator {
     let response: Response;
     try {
       response = await fetchWithSession(`${baseUrl}${DASHBOARD_PATH}`, {}, baseUrl, cookie, fetcher);
-    } catch {
+    } catch (error) {
+      // An unreachable site is not an expired cookie. Reporting it as one sends
+      // the user off to log in again while the real fault is the connection.
+      const network = asNetworkError(error);
+      if (network) {
+        throw network;
+      }
       return null;
     }
 

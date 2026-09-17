@@ -256,6 +256,21 @@ describe("auth chain", () => {
     expect(session.userid).toBe(9);
   });
 
+  it("reports an unreachable site as a network fault, not a dead session", async () => {
+    const error = await getAuthenticatedSession(BASE_URL, {
+      env: { [ENV_MOODLE_SESSION]: "cookie" },
+      homeDir: await mkdtemp(join(tmpdir(), "moodle-cli-auth-network-")),
+      fetch: async () => {
+        throw new TypeError("fetch failed");
+      },
+    }).then(() => null, (caught: Error & { code?: string; hint?: string }) => caught);
+
+    expect(error?.code).toBe("network");
+    expect(error?.message).toContain("school.example.edu");
+    // Telling the user to log in again would send them after the wrong problem.
+    expect(error?.hint).not.toContain("auth login");
+  });
+
   it("separates an unreadable cookie store from a missing session", () => {
     const blocked = ["Failed to read Safari cookies: EPERM: operation not permitted"];
     expect(cookieAccessBlocked(blocked)).toBe(true);
@@ -273,7 +288,9 @@ describe("auth chain", () => {
     const missing = authFailureHint(BASE_URL, ["Chrome cookies database not found."], "darwin");
     expect(missing).toContain("moodle auth login");
     expect(missing).not.toContain("okta");
-    expect(missing).toContain("Chrome cookies database not found.");
+    // A browser the user does not have is not a diagnostic worth printing.
+    expect(missing).not.toContain("Chrome cookies database not found.");
+    expect(missing).not.toContain("Cookie store diagnostics");
   });
 });
 
