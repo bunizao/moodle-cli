@@ -43,6 +43,11 @@ export interface CdpLoginOptions {
   browserPath?: string;
   timeoutMs?: number;
   pollIntervalMs?: number;
+  /** Bounds a single CDP request; a hung browser cannot wedge a poll. */
+  rpcTimeoutMs?: number;
+  /** How long the polite Browser.close is given before the process is killed. */
+  closeTimeoutMs?: number;
+  handshakeTimeoutMs?: number;
   homeDir?: string;
   platform?: NodeJS.Platform;
   env?: NodeJS.ProcessEnv;
@@ -71,6 +76,37 @@ export const NO_CHROMIUM_HINT =
 const DEFAULT_INTERACTIVE_TIMEOUT_MS = 300_000;
 const DEFAULT_HEADLESS_TIMEOUT_MS = 45_000;
 const HANDSHAKE_TIMEOUT_MS = 15_000;
+// A single CDP request must not outlive an unresponsive browser; cookie polls
+// and Browser.close both go through this bound.
+const RPC_TIMEOUT_MS = 10_000;
+// Browser.close is best-effort. If it does not acknowledge quickly we stop
+// waiting and fall through to killing the process.
+const CLOSE_TIMEOUT_MS = 2_000;
+// Grace between SIGTERM and SIGKILL when the process ignores the polite signal.
+const KILL_GRACE_MS = 1_000;
+
+/**
+ * Resolve with the promise, or with `onTimeout()` once `ms` elapses, whichever
+ * comes first. The timer is always cleared and unref'd, so a resolved race never
+ * keeps the event loop alive waiting on a stale timeout. This is what stops a
+ * successful login from lingering until the old handshake timer fired.
+ */
+function withTimeout<T>(promise: Promise<T>, ms: number, onTimeout: () => T): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => resolve(onTimeout()), ms);
+    timer.unref?.();
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error: unknown) => {
+        clearTimeout(timer);
+        reject(error instanceof Error ? error : new Error(String(error)));
+      },
+    );
+  });
+}
 
 export function cdpProfileDir(homeDir = homedir()): string {
   return join(homeDir, CDP_PROFILE_DIR_NAME);
@@ -168,9 +204,9 @@ export async function loginWithCdp(options: CdpLoginOptions): Promise<CdpLoginRe
     stdio: ["ignore", "ignore", "pipe", "pipe", "pipe"],
   });
 
-  const connection = new CdpConnection(child);
+  const connection = new CdpConnection(child, { rpc: options.rpcTimeoutMs, close: options.closeTimeoutMs });
   try {
-    await connection.handshake(HANDSHAKE_TIMEOUT_MS);
+    await connection.handshake(options.handshakeTimeoutMs ?? HANDSHAKE_TIMEOUT_MS);
     options.onOpened?.();
 
     const deadline = now() + timeoutMs;
@@ -203,14 +239,27 @@ class CdpConnection {
   private readonly pending = new Map<number, (message: CdpMessage) => void>();
   closed = false;
 
-  constructor(private readonly child: ChildProcess) {
-    child.on("exit", () => {
-      this.closed = true;
-      for (const resolve of this.pending.values()) resolve({ error: { message: "browser exited" } });
-      this.pending.clear();
-    });
+  constructor(
+    private readonly child: ChildProcess,
+    private readonly timeouts: { rpc?: number; close?: number } = {},
+  ) {
+    child.on("exit", () => this.markClosed());
+    // A spawn failure (ENOENT) or a broken pipe (EPIPE) arrives as an 'error'
+    // event; without a listener Node turns it into an uncaught exception that
+    // skips the CLI's error reporting entirely. Treat it as the browser closing.
+    child.on("error", () => this.markClosed());
+    const toBrowser = child.stdio[3] as NodeJS.WritableStream | null;
+    toBrowser?.on("error", () => this.markClosed());
     const fromBrowser = child.stdio[4] as NodeJS.ReadableStream | null;
+    fromBrowser?.on("error", () => this.markClosed());
     fromBrowser?.on("data", (chunk: Buffer) => this.consume(chunk));
+  }
+
+  private markClosed(): void {
+    if (this.closed) return;
+    this.closed = true;
+    for (const resolve of this.pending.values()) resolve({ error: { message: "browser closed" } });
+    this.pending.clear();
   }
 
   private consume(chunk: Buffer): void {
@@ -232,21 +281,31 @@ class CdpConnection {
     }
   }
 
-  private call(method: string, params: Record<string, unknown> = {}): Promise<CdpMessage> {
-    if (this.closed) return Promise.resolve({ error: { message: "browser exited" } });
+  private call(method: string, params: Record<string, unknown> = {}, timeoutMs = this.timeouts.rpc ?? RPC_TIMEOUT_MS): Promise<CdpMessage> {
+    if (this.closed) return Promise.resolve({ error: { message: "browser closed" } });
     const id = this.nextId++;
     const toBrowser = this.child.stdio[3] as NodeJS.WritableStream | null;
-    return new Promise<CdpMessage>((resolve) => {
+    const request = new Promise<CdpMessage>((resolve) => {
       this.pending.set(id, resolve);
-      toBrowser?.write(`${JSON.stringify({ id, method, params })}\0`);
+      try {
+        toBrowser?.write(`${JSON.stringify({ id, method, params })}\0`);
+      } catch {
+        // Writing to a dead pipe throws synchronously on some platforms; resolve
+        // as an error rather than letting it escape.
+        this.pending.delete(id);
+        resolve({ error: { message: "pipe write failed" } });
+      }
+    });
+    // A reply may never come if the browser hangs; drop the pending entry and
+    // report a timeout so the caller is never wedged on one request.
+    return withTimeout(request, timeoutMs, () => {
+      this.pending.delete(id);
+      return { error: { message: "timeout" } };
     });
   }
 
   async handshake(timeoutMs: number): Promise<void> {
-    const version = await Promise.race([
-      this.call("Browser.getVersion"),
-      new Promise<CdpMessage>((resolve) => setTimeout(() => resolve({ error: { message: "timeout" } }), timeoutMs)),
-    ]);
+    const version = await this.call("Browser.getVersion", {}, timeoutMs);
     if (version.error || this.closed) {
       throw new CdpError(
         "Could not talk to the browser over remote debugging.",
@@ -270,10 +329,20 @@ class CdpConnection {
 
   async close(): Promise<void> {
     if (!this.closed) {
-      await this.call("Browser.close");
+      // Bound the polite shutdown: a wedged browser must never hold the CLI here.
+      await this.call("Browser.close", {}, this.timeouts.close ?? CLOSE_TIMEOUT_MS);
     }
     // Browser.close is best-effort; make sure the process is gone.
-    if (!this.child.killed) this.child.kill();
+    if (this.child.killed || this.closed) return;
+    this.child.kill();
+    // If SIGTERM is ignored, escalate once. The timer is unref'd so it never
+    // keeps the process alive on its own.
+    if (!this.closed) {
+      const hardKill = setTimeout(() => {
+        if (!this.closed) this.child.kill("SIGKILL");
+      }, KILL_GRACE_MS);
+      hardKill.unref?.();
+    }
   }
 }
 

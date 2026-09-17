@@ -4,14 +4,14 @@ import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import { findChromiumBrowser, loginWithCdp, type CdpCookie } from "../src/cdp-login.js";
+import { CdpError, findChromiumBrowser, loginWithCdp, type CdpCookie } from "../src/cdp-login.js";
 
 /**
  * A stand-in for a Chromium process speaking CDP over fds 3 and 4. It answers
  * Browser.getVersion, replays a script of cookie sets for Storage.getCookies,
  * and records Browser.close.
  */
-function fakeChrome(cookieScript: CdpCookie[][], exitAfterCookies?: number) {
+function fakeChrome(cookieScript: CdpCookie[][], exitAfterCookies?: number, ignoreClose = false) {
   const child = new EventEmitter() as EventEmitter & {
     stdio: [null, null, PassThrough, PassThrough, PassThrough];
     killed: boolean;
@@ -34,6 +34,7 @@ function fakeChrome(cookieScript: CdpCookie[][], exitAfterCookies?: number) {
       const message = JSON.parse(buffer.slice(0, index)) as { id: number; method: string };
       buffer = buffer.slice(index + 1);
       const reply = (result: unknown) => fromBrowser.write(`${JSON.stringify({ id: message.id, result })}\0`);
+      if (message.method === "Browser.close" && ignoreClose) continue; // simulate a wedged browser
       if (message.method === "Browser.getVersion") reply({ product: "Chrome/999" });
       else if (message.method === "Storage.getCookies") {
         const frame = cookieScript[Math.min(getCookieCalls, cookieScript.length - 1)] ?? [];
@@ -83,6 +84,51 @@ describe("loginWithCdp", () => {
     expect(result.cookies.find((cookie) => cookie.name === "MoodleSession")?.value).toBe("live");
     // Best-effort shutdown of the browser we launched.
     expect(child.killed).toBe(true);
+  });
+
+  it("returns promptly and kills the process when Browser.close is never acknowledged", async () => {
+    const { child, spawn } = fakeChrome(
+      [[{ name: "MoodleSession", value: "live", domain: "school.example.edu" }]],
+      undefined,
+      true, // ignore Browser.close, as a hung browser would
+    );
+
+    const result = await loginWithCdp({
+      url: "https://school.example.edu/login/index.php",
+      profileDir: await mkdtemp(join(tmpdir(), "cdp-profile-")),
+      browserPath: "/fake/chrome",
+      spawn: spawn as never,
+      pollIntervalMs: 1,
+      sleep: async () => undefined,
+      closeTimeoutMs: 5, // do not wait the real 2s for the unresponsive close
+      isDone: (cookies) => cookies.some((cookie) => cookie.value === "live"),
+    });
+
+    expect(result.cookies.find((cookie) => cookie.name === "MoodleSession")?.value).toBe("live");
+    // The polite close timed out, so we fell through to killing the process.
+    expect(child.killed).toBe(true);
+  });
+
+  it("surfaces a spawn/pipe error as a CdpError instead of an uncaught exception", async () => {
+    const { child, spawn } = fakeChrome([[]]);
+    // A failed launch (ENOENT) or broken pipe arrives as an 'error' event on the
+    // child. Emit it right after spawn, before the handshake can complete.
+    const spawnThenError = vi.fn(() => {
+      queueMicrotask(() => child.emit("error", new Error("spawn ENOENT")));
+      return child;
+    });
+
+    await expect(
+      loginWithCdp({
+        url: "https://school.example.edu/login/index.php",
+        profileDir: await mkdtemp(join(tmpdir(), "cdp-profile-")),
+        browserPath: "/fake/chrome",
+        spawn: spawnThenError as never,
+        handshakeTimeoutMs: 1_000,
+        sleep: async () => undefined,
+        isDone: () => false,
+      }),
+    ).rejects.toBeInstanceOf(CdpError);
   });
 
   it("fails with a clear error when the browser exits before sign-in", async () => {
