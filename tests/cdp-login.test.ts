@@ -15,7 +15,7 @@ function fakeChrome(cookieScript: CdpCookie[][], exitAfterCookies?: number, igno
   const child = new EventEmitter() as EventEmitter & {
     stdio: [null, null, PassThrough, PassThrough, PassThrough];
     killed: boolean;
-    kill: () => void;
+    kill: (signal?: NodeJS.Signals) => void;
   };
   const toBrowser = new PassThrough(); // fd 3: CLI -> browser
   const fromBrowser = new PassThrough(); // fd 4: browser -> CLI
@@ -23,6 +23,7 @@ function fakeChrome(cookieScript: CdpCookie[][], exitAfterCookies?: number, igno
   child.killed = false;
   child.kill = () => {
     child.killed = true;
+    child.emit("exit", null, "SIGTERM");
   };
 
   let getCookieCalls = 0;
@@ -129,6 +130,44 @@ describe("loginWithCdp", () => {
         isDone: () => false,
       }),
     ).rejects.toBeInstanceOf(CdpError);
+  });
+
+  it("terminates a live browser after its CDP pipe breaks", async () => {
+    const { child, spawn } = fakeChrome([[]]);
+    const kill = vi.spyOn(child, "kill");
+    await expect(loginWithCdp({
+      url: "https://school.example.edu/login/index.php",
+      profileDir: await mkdtemp(join(tmpdir(), "cdp-broken-pipe-")),
+      browserPath: "/fake/chrome", spawn: spawn as never,
+      onOpened: () => child.stdio[3].emit("error", new Error("EPIPE")),
+      isDone: () => false,
+    })).rejects.toBeInstanceOf(CdpError);
+    expect(kill).toHaveBeenCalledOnce();
+  });
+
+  it("escalates to SIGKILL when a browser with a broken pipe ignores SIGTERM", async () => {
+    const profileDir = await mkdtemp(join(tmpdir(), "cdp-broken-stubborn-"));
+    const { child, spawn } = fakeChrome([[]]);
+    const kill = vi.spyOn(child, "kill").mockImplementation((signal) => {
+      child.killed = true;
+      if (signal === "SIGKILL") child.emit("exit", null, signal);
+    });
+    vi.useFakeTimers();
+    try {
+      await expect(loginWithCdp({
+        url: "https://school.example.edu/login/index.php",
+        profileDir, browserPath: "/fake/chrome", spawn: spawn as never,
+        onOpened: () => child.stdio[4].emit("error", new Error("Pipe failed")),
+        isDone: () => false,
+      })).rejects.toBeInstanceOf(CdpError);
+      expect(kill).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(kill).toHaveBeenLastCalledWith("SIGKILL");
+      expect(kill).toHaveBeenCalledTimes(2);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("fails with a clear error when the browser exits before sign-in", async () => {

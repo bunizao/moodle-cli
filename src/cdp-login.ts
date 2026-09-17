@@ -238,15 +238,22 @@ class CdpConnection {
   private buffer = "";
   private readonly pending = new Map<number, (message: CdpMessage) => void>();
   closed = false;
+  private exited = false;
+  private hardKill?: ReturnType<typeof setTimeout>;
 
   constructor(
     private readonly child: ChildProcess,
     private readonly timeouts: { rpc?: number; close?: number } = {},
   ) {
-    child.on("exit", () => this.markClosed());
+    child.on("exit", () => {
+      this.exited = true;
+      clearTimeout(this.hardKill);
+      this.markClosed();
+    });
     // A spawn failure (ENOENT) or a broken pipe (EPIPE) arrives as an 'error'
     // event; without a listener Node turns it into an uncaught exception that
-    // skips the CLI's error reporting entirely. Treat it as the browser closing.
+    // skips the CLI's error reporting entirely. Close the transport, while still
+    // tracking process exit separately so cleanup terminates a live browser.
     child.on("error", () => this.markClosed());
     const toBrowser = child.stdio[3] as NodeJS.WritableStream | null;
     toBrowser?.on("error", () => this.markClosed());
@@ -333,15 +340,15 @@ class CdpConnection {
       await this.call("Browser.close", {}, this.timeouts.close ?? CLOSE_TIMEOUT_MS);
     }
     // Browser.close is best-effort; make sure the process is gone.
-    if (this.child.killed || this.closed) return;
-    this.child.kill();
+    if (this.exited) return;
+    if (!this.child.killed) this.child.kill();
     // If SIGTERM is ignored, escalate once. The timer is unref'd so it never
     // keeps the process alive on its own.
-    if (!this.closed) {
-      const hardKill = setTimeout(() => {
-        if (!this.closed) this.child.kill("SIGKILL");
+    if (!this.exited) {
+      this.hardKill = setTimeout(() => {
+        if (!this.exited) this.child.kill("SIGKILL");
       }, KILL_GRACE_MS);
-      hardKill.unref?.();
+      this.hardKill.unref?.();
     }
   }
 }
