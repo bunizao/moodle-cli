@@ -71,6 +71,33 @@ export interface BrowserLoginOptions extends AuthOptions {
   // Render no browser window; only usable when the CLI profile already holds a
   // live identity-provider session. Used by unattended renewal.
   headlessCdp?: boolean;
+  // How long the OS cookie-store read may take before we abandon it and drive a
+  // browser sign-in instead. A macOS Keychain prompt or a locked store can stall
+  // the read indefinitely, and that must never block the login the user asked
+  // for. Injected small in tests.
+  cookieStoreTimeoutMs?: number;
+}
+
+// Enough for a user to approve a Keychain prompt, short enough that a wedged
+// store read hands off to the browser without an awkward wait.
+const COOKIE_STORE_TIMEOUT_MS = 8_000;
+
+/** Resolve with the promise, or with `onTimeout()` after `ms`, whichever is first. */
+function withTimeoutValue<T>(promise: Promise<T>, ms: number, onTimeout: () => T): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => resolve(onTimeout()), ms);
+    timer.unref?.();
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error: unknown) => {
+        clearTimeout(timer);
+        reject(error instanceof Error ? error : new Error(String(error)));
+      },
+    );
+  });
 }
 
 export async function getAuthenticatedSession(
@@ -126,10 +153,21 @@ export async function getAuthenticatedSessionWithBrowserFallback(
   options: BrowserLoginOptions = {},
 ): Promise<AuthenticatedSession> {
   const cookieWarnings: string[] = [];
+  // Time-bound the cookie-store read so a stalled Keychain prompt or a locked
+  // store cannot keep the CLI from reaching the browser sign-in below. A read
+  // that succeeds quickly still wins, so the zero-interaction path is preserved.
+  const rawProvider = options.browserCookieProvider ?? defaultBrowserCookieProvider;
+  const cookieStoreTimeoutMs = options.cookieStoreTimeoutMs ?? COOKIE_STORE_TIMEOUT_MS;
+  const boundedProvider: CookieProvider = (url, opts) =>
+    withTimeoutValue(rawProvider(url, opts), cookieStoreTimeoutMs, () => {
+      opts.onCookieWarnings?.(["Reading the browser cookie store timed out; opening a browser to sign in."]);
+      return [];
+    });
   const authOptions: AuthOptions = {
     ...options,
     noCache: true,
     nonInteractive: true,
+    browserCookieProvider: boundedProvider,
     onCookieWarnings: (warnings) => {
       cookieWarnings.push(...warnings);
       options.onCookieWarnings?.(warnings);

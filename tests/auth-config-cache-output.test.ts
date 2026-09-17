@@ -162,6 +162,27 @@ describe("auth chain", () => {
     expect(session).toMatchObject({ userid: 9, sesskey: "fresh-sess" });
   });
 
+  it("drives the browser when the cookie-store read stalls instead of blocking on it", async () => {
+    // A Keychain prompt or a locked store can leave the read pending forever;
+    // the login must time it out and open a browser rather than wedge.
+    const cdpLogin = fakeCdp([[cdpCookie("MoodleSession", "fresh-cookie")]]);
+    const stalledProvider = vi.fn(() => new Promise<never>(() => {}));
+
+    const session = await getAuthenticatedSessionWithBrowserFallback(BASE_URL, {
+      homeDir: await mkdtemp(join(tmpdir(), "moodle-cli-auth-stall-")),
+      browserCookieProvider: stalledProvider,
+      cookieStoreTimeoutMs: 5,
+      validateSession: async (_baseUrl, cookie) =>
+        cookie.value === "fresh-cookie" ? { sesskey: "fresh-sess", userid: 9 } : null,
+      findBrowser: async () => ({ name: "Google Chrome", path: "/Applications/Google Chrome.app" }),
+      cdpLogin,
+    });
+
+    expect(stalledProvider).toHaveBeenCalledOnce();
+    expect(cdpLogin).toHaveBeenCalledOnce();
+    expect(session).toMatchObject({ userid: 9, sesskey: "fresh-sess" });
+  });
+
   it("ignores a stale environment session during browser fallback", async () => {
     const cdpLogin = fakeCdp([[cdpCookie("MoodleSession", "fresh-cookie")]]);
 
