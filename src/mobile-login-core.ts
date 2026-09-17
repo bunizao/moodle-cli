@@ -1,4 +1,3 @@
-import { fetchWithSession } from "./session-fetch.js";
 import {
   FUNC_MOBILE_AUTOLOGIN_KEY,
   FUNC_MOBILE_PUBLIC_CONFIG,
@@ -114,14 +113,13 @@ export async function fetchMobileToken(
   let response: Response;
   try {
     // A MoodleMobile user agent keeps us on Moodle's Android redirect branch,
-    // which returns the token in a Location header instead of an HTML page.
-    response = await fetchWithSession(
-      url.toString(),
-      { headers: { "user-agent": MOBILE_USER_AGENT } },
-      baseUrl,
-      cookie,
-      fetchImpl,
-    );
+    // which returns the token in a Location header. The redirect targets a
+    // custom URL scheme that no HTTP client can follow, so read it manually.
+    response = await fetchImpl(url.toString(), {
+      method: "GET",
+      headers: { "user-agent": MOBILE_USER_AGENT, cookie: `${cookie.name}=${cookie.value}` },
+      redirect: "manual",
+    });
   } catch {
     return null;
   }

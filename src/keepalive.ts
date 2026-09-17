@@ -5,17 +5,19 @@ import { realpathSync } from "node:fs";
 import { mkdir, rm, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import { getAuthenticatedSession, MINIMUM_NODE_FOR_BROWSER_COOKIES } from "./auth.js";
+import { getAuthenticatedSession, parseSessionContext, MINIMUM_NODE_FOR_BROWSER_COOKIES } from "./auth.js";
+import { mintSessionFromMobileToken } from "./mobile-login-core.js";
 import {
   AJAX_SERVICE_PATH,
   CACHE_DIR_NAME,
+  DASHBOARD_PATH,
   FUNC_SESSION_TIME_REMAINING,
   FUNC_SESSION_TOUCH,
   KEEPALIVE_DEFAULT_INTERVAL_MINUTES,
   KEEPALIVE_LAUNCH_AGENT_LABEL,
   KEEPALIVE_LOG_FILENAME,
 } from "./constants.js";
-import { readCachedSession, writeCachedSession } from "./session-cache.js";
+import { readCachedSession, writeCachedSession, type CachedSession } from "./session-cache.js";
 
 export interface TouchResult {
   alive: boolean | null;
@@ -151,6 +153,14 @@ export async function keepAliveOnce(baseUrl: string, options: KeepaliveOptions =
     return { status: "expired", time_remaining_seconds: null };
   }
 
+  // A durable mobile token renews the cookie with no browser at all, which is
+  // the only renewal a background job can do unattended. Try it before the
+  // cookie-store path, which cannot run headless.
+  if (session.mobileToken) {
+    const renewed = await renewViaMobileToken(baseUrl, session, options);
+    if (renewed) return renewed;
+  }
+
   const authenticate = options.authenticate
     ?? ((url: string) =>
       getAuthenticatedSession(url, {
@@ -167,6 +177,46 @@ export async function keepAliveOnce(baseUrl: string, options: KeepaliveOptions =
   } catch {
     return { status: "expired", time_remaining_seconds: null };
   }
+}
+
+/**
+ * Mint a fresh session cookie from the stored mobile token and cache it with a
+ * newly resolved sesskey. Returns null when the site no longer offers the
+ * service or the token was revoked, so the caller falls back to a real login.
+ */
+async function renewViaMobileToken(
+  baseUrl: string,
+  session: CachedSession,
+  options: KeepaliveOptions,
+): Promise<KeepaliveRunResult | null> {
+  const fetchImpl = options.fetchImpl ?? fetch;
+  const minted = session.mobileToken
+    ? await mintSessionFromMobileToken(baseUrl, session.userid, session.mobileToken, fetchImpl)
+    : null;
+  if (!minted) return null;
+
+  let response: Response;
+  try {
+    response = await fetchWithSession(`${baseUrl.replace(/\/$/, "")}${DASHBOARD_PATH}`, {}, baseUrl, minted.cookie, fetchImpl);
+  } catch {
+    return null;
+  }
+  if (response.status >= 400) return null;
+  const context = parseSessionContext(await response.text());
+  if (!context) return null;
+
+  await writeCachedSession(
+    {
+      ...session,
+      cookieName: minted.cookie.name,
+      cookieValue: minted.cookie.value,
+      cookieSource: minted.cookie.source,
+      sesskey: context.sesskey,
+      savedAt: (options.now ?? Date.now)(),
+    },
+    { homeDir: options.homeDir },
+  );
+  return { status: "reauthenticated", time_remaining_seconds: null };
 }
 
 export async function getAuthStatus(baseUrl: string, options: KeepaliveOptions = {}): Promise<AuthStatus> {
