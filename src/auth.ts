@@ -12,7 +12,7 @@ import {
 } from "./constants.js";
 import { browserCookieStores, cookieStoresBlocked, unreadableCookieStores, type CookieStore } from "./cookie-stores.js";
 import { CdpError, cdpProfileDir, findChromiumBrowser, loginWithCdp, type CdpCookie, type CdpLoginOptions, type CdpLoginResult } from "./cdp-login.js";
-import { fetchMobileToken, type MobileToken } from "./mobile-login-core.js";
+import { fetchMobileToken, mintSessionFromMobileToken, readMobilePublicConfig, type MobileToken } from "./mobile-login-core.js";
 import { AuthError, asNetworkError } from "./errors.js";
 import {
   deleteCachedSession,
@@ -122,6 +122,15 @@ export async function getAuthenticatedSession(
   const cached = await readCache(baseUrl, options);
   if (cached) {
     return cached;
+  }
+
+  // A durable mobile token renews the cookie with no browser and no disk access,
+  // so wherever the instance supports the mobile service it is the best source.
+  // Prefer it before reading the OS cookie store. readCachedSession honours
+  // noCache, so an explicit fresh login never silently reuses the token.
+  const minted = await mintFromStoredToken(baseUrl, options, validate);
+  if (minted) {
+    return minted;
   }
 
   const cookieWarnings: string[] = [];
@@ -620,6 +629,9 @@ async function refreshSessionCache(
     // the site disables, the dashboard profile, and the durable mobile token all
     // survive an expired cookie.
     const previous = await readCachedSession(baseUrl, { ...cacheOptions(options), ttlMs: Number.MAX_SAFE_INTEGER });
+    // Mobile-service support is a property of the instance, not the account, so
+    // carry it across a login even when the user changed.
+    if (typeof previous?.mobileServiceEnabled === "boolean") session.mobileServiceEnabled = previous.mobileServiceEnabled;
     if (previous?.userid === context.userid) {
       if (previous.unavailable?.length) session.unavailable = previous.unavailable;
       if (previous.user) session.user = previous.user;
@@ -629,11 +641,13 @@ async function refreshSessionCache(
       if (previous.mobileToken?.privatetoken) session.mobileToken = previous.mobileToken;
     }
     // A genuinely new cookie is worth one attempt to obtain a durable mobile
-    // token; steady-state re-validation of the same cookie must not re-ask.
+    // token; steady-state re-validation of the same cookie must not re-ask, and a
+    // site already known not to offer the service is never probed again.
     const newCookie = !previous || previous.cookieValue !== cookie.value;
-    if (!session.mobileToken && newCookie && options.captureMobileToken) {
-      const token = await captureMobileToken(baseUrl, cookie, options);
-      if (token) session.mobileToken = token;
+    if (!session.mobileToken && newCookie && options.captureMobileToken && session.mobileServiceEnabled !== false) {
+      const captured = await captureMobileToken(baseUrl, cookie, options);
+      session.mobileServiceEnabled = captured.supported;
+      if (captured.token) session.mobileToken = captured.token;
     }
     await writeCachedSession(session, cacheOptions(options));
   } catch {
@@ -641,17 +655,70 @@ async function refreshSessionCache(
   }
 }
 
-/** One best-effort attempt to trade the session for a durable mobile token. */
+/**
+ * Detect whether the instance offers the mobile web service and, if so, trade
+ * the live session for a durable token. Best-effort: on any failure we report
+ * support as unknown-but-not-false so a later login can retry.
+ */
 async function captureMobileToken(
   baseUrl: string,
   cookie: MoodleSessionCookie,
   options: AuthOptions,
-): Promise<MobileToken | undefined> {
+): Promise<{ supported: boolean; token?: MobileToken }> {
+  const fetchImpl = options.fetch ?? globalThis.fetch;
   try {
-    return (await fetchMobileToken(baseUrl, cookie, options.fetch ?? globalThis.fetch)) ?? undefined;
+    const config = await readMobilePublicConfig(baseUrl, fetchImpl);
+    if (config && !config.mobileServiceEnabled) return { supported: false };
+    const token = (await fetchMobileToken(baseUrl, cookie, fetchImpl)) ?? undefined;
+    // With a readable config, trust its flag; otherwise a minted token is itself
+    // proof of support, and no token leaves support undetermined for next time.
+    return { supported: config?.mobileServiceEnabled ?? Boolean(token), token };
   } catch {
-    return undefined;
+    return { supported: false };
   }
+}
+
+/**
+ * Mint a fresh session cookie from a stored durable token and confirm it is a
+ * real login for the same account. Shared by the cold-read path and the
+ * background keepalive so both apply the same anti-anonymous-page guard.
+ */
+export async function mintValidatedSession(
+  baseUrl: string,
+  stored: Pick<CachedSession, "userid" | "mobileToken">,
+  options: AuthOptions = {},
+): Promise<{ cookie: MoodleSessionCookie; context: SessionValidation } | null> {
+  if (!stored.mobileToken?.privatetoken) return null;
+  const fetchImpl = options.fetch ?? globalThis.fetch;
+  const minted = await mintSessionFromMobileToken(baseUrl, stored.userid, stored.mobileToken, fetchImpl);
+  if (!minted) return null;
+  const cookie: MoodleSessionCookie = { name: minted.cookie.name, value: minted.cookie.value, source: minted.cookie.source };
+  const validate = options.validateSession ?? validateSessionWithFetch(options);
+  const context = await validate(baseUrl, cookie);
+  // A login/anonymous page also carries a sesskey but userid 0; accept the mint
+  // only when it produced a genuine session for the same account.
+  if (!context || context.userid === 0 || context.userid !== stored.userid) return null;
+  return { cookie, context };
+}
+
+/** Try to renew via a stored durable token before touching the OS cookie store. */
+async function mintFromStoredToken(
+  baseUrl: string,
+  options: AuthOptions,
+  validate: SessionValidator,
+): Promise<AuthenticatedSession | null> {
+  let stored: CachedSession | null;
+  try {
+    // Honours noCache: a forced fresh login never silently reuses the token.
+    stored = await readCachedSession(baseUrl, { ...cacheOptions(options), ttlMs: Number.MAX_SAFE_INTEGER });
+  } catch {
+    return null;
+  }
+  if (!stored?.mobileToken?.privatetoken) return null;
+  const result = await mintValidatedSession(baseUrl, stored, { ...options, validateSession: validate });
+  if (!result) return null;
+  await refreshSessionCache(baseUrl, result.cookie, result.context, options);
+  return { baseUrl, cookie: result.cookie, ...result.context, fromCache: false };
 }
 
 function cachedSessionToAuth(baseUrl: string, cached: CachedSession): AuthenticatedSession {

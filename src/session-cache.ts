@@ -25,6 +25,10 @@ export interface CachedSession {
   // A durable Moodle mobile Web Service token, when the site offers one. It
   // renews the session cookie without a browser; see mobile-login-core.ts.
   mobileToken?: { wstoken: string; privatetoken?: string };
+  // Whether this instance exposes the mobile web service, detected once and
+  // cached so we neither re-probe a known-unsupported site nor keep trying to
+  // capture a token it will never grant.
+  mobileServiceEnabled?: boolean;
 }
 
 export interface SessionCacheOptions {
@@ -171,6 +175,7 @@ function parseCachedSession(raw: string): CachedSession | null {
     ...(isRecord(session.mobileToken) && typeof session.mobileToken.wstoken === "string"
       ? { mobileToken: { wstoken: session.mobileToken.wstoken, ...(typeof session.mobileToken.privatetoken === "string" ? { privatetoken: session.mobileToken.privatetoken } : {}) } }
       : {}),
+    ...(typeof session.mobileServiceEnabled === "boolean" ? { mobileServiceEnabled: session.mobileServiceEnabled } : {}),
   };
 }
 

@@ -5,12 +5,10 @@ import { realpathSync } from "node:fs";
 import { mkdir, rm, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import { getAuthenticatedSession, isLoginRedirect, parseSessionContext, MINIMUM_NODE_FOR_BROWSER_COOKIES } from "./auth.js";
-import { mintSessionFromMobileToken } from "./mobile-login-core.js";
+import { getAuthenticatedSession, mintValidatedSession, MINIMUM_NODE_FOR_BROWSER_COOKIES } from "./auth.js";
 import {
   AJAX_SERVICE_PATH,
   CACHE_DIR_NAME,
-  DASHBOARD_PATH,
   FUNC_SESSION_TIME_REMAINING,
   FUNC_SESSION_TOUCH,
   KEEPALIVE_DEFAULT_INTERVAL_MINUTES,
@@ -189,32 +187,18 @@ async function renewViaMobileToken(
   session: CachedSession,
   options: KeepaliveOptions,
 ): Promise<KeepaliveRunResult | null> {
-  const fetchImpl = options.fetchImpl ?? fetch;
-  const minted = session.mobileToken
-    ? await mintSessionFromMobileToken(baseUrl, session.userid, session.mobileToken, fetchImpl)
-    : null;
-  if (!minted) return null;
-
-  let response: Response;
-  try {
-    response = await fetchWithSession(`${baseUrl.replace(/\/$/, "")}${DASHBOARD_PATH}`, {}, baseUrl, minted.cookie, fetchImpl);
-  } catch {
-    return null;
-  }
-  if (response.status >= 400 || isLoginRedirect(response.url, baseUrl)) return null;
-  const context = parseSessionContext(await response.text());
-  // A login/anonymous page also carries a sesskey but userid 0. Accept the mint
-  // only when it produced a genuine session for the same account we started
-  // from; otherwise fall back rather than caching an anonymous cookie.
-  if (!context || context.userid === 0 || context.userid !== session.userid) return null;
+  // A network fault mid-mint is not a dead token; treat it as "cannot renew now"
+  // and let the caller fall back rather than crashing the keepalive tick.
+  const result = await mintValidatedSession(baseUrl, session, { fetch: options.fetchImpl }).catch(() => null);
+  if (!result) return null;
 
   await writeCachedSession(
     {
       ...session,
-      cookieName: minted.cookie.name,
-      cookieValue: minted.cookie.value,
-      cookieSource: minted.cookie.source,
-      sesskey: context.sesskey,
+      cookieName: result.cookie.name,
+      cookieValue: result.cookie.value,
+      cookieSource: result.cookie.source,
+      sesskey: result.context.sesskey,
       savedAt: (options.now ?? Date.now)(),
     },
     { homeDir: options.homeDir },

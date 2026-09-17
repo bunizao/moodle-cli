@@ -529,6 +529,89 @@ describe("config and session cache", () => {
     expect(cached?.mobileToken).toEqual({ wstoken: "ws-new", privatetoken: "private-new" });
   });
 
+  it("detects an instance without the mobile service, caches it, and stops retrying", async () => {
+    const homeDir = await mkdtemp(join(tmpdir(), "moodle-cli-no-mobile-"));
+    let configCalls = 0;
+    let launchCalls = 0;
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("/lib/ajax/service-nologin.php")) {
+        configCalls += 1;
+        return new Response(JSON.stringify([{ error: false, data: { enablewebservices: 1, enablemobilewebservice: 0 } }]), { status: 200 });
+      }
+      if (url.includes("/admin/tool/mobile/launch.php")) {
+        launchCalls += 1;
+        return new Response(null, { status: 200 });
+      }
+      throw new Error(`unexpected ${url}`);
+    });
+
+    const login = (value: string, now: () => number) =>
+      getAuthenticatedSession(BASE_URL, {
+        homeDir,
+        now,
+        fetch: fetchImpl as unknown as typeof fetch,
+        captureMobileToken: true,
+        browserCookieProvider: async () => [{ name: "MoodleSession", value, domain: "school.example.edu" }],
+        validateSession: async () => ({ sesskey: "sess", userid: 7 }),
+      });
+
+    await login("cookie-1", () => 0);
+    expect(configCalls).toBe(1);
+    expect(launchCalls).toBe(0); // detected unsupported, never asked for a token
+    const cached = await readCachedSession(BASE_URL, { homeDir, now: () => 0 });
+    expect(cached?.mobileServiceEnabled).toBe(false);
+    expect(cached?.mobileToken).toBeUndefined();
+
+    // A later login (cache expired) reuses the cached capability, so no re-probe.
+    await login("cookie-2", () => 48 * 60 * 60 * 1000);
+    expect(configCalls).toBe(1);
+    expect(launchCalls).toBe(0);
+  });
+
+  it("renews from a durable mobile token before reading the OS cookie store", async () => {
+    const homeDir = await mkdtemp(join(tmpdir(), "moodle-cli-token-mint-"));
+    await writeCachedSession(
+      {
+        baseUrl: BASE_URL,
+        cookieName: "MoodleSession",
+        cookieValue: "old-cookie",
+        sesskey: "old-sess",
+        userid: 7,
+        savedAt: 0,
+        mobileToken: { wstoken: "ws", privatetoken: "pt" },
+        mobileServiceEnabled: true,
+      },
+      { homeDir },
+    );
+    const now = () => 48 * 60 * 60 * 1000; // expire the cached cookie
+
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("/webservice/rest/server.php")) {
+        return new Response(JSON.stringify({ key: "k", autologinurl: `${BASE_URL}/admin/tool/mobile/autologin.php` }), { status: 200 });
+      }
+      if (url.includes("/admin/tool/mobile/autologin.php")) {
+        return new Response(null, { status: 303, headers: { "set-cookie": "MoodleSession=minted; path=/; HttpOnly" } });
+      }
+      // The dashboard confirms a genuine login for the same account.
+      return new Response('<html><script>var M = {cfg: {"sesskey":"fresh-sess","userid":7}};</script></html>', { status: 200 });
+    });
+    // If the cookie store is ever consulted, the token path failed to win.
+    const browserCookieProvider = vi.fn(async () => []);
+
+    const session = await getAuthenticatedSession(BASE_URL, {
+      homeDir,
+      now,
+      fetch: fetchImpl as unknown as typeof fetch,
+      browserCookieProvider,
+    });
+
+    expect(session.cookie).toMatchObject({ value: "minted", source: "mobile-token" });
+    expect(session.userid).toBe(7);
+    expect(browserCookieProvider).not.toHaveBeenCalled();
+  });
+
   it("invalidates a stale cached AJAX session and retries once", async () => {
     const homeDir = await mkdtemp(join(tmpdir(), "moodle-cli-stale-cache-"));
     await writeCachedSession(
