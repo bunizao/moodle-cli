@@ -31,6 +31,7 @@ describe("pasted cookie login", () => {
     expect(parsePastedSessionCookie("MoodleSession=abc123")).toMatchObject({ name: "MoodleSession", value: "abc123" });
     expect(parsePastedSessionCookie("MoodleSessionprod=abc123")).toMatchObject({ name: "MoodleSessionprod", value: "abc123" });
     expect(parsePastedSessionCookie("Cookie: other=1; MoodleSession=abc123; more=2")).toMatchObject({ value: "abc123" });
+    expect(parsePastedSessionCookie(`curl 'https://school.example.edu/my/' -H 'cookie: _ga=1; MoodleSession=abc123' -H 'accept: */*'`)).toMatchObject({ name: "MoodleSession", value: "abc123" });
     expect(parsePastedSessionCookie("")).toBeNull();
     expect(parsePastedSessionCookie("username=alice")).toBeNull();
     expect(parsePastedSessionCookie("not a cookie")).toBeNull();

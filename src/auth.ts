@@ -196,20 +196,19 @@ export async function getAuthenticatedSessionWithBrowserFallback(
 }
 
 /**
- * Accepts a bare cookie value, a `name=value` pair, or a whole `Cookie:` header
- * line, because those are the three shapes a browser's cookie panel hands out.
+ * Pulls the cookie out of whatever the browser was willing to copy: a devtools
+ * "Copy as cURL" command, a Cookie header, a name=value pair, or the bare value.
+ * Deciding which of those to produce is the step users get wrong, and a wrong
+ * paste costs one failed request, so parsing loosely is cheaper than explaining.
  */
 export function parsePastedSessionCookie(raw: string): MoodleSessionCookie | null {
-  const text = raw.trim().replace(/^cookie:\s*/i, "");
+  const text = raw.trim();
   if (!text) {
     return null;
   }
-  for (const part of text.split(";")) {
-    const [name, ...rest] = part.trim().split("=");
-    const value = rest.join("=").trim();
-    if (value && name.startsWith(MOODLE_SESSION_COOKIE_PREFIX)) {
-      return { name, value, source: "paste" };
-    }
+  const pair = /\b(MoodleSession\w*)=([^;\s'"\\]+)/.exec(text);
+  if (pair) {
+    return { name: pair[1], value: pair[2], source: "paste" };
   }
   // A lone token is the value itself; anything else is a mis-paste we should
   // reject rather than send to Moodle as a cookie.
@@ -241,8 +240,8 @@ export async function authenticateWithPastedCookie(
 export function pastedCookieHint(baseUrl: string): string {
   return [
     `Sign in at ${loginUrl(baseUrl)}, then open the browser developer tools.`,
-    `Under Application (or Storage) > Cookies, copy the value of the ${MOODLE_SESSION_COOKIE_PREFIX} cookie.`,
-    "Rerun `moodle auth login --paste` and paste that value.",
+    'In the Network tab, right-click any request to the site and choose "Copy as cURL", then paste the whole command.',
+    `Copying the ${MOODLE_SESSION_COOKIE_PREFIX} value from Application (or Storage) > Cookies works too.`,
   ].join("\n");
 }
 

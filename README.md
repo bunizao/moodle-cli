@@ -73,7 +73,7 @@ On macOS the cookie store sits behind Full Disk Access, which is granted to your
 moodle auth login --paste
 ```
 
-The prompt does not echo, and the value is kept in the encrypted session cache, so this is a one-time step.
+The prompt does not echo, and the value is kept in the encrypted session cache, so this is a one-time step. Paste whatever the browser gives you: in the developer tools' Network tab, `Copy as cURL` on any request to the site carries the cookie, as does the `MoodleSession` value from the cookie panel.
 
 Keep the session active on macOS with `moodle auth keepalive install`. On Linux, schedule `moodle auth keepalive --json` every 30 minutes with cron.
 
