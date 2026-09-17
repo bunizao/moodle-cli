@@ -2,7 +2,7 @@ import { access, readdir, readFile } from "node:fs/promises";
 import { constants } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { defaultBrowserCookieProvider } from "./auth.js";
+import { defaultBrowserCookieProvider, hostApplicationName } from "./auth.js";
 import { browserCookieStores, cookieStoresBlocked, unreadableCookieStores } from "./cookie-stores.js";
 import { loadConfig, userConfigPath } from "./config.js";
 import { getAuthStatus } from "./keepalive.js";
@@ -39,7 +39,7 @@ export async function doctor(options: { homeDir?: string; cwd?: string; env?: No
       const found = await defaultBrowserCookieProvider(baseUrl, { homeDir: home, onCookieWarnings: items => warnings.push(...items) });
       // Cookies that were read prove access works, whatever any single store reports.
       const blocked = !found.length && (cookieStoresBlocked(stores) || warnings.some(w => /EPERM|EACCES|permission denied|operation not permitted/iu.test(w)));
-      checks.push({ name: "browser", status: blocked ? "fail" : found.length ? "pass" : "warn", detail: blocked ? `Browser store access was denied (${unreadableCookieStores(stores).length} unreadable store(s)).` : found.length ? `Cookie sources: ${[...new Set(found.map(c => c.source || "browser"))].join(", ")}` : "No browser session found.", ...(blocked ? { hint: "System Settings > Privacy & Security > Full Disk Access: enable the app running this command, then restart it." } : !found.length ? { hint: "Sign in to Moodle in a supported browser, then run moodle auth login." } : {}) });
+      checks.push({ name: "browser", status: blocked ? "fail" : found.length ? "pass" : "warn", detail: blocked ? `Browser store access was denied (${unreadableCookieStores(stores).length} unreadable store(s)).` : found.length ? `Cookie sources: ${[...new Set(found.map(c => c.source || "browser"))].join(", ")}` : "No browser session found.", ...(blocked ? { hint: `System Settings > Privacy & Security > Full Disk Access: enable ${hostApplicationName(options.env) ?? "the app running this command"}, then restart it.` } : !found.length ? { hint: "Sign in to Moodle in a supported browser, then run moodle auth login." } : {}) });
     } catch { checks.push({ name: "browser", status: "warn", detail: "Could not inspect browser stores.", hint: "Run moodle auth login from a regular terminal." }); }
   }
   const jobs = await ownedJobs(home);

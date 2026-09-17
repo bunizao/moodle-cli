@@ -4,7 +4,7 @@ import { doctor, ownedJobs } from "./doctor.js";
 import { rm, readdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import { DefaultRenewalIntegration } from "./mcp/renewal/index.js";
-import { CACHE_DIR_NAME, CONFIG_DIR_NAME } from "./constants.js";
+import { CACHE_DIR_NAME, CONFIG_DIR_NAME, MOODLE_SESSION_COOKIE_PREFIX } from "./constants.js";
 import { runtimeSupportsCookies } from "./mcp/self-command.js";
 import { createMoodleGateway } from "./mcp/gateway.js";
 import { createIntentService, type IntentService } from "./intents.js";
@@ -32,7 +32,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createMoodleClient, type MoodleClient } from "./client.js";
 import { loadConfig } from "./config.js";
-import { MoodleAPIError, UsageError, asNetworkError } from "./errors.js";
+import { CliError, MoodleAPIError, UsageError, asNetworkError } from "./errors.js";
 import {
   formatActivityDetail,
   formatActivityList,
@@ -59,7 +59,8 @@ import {
   keepaliveStatus,
   uninstallKeepalive,
 } from "./keepalive.js";
-import { getAuthenticatedSessionWithBrowserFallback } from "./auth.js";
+import { authenticateWithPastedCookie, getAuthenticatedSessionWithBrowserFallback } from "./auth.js";
+import { readSecretLine } from "./secret-input.js";
 import { VERSION } from "./version.js";
 import { filterDiscussionToPost, parseDiscussionReference, parseForumReference } from "./forum.js";
 import { looksLikeUrl, resolveTopLevelUrl } from "./url-resolver.js";
@@ -498,26 +499,45 @@ export function buildProgram(io: CliIO = {}): Command {
     },
   );
 
-  addOutputOptions(auth.command("login").description("Extract a fresh session, opening the browser when needed.")).action(
-    async (options: OutputCommandOptions) => {
+  addOutputOptions(
+    auth
+      .command("login")
+      .description("Extract a fresh session, opening the browser when needed.")
+      .option("--paste", "Take the MoodleSession cookie from a prompt instead of the browser store."),
+  ).action(
+    async (options: OutputCommandOptions & { paste?: boolean }) => {
       const baseUrl = await runtime.baseUrl();
       const humanOutput = outputFormat(options, stdout) === "table";
-      const progress = humanOutput && Boolean("isTTY" in stderr && stderr.isTTY);
-      const session = await getAuthenticatedSessionWithBrowserFallback(baseUrl, {
-        env: io.env,
-        fetch: io.fetchImpl,
-        homeDir: io.homeDir,
-        onBrowserOpened: humanOutput
-          ? (url) => stderr.write(`No active Moodle session found. Complete login in your browser:\n${url}\n`)
-          : undefined,
-        // Without this the command looks hung for the whole login window.
-        onLoginWait: progress ? (seconds) => stderr.write(`\rWaiting for the login to complete… ${seconds}s left `) : undefined,
-      });
+      const progress = humanOutput && !options.paste && Boolean("isTTY" in stderr && stderr.isTTY);
+      const session = options.paste
+        ? await pasteLogin(baseUrl, humanOutput)
+        : await getAuthenticatedSessionWithBrowserFallback(baseUrl, {
+          env: io.env,
+          fetch: io.fetchImpl,
+          homeDir: io.homeDir,
+          onBrowserOpened: humanOutput
+            ? (url) => stderr.write(`No active Moodle session found. Complete login in your browser:\n${url}\n`)
+            : undefined,
+          // Without this the command looks hung for the whole login window.
+          onLoginWait: progress ? (seconds) => stderr.write(`\rWaiting for the login to complete… ${seconds}s left `) : undefined,
+        });
       if (progress) stderr.write("\r\x1b[2K");
       const result = { base_url: baseUrl, userid: session.userid, cookie_source: session.cookie.source ?? "unknown" };
       await runtime.output(result, () => `Authenticated as userid ${result.userid} via ${result.cookie_source}`, options);
     },
   );
+
+  async function pasteLogin(baseUrl: string, humanOutput: boolean) {
+    const input = io.stdin ?? process.stdin;
+    if (humanOutput && input.isTTY) {
+      stderr.write(`Copy the ${MOODLE_SESSION_COOKIE_PREFIX} cookie for ${baseUrl} from your browser's developer tools.\nThe value is not echoed and is stored in the encrypted session cache.\n`);
+    }
+    const raw = await readSecretLine(input, stderr as NodeJS.WritableStream, input.isTTY ? `${MOODLE_SESSION_COOKIE_PREFIX}: ` : "");
+    if (raw === null) {
+      throw new CliError("cancelled", "Login cancelled.");
+    }
+    return authenticateWithPastedCookie(baseUrl, raw, { env: io.env, fetch: io.fetchImpl, homeDir: io.homeDir });
+  }
 
   const keepalive = addOutputOptions(
     auth

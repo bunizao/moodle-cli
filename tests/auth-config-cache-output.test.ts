@@ -3,9 +3,13 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import {
+  authenticateWithPastedCookie,
   authFailureHint,
   braveProfilePaths,
   cookieAccessBlocked,
+  cookieAccessHint,
+  hostApplicationName,
+  parsePastedSessionCookie,
   getAuthenticatedSession,
   getAuthenticatedSessionWithBrowserFallback,
   loadSessionFromEnv,
@@ -20,6 +24,52 @@ import { runCli } from "../src/cli.js";
 import { createMoodleClient } from "../src/client.js";
 
 const BASE_URL = "https://school.example.edu";
+
+describe("pasted cookie login", () => {
+  it("accepts every shape a cookie panel hands out", () => {
+    expect(parsePastedSessionCookie("  abc123  ")).toMatchObject({ name: "MoodleSession", value: "abc123" });
+    expect(parsePastedSessionCookie("MoodleSession=abc123")).toMatchObject({ name: "MoodleSession", value: "abc123" });
+    expect(parsePastedSessionCookie("MoodleSessionprod=abc123")).toMatchObject({ name: "MoodleSessionprod", value: "abc123" });
+    expect(parsePastedSessionCookie("Cookie: other=1; MoodleSession=abc123; more=2")).toMatchObject({ value: "abc123" });
+    expect(parsePastedSessionCookie("")).toBeNull();
+    expect(parsePastedSessionCookie("username=alice")).toBeNull();
+    expect(parsePastedSessionCookie("not a cookie")).toBeNull();
+  });
+
+  it("caches the pasted cookie so the paste is a one-time cost", async () => {
+    const homeDir = await mkdtemp(join(tmpdir(), "moodle-cli-paste-"));
+    const session = await authenticateWithPastedCookie(BASE_URL, "MoodleSession=pasted", {
+      homeDir,
+      validateSession: async () => ({ sesskey: "sess", userid: 11 }),
+    });
+
+    expect(session).toMatchObject({ userid: 11, cookie: { value: "pasted", source: "paste" } });
+    expect(await readCachedSession(BASE_URL, { homeDir })).toMatchObject({ cookieValue: "pasted", userid: 11 });
+  });
+
+  it("rejects a cookie the site does not accept", async () => {
+    const failure = await authenticateWithPastedCookie(BASE_URL, "stale", {
+      homeDir: await mkdtemp(join(tmpdir(), "moodle-cli-paste-bad-")),
+      validateSession: async () => null,
+    }).then(() => null, (caught: Error & { hint?: string }) => caught);
+
+    expect(failure?.message).toContain("did not authenticate");
+    expect(failure?.hint).toContain("MoodleSession");
+  });
+});
+
+describe("full disk access hint", () => {
+  it("names the terminal macOS actually checks", () => {
+    expect(hostApplicationName({ TERM_PROGRAM: "ghostty" })).toBe("Ghostty");
+    expect(hostApplicationName({ TERM_PROGRAM: "SomeTerm" })).toBe("SomeTerm");
+    expect(hostApplicationName({})).toBeNull();
+
+    const hint = cookieAccessHint([], "darwin", [{ browser: "Chrome", path: "/cookies", readable: false }], { TERM_PROGRAM: "ghostty" });
+    expect(hint).toContain("Grant Full Disk Access to Ghostty");
+    expect(hint).toContain("x-apple.systempreferences");
+    expect(hint).toContain("moodle auth login --paste");
+  });
+});
 
 describe("auth chain", () => {
   it("keeps MOODLE_SESSION as the winning source", async () => {
@@ -570,8 +620,8 @@ describe("agent output contract", () => {
     expect(code).toBe(3);
     const error = JSON.parse(stderr.text());
     expect(error).toMatchObject({ ok: false, error: { code: "auth" }, exit_code: 3 });
-    expect(error.error.hint).toContain("MOODLE_SESSION");
     expect(error.error.hint).toContain("moodle auth login");
+    expect(error.error.hint).toContain("moodle auth login --paste");
   });
 });
 

@@ -117,7 +117,7 @@ export async function getAuthenticatedSession(
   const stores = await browserCookieStores({ homeDir: options.homeDir, platform: options.platform });
   throw new AuthError(
     `No usable MoodleSession found for ${baseUrl}.`,
-    authFailureHint(baseUrl, cookieWarnings, options.platform, unreadableCookieStores(stores)),
+    authFailureHint(baseUrl, cookieWarnings, options.platform, unreadableCookieStores(stores), options.env),
   );
 }
 
@@ -163,7 +163,7 @@ export async function getAuthenticatedSessionWithBrowserFallback(
   if (cookieAccessBlocked(cookieWarnings) || cookieStoresBlocked(stores)) {
     throw new AuthError(
       `Cannot read browser cookies for ${baseUrl}.`,
-      cookieAccessHint(cookieWarnings, options.platform, unreadableCookieStores(stores)),
+      cookieAccessHint(cookieWarnings, options.platform, unreadableCookieStores(stores), options.env),
     );
   }
 
@@ -193,6 +193,57 @@ export async function getAuthenticatedSessionWithBrowserFallback(
     `Timed out waiting for browser login at ${baseUrl}.`,
     `Complete the login in your browser, then rerun: moodle auth login`,
   );
+}
+
+/**
+ * Accepts a bare cookie value, a `name=value` pair, or a whole `Cookie:` header
+ * line, because those are the three shapes a browser's cookie panel hands out.
+ */
+export function parsePastedSessionCookie(raw: string): MoodleSessionCookie | null {
+  const text = raw.trim().replace(/^cookie:\s*/i, "");
+  if (!text) {
+    return null;
+  }
+  for (const part of text.split(";")) {
+    const [name, ...rest] = part.trim().split("=");
+    const value = rest.join("=").trim();
+    if (value && name.startsWith(MOODLE_SESSION_COOKIE_PREFIX)) {
+      return { name, value, source: "paste" };
+    }
+  }
+  // A lone token is the value itself; anything else is a mis-paste we should
+  // reject rather than send to Moodle as a cookie.
+  return /[\s=;]/.test(text) ? null : { name: MOODLE_SESSION_COOKIE_PREFIX, value: text, source: "paste" };
+}
+
+/**
+ * The escape hatch for machines where the cookie store cannot be read at all.
+ * The cookie is cached like any other, so this is a one-time paste.
+ */
+export async function authenticateWithPastedCookie(
+  baseUrl: string,
+  raw: string,
+  options: AuthOptions = {},
+): Promise<AuthenticatedSession> {
+  const cookie = parsePastedSessionCookie(raw);
+  if (!cookie) {
+    throw new AuthError(`That is not a ${MOODLE_SESSION_COOKIE_PREFIX} cookie value.`, pastedCookieHint(baseUrl));
+  }
+  const validate = options.validateSession ?? validateSessionWithFetch(options);
+  const context = await validate(baseUrl, cookie);
+  if (!context) {
+    throw new AuthError(`The pasted cookie did not authenticate for ${baseUrl}.`, pastedCookieHint(baseUrl));
+  }
+  await refreshSessionCache(baseUrl, cookie, context, { ...options, noCache: false });
+  return { baseUrl, cookie, ...context, fromCache: false };
+}
+
+export function pastedCookieHint(baseUrl: string): string {
+  return [
+    `Sign in at ${loginUrl(baseUrl)}, then open the browser developer tools.`,
+    `Under Application (or Storage) > Cookies, copy the value of the ${MOODLE_SESSION_COOKIE_PREFIX} cookie.`,
+    "Rerun `moodle auth login --paste` and paste that value.",
+  ].join("\n");
 }
 
 export function loadSessionFromEnv(env: Record<string, string | undefined> = process.env): MoodleSessionCookie | null {
@@ -292,6 +343,28 @@ export async function braveProfilePaths(options: AuthOptions = {}): Promise<stri
   return profiles;
 }
 
+const FULL_DISK_ACCESS_PANE = "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles";
+
+/**
+ * macOS grants Full Disk Access to the application that owns the process tree,
+ * which is the terminal, never the CLI. Naming it saves the user from guessing.
+ */
+const TERMINAL_APPLICATIONS: Readonly<Record<string, string>> = {
+  Apple_Terminal: "Terminal",
+  ghostty: "Ghostty",
+  Hyper: "Hyper",
+  "iTerm.app": "iTerm",
+  Tabby: "Tabby",
+  vscode: "Visual Studio Code",
+  WarpTerminal: "Warp",
+  WezTerm: "WezTerm",
+};
+
+export function hostApplicationName(env: Record<string, string | undefined> = process.env): string | null {
+  const program = env.TERM_PROGRAM?.trim();
+  return program ? TERMINAL_APPLICATIONS[program] ?? program : null;
+}
+
 const COOKIE_ACCESS_DENIED = /EPERM|EACCES|operation not permitted|permission denied/i;
 // Chromium cookie stores are read through node:sqlite, which Node only ships
 // unflagged from 22.13. Older runtimes cannot read any browser cookie.
@@ -310,9 +383,13 @@ export function cookieAccessHint(
   warnings: readonly string[],
   platform: NodeJS.Platform = process.platform,
   unreadable: readonly CookieStore[] = [],
+  env: Record<string, string | undefined> = process.env,
 ): string {
   const grant = platform === "darwin"
-    ? "Grant Full Disk Access to the application running this command (System Settings > Privacy & Security > Full Disk Access), then restart it."
+    ? [
+        `Grant Full Disk Access to ${hostApplicationName(env) ?? "the application running this command"}, then restart it:`,
+        `  open "${FULL_DISK_ACCESS_PANE}"`,
+      ].join("\n")
     : "Run this command as the user that owns the browser profile, or grant it read access to the browser cookie store.";
   const remedy: string[] = [];
   if (warnings.some((warning) => COOKIE_SQLITE_UNAVAILABLE.test(warning))) {
@@ -331,8 +408,8 @@ export function cookieAccessHint(
   return [
     "The browser cookie store could not be read, so the session could not be detected.",
     ...remedy,
+    "Or skip the store entirely: `moodle auth login --paste` takes the cookie by hand and caches it.",
     "Run moodle doctor for runtime and browser diagnostics.",
-    `Alternatively set ${ENV_MOODLE_SESSION} to a valid MoodleSession cookie value.`,
     ...cookieDiagnostics(warnings, unreadable),
   ].join("\n");
 }
@@ -359,14 +436,15 @@ export function authFailureHint(
   cookieWarnings: readonly string[] = [],
   platform: NodeJS.Platform = process.platform,
   unreadable: readonly CookieStore[] = [],
+  env: Record<string, string | undefined> = process.env,
 ): string {
   if (cookieAccessBlocked(cookieWarnings) || unreadable.length) {
-    return cookieAccessHint(cookieWarnings, platform, unreadable);
+    return cookieAccessHint(cookieWarnings, platform, unreadable, env);
   }
   return [
     `Log in to ${loginUrl(baseUrl)} in your browser, then rerun the command.`,
     "Or run `moodle auth login` to sign in through a browser window this command controls.",
-    `Or set ${ENV_MOODLE_SESSION} to a valid MoodleSession cookie value.`,
+    "Or run `moodle auth login --paste` to hand over the cookie yourself.",
     ...cookieDiagnostics(cookieWarnings, unreadable),
   ].join("\n");
 }
