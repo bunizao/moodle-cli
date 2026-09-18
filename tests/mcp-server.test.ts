@@ -74,6 +74,28 @@ describe("Moodle MCP server", () => {
     expect(item.properties.item.properties).toHaveProperty("files");
   });
 
+  it("sends an image as image content, which hosted clients do render", async () => {
+    const gateway = fakeGateway();
+    gateway.getFile = async () => ({
+      name: "diagram.png",
+      mimeType: "image/png",
+      bytes: 6,
+      uri: "https://moodle.example.edu/pluginfile.php/1/diagram.png",
+      blob: "c2xpZGVz",
+    });
+    const server = createMoodleMcpServer(gateway);
+
+    const response = await server.handle({
+      jsonrpc: "2.0",
+      id: "file",
+      method: "tools/call",
+      params: modernParams({ name: "get_file", arguments: { source: 91234 } }),
+    });
+
+    const content = (response as { result: { content: Array<Record<string, unknown>> } }).result.content;
+    expect(content[1]).toEqual({ type: "image", data: "c2xpZGVz", mimeType: "image/png" });
+  });
+
   it("returns an authenticated file as an embedded MCP resource", async () => {
     const server = createMoodleMcpServer(fakeGateway());
     const response = await server.handle({

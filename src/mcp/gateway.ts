@@ -200,7 +200,9 @@ export function createMoodleGateway(client: MoodleClientPort): MoodleGateway {
         name,
         mimeType: contentType(response),
         bytes: content.byteLength,
-        uri: publicFileUrl(response.url || target.url),
+        // The Moodle-origin URL, never the post-redirect CDN one: stripping query parameters from
+        // a signed CDN link leaves an address that can only ever answer MissingKey.
+        uri: publicFileUrl(target.url),
         blob: encodeBase64(content),
       };
     },
