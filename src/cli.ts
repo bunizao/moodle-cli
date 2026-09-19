@@ -308,7 +308,7 @@ export function buildProgram(io: CliIO = {}): Command {
       .option("--limit <number>", "Maximum returned rows.", parsePositiveInt)
       .action(async (unit: string | undefined, options: OutputCommandOptions & { days?: number; limit?: number }) => execute(name, { unit, limit: count("limit", options.limit), ...(name === "due" ? { days: count("days", options.days) } : {}) }, options));
   }
-  addOutputOptions(program.command("find").description(humanDescription("find")).argument("<query>").argument("[unit]"))
+  addOutputOptions(program.command("find").description(humanDescription("find")).argument("<query>", "Words to look for").argument("[unit]", "Unit code, name, id or URL"))
     .option("--limit <number>", "Maximum returned rows.", parsePositiveInt)
     .option("--types <types>", "Comma-separated activity types.")
     .action(async (query: string, unit: string | undefined, options: OutputCommandOptions & { limit?: number; types?: string }) => execute("find", { query, unit, limit: count("limit", options.limit), types: options.types?.split(",") }, options));
@@ -322,7 +322,7 @@ export function buildProgram(io: CliIO = {}): Command {
       const receipt = await downloadMoodleFile(client, { source: String(source), directory: options.to ? path.resolve(io.cwd ?? process.cwd(), options.to) : undefined, force: options.force });
       await runtime.output(receipt, () => formatDownloadReceipt(receipt), options);
     });
-  addOutputOptions(mutating(program.command("submit").description(humanDescription("submit")).argument("<ref>", "Assignment id, URL, or UNIT TASK phrase").argument("[files...]", "Local files to upload")))
+  addOutputOptions(mutating(program.command("submit").description(humanDescription("submit")).summary("Upload files into an assignment").argument("<ref>", "Assignment id, URL, or UNIT TASK phrase").argument("[files...]", "Local files to upload")))
     .option("--final", "Also submit for grading. Moodle does not allow undoing this.")
     .option("--replace", "Remove the files already in the submission first.")
     .option("--accept-statement", "Agree to the site's submission statement when it requires one.")
@@ -410,7 +410,7 @@ export function buildProgram(io: CliIO = {}): Command {
       const result = stripEmpty({ activities: rows.slice(0, count("limit", options.limit)), total: rows.length }) as Record<string, unknown>;
       await runtime.output(result, () => runtime.screen(result, options), options);
     });
-  addOutputOptions(activities.command("show").description("Show activity details; resource and folder files can be passed to moodle get or download.").argument("<id>", "Course-module ID")).action(
+  addOutputOptions(activities.command("show").description("Show activity details; resource and folder files can be passed to moodle get or download.").summary("Show activity details").argument("<id>", "Course-module ID")).action(
     async (id: string, options: OutputCommandOptions) => {
       await execute("item", { ref: parsePositiveInt(id) }, options);
     },
@@ -484,7 +484,7 @@ export function buildProgram(io: CliIO = {}): Command {
 
   addForumSearchCommand(forums.command("search").description("Search forum discussion titles and post text."), runtime, 20);
 
-  addOutputOptions(program.command("doctor").description("Diagnose runtime, browser access, session, background jobs and MCP setup.")).action(async (options: OutputCommandOptions) => {
+  addOutputOptions(program.command("doctor").description("Diagnose runtime, browser access, session, background jobs and MCP setup.").summary("Diagnose runtime, session and MCP setup")).action(async (options: OutputCommandOptions) => {
     const result = await doctor(io);
     await runtime.output(result, () => result.checks.map(c => `${c.status.toUpperCase()} ${c.name}: ${c.detail}${c.hint ? `\n  ${c.hint}` : ""}`).join("\n") + "\n\nTry  moodle auth login · moodle mcp status", options);
   });
@@ -495,7 +495,7 @@ export function buildProgram(io: CliIO = {}): Command {
     else if (shell === "fish") stdout.write(names.map(n => `complete -c moodle -f -a '${n}'`).join("\n") + "\n");
     else throw new UsageError("Choose zsh, bash or fish.");
   });
-  addOutputOptions(mutating(program.command("uninstall").description("Remove local background jobs; optionally remove the selected Worker and configuration.")))
+  addOutputOptions(mutating(program.command("uninstall").description("Remove local background jobs; optionally remove the selected Worker and configuration.").summary("Remove background jobs, Worker and config")))
     .option("--remote", "Also remove the configured managed MCP deployment.")
     .option("--purge", "Also delete local Moodle CLI configuration, receipts and cache.")
     .action(async (options: OutputCommandOptions & { remote?: boolean; purge?: boolean }) => {
@@ -552,7 +552,7 @@ export function buildProgram(io: CliIO = {}): Command {
   const keepalive = addOutputOptions(
     auth
       .command("keepalive")
-      .description("Renew the Moodle session once; used by the background keepalive agent.")
+      .description("Renew the Moodle session once; used by the background keepalive agent.").summary("Renew the session once")
       .option("--no-renew", "Only touch the session; skip re-login when it is expired."),
   ).action(async (options: OutputCommandOptions & { renew: boolean }) => {
     const baseUrl = await runtime.baseUrl();
@@ -596,7 +596,7 @@ export function buildProgram(io: CliIO = {}): Command {
     },
   );
 
-  const mcp = program.command("mcp").description("Deploy a private MCP Worker on Cloudflare; encrypted session storage and local renewal. Free-tier limits apply.");
+  const mcp = program.command("mcp").description("Deploy a private MCP Worker on Cloudflare; encrypted session storage and local renewal. Free-tier limits apply.").summary("Private MCP server on Cloudflare");
   addOutputOptions(mutating(mcp.command("deploy").description("Deploy or update the managed Moodle MCP server.")))
     .option("--dry-run", "Preview deployment changes without applying them.")
     .option("--repair", "Repair authentication and managed deployment state.")
@@ -669,7 +669,7 @@ export function buildProgram(io: CliIO = {}): Command {
       await outputMcpResult(runtime, await getMcpService().manageClients({ revoke: true, clientId }), options);
     });
 
-  addOutputOptions(mutating(mcp.command("pair").description("Open a pairing window so Claude can connect to the remote MCP server."))).action(
+  addOutputOptions(mutating(mcp.command("pair").description("Open a pairing window so Claude can connect to the remote MCP server.").summary("Open a pairing window for Claude"))).action(
     async (options: OutputCommandOptions) => {
       await outputMcpResult(runtime, await getMcpService().pair(), options);
     },
@@ -716,7 +716,7 @@ export function buildProgram(io: CliIO = {}): Command {
     },
   );
 
-  const skills = program.command("skills").description("Show skill metadata or delegate to the shared skills CLI.");
+  const skills = program.command("skills").description("Show skill metadata or delegate to the shared skills CLI.").summary("Agent skill metadata");
   skills.action(() => {
     stdout.write(`${formatSkillSummary()}\n`);
   });
@@ -840,13 +840,17 @@ function addForumSearchCommand(command: Command, runtime: Runtime, defaultLimit:
     });
 }
 
+// Accepted after every command, but the root page already lists them as global options;
+// repeating the five on each page buried the flags that matter.
 function addOutputOptions(command: Command): Command {
-  return command
-    .option("--pretty", "Indent JSON output.")
-    .option("--json", "Output as JSON.")
-    .option("--yaml", "Output as YAML.")
-    .option("--table", "Force human output.")
-    .option("--fields <fields>", "Keep only listed top-level fields in structured output.");
+  for (const [flags, description] of [
+    ["--pretty", "Indent JSON output."],
+    ["--json", "Output as JSON."],
+    ["--yaml", "Output as YAML."],
+    ["--table", "Force human output."],
+    ["--fields <fields>", "Keep only listed top-level fields in structured output."],
+  ]) command.addOption(command.createOption(flags, description).hideHelp());
+  return command;
 }
 
 function outputFormat(options: OutputCommandOptions, stdout: CliIO["stdout"]): OutputFormat {
