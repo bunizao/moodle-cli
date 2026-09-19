@@ -1,24 +1,98 @@
-import { mkdir, mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import {
+  authenticateWithPastedCookie,
   authFailureHint,
   braveProfilePaths,
   cookieAccessBlocked,
+  cookieAccessHint,
+  hostApplicationName,
+  parsePastedSessionCookie,
   getAuthenticatedSession,
   getAuthenticatedSessionWithBrowserFallback,
   loadSessionFromEnv,
   matchingMoodleSessionCookies,
 } from "../src/auth.js";
+import type { CdpCookie, CdpLoginOptions, CdpLoginResult } from "../src/cdp-login.js";
+import { browserCookieStores, cookieStoresBlocked, unreadableCookieStores } from "../src/cookie-stores.js";
 import { loadConfig, normalizeBaseUrl } from "../src/config.js";
 import { ENV_MOODLE_BASE_URL, ENV_MOODLE_CONFIG, ENV_MOODLE_SESSION, ENV_MOODLE_TOKEN, ENV_MOODLE_URL } from "../src/constants.js";
-import { readCachedSession, writeCachedSession } from "../src/session-cache.js";
+import { deleteCachedSession, readCachedSession, writeCachedSession } from "../src/session-cache.js";
 import { render, resolveFormat } from "@bunizao/cli-kit";
 import { runCli } from "../src/cli.js";
 import { createMoodleClient } from "../src/client.js";
 
 const BASE_URL = "https://school.example.edu";
+
+/**
+ * Stand in for the CLI-owned Chromium: replay each cookie frame through the
+ * login's isDone check, the way a real browser's cookie jar changes as the user
+ * signs in, and stop on the frame that satisfies it.
+ */
+function fakeCdp(frames: CdpCookie[][]) {
+  return vi.fn(async (options: CdpLoginOptions): Promise<CdpLoginResult> => {
+    options.onOpened?.();
+    let last: CdpCookie[] = [];
+    for (const frame of frames) {
+      last = frame;
+      if (await options.isDone(frame)) return { cookies: frame, browserName: "Google Chrome" };
+    }
+    return { cookies: last, browserName: "Google Chrome" };
+  });
+}
+
+function cdpCookie(name: string, value: string, domain = "school.example.edu"): CdpCookie {
+  return { name, value, domain, secure: true, httpOnly: true };
+}
+
+describe("pasted cookie login", () => {
+  it("accepts every shape a cookie panel hands out", () => {
+    expect(parsePastedSessionCookie("  abc123  ")).toMatchObject({ name: "MoodleSession", value: "abc123" });
+    expect(parsePastedSessionCookie("MoodleSession=abc123")).toMatchObject({ name: "MoodleSession", value: "abc123" });
+    expect(parsePastedSessionCookie("MoodleSessionprod=abc123")).toMatchObject({ name: "MoodleSessionprod", value: "abc123" });
+    expect(parsePastedSessionCookie("Cookie: other=1; MoodleSession=abc123; more=2")).toMatchObject({ value: "abc123" });
+    expect(parsePastedSessionCookie(`curl 'https://school.example.edu/my/' -H 'cookie: _ga=1; MoodleSession=abc123' -H 'accept: */*'`)).toMatchObject({ name: "MoodleSession", value: "abc123" });
+    expect(parsePastedSessionCookie("")).toBeNull();
+    expect(parsePastedSessionCookie("username=alice")).toBeNull();
+    expect(parsePastedSessionCookie("not a cookie")).toBeNull();
+  });
+
+  it("caches the pasted cookie so the paste is a one-time cost", async () => {
+    const homeDir = await mkdtemp(join(tmpdir(), "moodle-cli-paste-"));
+    const session = await authenticateWithPastedCookie(BASE_URL, "MoodleSession=pasted", {
+      homeDir,
+      validateSession: async () => ({ sesskey: "sess", userid: 11 }),
+    });
+
+    expect(session).toMatchObject({ userid: 11, cookie: { value: "pasted", source: "paste" } });
+    expect(await readCachedSession(BASE_URL, { homeDir })).toMatchObject({ cookieValue: "pasted", userid: 11 });
+  });
+
+  it("rejects a cookie the site does not accept", async () => {
+    const failure = await authenticateWithPastedCookie(BASE_URL, "stale", {
+      homeDir: await mkdtemp(join(tmpdir(), "moodle-cli-paste-bad-")),
+      validateSession: async () => null,
+    }).then(() => null, (caught: Error & { hint?: string }) => caught);
+
+    expect(failure?.message).toContain("did not authenticate");
+    expect(failure?.hint).toContain("MoodleSession");
+  });
+});
+
+describe("full disk access hint", () => {
+  it("names the terminal macOS actually checks", () => {
+    expect(hostApplicationName({ TERM_PROGRAM: "ghostty" })).toBe("Ghostty");
+    expect(hostApplicationName({ TERM_PROGRAM: "SomeTerm" })).toBe("SomeTerm");
+    expect(hostApplicationName({})).toBeNull();
+
+    const hint = cookieAccessHint([], "darwin", [{ browser: "Chrome", path: "/cookies", readable: false }], { TERM_PROGRAM: "ghostty" });
+    expect(hint).toContain("Grant Full Disk Access to Ghostty");
+    expect(hint).toContain("x-apple.systempreferences");
+    expect(hint).toContain("moodle auth login --paste");
+  });
+});
 
 describe("auth chain", () => {
   it("keeps MOODLE_SESSION as the winning source", async () => {
@@ -52,8 +126,8 @@ describe("auth chain", () => {
     expect(matches.map((cookie) => [cookie.name, cookie.value])).toEqual([["MoodleSessionABC", "right"]]);
   });
 
-  it("does not open a browser when automatic extraction succeeds", async () => {
-    const openBrowser = vi.fn(async () => undefined);
+  it("does not drive a browser when automatic extraction succeeds", async () => {
+    const cdpLogin = fakeCdp([]);
 
     const session = await getAuthenticatedSessionWithBrowserFallback(BASE_URL, {
       homeDir: await mkdtemp(join(tmpdir(), "moodle-cli-auth-auto-")),
@@ -61,61 +135,67 @@ describe("auth chain", () => {
         { name: "MoodleSession", value: "browser-cookie", domain: "school.example.edu" },
       ],
       validateSession: async () => ({ sesskey: "sess", userid: 7 }),
-      openBrowser,
+      cdpLogin,
     });
 
     expect(session.cookie.value).toBe("browser-cookie");
-    expect(openBrowser).not.toHaveBeenCalled();
+    expect(cdpLogin).not.toHaveBeenCalled();
   });
 
-  it("opens Moodle login and retries extraction when no session is available", async () => {
-    let reads = 0;
-    const openBrowser = vi.fn(async () => undefined);
-    const sleep = vi.fn(async () => undefined);
+  it("signs in through the CLI browser when no session is available", async () => {
+    // The site hands out an anonymous MoodleSession before login; only the
+    // cookie that appears after sign-in validates.
+    const cdpLogin = fakeCdp([
+      [cdpCookie("MoodleSession", "anon")],
+      [cdpCookie("MoodleSessionSSO", "fresh-cookie", ".school.example.edu")],
+    ]);
 
     const session = await getAuthenticatedSessionWithBrowserFallback(BASE_URL, {
       homeDir: await mkdtemp(join(tmpdir(), "moodle-cli-auth-browser-")),
-      browserCookieProvider: async () => {
-        reads += 1;
-        return reads === 1
-          ? []
-          : [{ name: "MoodleSessionSSO", value: "fresh-cookie", domain: ".school.example.edu" }];
-      },
+      browserCookieProvider: async () => [],
       validateSession: async (_baseUrl, cookie) =>
         cookie.value === "fresh-cookie" ? { sesskey: "fresh-sess", userid: 9 } : null,
-      openBrowser,
-      sleep,
-      browserLoginTimeoutMs: 2_000,
-      browserLoginPollIntervalMs: 100,
+      cdpLogin,
     });
 
-    expect(openBrowser).toHaveBeenCalledWith(`${BASE_URL}/login/index.php`);
-    expect(sleep).toHaveBeenCalledWith(100);
+    expect(cdpLogin).toHaveBeenCalledOnce();
+    expect(session).toMatchObject({ userid: 9, sesskey: "fresh-sess" });
+  });
+
+  it("drives the browser when the cookie-store read stalls instead of blocking on it", async () => {
+    // A Keychain prompt or a locked store can leave the read pending forever;
+    // the login must time it out and open a browser rather than wedge.
+    const cdpLogin = fakeCdp([[cdpCookie("MoodleSession", "fresh-cookie")]]);
+    const stalledProvider = vi.fn(() => new Promise<never>(() => {}));
+
+    const session = await getAuthenticatedSessionWithBrowserFallback(BASE_URL, {
+      homeDir: await mkdtemp(join(tmpdir(), "moodle-cli-auth-stall-")),
+      browserCookieProvider: stalledProvider,
+      cookieStoreTimeoutMs: 5,
+      validateSession: async (_baseUrl, cookie) =>
+        cookie.value === "fresh-cookie" ? { sesskey: "fresh-sess", userid: 9 } : null,
+      findBrowser: async () => ({ name: "Google Chrome", path: "/Applications/Google Chrome.app" }),
+      cdpLogin,
+    });
+
+    expect(stalledProvider).toHaveBeenCalledOnce();
+    expect(cdpLogin).toHaveBeenCalledOnce();
     expect(session).toMatchObject({ userid: 9, sesskey: "fresh-sess" });
   });
 
   it("ignores a stale environment session during browser fallback", async () => {
-    let browserReads = 0;
-    const openBrowser = vi.fn(async () => undefined);
+    const cdpLogin = fakeCdp([[cdpCookie("MoodleSession", "fresh-cookie")]]);
 
     const session = await getAuthenticatedSessionWithBrowserFallback(BASE_URL, {
       env: { [ENV_MOODLE_SESSION]: "stale-cookie" },
       homeDir: await mkdtemp(join(tmpdir(), "moodle-cli-auth-stale-env-")),
-      browserCookieProvider: async () => {
-        browserReads += 1;
-        return browserReads === 1
-          ? []
-          : [{ name: "MoodleSession", value: "fresh-cookie", domain: "school.example.edu" }];
-      },
+      browserCookieProvider: async () => [],
       validateSession: async (_baseUrl, cookie) =>
         cookie.value === "fresh-cookie" ? { sesskey: "fresh-sess", userid: 9 } : null,
-      openBrowser,
-      sleep: async () => undefined,
-      browserLoginTimeoutMs: 1_000,
-      browserLoginPollIntervalMs: 100,
+      cdpLogin,
     });
 
-    expect(openBrowser).toHaveBeenCalledOnce();
+    expect(cdpLogin).toHaveBeenCalledOnce();
     expect(session.cookie.value).toBe("fresh-cookie");
   });
 
@@ -147,8 +227,8 @@ describe("auth chain", () => {
     ]);
   });
 
-  it("reports a blocked cookie store instead of looping on a browser login", async () => {
-    const openBrowser = vi.fn(async () => undefined);
+  it("reports a blocked cookie store when no browser can be driven either", async () => {
+    const cdpLogin = fakeCdp([[cdpCookie("MoodleSession", "fresh")]]);
     const blocked = "Failed to read Safari cookies: EPERM: operation not permitted, open '/Users/x/Cookies.binarycookies'";
 
     await expect(
@@ -160,12 +240,107 @@ describe("auth chain", () => {
           return [];
         },
         validateSession: async () => null,
-        openBrowser,
+        findBrowser: async () => null,
+        cdpLogin,
       }),
     ).rejects.toThrow(/Cannot read browser cookies/);
 
-    // A login cannot produce a cookie we are still not allowed to read.
-    expect(openBrowser).not.toHaveBeenCalled();
+    // No installed browser to sign in with, so the store error is the honest one.
+    expect(cdpLogin).not.toHaveBeenCalled();
+  });
+
+  it("fails fast when a store exists but cannot be opened and no browser is present", async () => {
+    const homeDir = await mkdtemp(join(tmpdir(), "moodle-cli-auth-denied-"));
+    const store = join(homeDir, "Library/Application Support/Google/Chrome/Default/Cookies");
+    await mkdir(dirname(store), { recursive: true });
+    await writeFile(store, "");
+    await chmod(store, 0o000);
+
+    const cdpLogin = fakeCdp([[cdpCookie("MoodleSession", "fresh")]]);
+
+    // sweet-cookie reports a denied store as "not found", so the warning text
+    // alone must not hide a store we genuinely cannot read.
+    const error = await getAuthenticatedSessionWithBrowserFallback(BASE_URL, {
+      homeDir,
+      platform: "darwin",
+      browserCookieProvider: async (_baseUrl, options) => {
+        options.onCookieWarnings?.(["Chrome cookies database not found."]);
+        return [];
+      },
+      validateSession: async () => null,
+      findBrowser: async () => null,
+      cdpLogin,
+    }).then(() => null, (caught: Error & { hint?: string }) => caught);
+
+    expect(error?.message).toMatch(/Cannot read browser cookies/);
+    expect(error?.hint).toContain(store);
+    expect(error?.hint).toContain("Full Disk Access");
+    expect(cdpLogin).not.toHaveBeenCalled();
+  });
+
+  it("lists a readable store and an unreadable one apart", async () => {
+    const homeDir = await mkdtemp(join(tmpdir(), "moodle-cli-stores-"));
+    const chrome = join(homeDir, "Library/Application Support/Google/Chrome/Default/Cookies");
+    const edge = join(homeDir, "Library/Application Support/Microsoft Edge/Default/Cookies");
+    for (const path of [chrome, edge]) {
+      await mkdir(dirname(path), { recursive: true });
+      await writeFile(path, "");
+    }
+    await chmod(chrome, 0o000);
+
+    const stores = await browserCookieStores({ homeDir, platform: "darwin" });
+    expect(stores).toEqual([
+      { browser: "Chrome", path: chrome, readable: false },
+      { browser: "Edge", path: edge, readable: true },
+    ]);
+    expect(unreadableCookieStores(stores).map((store) => store.path)).toEqual([chrome]);
+    // Safari is unreadable on every Mac without Full Disk Access, so one denied
+    // store must not block a login the user can still complete in Edge.
+    expect(cookieStoresBlocked(stores)).toBe(false);
+    expect(cookieStoresBlocked(stores.filter((store) => !store.readable))).toBe(true);
+    expect(cookieStoresBlocked([])).toBe(false);
+    // Only macOS withholds read access from a store the user owns.
+    await expect(browserCookieStores({ homeDir, platform: "linux" })).resolves.toEqual([]);
+  });
+
+  it("still signs in through the CLI browser when one readable store remains", async () => {
+    const homeDir = await mkdtemp(join(tmpdir(), "moodle-cli-auth-partial-"));
+    const denied = join(homeDir, "Library/Containers/com.apple.Safari/Data/Library/Cookies/Cookies.binarycookies");
+    const readable = join(homeDir, "Library/Application Support/Google/Chrome/Default/Cookies");
+    for (const path of [denied, readable]) {
+      await mkdir(dirname(path), { recursive: true });
+      await writeFile(path, "");
+    }
+    await chmod(denied, 0o000);
+
+    const cdpLogin = fakeCdp([[cdpCookie("MoodleSession", "fresh-cookie")]]);
+
+    const session = await getAuthenticatedSessionWithBrowserFallback(BASE_URL, {
+      homeDir,
+      platform: "darwin",
+      browserCookieProvider: async () => [],
+      validateSession: async (_baseUrl, cookie) => (cookie.value === "fresh-cookie" ? { sesskey: "s", userid: 9 } : null),
+      findBrowser: async () => ({ name: "Google Chrome", path: "/Applications/Google Chrome.app" }),
+      cdpLogin,
+    });
+
+    expect(cdpLogin).toHaveBeenCalledOnce();
+    expect(session.userid).toBe(9);
+  });
+
+  it("reports an unreachable site as a network fault, not a dead session", async () => {
+    const error = await getAuthenticatedSession(BASE_URL, {
+      env: { [ENV_MOODLE_SESSION]: "cookie" },
+      homeDir: await mkdtemp(join(tmpdir(), "moodle-cli-auth-network-")),
+      fetch: async () => {
+        throw new TypeError("fetch failed");
+      },
+    }).then(() => null, (caught: Error & { code?: string; hint?: string }) => caught);
+
+    expect(error?.code).toBe("network");
+    expect(error?.message).toContain("school.example.edu");
+    // Telling the user to log in again would send them after the wrong problem.
+    expect(error?.hint).not.toContain("auth login");
   });
 
   it("separates an unreadable cookie store from a missing session", () => {
@@ -185,7 +360,9 @@ describe("auth chain", () => {
     const missing = authFailureHint(BASE_URL, ["Chrome cookies database not found."], "darwin");
     expect(missing).toContain("moodle auth login");
     expect(missing).not.toContain("okta");
-    expect(missing).toContain("Chrome cookies database not found.");
+    // A browser the user does not have is not a diagnostic worth printing.
+    expect(missing).not.toContain("Chrome cookies database not found.");
+    expect(missing).not.toContain("Cookie store diagnostics");
   });
 });
 
@@ -320,6 +497,235 @@ describe("config and session cache", () => {
     expect(fetchImpl).not.toHaveBeenCalled();
     expect(browserCookieProvider).toHaveBeenCalledTimes(1);
     expect((await readCachedSession(BASE_URL, { homeDir, now: () => 48 * 60 * 60 * 1000 }))).toMatchObject({ cookieValue: "fresh-cookie", unavailable: ["core_webservice_get_site_info"], user: { fullname: "Alice" } });
+  });
+
+  it("replaces an unrenewable stored mobile token with a fresh one on a new login", async () => {
+    const homeDir = await mkdtemp(join(tmpdir(), "moodle-cli-token-refetch-"));
+    // The prior token lacks a privatetoken, so it can never mint a session.
+    await writeCachedSession(
+      { baseUrl: BASE_URL, cookieName: "MoodleSession", cookieValue: "old-cookie", sesskey: "old-sess", userid: 7, savedAt: 0, mobileToken: { wstoken: "ws-old" } },
+      { homeDir },
+    );
+    const tokenValue = Buffer.from(["site", "ws-new", "private-new"].join(":::"), "utf8").toString("base64");
+    const launch = vi.fn(async () => new Response(null, { status: 302, headers: { location: `moodlecli://token=${tokenValue}` } }));
+
+    // now() is 48h out so the seeded cache is expired: the read misses and the
+    // browser cookie yields a genuinely new session, but noCache would also skip
+    // the write we are asserting on, so rely on expiry instead.
+    const now = () => 48 * 60 * 60 * 1000;
+    const session = await getAuthenticatedSession(BASE_URL, {
+      homeDir,
+      now,
+      fetch: launch as unknown as typeof fetch,
+      captureMobileToken: true,
+      browserCookieProvider: async () => [{ name: "MoodleSession", value: "new-cookie", domain: "school.example.edu" }],
+      validateSession: async () => ({ sesskey: "new-sess", userid: 7 }),
+    });
+
+    expect(session.cookie.value).toBe("new-cookie");
+    // The useless stored token must not suppress fetching a real one.
+    expect(launch).toHaveBeenCalled();
+    const cached = await readCachedSession(BASE_URL, { homeDir, now });
+    expect(cached?.mobileToken).toEqual({ wstoken: "ws-new", privatetoken: "private-new" });
+  });
+
+  it("detects an instance without the mobile service, caches it, and stops retrying", async () => {
+    const homeDir = await mkdtemp(join(tmpdir(), "moodle-cli-no-mobile-"));
+    let configCalls = 0;
+    let launchCalls = 0;
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("/lib/ajax/service-nologin.php")) {
+        configCalls += 1;
+        return new Response(JSON.stringify([{ error: false, data: { enablewebservices: 1, enablemobilewebservice: 0 } }]), { status: 200 });
+      }
+      if (url.includes("/admin/tool/mobile/launch.php")) {
+        launchCalls += 1;
+        return new Response(null, { status: 200 });
+      }
+      throw new Error(`unexpected ${url}`);
+    });
+
+    const login = (value: string, now: () => number) =>
+      getAuthenticatedSession(BASE_URL, {
+        homeDir,
+        now,
+        fetch: fetchImpl as unknown as typeof fetch,
+        captureMobileToken: true,
+        browserCookieProvider: async () => [{ name: "MoodleSession", value, domain: "school.example.edu" }],
+        validateSession: async () => ({ sesskey: "sess", userid: 7 }),
+      });
+
+    await login("cookie-1", () => 0);
+    expect(configCalls).toBe(1);
+    expect(launchCalls).toBe(0); // detected unsupported, never asked for a token
+    const cached = await readCachedSession(BASE_URL, { homeDir, now: () => 0 });
+    expect(cached?.mobileServiceEnabled).toBe(false);
+    expect(cached?.mobileToken).toBeUndefined();
+
+    // A later login (cache expired) reuses the cached capability, so no re-probe.
+    await login("cookie-2", () => 48 * 60 * 60 * 1000);
+    expect(configCalls).toBe(1);
+    expect(launchCalls).toBe(0);
+  });
+
+  it("renews from a durable mobile token before reading the OS cookie store", async () => {
+    const homeDir = await mkdtemp(join(tmpdir(), "moodle-cli-token-mint-"));
+    await writeCachedSession(
+      {
+        baseUrl: BASE_URL,
+        cookieName: "MoodleSession",
+        cookieValue: "old-cookie",
+        sesskey: "old-sess",
+        userid: 7,
+        savedAt: 0,
+        mobileToken: { wstoken: "ws", privatetoken: "pt" },
+        mobileServiceEnabled: true,
+      },
+      { homeDir },
+    );
+    const now = () => 48 * 60 * 60 * 1000; // expire the cached cookie
+
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("/webservice/rest/server.php")) {
+        return new Response(JSON.stringify({ key: "k", autologinurl: `${BASE_URL}/admin/tool/mobile/autologin.php` }), { status: 200 });
+      }
+      if (url.includes("/admin/tool/mobile/autologin.php")) {
+        return new Response(null, { status: 303, headers: { "set-cookie": "MoodleSession=minted; path=/; HttpOnly" } });
+      }
+      // The dashboard confirms a genuine login for the same account.
+      return new Response('<html><script>var M = {cfg: {"sesskey":"fresh-sess","userid":7}};</script></html>', { status: 200 });
+    });
+    // If the cookie store is ever consulted, the token path failed to win.
+    const browserCookieProvider = vi.fn(async () => []);
+
+    const session = await getAuthenticatedSession(BASE_URL, {
+      homeDir,
+      now,
+      fetch: fetchImpl as unknown as typeof fetch,
+      browserCookieProvider,
+    });
+
+    expect(session.cookie).toMatchObject({ value: "minted", source: "mobile-token" });
+    expect(session.userid).toBe(7);
+    expect(browserCookieProvider).not.toHaveBeenCalled();
+  });
+
+  it("preserves mobile credentials when a normal user command updates the cache", async () => {
+    const homeDir = await mkdtemp(join(tmpdir(), "moodle-cli-token-user-"));
+    const mobileToken = { wstoken: "ws", privatetoken: "private" };
+    await writeCachedSession({ baseUrl: BASE_URL, cookieName: "MoodleSession", cookieValue: "cookie", sesskey: "sess", userid: 7, savedAt: 1000, mobileToken, mobileServiceEnabled: true }, { homeDir });
+    const client = await createMoodleClient(BASE_URL, {
+      homeDir, now: () => 1000, env: {},
+      fetchImpl: async () => jsonResponse([{ error: false, data: { userid: 7, username: "alice", fullname: "Alice", siteurl: BASE_URL } }]),
+    });
+
+    await client.getSiteInfo();
+
+    expect(await readCachedSession(BASE_URL, { homeDir, now: () => 1000 })).toMatchObject({ mobileToken, mobileServiceEnabled: true });
+  });
+
+  it("does not carry another account's mobile credentials into a client snapshot", async () => {
+    const homeDir = await mkdtemp(join(tmpdir(), "moodle-cli-token-account-"));
+    await writeCachedSession({ baseUrl: BASE_URL, cookieName: "MoodleSession", cookieValue: "cookie", sesskey: "sess", userid: 7, savedAt: 1000, mobileToken: { wstoken: "old", privatetoken: "old-private" }, mobileServiceEnabled: true }, { homeDir });
+    const client = await createMoodleClient(BASE_URL, {
+      homeDir, now: () => 1000, env: {},
+      fetchImpl: async () => jsonResponse([{ error: false, data: { userid: 8, username: "bob", fullname: "Bob", siteurl: BASE_URL } }]),
+    });
+
+    await client.getSiteInfo();
+
+    const cached = await readCachedSession(BASE_URL, { homeDir, now: () => 1000 });
+    expect(cached?.userid).toBe(8);
+    expect(cached?.mobileToken).toBeUndefined();
+  });
+
+  it("renews a server-expired cached cookie using its mobile token before consulting a browser", async () => {
+    const homeDir = await mkdtemp(join(tmpdir(), "moodle-cli-token-server-expired-"));
+    const mobileToken = { wstoken: "ws", privatetoken: "private" };
+    await writeCachedSession({ baseUrl: BASE_URL, cookieName: "MoodleSession", cookieValue: "old-cookie", sesskey: "old-sess", userid: 7, savedAt: 1000, mobileToken, mobileServiceEnabled: true }, { homeDir });
+    const browserCookieProvider = vi.fn(async () => []);
+    let ajaxCalls = 0;
+    let mintCalls = 0;
+    const client = await createMoodleClient(BASE_URL, {
+      homeDir, now: () => 1000, env: {}, browserCookieProvider,
+      fetchImpl: async (input, init) => {
+        const url = String(input);
+        if (url.includes("/webservice/rest/")) {
+          mintCalls += 1;
+          return jsonResponse({ key: "key" });
+        }
+        if (url.includes("/autologin.php")) return new Response(null, { status: 303, headers: { "set-cookie": "MoodleSession=new-cookie; Path=/" } });
+        if (url.endsWith("/my/")) return new Response('<script>M.cfg = {"sesskey":"new-sess","userid":7};</script>');
+        ajaxCalls += 1;
+        if (ajaxCalls === 1) return jsonResponse([{ error: true, exception: { errorcode: "servicerequireslogin", message: "Expired" } }]);
+        expect(new Headers(init?.headers).get("cookie")).toBe("MoodleSession=new-cookie");
+        return jsonResponse([{ error: false, data: { userid: 7, fullname: "Alice", username: "alice", siteurl: BASE_URL } }]);
+      },
+    });
+
+    await expect(client.getSiteInfo()).resolves.toMatchObject({ userid: 7 });
+    expect(mintCalls).toBe(1);
+    expect(ajaxCalls).toBe(2);
+    expect(browserCookieProvider).not.toHaveBeenCalled();
+    expect(await readCachedSession(BASE_URL, { homeDir, now: () => 1000 })).toMatchObject({ cookieValue: "new-cookie", mobileToken });
+  });
+
+  it("retains renewal credentials across failed reauthentication without reusing the invalid cookie", async () => {
+    const homeDir = await mkdtemp(join(tmpdir(), "moodle-cli-token-retry-"));
+    const mobileToken = { wstoken: "ws", privatetoken: "private" };
+    await writeCachedSession({ baseUrl: BASE_URL, cookieName: "MoodleSession", cookieValue: "old-cookie", sesskey: "old-sess", userid: 7, savedAt: 1000, mobileToken }, { homeDir });
+    const options = { homeDir, now: () => 1000, env: {}, platform: "linux" as const, browserCookieProvider: async () => [] };
+    const failedClient = await createMoodleClient(BASE_URL, {
+      ...options,
+      fetchImpl: async (input) => String(input).includes("/webservice/")
+        ? jsonResponse({ exception: "unavailable" })
+        : jsonResponse([{ error: true, exception: { errorcode: "servicerequireslogin" } }]),
+    });
+    await expect(failedClient.getSiteInfo()).rejects.toThrow(/No usable MoodleSession/);
+    expect(await readCachedSession(BASE_URL, options)).toBeNull();
+    expect(await readCachedSession(BASE_URL, { ...options, allowExpired: true })).toMatchObject({ mobileToken, cookieInvalidated: true });
+    expect(await readCachedSession(BASE_URL, { ...options, allowExpired: true, noCache: true })).toBeNull();
+
+    const recovered = await createMoodleClient(BASE_URL, {
+      ...options,
+      fetchImpl: async (input, init) => {
+        const url = String(input);
+        if (url.includes("/webservice/")) return jsonResponse({ key: "key" });
+        if (url.includes("/autologin.php")) return new Response(null, { status: 303, headers: { "set-cookie": "MoodleSession=new-cookie; Path=/" } });
+        expect(new Headers(init?.headers).get("cookie")).toBe("MoodleSession=new-cookie");
+        if (url.endsWith("/my/")) return new Response('<script>M.cfg = {"sesskey":"new-sess","userid":7};</script>');
+        return jsonResponse([{ error: false, data: { userid: 7, fullname: "Alice", siteurl: BASE_URL } }]);
+      },
+    });
+    await expect(recovered.getSiteInfo()).resolves.toMatchObject({ userid: 7 });
+    expect(await readCachedSession(BASE_URL, options)).toMatchObject({ mobileToken, cookieValue: "new-cookie" });
+
+    // Explicit deletion must still remove all credentials, even for an invalid cookie.
+    const cached = await readCachedSession(BASE_URL, options);
+    await writeCachedSession({ ...cached!, cookieInvalidated: true }, { homeDir });
+    await deleteCachedSession(BASE_URL, options);
+    expect(await readCachedSession(BASE_URL, { ...options, allowExpired: true })).toBeNull();
+  });
+
+  it("retries mobile capability discovery after a temporary outage", async () => {
+    const homeDir = await mkdtemp(join(tmpdir(), "moodle-cli-mobile-outage-"));
+    let offline = true;
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL) => {
+      if (offline) throw new Error("Temporary outage");
+      if (String(input).includes("service-nologin.php")) return jsonResponse([{ error: false, data: { enablemobilewebservice: 1 } }]);
+      const token = Buffer.from("site:::ws:::private").toString("base64");
+      return new Response(null, { status: 302, headers: { location: `moodlecli://token=${token}` } });
+    });
+    const options = { homeDir, env: {}, fetch: fetchImpl, captureMobileToken: true, validateSession: async () => ({ userid: 7, sesskey: "sess" }) };
+    await authenticateWithPastedCookie(BASE_URL, "first-cookie", options);
+    expect((await readCachedSession(BASE_URL, { homeDir }))?.mobileServiceEnabled).toBeUndefined();
+
+    offline = false;
+    await authenticateWithPastedCookie(BASE_URL, "second-cookie", options);
+    expect(await readCachedSession(BASE_URL, { homeDir })).toMatchObject({ mobileServiceEnabled: true, mobileToken: { wstoken: "ws", privatetoken: "private" } });
+    expect(fetchImpl).toHaveBeenCalledTimes(4);
   });
 
   it("invalidates a stale cached AJAX session and retries once", async () => {
@@ -465,8 +871,8 @@ describe("agent output contract", () => {
     expect(code).toBe(3);
     const error = JSON.parse(stderr.text());
     expect(error).toMatchObject({ ok: false, error: { code: "auth" }, exit_code: 3 });
-    expect(error.error.hint).toContain("MOODLE_SESSION");
     expect(error.error.hint).toContain("moodle auth login");
+    expect(error.error.hint).toContain("moodle auth login --paste");
   });
 });
 

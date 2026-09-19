@@ -607,16 +607,16 @@ describe("FetchManagedWorkerClient", () => {
 
 describe("background Moodle session source", () => {
   it("uses browser cookies without opening an interactive browser", async () => {
-    const openBrowser = vi.fn(async () => undefined);
+    const cdpLogin = vi.fn(async () => ({ cookies: [], browserName: "Google Chrome" }));
     const source = createBackgroundMoodleSessionSource({
       homeDir: await mkdtemp(join(tmpdir(), "moodle-session-source-")),
-      openBrowser,
+      cdpLogin,
       browserCookieProvider: async () => [],
     });
 
     await expect(source.loadValidated("school", "https://moodle.example.edu"))
       .rejects.toThrow("No usable MoodleSession");
-    expect(openBrowser).not.toHaveBeenCalled();
+    expect(cdpLogin).not.toHaveBeenCalled();
   });
 
   it("skips the local session cache so a dead cookie is never re-uploaded as the replacement", async () => {

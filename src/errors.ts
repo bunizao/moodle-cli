@@ -1,4 +1,5 @@
 import { CliError, type ErrorCode } from "@bunizao/cli-kit";
+import { RequestFailed } from "./session-fetch.js";
 
 export { CliError, type ErrorCode } from "@bunizao/cli-kit";
 
@@ -47,4 +48,11 @@ export function errorCode(error: unknown): ErrorCode | undefined {
 
 function isLoginErrorCode(code: string | undefined): boolean {
   return ["servicerequireslogin", "sitepolicynotagreed"].includes(code ?? "");
+}
+
+/** Transport failures are their own class of problem, not a bad session. */
+export function asNetworkError(error: unknown): CliError | null {
+  return error instanceof RequestFailed
+    ? new CliError("network", error.message, "Check the connection or VPN, then retry.")
+    : null;
 }

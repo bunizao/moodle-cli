@@ -8,7 +8,6 @@ import {
 import { isLoginRequiredError, MoodleAPIError, NotFoundError } from "./errors.js";
 import type { PageContext } from "./models.js";
 import {
-  deleteCachedSession,
   readCachedSession,
   writeCachedSession,
   type SessionCacheOptions,
@@ -73,7 +72,7 @@ export async function createMoodleClient(
   // A stale cache still knows which services the site disables and, for the same
   // account, the dashboard profile; a fresh sign-in should not relearn either.
   // Read it before signing in, because sign-in overwrites the cache file.
-  const stale = options.noCache ? null : await readCachedSession(baseUrl, { ...cacheOptions, ttlMs: Number.MAX_SAFE_INTEGER }).catch(() => null);
+  const stale = options.noCache ? null : await readCachedSession(baseUrl, { ...cacheOptions, allowExpired: true }).catch(() => null);
   const session = authToClientSession(await getAuthenticatedSession(baseUrl, authOptions));
   return new MoodleClient(baseUrl, {
     fetchImpl: options.fetchImpl,
@@ -92,11 +91,21 @@ function persistenceCallbacks(
   options: SessionCacheOptions,
 ): Pick<MoodleClientCoreOptions, "clearSessionCache" | "writeSessionCache"> {
   return {
-    clearSessionCache: () => deleteCachedSession(baseUrl, options),
-    writeSessionCache: (session) => writeCachedSession({
-      ...session,
-      savedAt: (options.now ?? Date.now)(),
-    }, options),
+    clearSessionCache: async () => {
+      const cached = await readCachedSession(baseUrl, { ...options, allowExpired: true });
+      if (cached) await writeCachedSession({ ...cached, cookieInvalidated: true }, options);
+    },
+    writeSessionCache: async (session) => {
+      const previous = await readCachedSession(baseUrl, { ...options, allowExpired: true });
+      await writeCachedSession({
+        ...session,
+        // Client snapshots contain cookie state only. Keep renewal credentials
+        // for the same account without carrying them across an account switch.
+        ...(previous?.userid === session.userid ? { mobileToken: previous.mobileToken } : {}),
+        mobileServiceEnabled: previous?.mobileServiceEnabled,
+        savedAt: (options.now ?? Date.now)(),
+      }, options);
+    },
   };
 }
 

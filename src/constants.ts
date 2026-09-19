@@ -18,6 +18,22 @@ export const GRADE_REPORT_OVERVIEW_PATH = "/grade/report/overview/index.php";
 export const GRADE_REPORT_PATH = "/grade/report/user/index.php";
 export const LOGIN_PATH = "/login/index.php";
 
+// Moodle's built-in mobile app bridge. `launch.php` mints a Web Service token
+// for an already-authenticated browser session; the autologin pair then trades
+// that durable token for a fresh MoodleSession cookie with no browser at all.
+export const MOBILE_LAUNCH_PATH = "/admin/tool/mobile/launch.php";
+export const MOBILE_AUTOLOGIN_PATH = "/admin/tool/mobile/autologin.php";
+export const WEBSERVICE_REST_PATH = "/webservice/rest/server.php";
+export const SERVICE_NOLOGIN_PATH = "/lib/ajax/service-nologin.php";
+export const MOBILE_SERVICE_SHORTNAME = "moodle_mobile_app";
+// A URL scheme launch.php redirects the token to. It never resolves in a real
+// browser; we only read it back over the wire, so any private scheme works.
+export const MOBILE_URL_SCHEME = "moodlecli";
+// tool_mobile gates the autologin functions on a MoodleMobile user agent.
+export const MOBILE_USER_AGENT = "MoodleMobile 4.5.0 (moodle-cli)";
+export const FUNC_MOBILE_PUBLIC_CONFIG = "tool_mobile_get_public_config";
+export const FUNC_MOBILE_AUTOLOGIN_KEY = "tool_mobile_get_autologin_key";
+
 export const FUNC_GET_SITE_INFO = "core_webservice_get_site_info";
 export const FUNC_GET_COURSES = "core_enrol_get_users_courses";
 export const FUNC_GET_COURSES_BY_TIMELINE = "core_course_get_enrolled_courses_by_timeline_classification";
@@ -37,6 +53,10 @@ export const CONFIG_FILENAME = "config.yaml";
 export const CONFIG_DIR_NAME = ".config/moodle-cli";
 export const CACHE_DIR_NAME = ".cache/moodle-cli";
 export const SESSION_CACHE_FILENAME = "session.json";
+// A Chromium user-data-dir the CLI owns outright, so remote debugging is allowed
+// (Chrome 136+ refuses it on the real profile) and reads never touch the user's
+// browser on disk. Kept out of the config dir so `auth logout` can wipe it.
+export const CDP_PROFILE_DIR_NAME = ".cache/moodle-cli/browser-profile";
 export const DEFAULT_SESSION_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 
 export const KEEPALIVE_LAUNCH_AGENT_LABEL = "com.moodle-cli.keepalive";
