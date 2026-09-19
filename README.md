@@ -174,7 +174,7 @@ Commands support:
 - `--fields units,total` to select envelope fields
 - `-o, --output FILE` to write command output or a download receipt
 
-The CLI prints tables in an interactive terminal and JSON when stdout goes to a pipe or file. Structured errors use one JSON object on stderr:
+The CLI prints tables in an interactive terminal and JSON when stdout goes to a pipe or file. In a terminal, a command missing its unit asks for it with a picker (`moodle activities` lists your units); pipes, `--json` and agent shells get the usage error with the usage line instead. Structured errors use one JSON object on stderr:
 
 ```json
 {"ok":false,"error":{"code":"auth","message":"...","hint":"..."},"exit_code":3}

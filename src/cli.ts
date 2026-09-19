@@ -19,15 +19,21 @@ import {
   createProgram,
   createUi,
   detectAudience,
+  examples,
+  helpSection,
   insertDefaultVerb,
+  isInformationalExit,
+  parseWithPrompts,
   render,
   reportError,
   normalizeError,
   resolveFormat,
   mutating,
   writeOutput,
+  type ArgumentFiller,
   type NounSpec,
   type OutputFormat,
+  type Ui,
 } from "@bunizao/cli-kit";
 import { realpathSync } from "node:fs";
 import path from "node:path";
@@ -104,12 +110,12 @@ interface OutputCommandOptions {
 
 const NOUNS: readonly NounSpec[] = [
   { name: "units", aliases: ["courses"], verbs: ["list", "show"], defaultByArity: { 0: "list", 1: "show" } },
-  { name: "activities", verbs: ["list", "show"], defaultByArity: { 1: "list" }, valueFlags: ["--limit", "--section"] },
+  { name: "activities", verbs: ["list", "show"], defaultByArity: { 0: "list", 1: "list" }, valueFlags: ["--limit", "--section"] },
   { name: "grades", verbs: ["list"], defaultByArity: { 0: "list", 1: "list" } },
   {
     name: "forums",
     verbs: ["list", "show", "search"],
-    defaultByArity: { 1: "list" },
+    defaultByArity: { 0: "list", 1: "list" },
     valueFlags: ["--limit", "--course", "--forum", "--limit-forums", "--limit-discussions", "--unit"],
   },
   { name: "threads", verbs: ["show"], defaultByArity: { 1: "show" }, valueFlags: ["--post", "--limit", "--offset"] },
@@ -306,7 +312,7 @@ export function buildProgram(io: CliIO = {}): Command {
     .option("--limit <number>", "Maximum returned rows.", parsePositiveInt)
     .option("--types <types>", "Comma-separated activity types.")
     .action(async (query: string, unit: string | undefined, options: OutputCommandOptions & { limit?: number; types?: string }) => execute("find", { query, unit, limit: count("limit", options.limit), types: options.types?.split(",") }, options));
-  addOutputOptions(program.command("get").description("Download a resource by id, URL, or UNIT TASK phrase.").argument("<ref>"))
+  addOutputOptions(program.command("get").description("Download a resource by id, URL, or UNIT TASK phrase.").argument("<ref>", "Resource id, URL, or UNIT TASK phrase"))
     .option("--to <directory>", "Destination directory.")
     .option("--force", "Replace an existing file atomically.")
     .action(async (ref: string, options: OutputCommandOptions & { to?: string; force?: boolean }) => {
@@ -316,7 +322,7 @@ export function buildProgram(io: CliIO = {}): Command {
       const receipt = await downloadMoodleFile(client, { source: String(source), directory: options.to ? path.resolve(io.cwd ?? process.cwd(), options.to) : undefined, force: options.force });
       await runtime.output(receipt, () => formatDownloadReceipt(receipt), options);
     });
-  addOutputOptions(mutating(program.command("submit").description(humanDescription("submit")).argument("<ref>").argument("[files...]")))
+  addOutputOptions(mutating(program.command("submit").description(humanDescription("submit")).argument("<ref>", "Assignment id, URL, or UNIT TASK phrase").argument("[files...]", "Local files to upload")))
     .option("--final", "Also submit for grading. Moodle does not allow undoing this.")
     .option("--replace", "Remove the files already in the submission first.")
     .option("--accept-statement", "Agree to the site's submission statement when it requires one.")
@@ -335,7 +341,7 @@ export function buildProgram(io: CliIO = {}): Command {
       const result = await service.run("submit", { ref: planned.id, ...args, dry_run: false });
       await runtime.output(result, () => formatSubmissionReceipt(result.submission as SubmissionReceipt), options);
     });
-  addOutputOptions(program.command("open").description("Open a unit or activity reference in the browser.").argument("<ref>"))
+  addOutputOptions(program.command("open").description("Open a unit or activity reference in the browser.").argument("<ref>", "Unit or activity id, URL, or UNIT TASK phrase"))
     .action(async (ref: string, options: OutputCommandOptions) => {
       const client = await runtime.getClient();
       let url: string;
@@ -482,7 +488,7 @@ export function buildProgram(io: CliIO = {}): Command {
     const result = await doctor(io);
     await runtime.output(result, () => result.checks.map(c => `${c.status.toUpperCase()} ${c.name}: ${c.detail}${c.hint ? `\n  ${c.hint}` : ""}`).join("\n") + "\n\nTry  moodle auth login · moodle mcp status", options);
   });
-  program.command("completion").description("Print shell completion for zsh, bash or fish.").argument("<shell>").action((shell: string) => {
+  program.command("completion").description("Print shell completion for zsh, bash or fish.").addArgument(program.createArgument("<shell>", "Shell to target").choices(["zsh", "bash", "fish"])).action((shell: string) => {
     const names = program.commands.filter(c => c.name() !== "help").flatMap(c => [c.name(), ...c.aliases()]);
     if (shell === "bash") stdout.write(`complete -W '${names.join(" ")}' moodle\n`);
     else if (shell === "zsh") stdout.write(`#compdef moodle\n_arguments '1:command:(${names.join(" ")})' '*:reference:'\n`);
@@ -656,7 +662,7 @@ export function buildProgram(io: CliIO = {}): Command {
   addOutputOptions(mcp.command("clients").description("List pending and approved OAuth clients.")).action(async (options: OutputCommandOptions) => {
     await outputMcpResult(runtime, await getMcpService().manageClients({}), options);
   });
-  addOutputOptions(mutating(mcp.command("revoke").description("Revoke an OAuth client or all OAuth access.").argument("[client-id]")))
+  addOutputOptions(mutating(mcp.command("revoke").description("Revoke an OAuth client or all OAuth access.").argument("[client-id]", "OAuth client id; omit with --all")))
     .option("--all", "Revoke every client, token, pending authorization, and pairing window.")
     .action(async (clientId: string | undefined, options: OutputCommandOptions & { all?: boolean }) => {
       if (Boolean(clientId) === Boolean(options.all)) throw new UsageError("Provide a client ID or --all.");
@@ -720,19 +726,46 @@ export function buildProgram(io: CliIO = {}): Command {
   });
   skills.command("add").description("Install the published skill through npx skills add.").allowUnknownOption(true).action((_options, command) => installSkill(command.args));
 
+  for (const [title, names] of Object.entries(HELP_SECTIONS)) {
+    for (const command of program.commands) if (names.includes(command.name())) helpSection(command, title);
+  }
+  examples(program, [
+    "moodle  # today: due items, alerts and news",
+    "moodle UNIT  # one unit: current section, due items, latest news",
+    "moodle UNIT grades",
+    "moodle due --days 14",
+    "moodle find \"lab 3\" UNIT",
+    "moodle submit UNIT \"Assignment 2\" report.pdf",
+    "moodle activities UNIT --json",
+  ]);
   return program;
 }
+
+const HELP_SECTIONS: Readonly<Record<string, readonly string[]>> = {
+  Reading: ["due", "news", "find", "get", "open", "user", "units", "todo", "alerts", "overview", "activities", "download", "grades", "threads", "forums"],
+  Writing: ["submit"],
+  Setup: ["doctor", "completion", "uninstall", "auth", "mcp", "commands", "skills"],
+};
 
 export async function runCli(argv = process.argv, io: CliIO = {}): Promise<number> {
   const stderr = io.stderr ?? process.stderr;
   const stdout = io.stdout ?? process.stdout;
   const args = insertDefaultVerb(argv.slice(2), NOUNS);
-  const program = buildProgram({ ...io, rootArgs: args });
+  const ui = createUi({
+    input: io.stdin ?? process.stdin,
+    output: stderr as Writable,
+    interactive: detectAudience({
+      stdin: io.stdin ?? process.stdin,
+      stdout: { isTTY: Boolean(stdout && "isTTY" in stdout && stdout.isTTY) },
+      env: io.env ?? process.env,
+      format: errorOutputFormat(args, stdout),
+    }) === "human",
+  });
   try {
-    await program.parseAsync(args, { from: "user" });
+    await parseWithPrompts(() => buildProgram({ ...io, rootArgs: args }), args, { ui, fillers: { unit: pickUnit(io, ui) } });
     return 0;
   } catch (error) {
-    if (isCommanderCompletion(error)) {
+    if (isInformationalExit(error)) {
       return 0;
     }
     const format = errorOutputFormat(args, stdout);
@@ -879,11 +912,27 @@ function parseFields(data: unknown, value?: string): string[] | undefined {
   return fields;
 }
 
-function isCommanderCompletion(error: unknown): boolean {
-  if (!error || typeof error !== "object") return false;
-  if ("exitCode" in error && error.exitCode === 0) return true;
-  const code = "code" in error ? String(error.code) : "";
-  return code.startsWith("commander.help") || code === "commander.version";
+// A person who typed `moodle activities` is shown their units rather than a usage error.
+function pickUnit(io: CliIO, ui: Ui): ArgumentFiller {
+  return async () => {
+    const spin = ui.spinner();
+    spin.start("Loading your units");
+    try {
+      return await selectUnit(spin);
+    } catch (error) {
+      // Otherwise the spinner keeps drawing over the session error.
+      spin.stop("Could not load your units");
+      throw error;
+    }
+  };
+
+  async function selectUnit(spin: ReturnType<Ui["spinner"]>): Promise<string> {
+    const { baseUrl } = await loadConfig({ env: io.env, cwd: io.cwd, homeDir: io.homeDir, stdin: io.stdin, stderr: (io.stderr ?? process.stderr) as NodeJS.WritableStream, fetch: io.fetchImpl });
+    const client = await createMoodleClient(baseUrl, { env: io.env, fetchImpl: io.fetchImpl, homeDir: io.homeDir });
+    const courses = await client.getCourses();
+    spin.stop(`${courses.length} units`);
+    return ui.select("Which unit?", courses.map(course => ({ value: String(course.id), label: course.fullname, ...(course.shortname ? { hint: course.shortname } : {}) })));
+  }
 }
 
 function parseRootOutputOptions(args: string[]): OutputCommandOptions {
