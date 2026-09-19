@@ -17,7 +17,7 @@ Resources and folders return `files` with names and URLs. Pass a selected file U
 | moodle auth keepalive install | Install a macOS launch agent that renews the session periodically. |  | --interval (value required)<br>--pretty<br>--json<br>--yaml<br>--table<br>--fields (value required) |
 | moodle auth keepalive status | Show whether the keepalive launch agent is installed. |  | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required) |
 | moodle auth keepalive uninstall | Remove the keepalive launch agent. |  | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required) |
-| moodle auth login | Extract a fresh session, opening the browser when needed. |  | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required) |
+| moodle auth login | Sign in through a browser the CLI controls, then capture the session. |  | --paste<br>--pretty<br>--json<br>--yaml<br>--table<br>--fields (value required) |
 | moodle auth status | Show cached session freshness and keepalive state. |  | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required) |
 | moodle commands | Describe the complete command tree. |  | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required) |
 | moodle completion | Print shell completion for zsh, bash or fish. | <shell> |  |
