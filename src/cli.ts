@@ -9,14 +9,15 @@ import { runtimeSupportsCookies } from "./mcp/self-command.js";
 import { createMoodleGateway } from "./mcp/gateway.js";
 import { createIntentService, type IntentService } from "./intents.js";
 import { humanDescription, type Intent } from "./intent-contract.js";
-import { ReferenceError, normalize, resolveSection, splitUnitPhrase } from "./resolve.js";
+import { ReferenceError, normalize, resolveSection, splitUnitPhrase, type Candidate } from "./resolve.js";
 import { renderScreen } from "./screens.js";
-import { createInterface } from "node:readline/promises";
+import type { Writable } from "node:stream";
 import { spawn } from "node:child_process";
 import { Command } from "commander";
 import {
   confirm,
   createProgram,
+  createUi,
   insertDefaultVerb,
   render,
   reportError,
@@ -223,14 +224,10 @@ export function buildProgram(io: CliIO = {}): Command {
   const choose = async <T>(action: () => Promise<T>, retry: (id: number) => Promise<T>): Promise<T> => {
     try { return await action(); } catch (error) {
       if (!(error instanceof ReferenceError) || error.code !== "ambiguous" || !(io.stdin?.isTTY ?? process.stdin.isTTY) || outputFormat(program.opts(), stdout) !== "table") throw error;
-      stderr.write(`${error.message}\n${error.candidates.map((c, i) => `  ${i + 1}  ${c.name}`).join("\n")}\n`);
-      const reader = createInterface({ input: io.stdin ?? process.stdin, output: stderr as NodeJS.WritableStream });
-      try {
-        const answer = await reader.question(`Pick [1-${error.candidates.length}]: `);
-        const chosen = error.candidates[Number(answer) - 1];
-        if (!chosen) throw error;
-        return await retry(chosen.id);
-      } finally { reader.close(); }
+      const ui = createUi({ input: io.stdin ?? process.stdin, output: stderr as Writable, interactive: true });
+      const hint = (c: Candidate) => c.code ?? c.type;
+      const chosen = await ui.select(error.message, error.candidates.map(c => ({ value: c.id, label: c.name, ...(hint(c) ? { hint: hint(c) } : {}) })));
+      return await retry(chosen);
     }
   };
 
