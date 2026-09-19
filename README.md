@@ -115,6 +115,24 @@ You can paste the same links into your agent and ask it to inspect the page, fin
 
 `moodle download` accepts an activity ID or an authenticated Moodle URL. `--dest` sets the exact local path, and `--force` replaces an existing file after the download completes. Folder activities expose `files` so you can choose which files to save.
 
+#### Submit assignment files
+
+`moodle submit` uploads local files into an assignment through the same pages a browser
+uses, then prints the receipt Moodle shows afterwards: status, files, due date and the
+time it was checked. It is the only command that writes to Moodle.
+
+```bash
+moodle submit "UNIT TASK" essay.pdf --dry-run          # plan only: limits, statement, existing files
+moodle submit "UNIT TASK" essay.pdf                    # upload; Moodle keeps a draft where drafts are allowed
+moodle submit "UNIT TASK" --final --accept-statement   # submit the draft for grading (cannot be undone)
+```
+
+Every run plans first and asks for confirmation; `--yes` skips the prompt for scripts.
+`--replace` removes the files already in the submission, `--accept-statement` agrees to
+the site's submission statement when one is required, and a file that is too large or of
+the wrong type is refused before anything is uploaded. Assignments without drafts submit
+on save; the receipt reports what the site did.
+
 ### Remote MCP for web AI
 
 A private remote MCP server lets a supported web AI client use Moodle when it cannot run the local CLI. You need a Cloudflare account.
@@ -127,6 +145,8 @@ moodle mcp status
 `moodle mcp deploy` validates Moodle access, deploys a Cloudflare Worker, uploads an encrypted Moodle session, verifies readiness, and installs session renewal. The guided [`ONBOARDING.md`](ONBOARDING.md) asks whether you want this after local setup and helps connect your web AI client.
 
 The MCP `get_file` tool accepts a resource activity ID, resource URL, or `pluginfile.php` URL and returns files up to 16 MiB directly as an embedded MCP resource. The Moodle session stays inside the local server or private Worker; clients do not need to fetch an authenticated Moodle URL themselves.
+
+The remote server is read-only. The local server (`moodle mcp serve`) also offers `submit`, which needs the files on the same machine. It defaults to `dry_run: true`, so an agent has to show the plan and run it again with `dry_run: false` to upload; `final: true` submits for grading.
 
 ### Update
 
@@ -298,7 +318,8 @@ and `name`. Dates include ISO offsets and epoch seconds. Unit detail defaults to
 section index; pass a section for activities. `--fields` selects envelope keys.
 
 The 11 default MCP tools are home, due, units, unit, find, item, grades, news, thread,
-search_forums and file. Old names remain callable through 0.8 with the new envelopes;
+search_forums and file; a local server adds submit, whose `submission` envelope is the
+upload receipt. Old names remain callable through 0.8 with the new envelopes;
 they are deprecated and omitted from default discovery to avoid duplicate catalog cost.
 The local command tree remains available, including courses as an alias for units.
 The unused projects/quiet aliases were removed. `--verbose` (`-v`) prints sanitized
