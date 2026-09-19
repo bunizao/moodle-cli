@@ -1,5 +1,5 @@
 import type { Course, Overview } from "./models.js";
-import type { MoodleGateway } from "./mcp/gateway.js";
+import { MoodleGatewayError, type MoodleGateway } from "./mcp/gateway.js";
 import { intentContracts, type Intent } from "./intent-contract.js";
 import { currentSection, ReferenceError, resolveSection, resolveUnit, searchSections, splitUnitPhrase, tokensMatch, type SearchMatch } from "./resolve.js";
 import { activityRow, dueRow, isoTime, itemRow, postRow, stripEmpty, timezoneFor, unitRow } from "./results.js";
@@ -196,6 +196,12 @@ export function createIntentService(gateway: MoodleGateway, now = () => Date.now
         const source = await fileSource(input.ref as string | number);
         const file = await gateway.getFile({ source });
         result = { file: { name: file.name, mime_type: file.mimeType, bytes: file.bytes, uri: file.uri } }; break;
+      }
+      case "submit": {
+        if (!gateway.submitAssignment) throw new MoodleGatewayError("MOODLE_TOOL_UNAVAILABLE", "Submitting needs local files; run moodle submit or the local MCP server on the machine that holds them.");
+        const activityId = await resolveItem(input.ref as string | number);
+        result = { submission: await gateway.submitAssignment({ activityId, files: input.files as string[], final: Boolean(input.final), replace: Boolean(input.replace), acceptStatement: Boolean(input.accept_statement), dryRun: Boolean(input.dry_run) }) };
+        break;
       }
     }
     return intentContracts[name].output.parse(stripEmpty(result)) as Record<string, unknown>;

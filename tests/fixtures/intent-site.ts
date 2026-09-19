@@ -30,6 +30,7 @@ export function fixtureGateway(): MoodleGateway {
     searchForums: async () => [{ course_id: 2, course_name: "Algorithms", forum_id: 50, forum_name: "News", group_id: 0, group_name: "", discussion_id: 60, discussion_subject: "Assignment released", post_id: 70, author_name: "Sam", matched_in: "post_body", snippet: "Read the assignment brief.", unread: true, time_created: 1789401600, url: "https://moodle.example.edu/mod/forum/discuss.php?d=60#p70" }],
     getThread: async () => ({ id: 60, subject: "Assignment released", course_id: 2, forum_id: 50, group_id: 0, group_name: "", url: "https://moodle.example.edu/mod/forum/discuss.php?d=60", posts: Array.from({ length: 25 }, (_, i) => ({ id: 70 + i, discussion_id: 60, subject: i ? "Re: Assignment released" : "Assignment released", message_html: "<p>Read the assignment brief.</p>", message_text: "Read the assignment brief.", image_urls: [], links: [], tables: [], author: { id: 8, fullname: "Sam", profile_url: "", profile_image_url: "" }, parent_id: i ? 70 : 0, time_created: 1789401600 + i, time_modified: 0, created_pretty: "", unread: false, is_deleted: false, is_private_reply: false, url: "", reply_url: "" })) }),
     getFile: async () => ({ name: "slides.pdf", mimeType: "application/pdf", bytes: 6, uri: "https://moodle.example.edu/pluginfile.php/1/slides.pdf", blob: "c2xpZGVz" }),
+    submitAssignment: async input => ({ id: input.activityId, name: "Mini Test", unit_id: Math.floor(input.activityId / 100), url: `https://moodle.example.edu/mod/assign/view.php?id=${input.activityId}`, action: input.dryRun ? "planned" : input.final ? "submitted" : "saved", submission_status: input.dryRun ? "No submission" : input.final ? "Submitted for grading" : "Draft (not submitted)", grading_status: "Not graded", due: "Friday, 15 May 2026, 5:00 PM", time_remaining: "2 days", last_modified: input.dryRun ? "" : "Wednesday, 13 May 2026, 9:00 AM", files: input.dryRun ? [] : input.files.map(file => ({ name: file.split("/").pop()!, url: `https://moodle.example.edu/pluginfile.php/9/assignsubmission_file/submission_files/1/${file.split("/").pop()}` })), uploads: input.files.map(file => ({ name: file.split("/").pop()!, bytes: 6, path: file })), removed: [], limits: { max_files: 1, max_bytes: 5242880 }, checked_at: "2026-05-13T09:00:00.000Z" }),
   };
 }
 export const intentCalls = [
@@ -37,4 +38,5 @@ export const intentCalls = [
   ["find", { query: "week 7 slides", unit: "algo-2" }], ["item", { ref: "algo-2 week 7 mini test" }],
   ["grades", {}], ["news", { unit: "algo-2" }], ["thread", { discussion_id: 60, limit: 1 }],
   ["search_forums", { query: "assignment" }], ["file", { ref: "algo-2 week 7 slides" }],
+  ["submit", { ref: "algo-2 week 7 mini test", files: ["/tmp/essay.pdf"] }],
 ] as const;

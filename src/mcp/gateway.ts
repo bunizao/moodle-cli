@@ -1,5 +1,7 @@
 import { parse } from "node-html-parser";
 
+import type { SubmissionReceipt } from "../moodle-assign-core.js";
+import type { SubmitLocalFilesRequest } from "../submit.js";
 import type {
   Activity,
   ActivityDetail,
@@ -91,6 +93,8 @@ export interface MoodleGateway {
   getFile(input: FileInput): Promise<MoodleFile>;
   listThreads?(forumId: number): Promise<ForumDiscussionRef[]>;
   listNewsForums?(courseId?: number): Promise<ForumActivityRef[]>;
+  /** Present only where the client can read local files; the remote Worker never offers it. */
+  submitAssignment?(input: SubmitLocalFilesRequest): Promise<SubmissionReceipt>;
 }
 
 export interface MoodleClientPort {
@@ -119,6 +123,7 @@ export interface MoodleClientPort {
   getForumDiscussion(discussionId: number, options?: { group?: boolean }): Promise<ForumDiscussion>;
   getForumDiscussionRefs?(forumId: number): Promise<ForumDiscussionRef[]>;
   getNewsForums?(courseId?: number): Promise<ForumActivityRef[]>;
+  submitAssignmentFiles?(input: SubmitLocalFilesRequest): Promise<SubmissionReceipt>;
   requestAbsolute(url: string, init?: RequestInit): Promise<Response>;
 }
 
@@ -139,6 +144,7 @@ export function createMoodleGateway(client: MoodleClientPort): MoodleGateway {
     listNewsForums: (id) => client.getNewsForums ? client.getNewsForums(id) : Promise.resolve([]),
     getOverview: (input) => client.getOverview(input.todoLimit, input.todoDays, input.alertsLimit),
     ...(client.getTodo ? { getDue: (days: number, courseId?: number) => client.getTodo!(Number.MAX_SAFE_INTEGER, days, courseId) } : {}),
+    ...(client.submitAssignmentFiles ? { submitAssignment: (input: SubmitLocalFilesRequest) => client.submitAssignmentFiles!(input) } : {}),
     listCourses: () => client.getCourses(),
     async getCourse({ courseId }) {
       const [courses, sections] = await Promise.all([

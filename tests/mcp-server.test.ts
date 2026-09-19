@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import type { MoodleGateway } from "../src/mcp/gateway.js";
 import { LEGACY_PROTOCOL_VERSION, MODERN_PROTOCOL_VERSION, SUPPORTED_PROTOCOL_VERSIONS } from "../src/mcp/protocol.js";
 import { createMoodleMcpServer, TOOL_OUTPUT_SCHEMAS } from "../src/mcp/server.js";
+import { UsageError } from "../src/errors.js";
 
 describe("Moodle MCP server", () => {
   it("discovers the modern stateless server without advertising unsupported capabilities", async () => {
@@ -72,6 +73,34 @@ describe("Moodle MCP server", () => {
     }
     const item = TOOL_OUTPUT_SCHEMAS.item as { properties: { item: { properties: Record<string, unknown> } } };
     expect(item.properties.item.properties).toHaveProperty("files");
+  });
+
+  it("lists and runs the submit tool only when the gateway can read local files", async () => {
+    const readOnly = createMoodleMcpServer(fakeGateway());
+    const missing = await readOnly.handle({ jsonrpc: "2.0", id: "no-submit", method: "tools/call", params: modernParams({ name: "submit", arguments: { ref: 555, files: ["essay.pdf"] } }) });
+    expect(missing).toMatchObject({ id: "no-submit", error: { code: -32602, data: { type: "TOOL_NOT_FOUND" } } });
+
+    const calls: unknown[] = [];
+    const gateway: MoodleGateway = { ...fakeGateway(), submitAssignment: async (input) => { calls.push(input); return receipt(input.dryRun ?? false); } };
+    const server = createMoodleMcpServer(gateway);
+    const listed = await server.handle({ jsonrpc: "2.0", id: "tools", method: "tools/list", params: modernParams() });
+    const tools = (listed as { result: { tools: Array<Record<string, unknown>> } }).result.tools;
+    expect(tools.map((tool) => tool.name)).toEqual(["home", "due", "units", "unit", "find", "item", "grades", "news", "thread", "search_forums", "submit", "file"]);
+    expect(tools.find((tool) => tool.name === "submit")?.annotations).toEqual({ readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true });
+    expect(tools.filter((tool) => tool.name !== "submit").every((tool) => (tool.annotations as Record<string, unknown>).readOnlyHint === true)).toBe(true);
+
+    const planned = await server.handle({ jsonrpc: "2.0", id: "plan", method: "tools/call", params: modernParams({ name: "submit", arguments: { ref: 555, files: ["essay.pdf"] } }) });
+    expect(planned).toMatchObject({ id: "plan", result: { structuredContent: { submission: { id: 555, action: "planned", uploads: [{ name: "essay.pdf", bytes: 5 }] } } } });
+    expect(calls).toEqual([{ activityId: 555, files: ["essay.pdf"], final: false, replace: false, acceptStatement: false, dryRun: true }]);
+
+    const legacy = await server.handle({ jsonrpc: "2.0", id: "init", method: "initialize", params: { protocolVersion: LEGACY_PROTOCOL_VERSION, capabilities: {}, clientInfo: { name: "vitest", version: "1.0.0" } } });
+    expect((legacy as { result: { instructions: string } }).result.instructions).toContain("submit");
+  });
+
+  it("keeps the reason when a submission is refused", async () => {
+    const gateway: MoodleGateway = { ...fakeGateway(), submitAssignment: async () => { throw new UsageError('Moodle requires you to accept this statement: "My own work."', "Re-run with --accept-statement once you agree."); } };
+    const response = await createMoodleMcpServer(gateway).handle({ jsonrpc: "2.0", id: "refused", method: "tools/call", params: modernParams({ name: "submit", arguments: { ref: 555, files: ["essay.pdf"], dry_run: false } }) });
+    expect(response).toMatchObject({ id: "refused", result: { isError: true, structuredContent: { error: { type: "MOODLE_INVALID_REQUEST", message: 'Moodle requires you to accept this statement: "My own work."', hint: "Re-run with --accept-statement once you agree." } } } });
   });
 
   it("returns an authenticated file as an embedded MCP resource", async () => {
@@ -391,6 +420,10 @@ describe("Moodle MCP server", () => {
     }
   });
 });
+
+function receipt(dryRun: boolean) {
+  return { id: 555, name: "Essay 1", unit_id: 101, url: "https://moodle.example.edu/mod/assign/view.php?id=555", action: dryRun ? "planned" as const : "saved" as const, submission_status: dryRun ? "No submission" : "Draft (not submitted)", grading_status: "Not graded", due: "Friday, 15 May 2026, 5:00 PM", time_remaining: "2 days", last_modified: "", files: [], uploads: [{ name: "essay.pdf", bytes: 5 }], removed: [], limits: { max_files: 1 }, checked_at: "2026-05-13T09:00:00.000Z" };
+}
 
 function textResult(response: unknown): Record<string, unknown> {
   const result = (response as { result: { content: Array<{ type: string; text?: string }> } }).result;
