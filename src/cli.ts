@@ -15,8 +15,11 @@ import type { Writable } from "node:stream";
 import { spawn } from "node:child_process";
 import { Command } from "commander";
 import {
+  banner,
+  colorEnabled,
   confirm,
   createProgram,
+  createTheme,
   createUi,
   detectAudience,
   examples,
@@ -33,6 +36,7 @@ import {
   type ArgumentFiller,
   type NounSpec,
   type OutputFormat,
+  type Theme,
   type Ui,
 } from "@bunizao/cli-kit";
 import { realpathSync } from "node:fs";
@@ -40,7 +44,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createMoodleClient, type MoodleClient } from "./client.js";
 import { loadConfig } from "./config.js";
-import { MoodleAPIError, UsageError } from "./errors.js";
+import { AuthError, MoodleAPIError, UsageError } from "./errors.js";
 import {
   formatActivityDetail,
   formatActivityList,
@@ -71,6 +75,8 @@ import {
   uninstallKeepalive,
 } from "./keepalive.js";
 import { getAuthenticatedSessionWithBrowserFallback, invalidateCachedSession } from "./auth.js";
+import { configureTerminalTables } from "./terminal-table.js";
+import { MOODLE_TAGLINE, MOODLE_WORDMARK, showWordmark } from "./wordmark.js";
 import { VERSION } from "./version.js";
 import { filterDiscussionToPost, parseDiscussionReference, parseForumReference } from "./forum.js";
 import { looksLikeUrl, resolveTopLevelUrl } from "./url-resolver.js";
@@ -92,6 +98,8 @@ interface CliIO {
 
 interface Runtime {
   client: MoodleClient | null;
+  /** A spinner owns stderr while this is set, so the request indicator stays quiet. */
+  busy: boolean;
   getClient: () => Promise<MoodleClient>;
   baseUrl: () => Promise<string>;
   output: (data: unknown, formatter: () => string, options: OutputCommandOptions) => Promise<void>;
@@ -124,7 +132,8 @@ const NOUNS: readonly NounSpec[] = [
 export function buildProgram(io: CliIO = {}): Command {
   const stdout = io.stdout ?? process.stdout;
   const stderr = io.stderr ?? process.stderr;
-  const program = createProgram({ name: "moodle", version: VERSION, description: "Terminal-first CLI for Moodle LMS." });
+  const program = createProgram({ name: "moodle", version: VERSION, description: MOODLE_TAGLINE });
+  banner(program, MOODLE_WORDMARK);
   program.configureOutput({
     writeOut: (text) => stdout.write(text),
     writeErr: (text) => stderr.write(text),
@@ -149,6 +158,7 @@ export function buildProgram(io: CliIO = {}): Command {
     width: (stdout as Partial<NodeJS.WriteStream>).columns || undefined,
     color: !process.env.NO_COLOR && program.opts().color !== false && outputFormat({ ...program.opts(), ...options }, stdout) === "table",
   });
+  configureTerminalTables({ color: () => colorEnabled(stdout as { isTTY?: boolean }, io.env) && program.opts().color !== false });
 
   // Commander hands a flag declared on both the program and a subcommand to the
   // program, so a local --limit or --days never arrives. What the user typed wins,
@@ -157,6 +167,7 @@ export function buildProgram(io: CliIO = {}): Command {
 
   const runtime: Runtime = {
     client: null,
+    busy: false,
     screen,
     count,
     baseUrl: async () => (await loadConfig({ env: io.env, cwd: io.cwd, homeDir: io.homeDir, stdin: io.stdin, stderr: stderr as NodeJS.WritableStream, fetch: io.fetchImpl })).baseUrl,
@@ -167,11 +178,11 @@ export function buildProgram(io: CliIO = {}): Command {
         let inflight = 0;
         let displayed = false;
         let timer: ReturnType<typeof setTimeout> | undefined;
-        runtime.client = await createMoodleClient(baseUrl, {
+        const connect = () => createMoodleClient(baseUrl, {
           env: io.env,
           fetchImpl: async (input, init) => {
             const started = Date.now();
-            const tty = Boolean("isTTY" in stderr && stderr.isTTY) && !program.opts().json && !io.rootArgs?.includes("--json");
+            const tty = Boolean("isTTY" in stderr && stderr.isTTY) && !program.opts().json && !io.rootArgs?.includes("--json") && !runtime.busy;
             if (tty && inflight++ === 0) timer = setTimeout(() => { displayed = true; stderr.write("Loading Moodle…"); }, 300);
             try { return await (io.fetchImpl ?? fetch)(input, init); }
             finally {
@@ -189,6 +200,14 @@ export function buildProgram(io: CliIO = {}): Command {
           homeDir: io.homeDir,
           noCache: Boolean(program.opts().cache === false),
         });
+        try {
+          runtime.client = await connect();
+        } catch (error) {
+          // A person with no session is walked through the browser sign-in once; an agent gets the auth error.
+          if (!(error instanceof AuthError) || !human()) throw error;
+          await signIn(baseUrl);
+          runtime.client = await connect();
+        }
       }
       return runtime.client;
     },
@@ -236,6 +255,27 @@ export function buildProgram(io: CliIO = {}): Command {
     env: io.env ?? process.env,
     format: outputFormat(program.opts(), stdout),
   }) === "human";
+
+  const theme = (): Theme => createTheme(colorEnabled(stderr as { isTTY?: boolean }, io.env) && program.opts().color !== false);
+
+  // First run on this machine: the wordmark, one note, then the browser sign-in `auth login` would do.
+  const signIn = async (baseUrl: string): Promise<void> => {
+    const ui = createUi({ input: io.stdin ?? process.stdin, output: stderr as Writable, interactive: true });
+    showWordmark(ui);
+    ui.note(`No Moodle session for ${baseUrl}.\nSign in once in your browser; later commands reuse that session.`, "One-time setup");
+    if (!await ui.confirm("Open the browser to sign in?", { initial: true })) {
+      throw new AuthError(`No usable MoodleSession found for ${baseUrl}.`, "Run moodle auth login when you are ready.");
+    }
+    const spin = ui.spinner();
+    spin.start("Opening the browser");
+    try {
+      const session = await getAuthenticatedSessionWithBrowserFallback(baseUrl, { env: io.env, fetch: io.fetchImpl, homeDir: io.homeDir, onBrowserOpened: url => spin.message(`Finish signing in at ${url}`) });
+      spin.stop(`Signed in as userid ${session.userid}`);
+    } catch (error) {
+      spin.error("Sign-in did not complete");
+      throw error;
+    }
+  };
 
   const choose = async <T>(action: () => Promise<T>, retry: (id: number) => Promise<T>): Promise<T> => {
     try { return await action(); } catch (error) {
@@ -337,8 +377,23 @@ export function buildProgram(io: CliIO = {}): Command {
       const plan = await choose(() => service.run("submit", { ref, ...args, dry_run: true }), id => service.run("submit", { ref: id, ...args, dry_run: true }));
       const planned = plan.submission as SubmissionReceipt;
       if (program.opts().dryRun) return runtime.output(plan, () => formatSubmissionReceipt(planned), options);
-      if (!await confirm({ summary: submissionSummary(planned, args.final) }, { yes: Boolean(program.opts().yes), dryRun: false, interactive })) return;
-      const result = await service.run("submit", { ref: planned.id, ...args, dry_run: false });
+      if (!await confirm({ summary: submissionSummary(planned, args.final, theme()) }, { yes: Boolean(program.opts().yes), dryRun: false, interactive })) return;
+      // The upload is the one long step a person watches, so it gets a spinner that names each file.
+      const spin = interactive ? createUi({ input: io.stdin ?? process.stdin, output: stderr as Writable, interactive: true }).spinner() : undefined;
+      runtime.busy = true;
+      spin?.start("Preparing the upload");
+      let result: Record<string, unknown>;
+      try {
+        const live = createIntentService(createMoodleGateway(client, { onSubmitProgress: message => spin?.message(message) }));
+        result = await live.run("submit", { ref: planned.id, ...args, dry_run: false });
+        const receipt = result.submission as SubmissionReceipt;
+        spin?.stop(receipt.uploads.length ? `Uploaded ${receipt.uploads.map(file => file.name).join(", ")} to ${receipt.name}` : `Submitted ${receipt.name}`);
+      } catch (error) {
+        spin?.error("The upload did not complete");
+        throw error;
+      } finally {
+        runtime.busy = false;
+      }
       await runtime.output(result, () => formatSubmissionReceipt(result.submission as SubmissionReceipt), options);
     });
   addOutputOptions(program.command("open").description("Open a unit or activity reference in the browser.").argument("<ref>", "Unit or activity id, URL, or UNIT TASK phrase"))
@@ -731,20 +786,17 @@ export function buildProgram(io: CliIO = {}): Command {
   }
   examples(program, [
     "moodle  # today: due items, alerts and news",
-    "moodle UNIT  # one unit: current section, due items, latest news",
     "moodle UNIT grades",
-    "moodle due --days 14",
-    "moodle find \"lab 3\" UNIT",
     "moodle submit UNIT \"Assignment 2\" report.pdf",
-    "moodle activities UNIT --json",
   ]);
   return program;
 }
 
+// Grouped the way `gh` does: what a person reaches for daily, then the rest, then what only an agent runs.
 const HELP_SECTIONS: Readonly<Record<string, readonly string[]>> = {
-  Reading: ["due", "news", "find", "get", "open", "user", "units", "todo", "alerts", "overview", "activities", "download", "grades", "threads", "forums"],
-  Writing: ["submit"],
-  Setup: ["doctor", "completion", "uninstall", "auth", "mcp", "commands", "skills"],
+  "Core commands": ["due", "news", "find", "get", "open", "submit", "units", "activities", "grades", "threads", "forums"],
+  "Additional commands": ["user", "todo", "alerts", "overview", "download", "auth", "doctor", "completion", "uninstall"],
+  "Agent commands": ["mcp", "commands", "skills"],
 };
 
 export async function runCli(argv = process.argv, io: CliIO = {}): Promise<number> {
@@ -857,17 +909,17 @@ function outputFormat(options: OutputCommandOptions, stdout: CliIO["stdout"]): O
   return resolveFormat(options, Boolean(stdout && "isTTY" in stdout && stdout.isTTY));
 }
 
-function submissionSummary(plan: SubmissionReceipt, final: boolean): string {
-  const lines = [
-    plan.uploads.length
-      ? `Upload ${plan.uploads.map(file => file.name).join(", ")} to "${plan.name}"${plan.unit_id ? ` (unit ${plan.unit_id})` : ""}.`
-      : `Submit the existing files in "${plan.name}"${plan.unit_id ? ` (unit ${plan.unit_id})` : ""} for grading.`,
-  ];
-  if (plan.removed.length) lines.push(`Remove first: ${plan.removed.join(", ")}.`);
-  if (plan.statement) lines.push(`Agree to: "${plan.statement}"`);
+// What is sent and where it lands are the two facts to check before saying yes, so each gets its own role and line.
+function submissionSummary(plan: SubmissionReceipt, final: boolean, theme: Theme): string {
+  const destination = `${theme.target(plan.name)}${plan.unit_id ? theme.dim(`  unit ${plan.unit_id}`) : ""}`;
+  const lines = plan.uploads.length
+    ? [`${theme.dim("Upload")}  ${theme.subject(plan.uploads.map(file => file.name).join(", "))}`, `${theme.dim("    to")}  ${destination}`]
+    : [`${theme.dim("Submit")}  ${destination}`, `${theme.dim("      ")}  ${theme.subject("the files already there")} for grading`];
+  if (plan.removed.length) lines.push(`${theme.dim("Remove")}  ${theme.tone("danger", plan.removed.join(", "))} ${theme.dim("first")}`);
+  if (plan.statement) lines.push(`${theme.dim(" Agree")}  "${plan.statement}"`);
   lines.push(final
-    ? "Then submit for grading. Moodle does not allow undoing this."
-    : "Moodle keeps a draft where the assignment allows drafts; otherwise it submits at once.");
+    ? theme.tone("warning", "Then submit for grading. Moodle does not allow undoing this.")
+    : theme.dim("Moodle keeps a draft where the assignment allows drafts; otherwise it submits at once."));
   return lines.join("\n");
 }
 

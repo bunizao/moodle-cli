@@ -14,6 +14,7 @@ export interface SubmitLocalFilesRequest {
   replace?: boolean;
   acceptStatement?: boolean;
   dryRun?: boolean;
+  onProgress?: (message: string) => void;
 }
 
 export function resolveSubmissionPath(given: string, cwd = process.cwd()): string {

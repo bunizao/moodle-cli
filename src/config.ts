@@ -3,6 +3,8 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import type { Writable } from "node:stream";
 import { createUi, isAgentEnvironment, type Ui } from "@bunizao/cli-kit";
+
+import { showWordmark } from "./wordmark.js";
 import YAML from "yaml";
 import { CONFIG_DIR_NAME, CONFIG_FILENAME, ENV_MOODLE_BASE_URL, ENV_MOODLE_CONFIG, ENV_MOODLE_URL } from "./constants.js";
 import { ConfigError } from "./errors.js";
@@ -107,6 +109,7 @@ export async function promptForBaseUrl(options: ConfigOptions = {}): Promise<str
   // An injected prompt (tests) means plain lines; a real terminal gets the guided setup.
   const ui = createUi({ input: process.stdin, output: (options.stderr ?? process.stderr) as Writable, ...(options.prompt ? { interactive: false } : {}) });
   const prompt = options.prompt ?? defaultPrompt(ui);
+  showWordmark(ui);
   ui.intro("Moodle setup");
   ui.note([
     "Moodle base URL is not configured yet.",

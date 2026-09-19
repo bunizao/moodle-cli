@@ -1,3 +1,5 @@
+import { createTheme } from "@bunizao/cli-kit";
+
 import { renderTerminalTable, sanitizeTerminalText } from "./terminal-table.js";
 
 const record = (v: unknown): Record<string, unknown> => v && typeof v === "object" && !Array.isArray(v) ? v as Record<string, unknown> : {};
@@ -19,16 +21,18 @@ function moment(value: unknown, now: number): string {
 export function renderScreen(data: Record<string, unknown>, options: { width?: number; color?: boolean; now?: number } = {}): string {
   const lines: string[] = [];
   const now = options.now ?? Date.now();
+  // Three levels on every row: the code a person types next, the name they read, the facts they glance at.
+  const theme = createTheme(Boolean(options.color));
   const dueText = (row: Record<string, unknown>) => {
-    if (!row.due_at) return text(row.status || row.submission_status);
+    if (!row.due_at) return theme.status(text(row.status || row.submission_status));
     const days = Math.ceil((Number(row.due_at) * 1000 - now) / 86400000);
     const value = `${days < 0 ? `${-days} days overdue` : days === 0 ? "today" : days === 1 ? "tomorrow" : `in ${days} days`} · ${moment(row.due, now)}`;
-    return options.color && days <= 2 ? `\x1b[${days < 0 ? 31 : 33}m${value}\x1b[0m` : value;
+    return days < 0 ? theme.tone("danger", value) : days <= 2 ? theme.tone("warning", value) : theme.dim(value);
   };
   const rows = (items: Record<string, unknown>[], title: string) => {
-    lines.push(title);
-    if (!items.length) lines.push("  None");
-    for (const r of items) lines.push(`  ${text(r.unit_code || r.type)}  ${text(r.name)}${r.due_at ? `  ${dueText(r)}` : ""}${r.id ? `  #${r.id}` : ""}`);
+    lines.push(theme.subject(title));
+    if (!items.length) lines.push(theme.dim("  None"));
+    for (const r of items) lines.push(`  ${theme.key(text(r.unit_code || r.type))}  ${text(r.name)}${r.due_at ? `  ${dueText(r)}` : ""}${r.id ? `  ${theme.dim(`#${r.id}`)}` : ""}`);
   };
   let next = "moodle due --days 30 · moodle grades";
   if (data.home) {
@@ -75,7 +79,7 @@ export function renderScreen(data: Record<string, unknown>, options: { width?: n
     rows(array(key ? data[key] : []), key === "due" ? "Due" : "Matches");
     if (data.total !== undefined) lines.push(`${data.total} total`);
   }
-  lines.push("", `Try  ${next}`);
+  lines.push("", theme.dim(`Try  ${next}`));
   const width = Math.max(40, options.width || 80);
   return lines.flatMap(line => {
     if (line.includes("\x1b[") || line.startsWith("│") || /^[┌└├]/u.test(line)) return [line];

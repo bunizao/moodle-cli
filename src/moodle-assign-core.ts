@@ -28,6 +28,8 @@ export interface SubmitAssignmentRequest {
   acceptStatement?: boolean;
   /** Load and validate everything, but send nothing that changes state. */
   dryRun?: boolean;
+  /** Each slow step, in words a person can watch: which file is uploading, when the form is saved. */
+  onProgress?: (message: string) => void;
 }
 
 export interface SubmissionFileRow {
@@ -117,6 +119,7 @@ export async function submitAssignmentFiles(deps: AssignSubmitDeps, request: Sub
   }
 
   const viewUrl = `${deps.baseUrl}${ASSIGN_VIEW_PATH}?id=${id}`;
+  request.onProgress?.("Reading the assignment");
   const before = parseReceiptPage(await pageText(deps, viewUrl), id, deps.baseUrl);
   const form = parseSubmissionForm(await pageText(deps, `${viewUrl}&action=editsubmission`), deps);
   const draft = await listDraftFiles(deps, form);
@@ -151,14 +154,22 @@ export async function submitAssignmentFiles(deps: AssignSubmitDeps, request: Sub
   }
 
   // With nothing to upload or remove, --final only confirms the draft that is already there.
-  if (removed.length) await deleteDraftFiles(deps, form, draft);
+  if (removed.length) {
+    request.onProgress?.(`Removing ${removed.join(", ")}`);
+    await deleteDraftFiles(deps, form, draft);
+  }
   const storedNames: string[] = [];
-  for (const file of request.files) storedNames.push(await uploadDraftFile(deps, form, file));
+  for (const [index, file] of request.files.entries()) {
+    request.onProgress?.(`Uploading ${file.name} (${index + 1}/${request.files.length})`);
+    storedNames.push(await uploadDraftFile(deps, form, file));
+  }
   if (storedNames.length || removed.length) {
+    request.onProgress?.("Saving the submission");
     const savedHtml = await postForm(deps, form.action, [...form.fields, ...(form.statement ? [["submissionstatement", "1"] as Field] : []), ["submitbutton", "Save changes"]]);
     if (savedHtml !== null) throw deps.fail(`Moodle did not save the submission: ${noticesOf(savedHtml) || "it returned the edit form again without a reason"}`);
   }
 
+  request.onProgress?.("Reading the receipt");
   let receipt = parseReceiptPage(await pageText(deps, viewUrl), id, deps.baseUrl);
   const listed = new Set(receipt.files.map(file => file.name.toLowerCase()));
   const missing = storedNames.filter(name => !listed.has(name.toLowerCase()));
@@ -167,6 +178,7 @@ export async function submitAssignmentFiles(deps: AssignSubmitDeps, request: Sub
   let action: SubmissionReceipt["action"] = "saved";
   if (isSubmitted(receipt.submission_status)) action = "submitted";
   else if (request.final) {
+    request.onProgress?.("Submitting for grading");
     confirm ??= parseConfirmForm(await pageText(deps, `${viewUrl}&action=submit`), deps);
     const errorHtml = await postForm(deps, confirm.action, [...confirm.fields, ...(confirm.statement ? [["submissionstatement", "1"] as Field] : []), ["submitbutton", "Continue"]]);
     if (errorHtml !== null) throw deps.fail(`Moodle did not submit the assignment for grading: ${noticesOf(errorHtml) || "it returned the confirmation page again without a reason"}`);

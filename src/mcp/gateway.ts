@@ -137,14 +137,19 @@ export class MoodleGatewayError extends Error {
   }
 }
 
-export function createMoodleGateway(client: MoodleClientPort): MoodleGateway {
+export interface GatewayHooks {
+  /** Progress of a submission's slow steps, for a spinner; the intent contract carries no callbacks. */
+  readonly onSubmitProgress?: (message: string) => void;
+}
+
+export function createMoodleGateway(client: MoodleClientPort, hooks: GatewayHooks = {}): MoodleGateway {
   return {
     getUser: () => client.getSiteInfo(),
     listThreads: (id) => client.getForumDiscussionRefs ? client.getForumDiscussionRefs(id) : Promise.resolve([]),
     listNewsForums: (id) => client.getNewsForums ? client.getNewsForums(id) : Promise.resolve([]),
     getOverview: (input) => client.getOverview(input.todoLimit, input.todoDays, input.alertsLimit),
     ...(client.getTodo ? { getDue: (days: number, courseId?: number) => client.getTodo!(Number.MAX_SAFE_INTEGER, days, courseId) } : {}),
-    ...(client.submitAssignmentFiles ? { submitAssignment: (input: SubmitLocalFilesRequest) => client.submitAssignmentFiles!(input) } : {}),
+    ...(client.submitAssignmentFiles ? { submitAssignment: (input: SubmitLocalFilesRequest) => client.submitAssignmentFiles!({ ...input, ...(hooks.onSubmitProgress ? { onProgress: hooks.onSubmitProgress } : {}) }) } : {}),
     listCourses: () => client.getCourses(),
     async getCourse({ courseId }) {
       const [courses, sections] = await Promise.all([
