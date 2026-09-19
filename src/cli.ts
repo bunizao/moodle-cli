@@ -42,6 +42,7 @@ import {
   formatCourses,
   formatDownloadReceipt,
   formatForumDiscussion,
+  formatSubmissionReceipt,
   formatForumDiscussionRefs,
   formatForumActivities,
   formatForumSearchHits,
@@ -51,6 +52,8 @@ import {
   formatUser,
 } from "./formatters.js";
 import { downloadMoodleFile } from "./download.js";
+import type { SubmissionReceipt } from "./moodle-assign-core.js";
+import { resolveSubmissionPath } from "./submit.js";
 import { formatSkillSummary, installSkill, writeGeneratedSkill } from "./skills.js";
 import {
   getAuthStatus,
@@ -305,6 +308,25 @@ export function buildProgram(io: CliIO = {}): Command {
       const source = await choose(() => service.fileSource(ref), id => Promise.resolve(id));
       const receipt = await downloadMoodleFile(client, { source: String(source), directory: options.to ? path.resolve(io.cwd ?? process.cwd(), options.to) : undefined, force: options.force });
       await runtime.output(receipt, () => formatDownloadReceipt(receipt), options);
+    });
+  addOutputOptions(mutating(program.command("submit").description(humanDescription("submit")).argument("<ref>").argument("[files...]")))
+    .option("--final", "Also submit for grading. Moodle does not allow undoing this.")
+    .option("--replace", "Remove the files already in the submission first.")
+    .option("--accept-statement", "Agree to the site's submission statement when it requires one.")
+    .action(async (ref: string, files: string[], options: OutputCommandOptions & { final?: boolean; replace?: boolean; acceptStatement?: boolean }) => {
+      const interactive = Boolean(io.stdin?.isTTY ?? process.stdin.isTTY);
+      // Same rule cli-kit's confirm applies, checked before the plan touches the site or the files.
+      if (!program.opts().dryRun && !program.opts().yes && !interactive) throw new UsageError("Mutation requires --yes when stdin is not interactive.", "Run with --dry-run to see the plan first.");
+      const client = await runtime.getClient();
+      const service = createIntentService(createMoodleGateway(client));
+      const args = { files: files.map(file => resolveSubmissionPath(file, io.cwd ?? process.cwd())), final: Boolean(options.final), replace: Boolean(options.replace), accept_statement: Boolean(options.acceptStatement) };
+      // The plan reads the files and every Moodle page the upload needs, so most refusals happen before any prompt.
+      const plan = await choose(() => service.run("submit", { ref, ...args, dry_run: true }), id => service.run("submit", { ref: id, ...args, dry_run: true }));
+      const planned = plan.submission as SubmissionReceipt;
+      if (program.opts().dryRun) return runtime.output(plan, () => formatSubmissionReceipt(planned), options);
+      if (!await confirm({ summary: submissionSummary(planned, args.final) }, { yes: Boolean(program.opts().yes), dryRun: false, interactive })) return;
+      const result = await service.run("submit", { ref: planned.id, ...args, dry_run: false });
+      await runtime.output(result, () => formatSubmissionReceipt(result.submission as SubmissionReceipt), options);
     });
   addOutputOptions(program.command("open").description("Open a unit or activity reference in the browser.").argument("<ref>"))
     .action(async (ref: string, options: OutputCommandOptions) => {
@@ -789,6 +811,20 @@ function addOutputOptions(command: Command): Command {
 
 function outputFormat(options: OutputCommandOptions, stdout: CliIO["stdout"]): OutputFormat {
   return resolveFormat(options, Boolean(stdout && "isTTY" in stdout && stdout.isTTY));
+}
+
+function submissionSummary(plan: SubmissionReceipt, final: boolean): string {
+  const lines = [
+    plan.uploads.length
+      ? `Upload ${plan.uploads.map(file => file.name).join(", ")} to "${plan.name}"${plan.unit_id ? ` (unit ${plan.unit_id})` : ""}.`
+      : `Submit the existing files in "${plan.name}"${plan.unit_id ? ` (unit ${plan.unit_id})` : ""} for grading.`,
+  ];
+  if (plan.removed.length) lines.push(`Remove first: ${plan.removed.join(", ")}.`);
+  if (plan.statement) lines.push(`Agree to: "${plan.statement}"`);
+  lines.push(final
+    ? "Then submit for grading. Moodle does not allow undoing this."
+    : "Moodle keeps a draft where the assignment allows drafts; otherwise it submits at once.");
+  return lines.join("\n");
 }
 
 function parsePositiveInt(value: string): number {

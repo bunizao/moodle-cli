@@ -14,6 +14,7 @@ import type {
   UserInfo,
 } from "./models.js";
 import type { DownloadReceipt } from "./download.js";
+import type { SubmissionReceipt } from "./moodle-assign-core.js";
 import type { AuthStatus, KeepaliveRunResult } from "./keepalive.js";
 import { renderKeyValueTable, renderTerminalTable, sanitizeTerminalText } from "./terminal-table.js";
 
@@ -142,6 +143,39 @@ export function formatDownloadReceipt(receipt: DownloadReceipt): string {
     ["Source", receipt.source_url],
     ["Final URL", receipt.final_url],
   ], { title: "Download" });
+}
+
+export function formatSubmissionReceipt(receipt: SubmissionReceipt): string {
+  const size = (bytes: number) => bytes >= 1024 * 1024 ? `${(bytes / (1024 * 1024)).toFixed(1)} MiB` : bytes >= 1024 ? `${(bytes / 1024).toFixed(1)} KiB` : `${bytes} B`;
+  const limits = [
+    receipt.limits.max_files ? `${receipt.limits.max_files} files` : "",
+    receipt.limits.max_bytes ? `${size(receipt.limits.max_bytes)} each` : "",
+    receipt.limits.area_max_bytes ? `${size(receipt.limits.area_max_bytes)} total` : "",
+    receipt.limits.accepted_types?.length ? receipt.limits.accepted_types.join(" ") : "",
+  ].filter(Boolean).join(", ");
+  const table = renderKeyValueTable([
+    ["Assignment", receipt.name],
+    ["Unit id", receipt.unit_id ? String(receipt.unit_id) : ""],
+    ["URL", receipt.url],
+    ["Action", receipt.action],
+    ["Status", receipt.submission_status],
+    ["Grading", receipt.grading_status],
+    ["Due", receipt.due],
+    ["Time remaining", receipt.time_remaining],
+    ["Last modified", receipt.last_modified],
+    [receipt.action === "planned" ? "Files now" : "Files", receipt.files.map(file => file.bytes ? `${file.name} (${size(file.bytes)})` : file.name).join(", ")],
+    ["Uploads", receipt.uploads.map(file => `${file.name} (${size(file.bytes)})`).join(", ")],
+    ["Removed", receipt.removed.join(", ")],
+    ["Statement", receipt.statement ? `${receipt.statement_accepted ? "accepted" : "not accepted"}: ${receipt.statement}` : ""],
+    ["Limits", limits],
+    ["Checked", receipt.checked_at],
+  ], { title: receipt.action === "planned" ? "Submission plan" : "Submission" });
+  const note = receipt.action === "planned"
+    ? "Plan only; nothing was uploaded. Re-run without --dry-run to upload."
+    : receipt.action === "saved" && /draft|not submitted/iu.test(receipt.submission_status)
+      ? "Saved as a draft. Re-run with --final to submit it for grading."
+      : "";
+  return note ? `${table}\n${note}` : table;
 }
 
 export function formatForumDiscussion(
