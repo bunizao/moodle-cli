@@ -96,7 +96,7 @@ moodle news UNIT
 ```
 
 Ambiguous references list candidates. JSON callers receive `error.code: "ambiguous"`;
-TTY users can select a numbered match. A bare number in a section reference matches
+At a terminal you pick the match from a list (arrow keys, or type to filter a long one). A bare number in a section reference matches
 that number in the site's section name, so 7 never matches 17.
 
 #### Paste Moodle links directly

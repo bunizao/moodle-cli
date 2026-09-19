@@ -18,6 +18,7 @@ import {
   confirm,
   createProgram,
   createUi,
+  detectAudience,
   insertDefaultVerb,
   render,
   reportError,
@@ -221,9 +222,18 @@ export function buildProgram(io: CliIO = {}): Command {
     await runtime.output(result, () => screen(result, options), options);
   };
 
+  // One rule for who is on the other end: a person at a terminal reading a table. Anyone
+  // else (a pipe, --json, an agent's shell) gets errors with the flag to pass, never a prompt.
+  const human = () => detectAudience({
+    stdin: io.stdin ?? process.stdin,
+    stdout: { isTTY: Boolean(stdout && "isTTY" in stdout && stdout.isTTY) },
+    env: io.env ?? process.env,
+    format: outputFormat(program.opts(), stdout),
+  }) === "human";
+
   const choose = async <T>(action: () => Promise<T>, retry: (id: number) => Promise<T>): Promise<T> => {
     try { return await action(); } catch (error) {
-      if (!(error instanceof ReferenceError) || error.code !== "ambiguous" || !(io.stdin?.isTTY ?? process.stdin.isTTY) || outputFormat(program.opts(), stdout) !== "table") throw error;
+      if (!(error instanceof ReferenceError) || error.code !== "ambiguous" || !human()) throw error;
       const ui = createUi({ input: io.stdin ?? process.stdin, output: stderr as Writable, interactive: true });
       const hint = (c: Candidate) => c.code ?? c.type;
       const chosen = await ui.select(error.message, error.candidates.map(c => ({ value: c.id, label: c.name, ...(hint(c) ? { hint: hint(c) } : {}) })));
@@ -311,7 +321,7 @@ export function buildProgram(io: CliIO = {}): Command {
     .option("--replace", "Remove the files already in the submission first.")
     .option("--accept-statement", "Agree to the site's submission statement when it requires one.")
     .action(async (ref: string, files: string[], options: OutputCommandOptions & { final?: boolean; replace?: boolean; acceptStatement?: boolean }) => {
-      const interactive = Boolean(io.stdin?.isTTY ?? process.stdin.isTTY);
+      const interactive = human();
       // Same rule cli-kit's confirm applies, checked before the plan touches the site or the files.
       if (!program.opts().dryRun && !program.opts().yes && !interactive) throw new UsageError("Mutation requires --yes when stdin is not interactive.", "Run with --dry-run to see the plan first.");
       const client = await runtime.getClient();
@@ -490,7 +500,7 @@ export function buildProgram(io: CliIO = {}): Command {
       if (program.opts().dryRun) return runtime.output(result, () => JSON.stringify(result, null, 2), options);
       if (options.purge && receipts.length && !options.remote) throw new UsageError("Managed deployment receipts exist; remove the Worker before purging its recovery information.", "Run moodle mcp remove for each configured site, then moodle uninstall --purge.");
       if (options.purge && receipts.length > 1) throw new UsageError("Multiple managed deployment receipts exist; remove each Worker before purging configuration.");
-      if (!await confirm({ summary: `Remove Moodle background jobs${options.remote ? ", the configured Worker" : ""}${options.purge ? ", configuration and cache" : ""}.` }, { yes: Boolean(program.opts().yes), dryRun: false, interactive: Boolean(io.stdin?.isTTY ?? process.stdin.isTTY) })) return;
+      if (!await confirm({ summary: `Remove Moodle background jobs${options.remote ? ", the configured Worker" : ""}${options.purge ? ", configuration and cache" : ""}.` }, { yes: Boolean(program.opts().yes), dryRun: false, interactive: human() })) return;
       if (options.remote) await getMcpService().remove({ yes: true });
       if (process.platform === "darwin") await uninstallKeepalive({ homeDir: home });
       const renewal = new DefaultRenewalIntegration({ homeDirectory: home, executable: process.execPath });
@@ -553,7 +563,7 @@ export function buildProgram(io: CliIO = {}): Command {
     const globals = program.opts();
     if (!await confirm(
       { summary: `Install the Moodle session keepalive agent${options.interval ? ` with a ${options.interval}-minute interval` : ""}.` },
-      { yes: Boolean(globals.yes), dryRun: Boolean(globals.dryRun), interactive: Boolean(io.stdin?.isTTY ?? process.stdin.isTTY) },
+      { yes: Boolean(globals.yes), dryRun: Boolean(globals.dryRun), interactive: human() },
     )) return;
     const baseUrl = await runtime.baseUrl();
     await getAuthenticatedSessionWithBrowserFallback(baseUrl, { env: io.env, homeDir: io.homeDir, fetch: io.fetchImpl, noCache: true, nonInteractive: true });
@@ -566,7 +576,7 @@ export function buildProgram(io: CliIO = {}): Command {
       const globals = program.opts();
       if (!await confirm(
         { summary: "Remove the Moodle session keepalive agent." },
-        { yes: Boolean(globals.yes), dryRun: Boolean(globals.dryRun), interactive: Boolean(io.stdin?.isTTY ?? process.stdin.isTTY) },
+        { yes: Boolean(globals.yes), dryRun: Boolean(globals.dryRun), interactive: human() },
       )) return;
       const result = await uninstallKeepalive({ homeDir: io.homeDir });
       await runtime.output(result, () => `Keepalive removed (${result.plist_path})`, options);
@@ -594,7 +604,7 @@ export function buildProgram(io: CliIO = {}): Command {
         {
           yes: Boolean(program.opts().yes),
           dryRun: false,
-          interactive: Boolean(io.stdin?.isTTY ?? process.stdin.isTTY),
+          interactive: human(),
         },
       )) return;
       const result = await getMcpService().deploy({

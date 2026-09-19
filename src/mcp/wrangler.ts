@@ -1,4 +1,4 @@
-import { createInterface } from "node:readline/promises";
+import { createUi } from "@bunizao/cli-kit";
 import { UsageError } from "../errors.js";
 import { mkdir } from "node:fs/promises";
 import { existsSync } from "node:fs";
@@ -29,12 +29,11 @@ export async function resolveWrangler(runner: DeploymentCommandRunner, options: 
     if (!bun && !npm) throw new Error("Install Bun or npm to download the pinned Cloudflare toolchain.");
     const yes = options.yes ?? (process.argv.includes("--yes") || process.argv.includes("-y"));
     if (!yes) {
-      if (!process.stdin.isTTY) throw new UsageError("Cloudflare management needs a first-use Wrangler download.", "Rerun with --yes to download and cache the pinned toolchain.");
-      const reader = createInterface({ input: process.stdin, output: process.stderr });
-      try {
-        const answer = await reader.question(`Download Cloudflare Wrangler ${WRANGLER_VERSION} (cached for next time)? [Y/n] `);
-        if (answer.trim() && !/^y(?:es)?$/iu.test(answer.trim())) throw new UsageError("Wrangler download cancelled.", "Retry when ready to install Cloudflare's toolchain.");
-      } finally { reader.close(); }
+      const ui = createUi({ input: process.stdin, output: process.stderr });
+      if (!ui.interactive) throw new UsageError("Cloudflare management needs a first-use Wrangler download.", "Rerun with --yes to download and cache the pinned toolchain.");
+      if (!await ui.confirm(`Download Cloudflare Wrangler ${WRANGLER_VERSION} (cached for next time)?`, { initial: true })) {
+        throw new UsageError("Wrangler download cancelled.", "Retry when ready to install Cloudflare's toolchain.");
+      }
     }
     notice(`Cloudflare management needs Wrangler ${WRANGLER_VERSION}; downloading once to ${root}.`);
     await mkdir(root, { recursive: true, mode: 0o700 });
