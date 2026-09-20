@@ -240,6 +240,10 @@ export function buildProgram(io: CliIO = {}): Command {
       stdout: stdout as NodeJS.WritableStream,
       stderr: stderr as NodeJS.WritableStream,
       fetchImpl: io.fetchImpl,
+      // Progress goes to stderr and the summary to stdout, so both streams must want colour.
+      color: () => colorEnabled(stdout as { isTTY?: boolean }, io.env)
+        && colorEnabled(stderr as { isTTY?: boolean }, io.env)
+        && program.opts().color !== false,
     });
     return mcpService;
   };
