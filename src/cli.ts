@@ -782,7 +782,8 @@ export function buildProgram(io: CliIO = {}): Command {
   skills.command("add").description("Install the published skill through npx skills add.").allowUnknownOption(true).action((_options, command) => installSkill(command.args));
 
   for (const [title, names] of Object.entries(HELP_SECTIONS)) {
-    for (const command of program.commands) if (names.includes(command.name())) helpSection(command, title);
+    // Placed in the order the list names them: that order is the help page.
+    for (const name of names) for (const command of program.commands) if (command.name() === name) helpSection(command, title);
   }
   examples(program, [
     "moodle  # today: due items, alerts and news",
