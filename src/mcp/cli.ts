@@ -322,6 +322,7 @@ class DefaultMcpCommandService implements McpCommandService {
         `Credentials: ${managed.credentialsStored ? "stored" : "missing"}`,
         `Renewal: ${managed.renewalInstalled ? "installed" : "missing"}`,
         `Clients: ${managed.clientsConnected ? "connected" : "not connected"}`,
+        ...(managed.recoveryActive ? ["Release: the recovery Worker is live; OAuth sign-in is disabled until `moodle mcp deploy` succeeds."] : []),
         ...(updateAvailable ? ["Update: remote Worker is behind this CLI. Run `moodle mcp deploy` to update it."] : []),
         ...(input.logs ? ["Logs: use a live sanitized tail from an interactive terminal"] : []),
       ].join("\n"),

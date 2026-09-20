@@ -499,9 +499,9 @@ describe("FetchManagedWorkerClient", () => {
       .mockResolvedValueOnce(Response.json({
         jsonrpc: "2.0",
         id: 3,
-        result: smokeToolResult({ user: { fullname: "Alice Example" } }),
+        result: smokeToolResult({ home: { name: "Alice Example" } }),
       }))
-      .mockResolvedValueOnce(Response.json({ jsonrpc: "2.0", id: 4, result: smokeToolResult({ courses: [] }) }));
+      .mockResolvedValueOnce(Response.json({ jsonrpc: "2.0", id: 4, result: smokeToolResult({ units: [] }) }));
     const sleep = vi.fn(async () => undefined);
     const client = new FetchManagedWorkerClient(fetchImpl as unknown as typeof fetch, sleep);
 
@@ -519,7 +519,7 @@ describe("FetchManagedWorkerClient", () => {
       if (!String(input).endsWith("/mcp")) return Response.json({ status: "pass" });
       const request = JSON.parse(String(init?.body));
       return Response.json({ jsonrpc: "2.0", id: request.id, result: request.method === "tools/call"
-        ? { content: [{ type: "text", text: "Authenticated as Alice Example." }], structuredContent: { user: { fullname: "Alice Example" } } }
+        ? { content: [{ type: "text", text: "Authenticated as Alice Example." }], structuredContent: { home: { name: "Alice Example" } } }
         : {} });
     });
     const client = new FetchManagedWorkerClient(fetchImpl as unknown as typeof fetch);
@@ -541,16 +541,16 @@ describe("FetchManagedWorkerClient", () => {
       if (url.endsWith("/readyz")) {
         return Response.json({ status: "pass" });
       }
-      const request = JSON.parse(String(init?.body)) as { id: number; method: string; params: { name?: string; arguments?: { courseId?: number } } };
+      const request = JSON.parse(String(init?.body)) as { id: number; method: string; params: { name?: string; arguments?: { unit?: number } } };
       return Response.json({
         jsonrpc: "2.0",
         id: request.id,
         result: request.method === "tools/call"
-          ? smokeToolResult(request.params.name === "list_courses"
-            ? { courses: [{ id: 101, fullname: "Computing" }] }
-            : request.params.name === "get_course"
-              ? { course: { course: { id: request.params.arguments?.courseId }, sections: [] } }
-              : { user: { fullname: "Alice Example" } })
+          ? smokeToolResult(request.params.name === "units"
+            ? { units: [{ id: 101, code: "UNIT101", name: "Computing" }] }
+            : request.params.name === "unit"
+              ? { unit: { id: request.params.arguments?.unit }, sections: [] }
+              : { home: { name: "Alice Example" } })
           : {},
       });
     });
@@ -591,11 +591,11 @@ describe("FetchManagedWorkerClient", () => {
     });
     const methods = requests.slice(3).map((request) => JSON.parse(String(request.init?.body)).method);
     expect(methods).toEqual(["server/discover", "tools/list", "tools/call", "tools/call", "tools/call"]);
-    expect(JSON.parse(String(requests.at(-1)?.init?.body)).params).toMatchObject({ name: "get_course", arguments: { courseId: 101 } });
+    expect(JSON.parse(String(requests.at(-1)?.init?.body)).params).toMatchObject({ name: "unit", arguments: { unit: 101 } });
     expect(new Headers(requests[3]?.init?.headers).get("mcp-method")).toBe("server/discover");
     expect(new Headers(requests[3]?.init?.headers).get("mcp-name")).toBeNull();
     expect(new Headers(requests[5]?.init?.headers).get("mcp-method")).toBe("tools/call");
-    expect(new Headers(requests[5]?.init?.headers).get("mcp-name")).toBe("get_user");
+    expect(new Headers(requests[5]?.init?.headers).get("mcp-name")).toBe("home");
     const metadata = JSON.parse(String(requests[3]?.init?.body)).params._meta as Record<string, unknown>;
     expect(metadata).toMatchObject({
       "io.modelcontextprotocol/protocolVersion": "2026-07-28",

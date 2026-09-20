@@ -223,6 +223,9 @@ export interface DeploymentStatus {
   readiness: "pass" | "warn" | "fail" | "unknown";
   readinessReasonCode: string | null;
   sessionRevision: number | null;
+  // The recovery release serves the session bridge with OAuth switched off, so a deploy that
+  // failed after promoting it leaves hosted clients unable to sign in. Say so.
+  recoveryActive: boolean;
 }
 
 export interface RecoveryResult {
@@ -559,6 +562,7 @@ export class ManagedMcpDeployment {
         readiness: "unknown",
         readinessReasonCode: "NOT_DEPLOYED",
         sessionRevision: null,
+        recoveryActive: false,
       };
     }
 
@@ -594,6 +598,7 @@ export class ManagedMcpDeployment {
       readiness,
       readinessReasonCode,
       sessionRevision,
+      recoveryActive: receipt.releaseDigest.endsWith("-recovery"),
     };
   }
 
