@@ -2,7 +2,8 @@ import { access, readdir, readFile } from "node:fs/promises";
 import { constants } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { defaultBrowserCookieProvider } from "./auth.js";
+import { defaultBrowserCookieProvider, hostApplicationName } from "./auth.js";
+import { browserCookieStores, cookieStoresBlocked, unreadableCookieStores } from "./cookie-stores.js";
 import { loadConfig, userConfigPath } from "./config.js";
 import { getAuthStatus } from "./keepalive.js";
 import { runtimeCommand, runtimeSupportsCookies } from "./mcp/self-command.js";
@@ -22,6 +23,7 @@ export async function ownedJobs(homeDir = homedir()): Promise<Array<{ path: stri
 export async function doctor(options: { homeDir?: string; cwd?: string; env?: NodeJS.ProcessEnv; fetchImpl?: typeof fetch } = {}) {
   const home = options.homeDir ?? homedir();
   const checks: Array<{ name: string; status: "pass" | "warn" | "fail"; detail: string; hint?: string }> = [];
+  const stores = await browserCookieStores({ homeDir: home });
   const cookies = runtimeSupportsCookies();
   checks.push({ name: "sqlite", status: cookies ? "pass" : "fail", detail: `${process.versions.bun ? "bun" : "node"} ${process.versions.bun ?? process.versions.node}`, ...(cookies ? {} : { hint: "Install Bun or Node 22.13+; Safari cookie reads do not require SQLite." }) });
   let baseUrl: string | undefined;
@@ -35,25 +37,10 @@ export async function doctor(options: { homeDir?: string; cwd?: string; env?: No
     const warnings: string[] = [];
     try {
       const found = await defaultBrowserCookieProvider(baseUrl, { homeDir: home, onCookieWarnings: items => warnings.push(...items) });
-      const blocked = warnings.some(w => /EPERM|EACCES|permission denied|operation not permitted/iu.test(w));
-      checks.push({ name: "browser", status: blocked ? "fail" : found.length ? "pass" : "warn", detail: blocked ? "Browser store access was denied." : found.length ? `Cookie sources: ${[...new Set(found.map(c => c.source || "browser"))].join(", ")}` : "No browser session found.", ...(blocked ? { hint: "System Settings > Privacy & Security > Full Disk Access: enable the app running this command, then restart it." } : !found.length ? { hint: "Sign in to Moodle in a supported browser, then run moodle auth login." } : {}) });
+      // Cookies that were read prove access works, whatever any single store reports.
+      const blocked = !found.length && (cookieStoresBlocked(stores) || warnings.some(w => /EPERM|EACCES|permission denied|operation not permitted/iu.test(w)));
+      checks.push({ name: "browser", status: blocked ? "fail" : found.length ? "pass" : "warn", detail: blocked ? `Browser store access was denied (${unreadableCookieStores(stores).length} unreadable store(s)).` : found.length ? `Cookie sources: ${[...new Set(found.map(c => c.source || "browser"))].join(", ")}` : "No browser session found.", ...(blocked ? { hint: `System Settings > Privacy & Security > Full Disk Access: enable ${hostApplicationName(options.env) ?? "the app running this command"}, then restart it.` } : !found.length ? { hint: "Sign in to Moodle in a supported browser, then run moodle auth login." } : {}) });
     } catch { checks.push({ name: "browser", status: "warn", detail: "Could not inspect browser stores.", hint: "Run moodle auth login from a regular terminal." }); }
-  }
-  const stores: Array<{ browser: string; path: string; readable: boolean }> = [];
-  if (process.platform === "darwin") {
-    for (const [browser, directory] of [["Chrome", "Google/Chrome"], ["Edge", "Microsoft Edge"], ["Brave", "BraveSoftware/Brave-Browser"], ["Firefox", "Firefox/Profiles"]]) {
-      const root = join(home, "Library/Application Support", directory);
-      for (const profile of await readdir(root).catch(() => [] as string[])) {
-        if (browser !== "Firefox" && profile !== "Default" && !profile.startsWith("Profile ")) continue;
-        for (const name of browser === "Firefox" ? ["cookies.sqlite"] : ["Cookies", "Network/Cookies"]) {
-          const file = join(root, profile, name);
-          try { await access(file); stores.push({ browser, path: file, readable: await access(file, constants.R_OK).then(() => true, () => false) }); } catch { /* Missing stores are not browser sessions. */ }
-        }
-      }
-    }
-    for (const file of [join(home, "Library/Cookies/Cookies.binarycookies"), join(home, "Library/Containers/com.apple.Safari/Data/Library/Cookies/Cookies.binarycookies")]) {
-      try { await access(file); stores.push({ browser: "Safari", path: file, readable: await access(file, constants.R_OK).then(() => true, () => false) }); } catch { /* Safari may not have a cookie store. */ }
-    }
   }
   const jobs = await ownedJobs(home);
   for (const job of jobs) {

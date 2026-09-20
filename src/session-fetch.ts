@@ -29,7 +29,12 @@ export async function fetchWithSession(
       headers.delete("authorization");
       headers.delete("proxy-authorization");
     }
-    const response = await fetchImpl(url.toString(), { ...init, method, body, headers: Object.fromEntries(headers), signal, redirect: "manual" });
+    let response: Response;
+    try {
+      response = await fetchImpl(url.toString(), { ...init, method, body, headers: Object.fromEntries(headers), signal, redirect: "manual" });
+    } catch (error) {
+      throw requestFailure(error, url, deadline);
+    }
     if (!REDIRECT_STATUSES.has(response.status)) return response;
     const location = response.headers.get("location");
     if (!location) return response;
@@ -49,4 +54,32 @@ export async function fetchWithSession(
     }
     url = next;
   }
+}
+
+/**
+ * Node reports every transport problem as "fetch failed", which tells the user
+ * nothing about which host went missing or whether they simply timed out. This
+ * module is bundled into the Worker, so it stays free of CLI dependencies and
+ * the callers map it onto their own error type.
+ */
+export class RequestFailed extends Error {
+  readonly host: string;
+  readonly timedOut: boolean;
+
+  constructor(host: string, timedOut: boolean, cause?: string) {
+    super(timedOut ? `${host} did not respond within ${REQUEST_TIMEOUT_MS / 1_000}s.` : `Could not reach ${host}: ${cause}`);
+    this.name = "RequestFailed";
+    this.host = host;
+    this.timedOut = timedOut;
+  }
+}
+
+function requestFailure(error: unknown, url: URL, deadline: AbortSignal): unknown {
+  if (deadline.aborted) {
+    return new RequestFailed(url.host, true);
+  }
+  if (!(error instanceof Error)) {
+    return error;
+  }
+  return new RequestFailed(url.host, false, error.cause instanceof Error ? error.cause.message : error.message);
 }

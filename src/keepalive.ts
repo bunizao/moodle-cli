@@ -5,7 +5,7 @@ import { realpathSync } from "node:fs";
 import { mkdir, rm, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import { getAuthenticatedSession, MINIMUM_NODE_FOR_BROWSER_COOKIES } from "./auth.js";
+import { getAuthenticatedSession, mintValidatedSession, MINIMUM_NODE_FOR_BROWSER_COOKIES } from "./auth.js";
 import {
   AJAX_SERVICE_PATH,
   CACHE_DIR_NAME,
@@ -15,7 +15,7 @@ import {
   KEEPALIVE_LAUNCH_AGENT_LABEL,
   KEEPALIVE_LOG_FILENAME,
 } from "./constants.js";
-import { readCachedSession, writeCachedSession } from "./session-cache.js";
+import { readCachedSession, writeCachedSession, type CachedSession } from "./session-cache.js";
 
 export interface TouchResult {
   alive: boolean | null;
@@ -127,19 +127,21 @@ export async function touchMoodleSession(
 export async function keepAliveOnce(baseUrl: string, options: KeepaliveOptions = {}): Promise<KeepaliveRunResult> {
   const session = await readCachedSession(baseUrl, {
     homeDir: options.homeDir,
-    ttlMs: Number.MAX_SAFE_INTEGER,
+    allowExpired: true,
     now: options.now,
   });
   if (!session) {
     return { status: "no_session", time_remaining_seconds: null };
   }
 
-  const touch = await touchMoodleSession(
-    baseUrl,
-    { name: session.cookieName, value: session.cookieValue },
-    session.sesskey,
-    options.fetchImpl ?? fetch,
-  );
+  const touch = session.cookieInvalidated
+    ? { alive: false, timeRemainingSeconds: null }
+    : await touchMoodleSession(
+        baseUrl,
+        { name: session.cookieName, value: session.cookieValue },
+        session.sesskey,
+        options.fetchImpl ?? fetch,
+      );
   if (touch.alive === true) {
     await writeCachedSession({ ...session, savedAt: (options.now ?? Date.now)() }, { homeDir: options.homeDir });
     return { status: "renewed", time_remaining_seconds: touch.timeRemainingSeconds };
@@ -149,6 +151,14 @@ export async function keepAliveOnce(baseUrl: string, options: KeepaliveOptions =
   }
   if (options.renewOnExpiry === false) {
     return { status: "expired", time_remaining_seconds: null };
+  }
+
+  // A durable mobile token renews the cookie with no browser at all, which is
+  // the only renewal a background job can do unattended. Try it before the
+  // cookie-store path, which cannot run headless.
+  if (session.mobileToken) {
+    const renewed = await renewViaMobileToken(baseUrl, session, options);
+    if (renewed) return renewed;
   }
 
   const authenticate = options.authenticate
@@ -169,12 +179,42 @@ export async function keepAliveOnce(baseUrl: string, options: KeepaliveOptions =
   }
 }
 
+/**
+ * Mint a fresh session cookie from the stored mobile token and cache it with a
+ * newly resolved sesskey. Returns null when the site no longer offers the
+ * service or the token was revoked, so the caller falls back to a real login.
+ */
+async function renewViaMobileToken(
+  baseUrl: string,
+  session: CachedSession,
+  options: KeepaliveOptions,
+): Promise<KeepaliveRunResult | null> {
+  // A network fault mid-mint is not a dead token; treat it as "cannot renew now"
+  // and let the caller fall back rather than crashing the keepalive tick.
+  const result = await mintValidatedSession(baseUrl, session, { fetch: options.fetchImpl }).catch(() => null);
+  if (!result) return null;
+
+  await writeCachedSession(
+    {
+      ...session,
+      cookieInvalidated: false,
+      cookieName: result.cookie.name,
+      cookieValue: result.cookie.value,
+      cookieSource: result.cookie.source,
+      sesskey: result.context.sesskey,
+      savedAt: (options.now ?? Date.now)(),
+    },
+    { homeDir: options.homeDir },
+  );
+  return { status: "reauthenticated", time_remaining_seconds: null };
+}
+
 export async function getAuthStatus(baseUrl: string, options: KeepaliveOptions = {}): Promise<AuthStatus> {
   const now = options.now ?? Date.now;
   const keepalive = await keepaliveStatus(options.homeDir);
   const session = await readCachedSession(baseUrl, {
     homeDir: options.homeDir,
-    ttlMs: Number.MAX_SAFE_INTEGER,
+    allowExpired: true,
     now: options.now,
   });
   if (!session) {
@@ -189,13 +229,15 @@ export async function getAuthStatus(baseUrl: string, options: KeepaliveOptions =
     };
   }
 
-  const touch = await touchMoodleSession(
-    baseUrl,
-    { name: session.cookieName, value: session.cookieValue },
-    session.sesskey,
-    options.fetchImpl ?? fetch,
-    false,
-  );
+  const touch = session.cookieInvalidated
+    ? { alive: false, timeRemainingSeconds: null }
+    : await touchMoodleSession(
+        baseUrl,
+        { name: session.cookieName, value: session.cookieValue },
+        session.sesskey,
+        options.fetchImpl ?? fetch,
+        false,
+      );
   return {
     base_url: baseUrl,
     session_cached: true,

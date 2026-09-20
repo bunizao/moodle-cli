@@ -4,7 +4,7 @@ import { doctor, ownedJobs } from "./doctor.js";
 import { rm, readdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import { DefaultRenewalIntegration } from "./mcp/renewal/index.js";
-import { CACHE_DIR_NAME, CONFIG_DIR_NAME } from "./constants.js";
+import { CACHE_DIR_NAME, CONFIG_DIR_NAME, MOODLE_SESSION_COOKIE_PREFIX } from "./constants.js";
 import { runtimeSupportsCookies } from "./mcp/self-command.js";
 import { createMoodleGateway } from "./mcp/gateway.js";
 import { createIntentService, type IntentService } from "./intents.js";
@@ -44,7 +44,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createMoodleClient, type MoodleClient } from "./client.js";
 import { loadConfig } from "./config.js";
-import { AuthError, MoodleAPIError, UsageError } from "./errors.js";
+import { AuthError, CliError, MoodleAPIError, UsageError, asNetworkError } from "./errors.js";
 import {
   formatActivityDetail,
   formatActivityList,
@@ -74,7 +74,8 @@ import {
   keepaliveStatus,
   uninstallKeepalive,
 } from "./keepalive.js";
-import { getAuthenticatedSessionWithBrowserFallback, invalidateCachedSession } from "./auth.js";
+import { authenticateWithPastedCookie, getAuthenticatedSessionWithBrowserFallback, invalidateCachedSession } from "./auth.js";
+import { readSecretLine } from "./secret-input.js";
 import { configureTerminalTables } from "./terminal-table.js";
 import { MOODLE_TAGLINE, MOODLE_WORDMARK, showWordmark } from "./wordmark.js";
 import { VERSION } from "./version.js";
@@ -541,7 +542,9 @@ export function buildProgram(io: CliIO = {}): Command {
 
   addOutputOptions(program.command("doctor").description("Diagnose runtime, browser access, session, background jobs and MCP setup.").summary("Diagnose runtime, session and MCP setup")).action(async (options: OutputCommandOptions) => {
     const result = await doctor(io);
-    await runtime.output(result, () => result.checks.map(c => `${c.status.toUpperCase()} ${c.name}: ${c.detail}${c.hint ? `\n  ${c.hint}` : ""}`).join("\n") + "\n\nTry  moodle auth login · moodle mcp status", options);
+    await runtime.output(result, () => result.checks.map(c => `${c.status.toUpperCase()} ${c.name}: ${c.detail}${c.hint ? `\n  ${c.hint}` : ""}`).join("\n") + `\n\nTry  ${doctorNextSteps(result.checks).join(" · ")}`, options);
+    // A health check that always succeeds cannot be scripted against.
+    if (result.checks.some(c => c.status === "fail")) process.exitCode = 3;
   });
   program.command("completion").description("Print shell completion for zsh, bash or fish.").addArgument(program.createArgument("<shell>", "Shell to target").choices(["zsh", "bash", "fish"])).action((shell: string) => {
     const names = program.commands.filter(c => c.name() !== "help").flatMap(c => [c.name(), ...c.aliases()]);
@@ -586,23 +589,42 @@ export function buildProgram(io: CliIO = {}): Command {
     },
   );
 
-  addOutputOptions(auth.command("login").description("Extract a fresh session, opening the browser when needed.")).action(
-    async (options: OutputCommandOptions) => {
+  addOutputOptions(
+    auth
+      .command("login")
+      .description("Sign in through a browser the CLI controls, then capture the session.")
+      .option("--paste", "Take the MoodleSession cookie from a prompt instead of the browser store."),
+  ).action(
+    async (options: OutputCommandOptions & { paste?: boolean }) => {
       const baseUrl = await runtime.baseUrl();
-      await invalidateCachedSession(baseUrl, { homeDir: io.homeDir });
       const humanOutput = outputFormat(options, stdout) === "table";
-      const session = await getAuthenticatedSessionWithBrowserFallback(baseUrl, {
-        env: io.env,
-        fetch: io.fetchImpl,
-        homeDir: io.homeDir,
-        onBrowserOpened: humanOutput
-          ? (url) => stderr.write(`No active Moodle session found. Complete login in your browser:\n${url}\n`)
-          : undefined,
-      });
+      const session = options.paste
+        ? await pasteLogin(baseUrl, humanOutput)
+        : await getAuthenticatedSessionWithBrowserFallback(baseUrl, {
+          env: io.env,
+          fetch: io.fetchImpl,
+          homeDir: io.homeDir,
+          captureMobileToken: true,
+          onBrowserOpened: humanOutput
+            ? () => stderr.write("A browser window opened. Sign in there; I'll capture the session automatically.\n")
+            : undefined,
+        });
       const result = { base_url: baseUrl, userid: session.userid, cookie_source: session.cookie.source ?? "unknown" };
       await runtime.output(result, () => `Authenticated as userid ${result.userid} via ${result.cookie_source}`, options);
     },
   );
+
+  async function pasteLogin(baseUrl: string, humanOutput: boolean) {
+    const input = io.stdin ?? process.stdin;
+    if (humanOutput && input.isTTY) {
+      stderr.write(`Copy the ${MOODLE_SESSION_COOKIE_PREFIX} cookie for ${baseUrl} from your browser's developer tools.\nThe value is not echoed and is stored in the encrypted session cache.\n`);
+    }
+    const raw = await readSecretLine(input, stderr as NodeJS.WritableStream, input.isTTY ? `${MOODLE_SESSION_COOKIE_PREFIX}: ` : "");
+    if (raw === null) {
+      throw new CliError("cancelled", "Login cancelled.");
+    }
+    return authenticateWithPastedCookie(baseUrl, raw, { env: io.env, fetch: io.fetchImpl, homeDir: io.homeDir, captureMobileToken: true });
+  }
 
   const keepalive = addOutputOptions(
     auth
@@ -627,7 +649,7 @@ export function buildProgram(io: CliIO = {}): Command {
       { yes: Boolean(globals.yes), dryRun: Boolean(globals.dryRun), interactive: human() },
     )) return;
     const baseUrl = await runtime.baseUrl();
-    await getAuthenticatedSessionWithBrowserFallback(baseUrl, { env: io.env, homeDir: io.homeDir, fetch: io.fetchImpl, noCache: true, nonInteractive: true });
+    await getAuthenticatedSessionWithBrowserFallback(baseUrl, { env: io.env, homeDir: io.homeDir, fetch: io.fetchImpl, noCache: true, nonInteractive: true, captureMobileToken: true });
     const result = await installKeepalive({ homeDir: io.homeDir, intervalMinutes: options.interval });
     await runtime.output(result, () => `Keepalive installed: renews every ${result.interval_minutes} min\nAgent: ${result.plist_path}\nLog: ${result.log_path}`, options);
   });
@@ -822,9 +844,9 @@ export async function runCli(argv = process.argv, io: CliIO = {}): Promise<numbe
       return 0;
     }
     const format = errorOutputFormat(args, stdout);
-    const normalized = normalizeError(error);
+    const normalized = normalizeError(asNetworkError(error) ?? error);
     const reference = error instanceof ReferenceError ? error : undefined;
-    const reported = reportError(error, "json");
+    const reported = reportError(asNetworkError(error) ?? error, "json");
     const envelope = JSON.parse(reported.text);
     const hint = reference?.hint || normalized.hint || ({ auth: "Run moodle auth login, or moodle doctor.", config: "Run moodle doctor to check configuration.", not_found: "Run moodle units or moodle find QUERY.", usage: "Run moodle --help or moodle commands --json.", upstream: "Run moodle doctor, then retry.", network: "Check the connection, then retry.", unexpected: "Run moodle doctor; use --verbose for request timings.", cancelled: "Retry when ready." }[normalized.code]);
     envelope.error.hint = hint;
@@ -832,6 +854,22 @@ export async function runCli(argv = process.argv, io: CliIO = {}): Promise<numbe
     stderr.write(format === "table" ? `✗ ${String(envelope.error.message).replace(/\s+/gu, " ")}\n${hint}\n` : `${JSON.stringify(envelope)}\n`);
     return envelope.exit_code;
   }
+}
+
+/**
+ * Suggest the command that clears the worst check, not a fixed pair. Telling a
+ * user to run `moodle auth login` when the cookie store is unreadable sends
+ * them straight back into the failure they just reported.
+ */
+function doctorNextSteps(checks: ReadonlyArray<{ name: string; status: string }>): string[] {
+  const failing = new Set(checks.filter(c => c.status !== "pass").map(c => c.name));
+  const steps: string[] = [];
+  if (failing.has("browser")) steps.push("grant Full Disk Access, then rerun moodle doctor");
+  else if (failing.has("session")) steps.push("moodle auth login");
+  if (failing.has("sqlite")) steps.push("install Node 22.13+ or Bun");
+  if (failing.has("config")) steps.push("moodle units");
+  if (failing.has("job")) steps.push("moodle auth keepalive install");
+  return steps.length ? steps : ["moodle todo", "moodle mcp status"];
 }
 
 async function dispatchUrl(runtime: Runtime, target: string, options: OutputCommandOptions): Promise<void> {
@@ -1026,6 +1064,7 @@ function pathsReferToSameFile(moduleUrl: string, executable: string | undefined)
 const isMain = (import.meta as ImportMeta & { main?: boolean }).main === true || pathsReferToSameFile(import.meta.url, process.argv[1]);
 if (isMain) {
   runCli().then((code) => {
-    process.exitCode = code;
+    // A command that ran fine but reported a failure (doctor) sets its own code.
+    process.exitCode = code || process.exitCode;
   });
 }

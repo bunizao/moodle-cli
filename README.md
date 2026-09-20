@@ -67,6 +67,14 @@ moodle
 
 On first use, enter your Moodle site origin, such as `https://moodle.example.edu`. `moodle-cli` validates it and saves it to `~/.config/moodle-cli/config.yaml`. If the CLI cannot find an active session, it opens your university's sign-in page and waits for you to finish.
 
+On macOS the cookie store sits behind Full Disk Access, which is granted to your terminal application rather than to the CLI. If `moodle doctor` reports that the store cannot be opened, either grant that access and restart the terminal, or hand the cookie over once:
+
+```bash
+moodle auth login --paste
+```
+
+The prompt does not echo, and the value is kept in the encrypted session cache, so this is a one-time step. Paste whatever the browser gives you: in the developer tools' Network tab, `Copy as cURL` on any request to the site carries the cookie, as does the `MoodleSession` value from the cookie panel.
+
 Keep the session active on macOS with `moodle auth keepalive install`. On Linux, schedule `moodle auth keepalive --json` every 30 minutes with cron.
 
 GitHub Releases also provide standalone binaries for macOS arm64 and Linux x64.

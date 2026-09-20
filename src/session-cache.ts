@@ -19,9 +19,18 @@ export interface CachedSession {
   sesskey: string;
   userid: number;
   savedAt: number;
+  // An upstream rejection invalidates the cookie, not the durable credentials.
+  cookieInvalidated?: boolean;
   // Site services already reported as disabled, and the profile the dashboard gave us.
   unavailable?: string[];
   user?: UserInfo;
+  // A durable Moodle mobile Web Service token, when the site offers one. It
+  // renews the session cookie without a browser; see mobile-login-core.ts.
+  mobileToken?: { wstoken: string; privatetoken?: string };
+  // Whether this instance exposes the mobile web service, detected once and
+  // cached so we neither re-probe a known-unsupported site nor keep trying to
+  // capture a token it will never grant.
+  mobileServiceEnabled?: boolean;
 }
 
 export interface SessionCacheOptions {
@@ -29,6 +38,8 @@ export interface SessionCacheOptions {
   ttlMs?: number;
   now?: () => number;
   noCache?: boolean;
+  // Read stale credentials for renewal or metadata updates, never direct reuse.
+  allowExpired?: boolean;
   fs?: SessionCacheFs;
   encryptionKey?: () => Promise<string>;
 }
@@ -53,7 +64,7 @@ export function isCachedSessionFresh(
   now = Date.now,
 ): boolean {
   const age = now() - session.savedAt;
-  return age >= 0 && age <= ttlMs;
+  return !session.cookieInvalidated && age >= 0 && age <= ttlMs;
 }
 
 export async function readCachedSession(
@@ -95,7 +106,7 @@ export async function readCachedSession(
   }
 
   const ttlMs = options.ttlMs ?? DEFAULT_SESSION_CACHE_TTL_MS;
-  return isCachedSessionFresh(session, ttlMs, options.now ?? Date.now) ? session : null;
+  return options.allowExpired || isCachedSessionFresh(session, ttlMs, options.now ?? Date.now) ? session : null;
 }
 
 export async function writeCachedSession(
@@ -116,7 +127,7 @@ export async function deleteCachedSession(
   baseUrl: string,
   options: SessionCacheOptions = {},
 ): Promise<void> {
-  const current = await readCachedSession(baseUrl, { ...options, noCache: false, ttlMs: Number.MAX_SAFE_INTEGER });
+  const current = await readCachedSession(baseUrl, { ...options, noCache: false, allowExpired: true });
   if (!current) {
     return;
   }
@@ -162,9 +173,14 @@ function parseCachedSession(raw: string): CachedSession | null {
     sesskey: session.sesskey,
     userid: session.userid,
     savedAt: session.savedAt,
+    ...(session.cookieInvalidated === true ? { cookieInvalidated: true } : {}),
     ...(typeof session.cookieSource === "string" ? { cookieSource: session.cookieSource } : {}),
     ...(Array.isArray(session.unavailable) && session.unavailable.every((name) => typeof name === "string") ? { unavailable: session.unavailable } : {}),
     ...(isRecord(session.user) && typeof session.user.fullname === "string" && typeof session.user.userid === "number" ? { user: session.user as unknown as UserInfo } : {}),
+    ...(isRecord(session.mobileToken) && typeof session.mobileToken.wstoken === "string"
+      ? { mobileToken: { wstoken: session.mobileToken.wstoken, ...(typeof session.mobileToken.privatetoken === "string" ? { privatetoken: session.mobileToken.privatetoken } : {}) } }
+      : {}),
+    ...(typeof session.mobileServiceEnabled === "boolean" ? { mobileServiceEnabled: session.mobileServiceEnabled } : {}),
   };
 }
 
