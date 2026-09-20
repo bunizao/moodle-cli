@@ -1,4 +1,4 @@
-import { chmod, mkdir, mkdtemp, rm, writeFile, realpath } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile, realpath } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { expect, it, vi } from "vitest";
@@ -35,5 +35,21 @@ it("resolves PATH, cached and first-use Wrangler without installing for construc
     expect(await resolveWrangler({ run }, { homeDir: home, env: { PATH: bin }, yes: true, notice: download })).toEqual({ command: node, args: [cached] });
     expect(run).toHaveBeenCalledWith(npm, expect.arrayContaining([`wrangler@${WRANGLER_VERSION}`, "--prefix"]));
     expect(download).toHaveBeenCalledOnce();
+  } finally { await rm(home, { recursive: true, force: true }); }
+});
+
+it("pins the tool directory with a package.json and reports the installer output when nothing was installed", async () => {
+  const home = await realpath(await mkdtemp(join(tmpdir(), "moodle-wrangler-")));
+  const bin = join(home, "bin");
+  await mkdir(bin);
+  for (const name of ["node", "npm"]) { const file = join(bin, name); await writeFile(file, "#!/bin/sh\nexit 0\n"); await chmod(file, 0o755); }
+  const root = join(home, ".config", "moodle-cli", "tools", `wrangler@${WRANGLER_VERSION}`);
+  // An installer that walks up to a parent package.json exits 0 and leaves the tool directory empty.
+  const run = vi.fn(async () => ({ stdout: "", stderr: "npm warn saveError ENOENT\n" }));
+  try {
+    const failure = await resolveWrangler({ run }, { homeDir: home, env: { PATH: bin }, yes: true, notice: () => undefined }).catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(Error);
+    expect((failure as Error).message).toMatch(/did not create .*wrangler\.js\.\nnpm warn saveError ENOENT\nRemove .* and retry moodle mcp deploy\./u);
+    expect(JSON.parse(await readFile(join(root, "package.json"), "utf8"))).toEqual({ private: true });
   } finally { await rm(home, { recursive: true, force: true }); }
 });

@@ -1,6 +1,6 @@
 import { createUi } from "@bunizao/cli-kit";
 import { UsageError } from "../errors.js";
-import { mkdir } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -37,10 +37,16 @@ export async function resolveWrangler(runner: DeploymentCommandRunner, options: 
     }
     notice(`Cloudflare management needs Wrangler ${WRANGLER_VERSION}; downloading once to ${root}.`);
     await mkdir(root, { recursive: true, mode: 0o700 });
-    await runner.run(bun ?? npm!, bun
+    // Bun and npm walk up from an empty directory to the nearest package.json and
+    // install there, so a home directory that has one would swallow the download.
+    await writeFile(join(root, "package.json"), '{ "private": true }\n');
+    const result = await runner.run(bun ?? npm!, bun
       ? ["install", "--cwd", root, "--no-save", `wrangler@${WRANGLER_VERSION}`]
       : ["install", "--prefix", root, "--no-save", "--package-lock=false", "--no-audit", "--no-fund", `wrangler@${WRANGLER_VERSION}`]);
-    if (!existsSync(script)) throw new Error("Wrangler installation did not create the expected executable. Retry moodle mcp deploy.");
+    if (!existsSync(script)) {
+      const output = `${result.stderr}\n${result.stdout}`.trim().split(/\r?\n/u).slice(-5).join("\n");
+      throw new Error(`Wrangler installation did not create ${script}.${output ? `\n${output}` : ""}\nRemove ${root} and retry moodle mcp deploy.`);
+    }
   }
   // Wrangler is tested by Cloudflare on Node; Bun only runs it when Node is absent.
   return { command: node ?? bun!, args: [script] };

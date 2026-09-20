@@ -161,6 +161,7 @@ class DefaultMcpCommandService implements McpCommandService {
   async deploy(input: McpDeployInput): Promise<McpCommandOutput> {
     // Every step here waits on Wrangler, Cloudflare, or Moodle, so the terminal reports
     // the running step instead of staying blank until the whole run finishes.
+    await this.prepareToolchain(input.yes);
     const progress = this.progress();
     try {
       progress.begin("Reading Cloudflare account and deployment state");
@@ -284,6 +285,7 @@ class DefaultMcpCommandService implements McpCommandService {
   async status(input: { verbose: boolean; logs: boolean }): Promise<McpCommandOutput> {
     const config = await this.config();
     const profile = deriveMcpProfile(config.baseUrl);
+    await this.prepareToolchain();
     const progress = this.progress();
     let managed;
     try {
@@ -328,6 +330,7 @@ class DefaultMcpCommandService implements McpCommandService {
 
   async login(): Promise<McpCommandOutput> {
     const profile = deriveMcpProfile((await this.config()).baseUrl);
+    await this.prepareToolchain();
     const progress = this.progress();
     try {
       // Sign-in can wait on the browser for up to two minutes, so say so rather than
@@ -748,6 +751,13 @@ class DefaultMcpCommandService implements McpCommandService {
   private wrangler(): NodeWranglerDeploymentAdapter {
     this.wranglerInstance ??= new NodeWranglerDeploymentAdapter();
     return this.wranglerInstance;
+  }
+
+  // The first-use Wrangler download asks a question, so it runs before a spinner
+  // owns the terminal rather than drawing its prompt underneath one.
+  private async prepareToolchain(yes = false): Promise<void> {
+    if (this.options.createDeployment || this.options.wrangler) return;
+    await this.wrangler().prepare({ yes });
   }
 
   private releaseDigest(): Promise<string> {

@@ -304,6 +304,11 @@ export class NodeWranglerDeploymentAdapter implements WranglerDeploymentAdapter 
     await this.wrangler(["delete", input.workerName, "--force"], input.accountId);
   }
 
+  /** Locate or download Wrangler now, so a first-use prompt is not drawn under a spinner later. */
+  async prepare(options: { yes?: boolean } = {}): Promise<void> {
+    if (!this.wranglerBinPath) await resolveWrangler(this.runner, options);
+  }
+
   private async wrangler(
     args: string[],
     accountId?: string,
