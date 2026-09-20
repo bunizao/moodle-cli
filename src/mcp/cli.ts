@@ -1,3 +1,5 @@
+import { createTheme, type Theme } from "@bunizao/cli-kit";
+
 import { deleteCachedSession } from "../session-cache.js";
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
@@ -109,6 +111,8 @@ export interface McpCommandServiceOptions {
   configLoader?: () => Promise<MoodleConfig>;
   createDeployment?: (background: boolean) => ManagedMcpDeployment;
   prompt?: (question: string) => Promise<string>;
+  /** The CLI decides whether this run is coloured; the service only asks. */
+  color?: () => boolean;
 }
 
 export function createMcpCommandService(options: McpCommandServiceOptions = {}): McpCommandService {
@@ -162,6 +166,7 @@ class DefaultMcpCommandService implements McpCommandService {
     // Every step here waits on Wrangler, Cloudflare, or Moodle, so the terminal reports
     // the running step instead of staying blank until the whole run finishes.
     await this.prepareToolchain(input.yes);
+    const theme = this.theme();
     const progress = this.progress();
     try {
       progress.begin("Reading Cloudflare account and deployment state");
@@ -206,8 +211,8 @@ class DefaultMcpCommandService implements McpCommandService {
       const events: DeploymentEvent[] = [];
       for await (const event of deployment.apply(plan)) {
         events.push(event);
-        if (event.status === "started") progress.begin(formatOnboardingStage(event.stageId, "pending"));
-        else if (event.status === "completed") progress.end(formatOnboardingStage(event.stageId, "completed"));
+        if (event.status === "started") progress.begin(formatOnboardingStage(event.stageId, "pending", theme));
+        else if (event.status === "completed") progress.end(formatOnboardingStage(event.stageId, "completed", theme));
         else progress.clear();
       }
       progress.begin("Reading deployment status");
@@ -236,7 +241,7 @@ class DefaultMcpCommandService implements McpCommandService {
         moodleSite: identity.moodleOrigin,
         moodleUser: events.find((event) => event.moodleUser)?.moodleUser ?? "Unknown Moodle user",
         clients: await this.connectedClientNames(identity.profile),
-      }),
+      }, this.theme()),
     };
   }
 
@@ -314,16 +319,21 @@ class DefaultMcpCommandService implements McpCommandService {
       ...(input.verbose ? { serviceVersion: VERSION } : {}),
       ...(input.logs ? { logs: { available: false, reason: "live_tail_required" } } : {}),
     };
+    const theme = this.theme();
+    // "missing", "not deployed" and the recovery warning are the words a person scans for,
+    // so they carry the tone; the labels stay quiet.
+    const row = (label: string, value: string) => `${theme.dim(`${label}:`)} ${theme.status(value, { pass: "success", warn: "warning", fail: "danger", unknown: "muted", "not deployed": "warning", missing: "warning", "not connected": "warning", stored: "success", installed: "success", connected: "success" })}`;
     return {
       data,
       text: [
-        `Moodle MCP: ${managed.readiness}`,
-        `Worker: ${managed.worker?.workerName ?? "not deployed"}`,
-        `Credentials: ${managed.credentialsStored ? "stored" : "missing"}`,
-        `Renewal: ${managed.renewalInstalled ? "installed" : "missing"}`,
-        `Clients: ${managed.clientsConnected ? "connected" : "not connected"}`,
-        ...(updateAvailable ? ["Update: remote Worker is behind this CLI. Run `moodle mcp deploy` to update it."] : []),
-        ...(input.logs ? ["Logs: use a live sanitized tail from an interactive terminal"] : []),
+        row("Moodle MCP", managed.readiness),
+        row("Worker", managed.worker?.workerName ?? "not deployed"),
+        row("Credentials", managed.credentialsStored ? "stored" : "missing"),
+        row("Renewal", managed.renewalInstalled ? "installed" : "missing"),
+        row("Clients", managed.clientsConnected ? "connected" : "not connected"),
+        ...(managed.recoveryActive ? [`${theme.dim("Release:")} ${theme.tone("warning", "the recovery Worker is live; OAuth sign-in is disabled until")} ${theme.key("moodle mcp deploy")} ${theme.tone("warning", "succeeds.")}`] : []),
+        ...(updateAvailable ? [`${theme.dim("Update:")} remote Worker is behind this CLI. Run ${theme.key("moodle mcp deploy")} to update it.`] : []),
+        ...(input.logs ? [`${theme.dim("Logs:")} use a live sanitized tail from an interactive terminal`] : []),
       ].join("\n"),
     };
   }
@@ -784,6 +794,10 @@ class DefaultMcpCommandService implements McpCommandService {
 
   // Progress belongs on stderr so that --json and --yaml keep stdout to themselves.
   // One shared reporter, so anything else that writes can stop the animation first.
+  private theme(): Theme {
+    return createTheme(this.options.color?.() ?? false);
+  }
+
   private progress(): ProgressReporter {
     this.progressReporter ??= createProgressReporter({ stream: this.options.stderr ?? process.stderr });
     return this.progressReporter;

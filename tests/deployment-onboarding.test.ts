@@ -1,3 +1,4 @@
+import { createTheme } from "@bunizao/cli-kit";
 import { describe, expect, it, vi } from "vitest";
 import {
   ONBOARDING_COPY,
@@ -109,5 +110,24 @@ describe("deployment progress reporter", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  // Colour is a role, not decoration: the same run must read identically with it switched off.
+  it("paints the ready screen with the shared theme and stays plain without it", () => {
+    const input = {
+      endpoint: "https://worker.example/mcp",
+      moodleSite: "https://moodle.example.edu",
+      moodleUser: "Ada Lovelace",
+      clients: ["Codex", "Cursor"],
+    };
+    const plain = successfulDeploymentCopy(input);
+    const painted = successfulDeploymentCopy(input, createTheme(true));
+
+    expect(plain).not.toMatch(/\u001B\[/u);
+    expect(painted).toMatch(/\u001B\[/u);
+    // eslint-disable-next-line no-control-regex
+    expect(painted.replaceAll(/\u001B\[[0-9;]*m/gu, "")).toBe(plain);
+    expect(formatOnboardingStage("check_cloudflare_access", "completed", createTheme(true))).toMatch(/\u001B\[/u);
+    expect(formatOnboardingStage("check_cloudflare_access", "completed")).toBe("✓ [2/8] Checking Cloudflare access");
   });
 });

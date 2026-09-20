@@ -5,6 +5,7 @@ import type { MoodleGateway } from "../src/mcp/gateway.js";
 import { LEGACY_PROTOCOL_VERSION, MODERN_PROTOCOL_VERSION, SUPPORTED_PROTOCOL_VERSIONS } from "../src/mcp/protocol.js";
 import { createMoodleMcpServer, TOOL_OUTPUT_SCHEMAS } from "../src/mcp/server.js";
 import { UsageError } from "../src/errors.js";
+import { readableToolResult, smokeMoodleUser } from "../src/mcp/deployment/node-adapters.js";
 
 describe("Moodle MCP server", () => {
   it("discovers the modern stateless server without advertising unsupported capabilities", async () => {
@@ -418,6 +419,23 @@ describe("Moodle MCP server", () => {
     for (const method of [getCourse, getGrades]) {
       expect(method).toHaveBeenCalledWith(expect.objectContaining({ courseId }));
     }
+  });
+
+  // The deployment smoke reads these results to decide whether a release is healthy. Renaming a
+  // tool or a field without updating it parks production on the OAuth-less recovery release.
+  it("answers the deployment smoke with the fields it reads", async () => {
+    const server = createMoodleMcpServer(fakeGateway());
+    const call = async (name: string, args: Record<string, unknown>) => {
+      const response = await server.handle({ jsonrpc: "2.0", id: name, method: "tools/call", params: modernParams({ name, arguments: args }) });
+      return (response as { result: unknown }).result;
+    };
+
+    expect(smokeMoodleUser(await call("home", {}))).toBe("Ada Lovelace");
+    const units = readableToolResult(await call("units", { limit: 1 })).units as Array<{ id: number }>;
+    expect(Array.isArray(units)).toBe(true);
+    expect(Number.isSafeInteger(units[0]?.id)).toBe(true);
+    const detail = readableToolResult(await call("unit", { unit: units[0].id }));
+    expect((detail.unit as { id: number }).id).toBe(units[0].id);
   });
 });
 
