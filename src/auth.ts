@@ -754,7 +754,7 @@ function cookieHostRank(domain: string | undefined, host: string): number | null
   return null;
 }
 
-function loginUrl(baseUrl: string): string {
+export function loginUrl(baseUrl: string): string {
   return new URL(LOGIN_PATH, `${baseUrl.replace(/\/+$/, "")}/`).toString();
 }
 

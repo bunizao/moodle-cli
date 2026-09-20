@@ -10,7 +10,7 @@ import { createMoodleGateway } from "./mcp/gateway.js";
 import { createIntentService, type IntentService } from "./intents.js";
 import { humanDescription, type Intent } from "./intent-contract.js";
 import { ReferenceError, normalize, resolveSection, splitUnitPhrase, type Candidate } from "./resolve.js";
-import { renderScreen } from "./screens.js";
+import { renderScreen, tryLines } from "./screens.js";
 import type { Writable } from "node:stream";
 import { spawn } from "node:child_process";
 import { Command } from "commander";
@@ -74,7 +74,9 @@ import {
   keepaliveStatus,
   uninstallKeepalive,
 } from "./keepalive.js";
-import { authenticateWithPastedCookie, getAuthenticatedSessionWithBrowserFallback, invalidateCachedSession } from "./auth.js";
+import { authenticateWithPastedCookie, getAuthenticatedSession, getAuthenticatedSessionWithBrowserFallback, invalidateCachedSession } from "./auth.js";
+import { browserCookieStores, cookieStoresBlocked } from "./cookie-stores.js";
+import { signInInteractively } from "./onboarding.js";
 import { readSecretLine } from "./secret-input.js";
 import { configureTerminalTables } from "./terminal-table.js";
 import { MOODLE_TAGLINE, MOODLE_WORDMARK, showWordmark } from "./wordmark.js";
@@ -217,7 +219,7 @@ export function buildProgram(io: CliIO = {}): Command {
       const format = outputFormat(merged, stdout);
       const human = format === "table" ? formatter() : "";
       const text = format === "table"
-        ? `${human}${human.includes("Try  ") ? "" : "\n\nTry  moodle due · moodle units · moodle --help"}\n`
+        ? `${human}${human.includes("Try  ") ? "" : `\n\n${tryLines(["moodle due", "moodle units", "moodle --help"])}`}\n`
         : format === "json"
           ? `${JSON.stringify(JSON.parse(render(data, { format, fields: parseFields(data, merged.fields) })), null, merged.pretty ? 2 : undefined)}\n`
           : render(data, { format, fields: parseFields(data, merged.fields) });
@@ -259,22 +261,26 @@ export function buildProgram(io: CliIO = {}): Command {
 
   const theme = (): Theme => createTheme(colorEnabled(stderr as { isTTY?: boolean }, io.env) && program.opts().color !== false);
 
-  // First run on this machine: the wordmark, one note, then the browser sign-in `auth login` would do.
+  // First run on this machine: the wordmark, one note, then whichever sign-in the person picks.
   const signIn = async (baseUrl: string): Promise<void> => {
     const ui = createUi({ input: io.stdin ?? process.stdin, output: stderr as Writable, interactive: true });
-    showWordmark(ui);
-    ui.note(`No Moodle session for ${baseUrl}.\nSign in once in your browser; later commands reuse that session.`, "One-time setup");
-    if (!await ui.confirm("Open the browser to sign in?", { initial: true })) {
-      throw new AuthError(`No usable MoodleSession found for ${baseUrl}.`, "Run moodle auth login when you are ready.");
-    }
-    const spin = ui.spinner();
-    spin.start("Opening the browser");
+    const auth = { env: io.env, fetch: io.fetchImpl, homeDir: io.homeDir, captureMobileToken: true };
+    runtime.busy = true;
     try {
-      const session = await getAuthenticatedSessionWithBrowserFallback(baseUrl, { env: io.env, fetch: io.fetchImpl, homeDir: io.homeDir, onBrowserOpened: url => spin.message(`Finish signing in at ${url}`) });
-      spin.stop(`Signed in as userid ${session.userid}`);
-    } catch (error) {
-      spin.error("Sign-in did not complete");
-      throw error;
+      await signInInteractively(ui, {
+        baseUrl,
+        platform: process.platform,
+        showWordmark,
+        storesBlocked: async () => cookieStoresBlocked(await browserCookieStores({ homeDir: io.homeDir })),
+        openInBrowser,
+        readBrowserSession: () => getAuthenticatedSession(baseUrl, { ...auth, noCache: true, nonInteractive: true }),
+        browserLogin: onBrowserOpened => getAuthenticatedSessionWithBrowserFallback(baseUrl, { ...auth, onBrowserOpened }),
+        pasteLogin: () => pasteLogin(baseUrl, true),
+        keepaliveInstalled: async () => (await keepaliveStatus(io.homeDir)).installed,
+        installKeepalive: () => installKeepalive({ homeDir: io.homeDir }),
+      });
+    } finally {
+      runtime.busy = false;
     }
   };
 
@@ -408,7 +414,7 @@ export function buildProgram(io: CliIO = {}): Command {
         else { const id = await createIntentService(createMoodleGateway(client)).resolveItem(ref); const item = await client.getActivity(id); url = item.url; }
       }
       if (!url || !/^https?:/u.test(url)) throw new UsageError("This item has no browser URL.");
-      await new Promise<void>((resolve, reject) => { const child = spawn(process.platform === "darwin" ? "open" : process.platform === "win32" ? "explorer.exe" : "xdg-open", [url], { stdio: "ignore" }); child.once("error", reject); child.once("exit", code => code === 0 ? resolve() : reject(new Error("Could not open the browser."))); });
+      await openInBrowser(url);
       await runtime.output({ opened: url }, () => `Opened ${url}`, options);
     });
 
@@ -542,7 +548,7 @@ export function buildProgram(io: CliIO = {}): Command {
 
   addOutputOptions(program.command("doctor").description("Diagnose runtime, browser access, session, background jobs and MCP setup.").summary("Diagnose runtime, session and MCP setup")).action(async (options: OutputCommandOptions) => {
     const result = await doctor(io);
-    await runtime.output(result, () => result.checks.map(c => `${c.status.toUpperCase()} ${c.name}: ${c.detail}${c.hint ? `\n  ${c.hint}` : ""}`).join("\n") + `\n\nTry  ${doctorNextSteps(result.checks).join(" · ")}`, options);
+    await runtime.output(result, () => result.checks.map(c => `${c.status.toUpperCase()} ${c.name}: ${c.detail}${c.hint ? `\n  ${c.hint}` : ""}`).join("\n") + `\n\n${tryLines(doctorNextSteps(result.checks))}`, options);
     // A health check that always succeeds cannot be scripted against.
     if (result.checks.some(c => c.status === "fail")) process.exitCode = 3;
   });
@@ -861,6 +867,14 @@ export async function runCli(argv = process.argv, io: CliIO = {}): Promise<numbe
  * user to run `moodle auth login` when the cookie store is unreadable sends
  * them straight back into the failure they just reported.
  */
+function openInBrowser(url: string): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    const child = spawn(process.platform === "darwin" ? "open" : process.platform === "win32" ? "explorer.exe" : "xdg-open", [url], { stdio: "ignore" });
+    child.once("error", reject);
+    child.once("exit", code => code === 0 ? resolve() : reject(new Error("Could not open the browser.")));
+  });
+}
+
 function doctorNextSteps(checks: ReadonlyArray<{ name: string; status: string }>): string[] {
   const failing = new Set(checks.filter(c => c.status !== "pass").map(c => c.name));
   const steps: string[] = [];
