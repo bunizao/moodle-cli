@@ -1,6 +1,9 @@
 import { HTMLElement, parse } from "node-html-parser";
 import type {
   FeedbackCriterion,
+  QuizAttempt,
+  QuizAttemptReview,
+  QuizQuestion,
   Activity,
   Assignment,
   CourseGrades,
@@ -326,11 +329,95 @@ export function parseQuizHtml(html: string, quizId: number, baseUrl: string): Qu
     ...activityContext(html),
     opens_pretty: extractLabeledText(html, "Opens:"),
     closes_pretty: extractLabeledText(html, "Closes:"),
-    attempts_allowed: cleanText(root.textContent.match(/Attempts allowed:\s*([^\n]+)/i)?.[1] ?? ""),
+    attempts_allowed: labeledParagraph(root, "Attempts allowed:"),
+    time_limit: labeledParagraph(root, "Time limit:"),
     availability: cleanText(root.textContent.match(/This quiz is currently[^\n]+/i)?.[0] ?? ""),
     grade: findTableValue(html, "Grade"),
+    attempts: parseQuizAttempts(root, baseUrl),
     url: `${baseUrl.replace(/\/$/, "")}/mod/quiz/view.php?id=${quizId}`,
   };
+}
+
+// Quiz info lines are sibling paragraphs, so whole-page text runs them together.
+function labeledParagraph(root: HTMLElement, label: string): string {
+  for (const p of root.querySelectorAll("p")) {
+    const line = cleanNodeText(p);
+    if (line.startsWith(label)) return cleanText(line.slice(label.length));
+  }
+  return "";
+}
+
+// Each attempt is a card holding a summary table and a Review link; the attempt id
+// only exists in that link, so cards without one (an attempt still in progress) are skipped.
+function parseQuizAttempts(root: HTMLElement, baseUrl: string): QuizAttempt[] {
+  const attempts: QuizAttempt[] = [];
+  for (const table of root.querySelectorAll("table.quizreviewsummary")) {
+    const card = table.closest(".card") ?? table.parentNode;
+    const link = card?.querySelector('a[href*="/mod/quiz/review.php"]');
+    const reviewUrl = link ? resolveUrl(baseUrl, link.getAttribute("href") ?? "") : "";
+    const id = numberQueryValue(reviewUrl, "attempt");
+    if (!link || id === null) continue;
+    const summary = tableValues(table);
+    const number = Number(cleanNodeText(card?.querySelector(".card-title")).match(/\d+/)?.[0] ?? attempts.length + 1);
+    attempts.push({ id, number, status: summary.Status ?? "", started: summary.Started ?? "", completed: summary.Completed ?? "", duration: summary.Duration ?? "", marks: summary.Marks ?? "", grade: summary.Grade ?? "", review_url: reviewUrl });
+  }
+  return attempts;
+}
+
+export function parseQuizReviewHtml(html: string, attemptId: number, baseUrl: string): QuizAttemptReview {
+  const root = parse(html);
+  const summary = tableValues(root.querySelector("table.quizreviewsummary"));
+  const form = root.querySelector("form.questionflagsaveform");
+  const url = `${baseUrl.replace(/\/$/, "")}/mod/quiz/review.php?attempt=${attemptId}`;
+  return {
+    id: attemptId,
+    quiz_id: numberQueryValue(form?.getAttribute("action") ?? "", "cmid") ?? 0,
+    course_id: parseCourseIdFromPageHtml(html) ?? 0,
+    status: summary.Status ?? "",
+    started: summary.Started ?? "",
+    completed: summary.Completed ?? "",
+    duration: summary.Duration ?? "",
+    marks: summary.Marks ?? "",
+    grade: summary.Grade ?? "",
+    questions: root.querySelectorAll("div.que").map(parseQuizQuestion),
+    url,
+  };
+}
+
+// The question type is the second class on div.que ("que multichoice deferredfeedback complete").
+function parseQuizQuestion(que: HTMLElement): QuizQuestion {
+  const answer = que.querySelector(".answer");
+  // Choice questions keep the learner's picks as checked inputs; free-text types print the text.
+  const picked = answer?.querySelectorAll("input:checked, input[checked]").map((input) => {
+    const label = input.getAttribute("aria-labelledby");
+    return cleanTableCell(label ? que.querySelector(`[id="${label}"]`) : input.parentNode);
+  }).filter(Boolean) ?? [];
+  const response = picked.length ? picked.join("; ") : blockText(answer?.querySelector(".qtype_essay_response") ?? answer);
+  return {
+    number: Number(cleanNodeText(que.querySelector(".qno")) || 0),
+    type: que.classList.value[1] ?? "",
+    state: cleanNodeText(que.querySelector(".info .state")),
+    mark: cleanNodeText(que.querySelector(".info .grade")).replace(/^Mark\s+/u, ""),
+    text: blockText(que.querySelector(".qtext")),
+    response: response.replace(/\s*Word count: \d+$/u, ""),
+    correct: blockText(que.querySelector(".rightanswer")).replace(/^The correct answers? (?:is|are):?\s*/iu, "").replace(/^'(.*)'\.?$/u, "$1"),
+    feedback: blockText(que.querySelector(".outcome .feedback")),
+  };
+}
+
+// Essays and feedback are paragraphs; joining them without a break glues sentences together.
+function blockText(node: HTMLElement | null | undefined): string {
+  if (!node) return "";
+  return cleanTableCell(parse(node.toString().replace(/<br\s*\/?>|<\/(?:p|div|li|h\d|tr)>/giu, "$& ")));
+}
+
+function tableValues(table: HTMLElement | null | undefined): Record<string, string> {
+  const values: Record<string, string> = {};
+  for (const row of table?.querySelectorAll("tr") ?? []) {
+    const cells = row.querySelectorAll("th, td");
+    if (cells.length >= 2) values[cleanNodeText(cells[0])] = cleanTableCell(cells[1]);
+  }
+  return values;
 }
 
 export function parseResourceHtml(html: string, resourceId: number, baseUrl: string): Resource {

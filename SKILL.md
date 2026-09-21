@@ -16,6 +16,7 @@ Never assume code patterns or ask for ids. `moodle units` shows the site's vocab
 | a unit or section | moodle UNIT [SECTION] |
 | find slides or a task | moodle find "QUERY" [UNIT] |
 | submission or item detail | moodle UNIT "TASK" |
+| a quiz attempt | moodle attempt ID |
 | my grades | moodle grades [UNIT] |
 | announcements | moodle news [UNIT] |
 | forum post text | moodle forums search "QUERY" --unit UNIT |

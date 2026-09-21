@@ -22,6 +22,7 @@ import {
   GRADE_REPORT_OVERVIEW_PATH,
   GRADE_REPORT_PATH,
   PAGE_VIEW_PATH,
+  QUIZ_REVIEW_PATH,
   QUIZ_VIEW_PATH,
   RESOURCE_VIEW_PATH,
   URL_VIEW_PATH,
@@ -45,6 +46,7 @@ import type {
   Page,
   PageContext,
   Quiz,
+  QuizAttemptReview,
   Resource,
   Section,
   TodoItem,
@@ -73,6 +75,7 @@ import {
   parsePageContext,
   parsePageHtml,
   parseQuizHtml,
+  parseQuizReviewHtml,
   parseResourceHtml,
 } from "./scraper.js";
 
@@ -544,6 +547,11 @@ export class MoodleClientCore {
 
   async getQuiz(id: number): Promise<Quiz> {
     return parseQuizHtml(await this.get(QUIZ_VIEW_PATH, { id }), id, this.baseUrl);
+  }
+
+  async getQuizAttempt(attemptId: number): Promise<QuizAttemptReview> {
+    await this.ensureSession();
+    return parseQuizReviewHtml(await this.get(QUIZ_REVIEW_PATH, { attempt: attemptId }), attemptId, this.baseUrl);
   }
 
   async getResource(id: number): Promise<Resource> {

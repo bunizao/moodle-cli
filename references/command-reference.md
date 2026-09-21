@@ -12,12 +12,13 @@ Resources and folders return `files` with names and URLs. Pass a selected file U
 | moodle activities list | List activities in a unit; narrow by section. | <unit> | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required)<br>--section (value required)<br>--limit (value required)<br>--include-labels |
 | moodle activities show | Show activity details; resource and folder files can be passed to moodle get or download. | <id> | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required) |
 | moodle alerts | List notifications and message counts. |  | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required)<br>--limit (value required) |
+| moodle attempt | Each question with your response, and mark, correct answer and feedback when the site shows them. | <ref> | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required) |
 | moodle auth | Session and keepalive utilities. |  |  |
 | moodle auth keepalive | Renew the Moodle session once; used by the background keepalive agent. |  | --no-renew<br>--pretty<br>--json<br>--yaml<br>--table<br>--fields (value required) |
 | moodle auth keepalive install | Install a macOS launch agent that renews the session periodically. |  | --interval (value required)<br>--pretty<br>--json<br>--yaml<br>--table<br>--fields (value required) |
 | moodle auth keepalive status | Show whether the keepalive launch agent is installed. |  | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required) |
 | moodle auth keepalive uninstall | Remove the keepalive launch agent. |  | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required) |
-| moodle auth login | Extract a fresh session, opening the browser when needed. |  | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required) |
+| moodle auth login | Sign in through a browser the CLI controls, then capture the session. |  | --paste<br>--pretty<br>--json<br>--yaml<br>--table<br>--fields (value required) |
 | moodle auth status | Show cached session freshness and keepalive state. |  | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required) |
 | moodle commands | Describe the complete command tree. |  | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required) |
 | moodle completion | Print shell completion for zsh, bash or fish. | <shell> |  |

@@ -7,6 +7,7 @@ export const DASHBOARD_PATH = "/my/";
 export const COURSE_PATH = "/course/view.php";
 export const ASSIGN_VIEW_PATH = "/mod/assign/view.php";
 export const QUIZ_VIEW_PATH = "/mod/quiz/view.php";
+export const QUIZ_REVIEW_PATH = "/mod/quiz/review.php";
 export const RESOURCE_VIEW_PATH = "/mod/resource/view.php";
 export const URL_VIEW_PATH = "/mod/url/view.php";
 export const PAGE_VIEW_PATH = "/mod/page/view.php";

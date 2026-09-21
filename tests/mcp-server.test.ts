@@ -53,8 +53,8 @@ describe("Moodle MCP server", () => {
       },
     });
     const tools = (response as { result: { tools: Array<Record<string, unknown>> } }).result.tools;
-    expect(tools.map((tool) => tool.name)).toEqual(["home", "due", "units", "unit", "find", "item", "grades", "news", "thread", "search_forums", "file"]);
-    expect(tools).toHaveLength(11);
+    expect(tools.map((tool) => tool.name)).toEqual(["home", "due", "units", "unit", "find", "item", "attempt", "grades", "news", "thread", "search_forums", "file"]);
+    expect(tools).toHaveLength(12);
     expect(tools.every((tool) => (
       (tool.annotations as Record<string, unknown>).readOnlyHint === true
       && (tool.annotations as Record<string, unknown>).destructiveHint === false

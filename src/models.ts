@@ -155,8 +155,48 @@ export interface Quiz {
   opens_pretty: string;
   closes_pretty: string;
   attempts_allowed: string;
+  time_limit: string;
   availability: string;
   grade: string;
+  attempts: QuizAttempt[];
+  url: string;
+}
+
+/** One card under "Your attempts" on a quiz page; marks and grade show only when the site permits review. */
+export interface QuizAttempt {
+  id: number;
+  number: number;
+  status: string;
+  started: string;
+  completed: string;
+  duration: string;
+  marks: string;
+  grade: string;
+  review_url: string;
+}
+
+export interface QuizQuestion {
+  number: number;
+  type: string;
+  state: string;
+  mark: string;
+  text: string;
+  response: string;
+  correct: string;
+  feedback: string;
+}
+
+export interface QuizAttemptReview {
+  id: number;
+  quiz_id: number;
+  course_id: number;
+  status: string;
+  started: string;
+  completed: string;
+  duration: string;
+  marks: string;
+  grade: string;
+  questions: QuizQuestion[];
   url: string;
 }
 

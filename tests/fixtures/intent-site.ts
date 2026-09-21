@@ -23,6 +23,7 @@ export function fixtureGateway(): MoodleGateway {
     listActivities: async ({ courseId }) => sections("Week", courseId).flatMap(s => s.activities),
     getOverview: async () => ({ user: siteUser, courses: units, todo: todos, errors: [] }),
     getActivity: async ({ activityId }) => ({ id: activityId, name: "Mini Test", type: "assign", course_id: Math.floor(activityId / 100), course_name: "Algorithms", section_name: "Week 7", due_pretty: "", submission_status: "Not submitted", grading_status: "Not graded", time_remaining: "", grade: "", graded_on: "", graded_by: "", feedback_comments: "", criteria: [], file_entries: [], url: `https://moodle.example.edu/mod/assign/view.php?id=${activityId}` }),
+    getQuizAttempt: async (attemptId) => ({ id: attemptId, quiz_id: 202, course_id: 2, status: "Finished", started: "", completed: "", duration: "12 mins", marks: "2.00/3.00", grade: "6.67 out of 10.00 (67%)", url: `https://moodle.example.edu/mod/quiz/review.php?attempt=${attemptId}`, questions: [{ number: 1, type: "truefalse", state: "Correct", mark: "1.00 out of 1.00", text: "Sorting is stable.", response: "False", correct: "False", feedback: "" }] }),
     getGrades: async ({ courseId }) => ({ course_id: courseId, course_name: "Algorithms", learner_name: "Alex", total_grade: "", total_range: "", total_percentage: "", items: [ { name: "Mini Test", item_type: "assign", grade: "-", range: "0–10", percentage: "", weight: "", contribution: "", feedback: "", url: "", status: "" }, { name: "Quiz", item_type: "quiz", grade: "8", range: "0–10", percentage: "80%", weight: "", contribution: "", feedback: "Well done", url: "", status: "" }] }),
     listForums: async ({ courseId }) => [{ id: 50, name: "News", course_id: courseId ?? 2, course_name: "Algorithms", url: "https://moodle.example.edu/mod/forum/view.php?id=50" }],
     listNewsForums: async (courseId) => (courseId === undefined ? units : units.filter(c => c.id === courseId)).map(c => ({ id: 48 + c.id, name: "News", course_id: c.id, course_name: c.fullname, url: `https://moodle.example.edu/mod/forum/view.php?id=${48 + c.id}` })),
@@ -36,5 +37,5 @@ export const intentCalls = [
   ["home", {}], ["due", { unit: "algo-2" }], ["units", {}], ["unit", { unit: "algo-2" }],
   ["find", { query: "week 7 slides", unit: "algo-2" }], ["item", { ref: "algo-2 week 7 mini test" }],
   ["grades", {}], ["news", { unit: "algo-2" }], ["thread", { discussion_id: 60, limit: 1 }],
-  ["search_forums", { query: "assignment" }], ["file", { ref: "algo-2 week 7 slides" }],
+  ["search_forums", { query: "assignment" }], ["file", { ref: "algo-2 week 7 slides" }], ["attempt", { attempt: 777 }],
 ] as const;
