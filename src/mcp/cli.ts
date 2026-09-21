@@ -87,6 +87,8 @@ export interface McpCommandService {
   bridge(profile?: string): Promise<void>;
   renew(profile: string): Promise<McpCommandOutput>;
   pushSessionFromStdin(): Promise<McpCommandOutput>;
+  /** Null without a deployment receipt; otherwise whether the Worker is behind this package. */
+  workerBehind(): Promise<boolean | null>;
 }
 
 export interface McpCommandServiceOptions {
@@ -748,6 +750,16 @@ class DefaultMcpCommandService implements McpCommandService {
   private wrangler(): NodeWranglerDeploymentAdapter {
     this.wranglerInstance ??= new NodeWranglerDeploymentAdapter();
     return this.wranglerInstance;
+  }
+
+  async workerBehind(): Promise<boolean | null> {
+    try {
+      const profile = deriveMcpProfile((await this.config()).baseUrl);
+      if (!await this.receipts.read(profile)) return null;
+      return this.remoteWorkerBehindLocal(profile);
+    } catch {
+      return null;
+    }
   }
 
   private releaseDigest(): Promise<string> {

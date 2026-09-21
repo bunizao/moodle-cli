@@ -61,6 +61,7 @@ Resources and folders return `files` with names and URLs. Pass a selected file U
 | moodle units | Inspect enrolled units. |  |  |
 | moodle units list | List enrolled units. |  | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required) |
 | moodle units show | Show unit detail with sections. | <unit> | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required) |
+| moodle update | Update the package and redeploy the managed MCP Worker when either is behind. |  | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required)<br>--check<br>--quiet |
 | moodle user | Show authenticated user info. |  | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required) |
 
 ### Output Contract

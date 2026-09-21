@@ -31,6 +31,8 @@ import { realpathSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createMoodleClient, type MoodleClient } from "./client.js";
+import { refreshLatestVersion, runUpdate, startupUpdateNotice } from "./update-check.js";
+import { isNewerVersion } from "./update-core.js";
 import { loadConfig } from "./config.js";
 import { CliError, MoodleAPIError, UsageError, asNetworkError } from "./errors.js";
 import {
@@ -308,6 +310,22 @@ export function buildProgram(io: CliIO = {}): Command {
       if (new URL(url).origin !== new URL(client.baseUrl).origin) throw new UsageError("The URL must belong to the configured Moodle site.");
       const html = await (await client.requestAbsolute(url)).text();
       stdout.write(`${html.replaceAll(/sesskey(["=:\s]*)[A-Za-z0-9]+/g, "sesskey$1REDACTED")}\n`);
+    });
+  addOutputOptions(mutating(program.command("update").description("Update the package and redeploy the managed MCP Worker when either is behind.")))
+    .option("--check", "Report versions without installing or deploying.")
+    .option("--quiet", "Print nothing; refresh the cached version only.")
+    .action(async (options: OutputCommandOptions & { check?: boolean; quiet?: boolean }) => {
+      const updateOptions = { homeDir: io.homeDir, env: io.env, fetchImpl: io.fetchImpl };
+      if (options.quiet) { await refreshLatestVersion(updateOptions); return; }
+      const workerBehind = await getMcpService().workerBehind();
+      if (options.check) {
+        const latest = await refreshLatestVersion(updateOptions);
+        const report = { current: VERSION, latest, update_available: isNewerVersion(latest ?? undefined, VERSION), worker_behind: workerBehind ?? undefined };
+        await runtime.output(report, () => [`moodle-cli ${VERSION}${report.update_available ? ` → ${latest} available` : latest ? " (latest)" : " (npm unreachable)"}`, ...(workerBehind === null ? [] : [`Worker: ${workerBehind ? "behind this package" : "current"}`])].join("\n"), options);
+        return;
+      }
+      const report = await runUpdate({ ...updateOptions, workerBehind: workerBehind ?? undefined });
+      await runtime.output(report, () => report.note, options);
     });
   addOutputOptions(program.command("get").description("Download a resource by id, URL, or UNIT TASK phrase.").argument("<ref>"))
     .option("--to <directory>", "Destination directory.")
@@ -734,6 +752,7 @@ export async function runCli(argv = process.argv, io: CliIO = {}): Promise<numbe
   const args = insertDefaultVerb(argv.slice(2), NOUNS);
   const program = buildProgram({ ...io, rootArgs: args });
   try {
+    await startupUpdateNotice(args, stderr, { homeDir: io.homeDir, env: io.env });
     await program.parseAsync(args, { from: "user" });
     return 0;
   } catch (error) {
