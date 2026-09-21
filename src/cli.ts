@@ -297,6 +297,18 @@ export function buildProgram(io: CliIO = {}): Command {
     .option("--limit <number>", "Maximum returned rows.", parsePositiveInt)
     .option("--types <types>", "Comma-separated activity types.")
     .action(async (query: string, unit: string | undefined, options: OutputCommandOptions & { limit?: number; types?: string }) => execute("find", { query, unit, limit: count("limit", options.limit), types: options.types?.split(",") }, options));
+  addOutputOptions(program.command("attempt").description(humanDescription("attempt")).argument("<ref>", "Quiz attempt id or review URL"))
+    .action(async (ref: string, options: OutputCommandOptions) => execute("attempt", { attempt: ref }, options));
+  // Maintainer aid: parser work needs the real page markup, and the browser session is
+  // only readable from here. Hidden from help and the generated contract on purpose.
+  const dev = program.command("dev", { hidden: true }).description("Maintainer utilities.");
+  dev.command("fetch").description("Print a same-site page as HTML with the session; sesskey values are redacted.").argument("<url>")
+    .action(async (url: string) => {
+      const client = await runtime.getClient();
+      if (new URL(url).origin !== new URL(client.baseUrl).origin) throw new UsageError("The URL must belong to the configured Moodle site.");
+      const html = await (await client.requestAbsolute(url)).text();
+      stdout.write(`${html.replaceAll(/sesskey(["=:\s]*)[A-Za-z0-9]+/g, "sesskey$1REDACTED")}\n`);
+    });
   addOutputOptions(program.command("get").description("Download a resource by id, URL, or UNIT TASK phrase.").argument("<ref>"))
     .option("--to <directory>", "Destination directory.")
     .option("--force", "Replace an existing file atomically.")

@@ -9,7 +9,7 @@ export function describeProgram(program: Command): ProgramDescription {
     version: program.version() ?? "",
     description: program.description(),
     commands: program.commands
-      .filter((command) => command.name() !== "help")
+      .filter((command) => command.name() !== "help" && command.name() !== "dev")
       .map((command) => describeCommand(command)),
   };
 }
