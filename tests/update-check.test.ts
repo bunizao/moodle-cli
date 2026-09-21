@@ -1,9 +1,9 @@
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { UPDATE_CHECK_TTL_MS } from "../src/update-core.js";
-import { detectInstallKind, readUpdateCache, startupCheckApplies, startupUpdateNotice, updateCachePath, writeUpdateCache } from "../src/update-check.js";
+import { UPDATE_CHECK_TTL_MS, UPDATE_RETRY_MS } from "../src/update-core.js";
+import { detectInstallKind, readUpdateCache, refreshLatestVersion, replaceStandalone, startupCheckApplies, startupUpdateNotice, updateCachePath, writeUpdateCache } from "../src/update-check.js";
 import { VERSION } from "../src/version.js";
 
 const NOW = 1_700_000_000_000;
@@ -64,8 +64,43 @@ describe("startupUpdateNotice", () => {
     await writeUpdateCache({ latest: "1.0.0", checked_at: NOW }, homeDir);
     const file = updateCachePath(homeDir);
     expect(JSON.parse(await readFile(file, "utf8"))).toEqual({ latest: "1.0.0", checked_at: NOW });
-    const { stat } = await import("node:fs/promises");
     expect((await stat(file)).mode & 0o777).toBe(0o600);
+  });
+});
+
+describe("refreshLatestVersion", () => {
+  it("records a failed lookup so the next command retries after an hour, not immediately", async () => {
+    await writeUpdateCache({ latest: "1.0.0", checked_at: NOW - 2 * UPDATE_CHECK_TTL_MS }, homeDir);
+    expect(await refreshLatestVersion({ homeDir, now: () => NOW, fetchImpl: async () => { throw new Error("offline"); } })).toBeNull();
+    const cache = await readUpdateCache(homeDir);
+    expect(cache).toMatchObject({ latest: "1.0.0", failed_at: NOW });
+
+    expect(await refreshLatestVersion({ homeDir, now: () => NOW + UPDATE_RETRY_MS, fetchImpl: async () => Response.json({ latest: "1.1.0" }) })).toBe("1.1.0");
+    expect(await readUpdateCache(homeDir)).toEqual({ latest: "1.1.0", checked_at: NOW + UPDATE_RETRY_MS });
+  });
+});
+
+describe("replaceStandalone", () => {
+  it("downloads the matching asset beside the binary and renames it into place", async () => {
+    const execPath = join(homeDir, "moodle");
+    await writeFile(execPath, "old", { mode: 0o755 });
+    const fetchImpl = vi.fn<typeof fetch>(async (input) => {
+      expect(String(input)).toBe("https://github.com/bunizao/moodle-cli/releases/download/v2.0.0/moodle-darwin-arm64");
+      return new Response("new binary");
+    });
+    expect(await replaceStandalone(execPath, "2.0.0", fetchImpl, { platform: "darwin", arch: "arm64" })).toBeNull();
+    expect(await readFile(execPath, "utf8")).toBe("new binary");
+    expect((await stat(execPath)).mode & 0o111).toBe(0o111);
+    expect(await readdir(homeDir)).toEqual(["moodle"]);
+  });
+
+  it("keeps the old binary when the download fails or no asset exists", async () => {
+    const execPath = join(homeDir, "moodle");
+    await writeFile(execPath, "old", { mode: 0o755 });
+    expect(await replaceStandalone(execPath, "2.0.0", async () => new Response("", { status: 404 }), { platform: "darwin", arch: "arm64" })).toContain("404");
+    expect(await replaceStandalone(execPath, "2.0.0", async () => new Response(""), { platform: "win32", arch: "x64" })).toContain("win32-x64");
+    expect(await readFile(execPath, "utf8")).toBe("old");
+    expect(await readdir(homeDir)).toEqual(["moodle"]);
   });
 });
 

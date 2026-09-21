@@ -181,7 +181,7 @@ function mcpService(overrides: Partial<McpCommandService> = {}): McpCommandServi
     bridge: async () => undefined,
     renew: output,
     pushSessionFromStdin: output,
-    workerBehind: async () => null,
+    workerState: async () => null,
     ...overrides,
   } as McpCommandService;
 }

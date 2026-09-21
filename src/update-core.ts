@@ -7,6 +7,9 @@ export const PACKAGE_NAME = "moodle-cli";
 // The dist-tags document is a few bytes; the full packument is hundreds of kilobytes.
 export const LATEST_VERSION_URL = `https://registry.npmjs.org/-/package/${PACKAGE_NAME}/dist-tags`;
 export const UPDATE_CHECK_TTL_MS = 24 * 60 * 60 * 1000;
+// An unreachable registry is retried sooner than a successful check, but not on every command.
+export const UPDATE_RETRY_MS = 60 * 60 * 1000;
+export const GITHUB_REPOSITORY = "bunizao/moodle-cli";
 
 export interface LatestVersionRecord {
   latest: string;
@@ -47,5 +50,16 @@ export function updateHint(current: string, latest: string): string {
 }
 
 export function standaloneUpdateHint(current: string, latest: string): string {
-  return `moodle-cli ${latest} is available (running ${current}). Download it from ${GITHUB_RELEASES_URL}`;
+  return `moodle-cli ${latest} is available (running ${current}). Run: moodle update`;
 }
+
+const STANDALONE_TARGETS = new Set(["darwin-arm64", "linux-x64"]);
+
+/** The release asset a standalone build replaces itself with, or null when none is published for this machine. */
+export function standaloneAssetUrl(version: string, platform: string, arch: string): string | null {
+  const target = `${platform}-${arch}`;
+  if (!STANDALONE_TARGETS.has(target)) return null;
+  return `https://github.com/${GITHUB_REPOSITORY}/releases/download/v${version}/moodle-${target}`;
+}
+
+export { GITHUB_RELEASES_URL };

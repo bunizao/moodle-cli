@@ -383,15 +383,23 @@ export function buildProgram(io: CliIO = {}): Command {
     .action(async (options: OutputCommandOptions & { check?: boolean; quiet?: boolean }) => {
       const updateOptions = { homeDir: io.homeDir, env: io.env, fetchImpl: io.fetchImpl };
       if (options.quiet) { await refreshLatestVersion(updateOptions); return; }
-      const workerBehind = await getMcpService().workerBehind();
+      const worker = await getMcpService().workerState();
+      const palette = theme();
+      const workerLine = worker === null ? [] : [`${palette.dim("Worker:")} ${palette.status(worker.behind ? "behind this package" : worker.ready ? "current" : "not ready", { current: "success", "behind this package": "warning", "not ready": "danger" })}`];
       if (options.check) {
         const latest = await refreshLatestVersion(updateOptions);
-        const report = { current: VERSION, latest, update_available: isNewerVersion(latest ?? undefined, VERSION), worker_behind: workerBehind ?? undefined };
-        await runtime.output(report, () => [`moodle-cli ${VERSION}${report.update_available ? ` → ${latest} available` : latest ? " (latest)" : " (npm unreachable)"}`, ...(workerBehind === null ? [] : [`Worker: ${workerBehind ? "behind this package" : "current"}`])].join("\n"), options);
+        const available = isNewerVersion(latest ?? undefined, VERSION);
+        const report = { current: VERSION, latest, update_available: available, ...(worker ? { worker_behind: worker.behind, worker_ready: worker.ready } : {}) };
+        await runtime.output(report, () => [
+          `${palette.dim("moodle-cli:")} ${palette.key(VERSION)} ${available ? palette.tone("warning", `→ ${latest} available`) : latest ? palette.dim("(latest)") : palette.tone("warning", "(npm unreachable)")}`,
+          ...workerLine,
+          ...(available || worker?.behind ? ["", tryLines(["moodle update"])] : []),
+        ].join("\n"), options);
         return;
       }
-      const report = await runUpdate({ ...updateOptions, workerBehind: workerBehind ?? undefined });
-      await runtime.output(report, () => report.note, options);
+      const report = await runUpdate({ ...updateOptions, workerBehind: worker?.behind });
+      const stale = worker && !worker.ready && !report.deployed ? [`${palette.tone("warning", "The Worker is deployed but not answering.")} ${tryLines(["moodle mcp status"])}`] : [];
+      await runtime.output({ ...report, ...(worker ? { worker_ready: worker.ready } : {}) }, () => [palette.tone(report.updated || report.deployed ? "success" : "muted", report.note), ...stale].join("\n"), options);
     });
     addOutputOptions(program.command("get").description("Download a resource by id, URL, or UNIT TASK phrase.").argument("<ref>", "Resource id, URL, or UNIT TASK phrase"))
     .option("--to <directory>", "Destination directory.")

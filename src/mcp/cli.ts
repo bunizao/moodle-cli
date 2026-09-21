@@ -89,8 +89,8 @@ export interface McpCommandService {
   bridge(profile?: string): Promise<void>;
   renew(profile: string): Promise<McpCommandOutput>;
   pushSessionFromStdin(): Promise<McpCommandOutput>;
-  /** Null without a deployment receipt; otherwise whether the Worker is behind this package. */
-  workerBehind(): Promise<boolean | null>;
+  /** Null without a deployment receipt; otherwise whether the Worker is behind this package and answering. */
+  workerState(): Promise<{ behind: boolean; ready: boolean } | null>;
 }
 
 export interface McpCommandServiceOptions {
@@ -765,11 +765,15 @@ class DefaultMcpCommandService implements McpCommandService {
     return this.wranglerInstance;
   }
 
-  async workerBehind(): Promise<boolean | null> {
+  async workerState(): Promise<{ behind: boolean; ready: boolean } | null> {
     try {
       const profile = deriveMcpProfile((await this.config()).baseUrl);
-      if (!await this.receipts.read(profile)) return null;
-      return this.remoteWorkerBehindLocal(profile);
+      const [receipt, credentials] = await Promise.all([this.receipts.read(profile), this.credentials.read(profile)]);
+      if (!receipt || !credentials) return null;
+      const behind = await this.remoteWorkerBehindLocal(profile);
+      // A receipt only proves a deploy once happened; the Worker itself says whether it still answers.
+      const readiness = await this.worker.getReadiness({ endpoint: receipt.productionEndpoint, sessionSyncToken: credentials.sessionSyncToken }).catch(() => null);
+      return { behind, ready: readiness?.status === "pass" };
     } catch {
       return null;
     }

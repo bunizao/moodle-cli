@@ -159,11 +159,12 @@ The remote server is read-only. The local server (`moodle mcp serve`) also offer
 ### Update
 
 ```bash
-npm install -g moodle-cli@latest
-bun add --global moodle-cli@latest
+moodle update
 ```
 
-Standalone binaries print the latest GitHub Release URL instead of modifying themselves.
+`moodle update` upgrades the package with whichever installer put it there (npm, bun, or the standalone binary replacing itself), then runs `moodle mcp deploy` when a managed Worker exists and is behind the new release. `moodle update --check` only reports versions.
+
+The CLI checks npm once a day in the background and prints a one-line notice on stderr when a newer release exists. A deployed Worker performs the same daily check and tells connected MCP clients through the server instructions, because the Worker ships inside the package and only redeploys from your machine. Set `MOODLE_NO_UPDATE_CHECK=1` to disable the check; it is already off under `CI`.
 
 ## For developers and agents
 

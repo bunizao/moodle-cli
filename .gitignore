@@ -13,3 +13,4 @@ build/
 *.egg-info/
 .DS_Store
 .playwright-mcp/
+bun.lock

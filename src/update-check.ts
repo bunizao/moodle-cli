@@ -2,13 +2,13 @@
 // a startup notice on stderr, and the package-manager commands `moodle update` runs.
 
 import { spawn, spawnSync, type SpawnSyncReturns } from "node:child_process";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { realpathSync } from "node:fs";
-import { homedir } from "node:os";
+import { arch, homedir, platform } from "node:os";
 import { join } from "node:path";
 import { CONFIG_DIR_NAME } from "./constants.js";
 import { findExecutable, selfCommand, type SelfCommand } from "./mcp/self-command.js";
-import { fetchLatestVersion, isNewerVersion, standaloneUpdateHint, updateHint, UPDATE_CHECK_TTL_MS, type LatestVersionRecord } from "./update-core.js";
+import { fetchLatestVersion, GITHUB_RELEASES_URL, isNewerVersion, standaloneAssetUrl, standaloneUpdateHint, updateHint, UPDATE_CHECK_TTL_MS, UPDATE_RETRY_MS, type LatestVersionRecord } from "./update-core.js";
 import { VERSION } from "./version.js";
 
 export const UPDATE_CACHE_FILENAME = "update-check.json";
@@ -16,6 +16,7 @@ export const ENV_NO_UPDATE_CHECK = "MOODLE_NO_UPDATE_CHECK";
 
 interface UpdateCache extends Partial<LatestVersionRecord> {
   notified_at?: number;
+  failed_at?: number;
 }
 
 export interface UpdateCheckOptions {
@@ -47,8 +48,15 @@ export async function writeUpdateCache(cache: UpdateCache, homeDir?: string): Pr
 /** Ask npm once and remember the answer; returns the latest version or null when offline. */
 export async function refreshLatestVersion(options: UpdateCheckOptions = {}): Promise<string | null> {
   const latest = await fetchLatestVersion(options.fetchImpl);
-  if (latest) await writeUpdateCache({ ...(await readUpdateCache(options.homeDir)), latest, checked_at: (options.now ?? Date.now)() }, options.homeDir);
+  const now = (options.now ?? Date.now)();
+  const cache = await readUpdateCache(options.homeDir);
+  await writeUpdateCache(latest ? { ...cache, latest, checked_at: now, failed_at: undefined } : { ...cache, failed_at: now }, options.homeDir);
   return latest;
+}
+
+function refreshDue(cache: UpdateCache, now: number): boolean {
+  if (now - (cache.checked_at ?? 0) < UPDATE_CHECK_TTL_MS) return false;
+  return now - (cache.failed_at ?? 0) >= UPDATE_RETRY_MS;
 }
 
 // Commands that run unattended, print machine output for tooling, or are the
@@ -74,7 +82,7 @@ export async function startupUpdateNotice(args: readonly string[], stderr: { wri
     stderr.write(`${selfCommand().args.length ? updateHint(VERSION, cache.latest!) : standaloneUpdateHint(VERSION, cache.latest!)}\n`);
     await writeUpdateCache({ ...cache, notified_at: now }, options.homeDir);
   }
-  if (now - (cache.checked_at ?? 0) >= UPDATE_CHECK_TTL_MS) spawnRefresh(env);
+  if (refreshDue(cache, now)) spawnRefresh(env);
 }
 
 function spawnRefresh(env: NodeJS.ProcessEnv): void {
@@ -104,6 +112,28 @@ export function installCommand(kind: InstallKind): SelfCommand | null {
   return null;
 }
 
+/**
+ * Swap a standalone binary for the published one. The download lands beside the
+ * binary and is renamed over it, so a failed download never leaves a half-written
+ * executable and the running process keeps its already-mapped file.
+ */
+export async function replaceStandalone(execPath: string, version: string, fetchImpl: typeof fetch = fetch, host = { platform: platform(), arch: arch() }): Promise<string | null> {
+  const url = standaloneAssetUrl(version, host.platform, host.arch);
+  if (!url) return `No standalone build is published for ${host.platform}-${host.arch}. See ${GITHUB_RELEASES_URL}`;
+  const staging = `${execPath}.${process.pid}.download`;
+  try {
+    const response = await fetchImpl(url, { redirect: "follow" });
+    if (!response.ok) return `Download failed with HTTP ${response.status} for ${url}`;
+    await writeFile(staging, new Uint8Array(await response.arrayBuffer()), { mode: 0o755 });
+    await chmod(staging, 0o755);
+    await rename(staging, execPath);
+    return null;
+  } catch (error) {
+    await rm(staging, { force: true });
+    return `Could not replace ${execPath}: ${error instanceof Error ? error.message : String(error)}`;
+  }
+}
+
 export interface RunUpdateOptions extends UpdateCheckOptions {
   runCommand?: (command: string, args: string[]) => SpawnSyncReturns<Buffer>;
   argv?: readonly string[];
@@ -130,9 +160,13 @@ export async function runUpdate(options: RunUpdateOptions): Promise<UpdateReport
   const newer = isNewerVersion(latest ?? undefined, VERSION);
   if (newer) {
     const command = installCommand(install);
-    if (!command) { report.note = standaloneUpdateHint(VERSION, latest!); return report; }
-    const result = run(command.command, command.args);
-    if (result.status !== 0) { report.note = `${command.command} exited with ${result.status ?? "a signal"}; the package was not updated.`; return report; }
+    if (command) {
+      const result = run(command.command, command.args);
+      if (result.status !== 0) { report.note = `${command.command} exited with ${result.status ?? "a signal"}; the package was not updated.`; return report; }
+    } else {
+      const failure = await replaceStandalone(options.execPath ?? process.execPath, latest!, options.fetchImpl);
+      if (failure) { report.note = `${standaloneUpdateHint(VERSION, latest!)} ${failure}`; return report; }
+    }
     report.updated = true;
   }
   if (options.workerBehind === undefined) {
@@ -140,9 +174,10 @@ export async function runUpdate(options: RunUpdateOptions): Promise<UpdateReport
     return report;
   }
   if (!newer && !options.workerBehind) { report.note = "Package and Worker are up to date."; return report; }
-  // The process that just ran the installer is still the old code; the new bin on PATH deploys.
-  const bin = newer ? findExecutable("moodle") : undefined;
+  // The process that just ran the installer is still the old code; the new bin on
+  // PATH (or the freshly replaced standalone binary) deploys.
   const self = selfCommand(options.argv, options.execPath);
+  const bin = newer && install !== "standalone" ? findExecutable("moodle") : undefined;
   const deploy: SelfCommand = bin ? { command: bin, args: ["mcp", "deploy"] } : { command: self.command, args: [...self.args, "mcp", "deploy"] };
   const result = run(deploy.command, deploy.args);
   report.deployed = result.status === 0;
