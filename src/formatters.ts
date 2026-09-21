@@ -129,8 +129,14 @@ export function formatGrades(grades: CourseGrades): string {
 export function formatActivityDetail(activity: ActivityDetail): string {
   const rows = Object.entries(activity)
     .filter(([, value]) => value !== "" && value !== undefined && !(Array.isArray(value) && value.length === 0))
-    .map(([key, value]) => [key, Array.isArray(value) ? value.join("\n") : String(value)] as [string, string]);
+    .map(([key, value]) => [key, Array.isArray(value) ? value.map(cellText).join("\n") : String(value)] as [string, string]);
   return renderKeyValueTable(rows, { title: "Activity" });
+}
+
+// Rubric rows and file entries are objects; print the fields a reader wants, not JSON.
+function cellText(value: unknown): string {
+  if (!value || typeof value !== "object") return String(value);
+  return Object.values(value as Record<string, unknown>).filter((v) => typeof v === "string" && v !== "").join("  ");
 }
 
 export function formatDownloadReceipt(receipt: DownloadReceipt): string {

@@ -1,5 +1,6 @@
 import { HTMLElement, parse } from "node-html-parser";
 import type {
+  FeedbackCriterion,
   Activity,
   Assignment,
   CourseGrades,
@@ -266,6 +267,8 @@ export function parseGradeOverviewRows(html: string, baseUrl: string): Record<nu
 }
 
 export function parseAssignmentHtml(html: string, assignmentId: number, baseUrl: string): Assignment {
+  const root = parse(html);
+  const feedback = root.querySelector(".feedback");
   return {
     id: assignmentId,
     name: pageTitle(html),
@@ -275,8 +278,44 @@ export function parseAssignmentHtml(html: string, assignmentId: number, baseUrl:
     grading_status: findTableValue(html, "Grading status"),
     time_remaining: findTableValue(html, "Time remaining"),
     grade: findTableValue(html, "Grade"),
+    graded_on: feedback ? findTableValue(feedback.toString(), "Graded on") : "",
+    graded_by: feedback ? findTableValue(feedback.toString(), "Graded by") : "",
+    feedback_comments: feedback ? findTableValue(feedback.toString(), "Feedback comments") : "",
+    criteria: feedback ? parseFeedbackCriteria(feedback) : [],
+    file_entries: feedback ? parseFeedbackFiles(feedback, baseUrl) : [],
     url: `${baseUrl.replace(/\/$/, "")}/mod/assign/view.php?id=${assignmentId}`,
   };
+}
+
+// Rubrics and marking guides render the same tr.criterion rows but keep the
+// marker's choice in different cells: a rubric ticks one level, a guide types a score.
+function parseFeedbackCriteria(feedback: HTMLElement): FeedbackCriterion[] {
+  const criteria: FeedbackCriterion[] = [];
+  for (const row of feedback.querySelectorAll("tr.criterion")) {
+    const level = row.querySelector("td.level.checked");
+    const name = cleanNodeText(row.querySelector(".criterionshortname") ?? row.querySelector("td.description"));
+    if (!name) continue;
+    criteria.push({
+      name,
+      level: cleanNodeText(level?.querySelector(".definition")),
+      score: cleanNodeText(row.querySelector("td.score") ?? level?.querySelector(".score")),
+      remark: cleanTableCell(row.querySelector("td.remark")),
+    });
+  }
+  return criteria;
+}
+
+// Feedback files and annotated PDFs both arrive as plain pluginfile links in the feedback table.
+function parseFeedbackFiles(feedback: HTMLElement, baseUrl: string): FileEntry[] {
+  const entries: FileEntry[] = [];
+  for (const link of feedback.querySelectorAll('a[href*="pluginfile.php"]')) {
+    const url = resolveUrl(baseUrl, link.getAttribute("href") ?? "");
+    // "View annotated PDF..." is a prompt, not a name; the path carries the real filename.
+    const label = cleanNodeText(link);
+    const name = /\.\w{1,5}$/u.test(label) ? label : decodeURIComponent(new URL(url).pathname.split("/").at(-1) || "file");
+    if (!entries.some((entry) => entry.url === url)) entries.push(fileEntry(name, url, baseUrl));
+  }
+  return entries;
 }
 
 export function parseQuizHtml(html: string, quizId: number, baseUrl: string): Quiz {
@@ -655,7 +694,7 @@ function cleanTableCell(node: HTMLElement | null | undefined): string {
     return "";
   }
   const clone = parse(node.toString());
-  for (const unwanted of clone.querySelectorAll(".action-menu, .dropdown, script, style")) {
+  for (const unwanted of clone.querySelectorAll(".action-menu, .dropdown, .hidden, .accesshide, script, style")) {
     unwanted.remove();
   }
   return cleanText(clone.textContent.replace("( Empty )", "(Empty)"));

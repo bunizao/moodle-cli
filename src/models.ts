@@ -130,7 +130,20 @@ export interface Assignment {
   grading_status: string;
   time_remaining: string;
   grade: string;
+  graded_on: string;
+  graded_by: string;
+  feedback_comments: string;
+  criteria: FeedbackCriterion[];
+  file_entries: FileEntry[];
   url: string;
+}
+
+/** One row of a rubric or marking guide as the marker filled it in. */
+export interface FeedbackCriterion {
+  name: string;
+  level: string;
+  score: string;
+  remark: string;
 }
 
 export interface Quiz {

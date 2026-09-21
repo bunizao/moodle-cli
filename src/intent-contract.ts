@@ -9,7 +9,8 @@ const fields = (keys: string[]) => Object.fromEntries(keys.map(key => [key, s]))
 const file = z.object({ name: s, url: s, requires_authentication: z.boolean().optional() });
 const activityFields = { id, name: s, type: s, unit_id: n, section_id: n, hidden: z.boolean().optional(), due: s, due_at: n, files: z.array(file).optional() };
 const activityListSchema = z.object({ ...activityFields, section: s, unit_code: s, description: s });
-export const activitySchema = z.object({ ...activityFields, ...fields(["url", "target_url", "section", "unit_code", "description", "submission_status", "grading_status", "grade", "due_pretty", "opens_pretty", "closes_pretty", "attempts_allowed", "availability", "time_remaining", "content_text"]), files: z.array(file).optional() });
+const criterion = z.object({ name: s, level: s, score: s, remark: s });
+export const activitySchema = z.object({ ...activityFields, ...fields(["url", "target_url", "section", "unit_code", "description", "submission_status", "grading_status", "grade", "graded_on", "graded_by", "feedback_comments", "due_pretty", "opens_pretty", "closes_pretty", "attempts_allowed", "availability", "time_remaining", "content_text"]), criteria: z.array(criterion).optional(), files: z.array(file).optional() });
 const sectionSchema = z.object({ id, name: s, activity_count: id, hidden: z.boolean().optional(), positional: z.boolean().optional(), activities: z.array(activityListSchema).optional() });
 const current = z.object({ id, name: s, estimated: z.boolean().optional() });
 const unitSchema = z.object({ id, code: s, name: s, start: s, end: s, start_at: n, end_at: n, hidden: z.boolean().optional(), current_section: current.optional() });

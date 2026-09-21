@@ -6,6 +6,7 @@ import { describe, expect, it, vi } from "vitest";
 import { runCli } from "../src/cli";
 import { MoodleAPIError, MoodleClient, type AjaxCall } from "../src/client";
 import { ENV_MOODLE_BASE_URL, ENV_MOODLE_SESSION } from "../src/constants";
+import { parseAssignmentHtml } from "../src/scraper";
 import { resolveCourseReference, parseActivityReference, resolveTopLevelUrl } from "../src/url-resolver";
 
 const BASE_URL = "https://school.example.edu";
@@ -250,6 +251,28 @@ describe("MoodleClient course/activity modules", () => {
     expect(overview.todo).toHaveLength(1);
     expect(overview.alerts).toMatchObject({ direct_message_count: 2 });
     expect(overview.errors).toEqual([]);
+  });
+
+  it("reads marker feedback, marking guide rows and feedback files from a graded assignment", () => {
+    const graded = parseAssignmentHtml(fixture("assign-graded.html"), 31, BASE_URL);
+    expect(graded).toMatchObject({
+      grade: "2.50 / 3.00",
+      graded_on: "Sunday, 12 May 2026, 12:08 PM",
+      graded_by: "Dana Marker",
+      feedback_comments: "Clear argument. Cite the lecture notes next time.",
+      criteria: [
+        { name: "Q1", level: "", score: "1 / 1", remark: "" },
+        { name: "Q2", level: "", score: "1.5 / 2", remark: "- [definition almost correct]: the second probability is a detection rate" },
+      ],
+    });
+    expect(graded.file_entries.map((file) => file.name)).toEqual(["essay-marked.pdf", "combined.pdf"]);
+    expect(graded.file_entries.every((file) => file.requires_authentication)).toBe(true);
+
+    const rubric = parseAssignmentHtml(fixture("assign-rubric.html"), 32, BASE_URL);
+    expect(rubric.criteria).toEqual([
+      { name: "Structure", level: "Clear sections with a summary", score: "4 points", remark: "Good flow." },
+      { name: "Analysis", level: "Partial", score: "3 points", remark: "" },
+    ]);
   });
 
   it("loads course contents through AJAX and exposes a flattened activity list", async () => {
@@ -693,7 +716,7 @@ describe("MoodleClient course/activity modules", () => {
     ]);
     const client = new MoodleClient(BASE_URL, "session");
 
-    await expect(client.getAssignment(31)).resolves.toMatchObject({ name: "Essay 1", due_pretty: "Friday, 10 May 2026, 5:00 PM" });
+    await expect(client.getAssignment(31)).resolves.toMatchObject({ name: "Essay 1", due_pretty: "Friday, 10 May 2026, 5:00 PM", criteria: [], file_entries: [] });
     await expect(client.getQuiz(32)).resolves.toMatchObject({ name: "Quiz 1", attempts_allowed: "2" });
     await expect(client.getResource(33)).resolves.toMatchObject({
       target_name: "slides.pdf",

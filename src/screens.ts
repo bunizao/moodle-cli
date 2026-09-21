@@ -57,6 +57,7 @@ export function renderScreen(data: Record<string, unknown>, options: { width?: n
     const i = record(data.item); lines.push(`${text(i.name)} · ${text(i.type)} · #${i.id}`);
     // Epoch twins of the ISO fields are for machines reading --json, not for this screen.
     for (const [k, v] of Object.entries(i)) if (!["id", "name", "type", "files"].includes(k) && !k.endsWith("_at") && typeof v !== "object") lines.push(`${k.replaceAll("_", " ")}: ${moment(v, now)}`);
+    for (const c of array(i.criteria)) lines.push(`${text(c.name)}  ${[c.score, c.level, c.remark].map(text).filter(Boolean).join("  ·  ")}`);
     for (const f of array(i.files)) lines.push(`File  ${text(f.name)}  ${text(f.url)}`);
     if (data.threads) rows(array(data.threads), "Threads");
     next = `moodle get ${i.id} --to DIR`;
