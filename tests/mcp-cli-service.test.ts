@@ -231,8 +231,7 @@ describe("managed MCP CLI service", () => {
       expect(result.text).toContain(`  ${receipt.productionEndpoint}/mcp`);
       expect(result.text).toContain(`  Site: ${receipt.moodleOrigin}`);
       expect(result.text).toContain("  User: Alice Example");
-      expect(result.text).toContain("runs silently every 30 minutes");
-      expect(result.text).toContain("never opens a browser");
+      expect(result.text).toContain("silent background check every 30 minutes; you never see it");
       expect(result.text).toContain("Connected clients\n  No supported clients detected");
       expect(result.text).not.toMatch(/Bearer|MoodleSession|private-token/iu);
     } finally {
