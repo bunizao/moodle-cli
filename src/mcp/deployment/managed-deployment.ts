@@ -54,6 +54,9 @@ export interface DeploymentReceipt {
   sessionRevision: number;
   verified?: boolean;
   recoveryVersionId?: string;
+  // What the scheduled renewal last found, so status can show the job is alive
+  // without anyone opening its log.
+  lastRenewal?: { at: string; state: string; reasonCode: string | null };
 }
 
 export interface DeploymentPlan {

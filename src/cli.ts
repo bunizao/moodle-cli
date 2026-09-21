@@ -1033,7 +1033,7 @@ function parseMcpConnectionMode(value: string): "bridge" | "remote" {
 }
 
 async function outputMcpResult(runtime: Runtime, result: McpCommandOutput, options: OutputCommandOptions): Promise<void> {
-  await runtime.output(result.data, () => result.text, options);
+  await runtime.output(result.data, () => (result.next?.length ? `${result.text}\n\n${tryLines(result.next)}` : result.text), options);
 }
 
 function errorOutputFormat(args: string[], stdout: CliIO["stdout"]): OutputFormat {

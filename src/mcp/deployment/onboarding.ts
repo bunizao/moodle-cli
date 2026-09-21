@@ -1,6 +1,7 @@
 import { createTheme, type Theme } from "@bunizao/cli-kit";
 
 import { LEGACY_PROTOCOL_VERSION, MODERN_PROTOCOL_VERSION } from "../protocol.js";
+import type { RenewalJobDescription } from "../renewal/installers.js";
 
 // Copy is rendered plain unless a caller hands over the CLI's theme.
 const PLAIN = createTheme(false);
@@ -118,6 +119,7 @@ export function successfulDeploymentCopy(input: {
   moodleSite: string;
   moodleUser: string;
   clients: string[];
+  renewal?: RenewalJobDescription;
 }, theme: Theme = PLAIN): string {
   const connectedClients = input.clients.length
     ? input.clients.map((client) => `  ${theme.tone("success", "✓")} ${client}`).join("\n")
@@ -140,13 +142,18 @@ export function successfulDeploymentCopy(input: {
     field("Session", theme.status("ready", { ready: "success" })),
     "",
     theme.subject("Renewal"),
-    `  ${theme.dim("Installed on this computer")}`,
+    // People did not ask for a scheduler, so the copy says which one, how often, and where it writes.
+    ...(input.renewal
+      ? [
+        `  A ${input.renewal.scheduler} ${theme.dim(`(${input.renewal.label})`)} runs ${theme.key("moodle mcp renewal run")} ${input.renewal.schedule}.`,
+        `  ${theme.dim("It keeps the remote session alive and uploads a fresh browser cookie when Moodle expires it.")}`,
+        field("Log", theme.dim(input.renewal.log)),
+      ]
+      : [`  ${theme.dim("Installed on this computer")}`]),
     `  ${theme.dim("Next check: within 30 minutes")}`,
     "",
     theme.subject("Connected clients"),
     connectedClients,
-    "",
-    `Run ${theme.key("moodle mcp status")} at any time.`,
   ].join("\n");
 }
 
