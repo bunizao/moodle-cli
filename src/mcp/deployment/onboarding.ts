@@ -142,15 +142,19 @@ export function successfulDeploymentCopy(input: {
     field("Session", theme.status("ready", { ready: "success" })),
     "",
     theme.subject("Renewal"),
-    // People did not ask for a scheduler, so the copy says which one, how often, and where it writes.
+    // People did not ask for a scheduler, so the first thing to say is what they will
+    // notice: nothing, unless Moodle signs them out. The mechanics come last and dim.
+    "  A background job keeps the remote session signed in. It runs silently every 30 minutes,",
+    "  takes about a second, and never opens a browser or a window.",
+    "  Only when Moodle expires the session does it copy the fresh cookie from your browser and",
+    `  upload it. If that fails you get one notification to run ${theme.key("moodle mcp login")}.`,
     ...(input.renewal
       ? [
-        `  A ${input.renewal.scheduler} ${theme.dim(`(${input.renewal.label})`)} runs ${theme.key("moodle mcp renewal run")} ${input.renewal.schedule}.`,
-        `  ${theme.dim("It keeps the remote session alive and uploads a fresh browser cookie when Moodle expires it.")}`,
+        field("Job", theme.dim(`${input.renewal.scheduler} ${input.renewal.label}`)),
         field("Log", theme.dim(input.renewal.log)),
+        field("Remove", theme.dim("moodle mcp remove")),
       ]
-      : [`  ${theme.dim("Installed on this computer")}`]),
-    `  ${theme.dim("Next check: within 30 minutes")}`,
+      : []),
     "",
     theme.subject("Connected clients"),
     connectedClients,

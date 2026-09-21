@@ -83,7 +83,7 @@ export interface RenewalJobDescription {
 
 /** What `moodle mcp deploy` installed, for the people who never asked to run a scheduler. */
 export function describeRenewalJob(platform: RenewalPlatform, homeDirectory: string, profile: string, intervalMinutes = 30): RenewalJobDescription {
-  const schedule = `every ${intervalMinutes} minutes while you are logged in`;
+  const schedule = `silent check every ${intervalMinutes} minutes`;
   if (platform === "darwin") {
     const label = `com.moodle-cli.mcp-renewal.${profile}`;
     return { scheduler: "launchd agent", label, schedule, log: `${trimEnd(homeDirectory, "/")}/Library/Logs/${label}.log` };

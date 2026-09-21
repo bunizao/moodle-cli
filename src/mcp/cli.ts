@@ -353,7 +353,7 @@ class DefaultMcpCommandService implements McpCommandService {
         row("Worker", managed.worker?.workerName ?? "not deployed"),
         row("Credentials", managed.credentialsStored ? "stored" : "missing"),
         row("Renewal", managed.renewalInstalled ? "installed" : "missing"),
-        ...(managed.renewalInstalled && job ? [`  ${theme.dim(`${job.scheduler}, ${job.schedule}`)}`] : []),
+        ...(managed.renewalInstalled && job ? [`  ${theme.dim(`${job.schedule}; you only hear from it when Moodle signs you out`)}`] : []),
         `  ${theme.dim("Last run:")} ${renewalRunText(renewal.lastRun, theme)}`,
         ...(managed.renewalInstalled && job && input.verbose ? [`  ${theme.dim("Log:")} ${theme.dim(job.log)}`] : []),
         row("Local clients", managed.clientsConnected ? "connected" : "not connected"),
