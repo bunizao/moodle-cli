@@ -468,13 +468,21 @@ export function buildProgram(io: CliIO = {}): Command {
   };
   const showPage = (page: AttemptPage, palette: Theme) => `${palette.tone("warning", "BETA")} ${formatAttemptPage(page)}\n\n${tryLines(attemptNext(page))}`;
   addOutputOptions(mutating(quiz.command("start").description("Start a new attempt, or continue the one in progress, and show its first page.").argument("<ref>", "Quiz id, URL, or UNIT TASK phrase")))
-    .action(async (ref: string, options: OutputCommandOptions) => {
+    .option("--password <password>", "Quiz access password for scripts; at a terminal you are asked for it instead.")
+    .action(async (ref: string, options: OutputCommandOptions & { password?: string }) => {
       const client = await runtime.getClient();
       const service = createIntentService(createMoodleGateway(client));
       const id = await choose(() => service.resolveItem(ref), id => Promise.resolve(id));
       if (!program.opts().dryRun && !await quizConsent(`Start or continue an attempt on quiz ${theme().target(String(id))}. Moodle records the attempt and its start time.`)) return;
       if (program.opts().dryRun) return runtime.output({ planned: "start", quiz_id: id }, () => `Would start an attempt on quiz ${id}.`, options);
-      const page = await client.startQuizAttempt(id);
+      // The password is only asked for when Moodle's pre-flight form wants one, so most quizzes never see a prompt.
+      const password = async (): Promise<string | null> => {
+        if (options.password) return options.password;
+        const input = io.stdin ?? process.stdin;
+        if (!human() || !input.isTTY) return null;
+        return readSecretLine(input, stderr as NodeJS.WritableStream, "Quiz password (not echoed): ");
+      };
+      const page = await client.startQuizAttempt(id, { password });
       await runtime.output({ attempt: page }, () => showPage(page, theme()), options);
     });
   addOutputOptions(quiz.command("show").description("Show one page of an attempt in progress: questions, options and saved answers.").argument("<attempt>", "Attempt id").argument("<quiz>", "Quiz id"))

@@ -153,7 +153,7 @@ moodle quiz answer <attempt> <quiz> 3 --from essay.md
 moodle quiz finish <attempt> <quiz>             # "Submit all and finish"; Moodle does not allow undoing this
 ```
 
-Every write shows the beta and academic-integrity notice and asks for a yes; a pipe must pass `--yes`, and `--dry-run` shows the plan. Answers you send are your own submission under your institution's rules: use it only where the quiz allows it, and check the attempt in a browser before you finish. Quizzes that need the Safe Exam Browser or a password are refused; question types without a plain choice or text input are shown but must be answered in a browser.
+Every write shows the beta and academic-integrity notice and asks for a yes; a pipe must pass `--yes`, and `--dry-run` shows the plan. Answers you send are your own submission under your institution's rules: use it only where the quiz allows it, and check the attempt in a browser before you finish. A quiz with an access password asks for it at the terminal (not echoed, never stored); scripts pass `--password`. A quiz that requires the Safe Exam Browser cannot be taken here, because Moodle checks the browser itself. Question types without a plain choice or text input are shown but must be answered in a browser.
 
 ### Remote MCP for web AI
 

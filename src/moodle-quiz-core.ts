@@ -83,7 +83,12 @@ export interface AttemptFinishReceipt {
 
 type Field = [string, string];
 
-export async function startQuizAttempt(deps: QuizDeps, quizId: number): Promise<AttemptPage> {
+export interface StartOptions {
+  /** Asked once when the quiz has an access password; null means the person declined. */
+  password?: () => Promise<string | null>;
+}
+
+export async function startQuizAttempt(deps: QuizDeps, quizId: number, options: StartOptions = {}): Promise<AttemptPage> {
   if (!Number.isSafeInteger(quizId) || quizId <= 0) throw deps.usage("The quiz id must be a positive integer.");
   const viewUrl = `${deps.baseUrl}${QUIZ_VIEW_PATH}?id=${quizId}`;
   const viewHtml = await pageText(deps, viewUrl);
@@ -109,8 +114,14 @@ export async function startQuizAttempt(deps: QuizDeps, quizId: number): Promise<
   if (!onPath(response.url, QUIZ_ATTEMPT_PATH)) {
     const preflight = formWithAction(parse(html), QUIZ_START_PATH);
     if (!preflight) throw deps.fail(`Moodle did not start the attempt: ${noticesOf(html) || "it returned an unexpected page"}`);
-    if (preflight.querySelector("input[name=quizpassword]")) throw deps.usage("This quiz needs a password to start, which the CLI does not take.", `Start the attempt in a browser, then run moodle quiz start again to continue it.`);
-    response = await deps.request(resolveUrl(deps.baseUrl, preflight.getAttribute("action") ?? ""), postInit([...formFields(preflight), ["submitbutton", "Start attempt"]]));
+    const fields: Field[] = [...formFields(preflight).filter(([name]) => name !== "quizpassword"), ["submitbutton", "Start attempt"]];
+    // The quiz access password is the one the teacher hands out; it is asked for, never guessed or stored.
+    if (preflight.querySelector("input[name=quizpassword]")) {
+      const password = options.password ? await options.password() : null;
+      if (!password) throw deps.usage("This quiz needs its access password to start.", "Run moodle quiz start again at a terminal to be asked for it, or pass --password.");
+      fields.push(["quizpassword", password]);
+    }
+    response = await deps.request(resolveUrl(deps.baseUrl, preflight.getAttribute("action") ?? ""), postInit(fields));
     html = await response.text();
     if (!onPath(response.url, QUIZ_ATTEMPT_PATH)) throw deps.fail(`Moodle did not start the attempt: ${noticesOf(html) || "it returned the pre-flight form again"}`);
   }

@@ -94,13 +94,34 @@ describe("startQuizAttempt", () => {
     await expect(startQuizAttempt(deps, 32)).rejects.toThrow(/Safe Exam Browser/u);
   });
 
-  it("refuses a password-protected quiz instead of guessing", async () => {
-    const preflight = `<form method="post" action="${BASE}/mod/quiz/startattempt.php"><input type="hidden" name="cmid" value="32"><input type="hidden" name="sesskey" value="FIXTUREKEY"><input type="password" name="quizpassword"><input type="submit" name="submitbutton" value="Start attempt"></form>`;
+  const preflight = `<form method="post" action="${BASE}/mod/quiz/startattempt.php"><input type="hidden" name="cmid" value="32"><input type="hidden" name="sesskey" value="FIXTUREKEY"><input type="password" name="quizpassword"><input type="submit" name="submitbutton" value="Start attempt"></form>`;
+
+  it("asks for the quiz access password and posts it with the pre-flight form", async () => {
+    const deps = fakeDeps({
+      "GET /mod/quiz/view.php": () => ({ url: `${BASE}/mod/quiz/view.php?id=32`, html: fixture("quiz-start.html") }),
+      "POST /mod/quiz/startattempt.php": ({ body }) => body.get("quizpassword") === "open-sesame"
+        ? { url: ATTEMPT, html: fixture("quiz-attempt-page-0.html") }
+        : { url: `${BASE}/mod/quiz/startattempt.php`, html: preflight },
+    });
+    const page = await startQuizAttempt(deps, 32, { password: async () => "open-sesame" });
+    expect(page.attempt).toBe(900);
+    expect(deps.calls[2].body.get("submitbutton")).toBe("Start attempt");
+  });
+
+  it("explains how to supply the password when nobody can be asked", async () => {
     const deps = fakeDeps({
       "GET /mod/quiz/view.php": () => ({ url: `${BASE}/mod/quiz/view.php?id=32`, html: fixture("quiz-start.html") }),
       "POST /mod/quiz/startattempt.php": () => ({ url: `${BASE}/mod/quiz/startattempt.php`, html: preflight }),
     });
-    await expect(startQuizAttempt(deps, 32)).rejects.toThrow(/needs a password/u);
+    await expect(startQuizAttempt(deps, 32)).rejects.toThrow(/needs its access password.*--password/u);
+  });
+
+  it("reports a rejected password from Moodle's own notice", async () => {
+    const deps = fakeDeps({
+      "GET /mod/quiz/view.php": () => ({ url: `${BASE}/mod/quiz/view.php?id=32`, html: fixture("quiz-start.html") }),
+      "POST /mod/quiz/startattempt.php": () => ({ url: `${BASE}/mod/quiz/startattempt.php`, html: `<div class="alert alert-danger">The password entered was incorrect</div>${preflight}` }),
+    });
+    await expect(startQuizAttempt(deps, 32, { password: async () => "wrong" })).rejects.toThrow(/password entered was incorrect/u);
   });
 });
 
