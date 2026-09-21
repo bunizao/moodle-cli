@@ -30,9 +30,9 @@ describe("shared intent contract", () => {
       expect(tool).not.toHaveProperty("outputSchema");
       walk(TOOL_OUTPUT_SCHEMAS[tool.name], node => { if (node && typeof node === "object" && (node as { type?: string }).type === "object" && "properties" in node) expect(node).toHaveProperty("additionalProperties", false); });
     }
-    expect(TOOL_CATALOG).toHaveLength(12);
+    expect(TOOL_CATALOG).toHaveLength(13);
     // The catalog is read once per session before any data flows; keep it under budget.
-    expect(JSON.stringify(TOOL_CATALOG).length).toBeLessThan(8200);
+    expect(JSON.stringify(TOOL_CATALOG).length).toBeLessThan(9000);
   });
   it("makes ambiguous names actionable, and resolves a complete phrase in one call", async () => {
     expect(await call("item", { ref: "algo-2 mini test" })).toMatchObject({ isError: true, structuredContent: { error: { code: "ambiguous", candidates: [{ id: 201 }, { id: 211 }] } } });
@@ -71,9 +71,10 @@ describe("shared intent contract", () => {
     }
   });
   it("pins honest fixture payload budgets independently from catalog cost", async () => {
-    const budgets = { home: 2000, due: 300, units: 600, unit: 600, find: 500, item: 500, grades: 1500, news: 500, thread: 600, search_forums: 600, file: 250, attempt: 450 };
+    const budgets = { home: 2000, due: 300, units: 600, unit: 600, find: 500, item: 500, grades: 1500, news: 500, thread: 600, search_forums: 600, file: 250, submit: 600, attempt: 450 };
     for (const [name, args] of intentCalls) expect(JSON.stringify((await call(name, args)).structuredContent).length, name).toBeLessThanOrEqual(budgets[name]);
-    expect(JSON.stringify(TOOL_CATALOG).length).toBeLessThanOrEqual(8200);
+    // Twelve read tools fit in 8 KB; the one write tool earns the space its warnings take.
+    expect(JSON.stringify(TOOL_CATALOG).length).toBeLessThanOrEqual(9000);
   });
   it("reads only the announcements it can show, and one unit detail per unit", async () => {
     const base = fixtureGateway();

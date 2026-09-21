@@ -29,12 +29,25 @@ const READ_ONLY_ANNOTATIONS = {
   idempotentHint: true,
   openWorldHint: true,
 } as const;
+// Submitting for grading cannot be undone and a second upload replaces files.
+const WRITE_ANNOTATIONS = {
+  readOnlyHint: false,
+  destructiveHint: true,
+  idempotentHint: false,
+  openWorldHint: true,
+} as const;
+const WRITE_TOOLS: ReadonlySet<string> = new Set<Intent>(["submit"]);
 
 const aliases: Partial<Record<string, Intent>> = { get_overview: "home", list_courses: "units", get_course: "unit", get_activity: "item", get_grades: "grades", get_thread: "thread", get_file: "file" };
 export const TOOL_CATALOG = Object.entries(intentContracts).map(([name, contract]) => ({
   name, description: intentDescription(name as Intent),
-  inputSchema: compactSchema(z.toJSONSchema(contract.input, { io: "input" })), annotations: READ_ONLY_ANNOTATIONS,
+  inputSchema: compactSchema(z.toJSONSchema(contract.input, { io: "input" })), annotations: WRITE_TOOLS.has(name) ? WRITE_ANNOTATIONS : READ_ONLY_ANNOTATIONS,
 }));
+
+// The remote Worker has no filesystem, so it never lists the upload tool.
+function toolsFor(gateway: MoodleGateway) {
+  return gateway.submitAssignment ? TOOL_CATALOG : TOOL_CATALOG.filter(tool => !WRITE_TOOLS.has(tool.name));
+}
 
 // Results are parsed against the contract before they are sent, so publishing the
 // output schema only adds bytes to every tools/list a client ever reads.
@@ -92,7 +105,12 @@ export function createMoodleMcpServer(
             protocolVersion,
             capabilities: { tools: { listChanged: false } },
             serverInfo,
-            instructions: ["Read-only access to the authenticated user's Moodle data.", ...(options.instructions ?? [])].join(" "),
+            instructions: [
+              gateway.submitAssignment
+                ? "Access to the authenticated user's Moodle data. Only submit writes; it defaults to a dry run."
+                : "Read-only access to the authenticated user's Moodle data.",
+              ...(options.instructions ?? []),
+            ].join(" "),
           });
         }
         if (request.method === "ping") {
@@ -100,7 +118,7 @@ export function createMoodleMcpServer(
         }
         if (request.method === "tools/list") {
           return jsonRpcSuccess(id, {
-            tools: TOOL_CATALOG,
+            tools: toolsFor(gateway),
             resultType: "complete",
             _meta: RESULT_META,
           });
@@ -157,6 +175,7 @@ async function callTool(gateway: MoodleGateway, params: Record<string, unknown> 
   const requested = typeof params?.name === "string" ? params.name : "";
   const name = Object.hasOwn(aliases, requested) ? aliases[requested]! : requested;
   if (!Object.hasOwn(intentContracts, name) && !["get_user", "list_activities", "list_forums"].includes(name)) throw new McpCallError("TOOL_NOT_FOUND", `Unknown Moodle tool: ${requested || "<missing>"}`);
+  if (WRITE_TOOLS.has(name) && !gateway.submitAssignment) throw new McpCallError("TOOL_NOT_FOUND", `${requested} is only available on a local MCP server with access to the files.`);
   const raw = params?.arguments ?? {};
   if (!isRecord(raw)) throw new McpCallError("INVALID_TOOL_ARGUMENTS", "Tool arguments must be an object.");
   const args = { ...raw };
@@ -203,7 +222,7 @@ async function callTool(gateway: MoodleGateway, params: Record<string, unknown> 
       const mapped = { type: "MOODLE_RESULT_INVALID", message: `Moodle returned ${name} data in an unexpected shape.`, hint: "Retry once; if it persists, run the same command locally with --verbose and report the tool name.", issues: error.issues.slice(0, 5).map(issue => ({ path: issue.path.join("."), message: issue.message })) };
       return { content: [{ type: "text", text: JSON.stringify({ error: mapped }) }], structuredContent: { error: mapped }, isError: true, resultType: "complete", _meta: RESULT_META };
     }
-    const mapped = error instanceof ReferenceError ? { type: error.code, code: error.code, message: error.message, hint: error.hint, candidates: error.candidates } : mapMoodleError(error);
+    const mapped = error instanceof ReferenceError ? { type: error.code, code: error.code, message: error.message, hint: error.hint, candidates: error.candidates } : mapMoodleError(error, WRITE_TOOLS.has(name));
     return { content: [{ type: "text", text: JSON.stringify({ error: mapped }) }], structuredContent: { error: mapped }, isError: true, resultType: "complete", _meta: RESULT_META };
   }
 }
@@ -230,9 +249,12 @@ function toolContent(name: string, payload: unknown, structuredContent: unknown)
   ];
 }
 
-function mapMoodleError(error: unknown): { type: string; message: string; hint: string; recovery?: Record<string, string>; moodleCode?: string } {
+function mapMoodleError(error: unknown, verbatim = false): { type: string; message: string; hint: string; recovery?: Record<string, string>; moodleCode?: string } {
   const record = isRecord(error) ? error : {};
   const code = typeof record.code === "string" ? record.code : "";
+  // A refused write must say why (statement text, size limit, closed submissions); read tools keep the fixed phrasing.
+  const own = verbatim && typeof record.message === "string" && record.message.trim() && code !== "auth" ? record.message : undefined;
+  const ownHint = verbatim && typeof record.hint === "string" && record.hint.trim() ? record.hint : undefined;
   const typeByCode: Record<string, string> = {
     auth: "MOODLE_AUTH_REQUIRED",
     not_found: "MOODLE_NOT_FOUND",
@@ -245,7 +267,7 @@ function mapMoodleError(error: unknown): { type: string; message: string; hint: 
     : type === "MOODLE_INVALID_REQUEST" ? "The Moodle request is invalid."
     : "Moodle could not complete the request.";
   const moodleCode = typeof record.moodleErrorCode === "string" && /^[a-z][a-z0-9_]{0,63}$/u.test(record.moodleErrorCode) ? record.moodleErrorCode : undefined;
-  return { type, message, hint: type === "MOODLE_AUTH_REQUIRED" ? "Run moodle mcp login for a remote server, or moodle auth login locally; then retry." : "Run moodle doctor, or refine the request using units and find.", ...(type === "MOODLE_AUTH_REQUIRED" ? { recovery: { action: "moodle mcp login", where: "machine running moodle-cli", then: "retry this tool" } } : {}), ...(moodleCode ? { moodleCode } : {}) };
+  return { type, message: own ?? message, hint: ownHint ?? (type === "MOODLE_AUTH_REQUIRED" ? "Run moodle mcp login for a remote server, or moodle auth login locally; then retry." : "Run moodle doctor, or refine the request using units and find."), ...(type === "MOODLE_AUTH_REQUIRED" ? { recovery: { action: "moodle mcp login", where: "machine running moodle-cli", then: "retry this tool" } } : {}), ...(moodleCode ? { moodleCode } : {}) };
 }
 
 class McpCallError extends Error {

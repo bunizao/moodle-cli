@@ -3,6 +3,7 @@ import {
   rotateCredentials,
   type DeploymentCredentials,
 } from "../credentials/index.js";
+import { CliError } from "../../errors.js";
 import { ONBOARDING_STAGES, type OnboardingStageId } from "./onboarding.js";
 
 export const MANAGED_SESSION_ENDPOINTS = {
@@ -222,6 +223,9 @@ export interface DeploymentStatus {
   readiness: "pass" | "warn" | "fail" | "unknown";
   readinessReasonCode: string | null;
   sessionRevision: number | null;
+  // The recovery release serves the session bridge with OAuth switched off, so a deploy that
+  // failed after promoting it leaves hosted clients unable to sign in. Say so.
+  recoveryActive: boolean;
 }
 
 export interface RecoveryResult {
@@ -558,6 +562,7 @@ export class ManagedMcpDeployment {
         readiness: "unknown",
         readinessReasonCode: "NOT_DEPLOYED",
         sessionRevision: null,
+        recoveryActive: false,
       };
     }
 
@@ -593,6 +598,7 @@ export class ManagedMcpDeployment {
       readiness,
       readinessReasonCode,
       sessionRevision,
+      recoveryActive: receipt.releaseDigest.endsWith("-recovery"),
     };
   }
 
@@ -906,8 +912,13 @@ function event(stageId: OnboardingStageId, status: DeploymentEvent["status"]): D
   return { stageId, stage: stage.index, total: 8, label: stage.label, status };
 }
 
-function asDeploymentError(error: unknown): DeploymentApplyError {
+function asDeploymentError(error: unknown): DeploymentApplyError | CliError {
   if (error instanceof DeploymentApplyError) {
+    return error;
+  }
+  // Auth and config failures already carry the fix in their hint (Node without
+  // node:sqlite, Full Disk Access, a stale profile); wrapping them hid it.
+  if (error instanceof CliError) {
     return error;
   }
   const detail = error instanceof Error && error.message ? `: ${error.message}` : "";

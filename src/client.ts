@@ -5,7 +5,9 @@ import {
   type MoodleClientErrorAdapter,
   type MoodleSessionCookie,
 } from "./moodle-client-core.js";
-import { isLoginRequiredError, MoodleAPIError, NotFoundError } from "./errors.js";
+import { isLoginRequiredError, MoodleAPIError, NotFoundError, UsageError } from "./errors.js";
+import type { SubmissionReceipt } from "./moodle-assign-core.js";
+import { readSubmissionFiles, type SubmitLocalFilesRequest } from "./submit.js";
 import type { PageContext } from "./models.js";
 import {
   readCachedSession,
@@ -25,6 +27,7 @@ export type {
 const NODE_ERROR_ADAPTER: MoodleClientErrorAdapter = {
   api: (message, moodleErrorCode) => new MoodleAPIError(message, moodleErrorCode),
   notFound: (message) => new NotFoundError(message),
+  usage: (message, hint) => new UsageError(message, hint),
   isApi: (error): error is MoodleAPIError => error instanceof MoodleAPIError,
   isLoginRequired: isLoginRequiredError,
 };
@@ -35,6 +38,12 @@ export class MoodleClient extends MoodleClientCore {
       ? { cookie: { name: "MoodleSession", value: options } }
       : options;
     super(baseUrl, { ...resolvedOptions, errorAdapter: NODE_ERROR_ADAPTER });
+  }
+
+  /** Reads local files, then uploads them into the assignment. Only the Node client has a filesystem. */
+  async submitAssignmentFiles(request: SubmitLocalFilesRequest): Promise<SubmissionReceipt> {
+    const { files, cwd, ...rest } = request;
+    return this.submitAssignment({ ...rest, files: await readSubmissionFiles(files, cwd) });
   }
 }
 

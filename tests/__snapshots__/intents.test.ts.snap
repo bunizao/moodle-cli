@@ -9,7 +9,8 @@ exports[`shared intent contract > pins the home, section, item and grades screen
 │ Quiz      │ 8     │ 0–10  │ Well done                     │
 └───────────┴───────┴───────┴───────────────────────────────┘
 
-Try  moodle due --days 30 · moodle grades"
+Try  moodle due --days 30
+     moodle grades"
 `;
 
 exports[`shared intent contract > pins the home, section, item and grades screens at 80 columns > home 1`] = `
@@ -30,7 +31,8 @@ Units  DB240 · algo-2 · STATS · Ethics in Computing
   STATS · Week 7
   Ethics in Computing · Week 7
 
-Try  moodle due --days 30 · moodle grades"
+Try  moodle due --days 30
+     moodle grades"
 `;
 
 exports[`shared intent contract > pins the home, section, item and grades screens at 80 columns > item 1`] = `
@@ -52,5 +54,6 @@ Week 7
   resource  Week 7 Lecture slides  #200
   assign  Mini Test  #201
 
-Try  moodle "algo-2" "TASK" · moodle get "UNIT TASK" --to ."
+Try  moodle "algo-2" "TASK"
+     moodle get "UNIT TASK" --to ."
 `;

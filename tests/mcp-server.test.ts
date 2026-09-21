@@ -4,6 +4,8 @@ import { describe, expect, it } from "vitest";
 import type { MoodleGateway } from "../src/mcp/gateway.js";
 import { LEGACY_PROTOCOL_VERSION, MODERN_PROTOCOL_VERSION, SUPPORTED_PROTOCOL_VERSIONS } from "../src/mcp/protocol.js";
 import { createMoodleMcpServer, TOOL_OUTPUT_SCHEMAS } from "../src/mcp/server.js";
+import { UsageError } from "../src/errors.js";
+import { readableToolResult, smokeMoodleUser } from "../src/mcp/deployment/node-adapters.js";
 
 describe("Moodle MCP server", () => {
   it("discovers the modern stateless server without advertising unsupported capabilities", async () => {
@@ -94,6 +96,34 @@ describe("Moodle MCP server", () => {
 
     const content = (response as { result: { content: Array<Record<string, unknown>> } }).result.content;
     expect(content[1]).toEqual({ type: "image", data: "c2xpZGVz", mimeType: "image/png" });
+  });
+
+  it("lists and runs the submit tool only when the gateway can read local files", async () => {
+    const readOnly = createMoodleMcpServer(fakeGateway());
+    const missing = await readOnly.handle({ jsonrpc: "2.0", id: "no-submit", method: "tools/call", params: modernParams({ name: "submit", arguments: { ref: 555, files: ["essay.pdf"] } }) });
+    expect(missing).toMatchObject({ id: "no-submit", error: { code: -32602, data: { type: "TOOL_NOT_FOUND" } } });
+
+    const calls: unknown[] = [];
+    const gateway: MoodleGateway = { ...fakeGateway(), submitAssignment: async (input) => { calls.push(input); return receipt(input.dryRun ?? false); } };
+    const server = createMoodleMcpServer(gateway);
+    const listed = await server.handle({ jsonrpc: "2.0", id: "tools", method: "tools/list", params: modernParams() });
+    const tools = (listed as { result: { tools: Array<Record<string, unknown>> } }).result.tools;
+    expect(tools.map((tool) => tool.name)).toEqual(["home", "due", "units", "unit", "find", "item", "attempt", "grades", "news", "thread", "search_forums", "submit", "file"]);
+    expect(tools.find((tool) => tool.name === "submit")?.annotations).toEqual({ readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true });
+    expect(tools.filter((tool) => tool.name !== "submit").every((tool) => (tool.annotations as Record<string, unknown>).readOnlyHint === true)).toBe(true);
+
+    const planned = await server.handle({ jsonrpc: "2.0", id: "plan", method: "tools/call", params: modernParams({ name: "submit", arguments: { ref: 555, files: ["essay.pdf"] } }) });
+    expect(planned).toMatchObject({ id: "plan", result: { structuredContent: { submission: { id: 555, action: "planned", uploads: [{ name: "essay.pdf", bytes: 5 }] } } } });
+    expect(calls).toEqual([{ activityId: 555, files: ["essay.pdf"], final: false, replace: false, acceptStatement: false, dryRun: true }]);
+
+    const legacy = await server.handle({ jsonrpc: "2.0", id: "init", method: "initialize", params: { protocolVersion: LEGACY_PROTOCOL_VERSION, capabilities: {}, clientInfo: { name: "vitest", version: "1.0.0" } } });
+    expect((legacy as { result: { instructions: string } }).result.instructions).toContain("submit");
+  });
+
+  it("keeps the reason when a submission is refused", async () => {
+    const gateway: MoodleGateway = { ...fakeGateway(), submitAssignment: async () => { throw new UsageError('Moodle requires you to accept this statement: "My own work."', "Re-run with --accept-statement once you agree."); } };
+    const response = await createMoodleMcpServer(gateway).handle({ jsonrpc: "2.0", id: "refused", method: "tools/call", params: modernParams({ name: "submit", arguments: { ref: 555, files: ["essay.pdf"], dry_run: false } }) });
+    expect(response).toMatchObject({ id: "refused", result: { isError: true, structuredContent: { error: { type: "MOODLE_INVALID_REQUEST", message: 'Moodle requires you to accept this statement: "My own work."', hint: "Re-run with --accept-statement once you agree." } } } });
   });
 
   it("returns an authenticated file as an embedded MCP resource", async () => {
@@ -412,7 +442,28 @@ describe("Moodle MCP server", () => {
       expect(method).toHaveBeenCalledWith(expect.objectContaining({ courseId }));
     }
   });
+
+  // The deployment smoke reads these results to decide whether a release is healthy. Renaming a
+  // tool or a field without updating it parks production on the OAuth-less recovery release.
+  it("answers the deployment smoke with the fields it reads", async () => {
+    const server = createMoodleMcpServer(fakeGateway());
+    const call = async (name: string, args: Record<string, unknown>) => {
+      const response = await server.handle({ jsonrpc: "2.0", id: name, method: "tools/call", params: modernParams({ name, arguments: args }) });
+      return (response as { result: unknown }).result;
+    };
+
+    expect(smokeMoodleUser(await call("home", {}))).toBe("Ada Lovelace");
+    const units = readableToolResult(await call("units", { limit: 1 })).units as Array<{ id: number }>;
+    expect(Array.isArray(units)).toBe(true);
+    expect(Number.isSafeInteger(units[0]?.id)).toBe(true);
+    const detail = readableToolResult(await call("unit", { unit: units[0].id }));
+    expect((detail.unit as { id: number }).id).toBe(units[0].id);
+  });
 });
+
+function receipt(dryRun: boolean) {
+  return { id: 555, name: "Essay 1", unit_id: 101, url: "https://moodle.example.edu/mod/assign/view.php?id=555", action: dryRun ? "planned" as const : "saved" as const, submission_status: dryRun ? "No submission" : "Draft (not submitted)", grading_status: "Not graded", due: "Friday, 15 May 2026, 5:00 PM", time_remaining: "2 days", last_modified: "", files: [], uploads: [{ name: "essay.pdf", bytes: 5 }], removed: [], limits: { max_files: 1 }, checked_at: "2026-05-13T09:00:00.000Z" };
+}
 
 function textResult(response: unknown): Record<string, unknown> {
   const result = (response as { result: { content: Array<{ type: string; text?: string }> } }).result;

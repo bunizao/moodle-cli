@@ -1,3 +1,10 @@
+import { createTheme, type Theme } from "@bunizao/cli-kit";
+
+import { LEGACY_PROTOCOL_VERSION, MODERN_PROTOCOL_VERSION } from "../protocol.js";
+
+// Copy is rendered plain unless a caller hands over the CLI's theme.
+const PLAIN = createTheme(false);
+
 export const ONBOARDING_STAGES = [
   { id: "validate_moodle_session", index: 1, label: "Validating Moodle session" },
   { id: "check_cloudflare_access", index: 2, label: "Checking Cloudflare access" },
@@ -96,13 +103,14 @@ export const ONBOARDING_COPY = {
 export function formatOnboardingStage(
   stageId: OnboardingStageId,
   status: "pending" | "completed",
+  theme: Theme = PLAIN,
 ): string {
   const stage = ONBOARDING_STAGES.find((item) => item.id === stageId);
   if (!stage) {
     throw new Error(`Unknown onboarding stage: ${stageId}`);
   }
   const line = `[${stage.index}/8] ${stage.label}`;
-  return status === "completed" ? `✓ ${line}` : line;
+  return status === "completed" ? `${theme.tone("success", "✓")} ${line}` : line;
 }
 
 export function successfulDeploymentCopy(input: {
@@ -110,56 +118,58 @@ export function successfulDeploymentCopy(input: {
   moodleSite: string;
   moodleUser: string;
   clients: string[];
-}): string {
+}, theme: Theme = PLAIN): string {
   const connectedClients = input.clients.length
-    ? input.clients.map((client) => `  ✓ ${client}`).join("\n")
-    : "  No supported clients detected";
+    ? input.clients.map((client) => `  ${theme.tone("success", "✓")} ${client}`).join("\n")
+    : `  ${theme.dim("No supported clients detected")}`;
+  const field = (label: string, value: string) => `  ${theme.dim(`${label}:`)} ${value}`;
   return [
-    "Moodle MCP is ready.",
+    theme.tone("success", "Moodle MCP is ready."),
     "",
-    "Endpoint",
-    `  ${input.endpoint}`,
+    theme.subject("Endpoint"),
+    // The one line a person copies into a client, so it reads as an identifier, not a footnote.
+    `  ${theme.key(input.endpoint)}`,
     "",
-    "Protocol",
-    "  MCP 2026-07-28",
-    "  Stateless legacy compatibility: 2025-11-25",
+    theme.subject("Protocol"),
+    `  ${theme.dim("MCP")} ${MODERN_PROTOCOL_VERSION}`,
+    `  ${theme.dim(`Stateless legacy compatibility: ${LEGACY_PROTOCOL_VERSION}`)}`,
     "",
-    "Moodle",
-    `  Site: ${input.moodleSite}`,
-    `  User: ${input.moodleUser}`,
-    "  Session: ready",
+    theme.subject("Moodle"),
+    field("Site", theme.target(input.moodleSite)),
+    field("User", input.moodleUser),
+    field("Session", theme.status("ready", { ready: "success" })),
     "",
-    "Renewal",
-    "  Installed on this computer",
-    "  Next check: within 30 minutes",
+    theme.subject("Renewal"),
+    `  ${theme.dim("Installed on this computer")}`,
+    `  ${theme.dim("Next check: within 30 minutes")}`,
     "",
-    "Connected clients",
+    theme.subject("Connected clients"),
     connectedClients,
     "",
-    "Run `moodle mcp status` at any time.",
+    `Run ${theme.key("moodle mcp status")} at any time.`,
   ].join("\n");
 }
 
-export function moodleUnavailableCopy(moodleSite: string): string {
+export function moodleUnavailableCopy(moodleSite: string, theme: Theme = PLAIN): string {
   return [
-    `Moodle MCP cannot reach ${moodleSite}.`,
+    `Moodle MCP cannot reach ${theme.target(moodleSite)}.`,
     "",
     "The current session has been preserved. No login is required yet.",
     "",
     "Try again with:",
     "",
-    "  moodle mcp status",
+    `  ${theme.key("moodle mcp status")}`,
   ].join("\n");
 }
 
-export function clientConfigurationFailedCopy(client: string): string {
+export function clientConfigurationFailedCopy(client: string, theme: Theme = PLAIN): string {
   return [
-    `The MCP server is ready, but ${client} configuration could not be updated.`,
+    `The MCP server is ready, but ${theme.target(client)} configuration could not be updated.`,
     "",
     "No existing client configuration was overwritten.",
     "",
     "Run:",
     "",
-    `  moodle mcp connect ${client.toLowerCase()}`,
+    `  ${theme.key(`moodle mcp connect ${client.toLowerCase()}`)}`,
   ].join("\n");
 }

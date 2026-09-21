@@ -9,23 +9,35 @@ import { runtimeSupportsCookies } from "./mcp/self-command.js";
 import { createMoodleGateway } from "./mcp/gateway.js";
 import { createIntentService, type IntentService } from "./intents.js";
 import { humanDescription, type Intent } from "./intent-contract.js";
-import { ReferenceError, normalize, resolveSection, splitUnitPhrase } from "./resolve.js";
-import { renderScreen } from "./screens.js";
-import { createInterface } from "node:readline/promises";
+import { ReferenceError, normalize, resolveSection, splitUnitPhrase, type Candidate } from "./resolve.js";
+import { renderScreen, tryLines } from "./screens.js";
+import type { Writable } from "node:stream";
 import { spawn } from "node:child_process";
 import { Command } from "commander";
 import {
+  banner,
+  colorEnabled,
   confirm,
   createProgram,
+  createTheme,
+  createUi,
+  detectAudience,
+  examples,
+  helpSection,
   insertDefaultVerb,
+  isInformationalExit,
+  parseWithPrompts,
   render,
   reportError,
   normalizeError,
   resolveFormat,
   mutating,
   writeOutput,
+  type ArgumentFiller,
   type NounSpec,
   type OutputFormat,
+  type Theme,
+  type Ui,
 } from "@bunizao/cli-kit";
 import { realpathSync } from "node:fs";
 import path from "node:path";
@@ -34,7 +46,7 @@ import { createMoodleClient, type MoodleClient } from "./client.js";
 import { refreshLatestVersion, runUpdate, startupUpdateNotice } from "./update-check.js";
 import { isNewerVersion } from "./update-core.js";
 import { loadConfig } from "./config.js";
-import { CliError, MoodleAPIError, UsageError, asNetworkError } from "./errors.js";
+import { AuthError, CliError, MoodleAPIError, UsageError, asNetworkError } from "./errors.js";
 import {
   formatActivityDetail,
   formatActivityList,
@@ -44,6 +56,7 @@ import {
   formatCourses,
   formatDownloadReceipt,
   formatForumDiscussion,
+  formatSubmissionReceipt,
   formatForumDiscussionRefs,
   formatForumActivities,
   formatForumSearchHits,
@@ -53,6 +66,8 @@ import {
   formatUser,
 } from "./formatters.js";
 import { downloadMoodleFile } from "./download.js";
+import type { SubmissionReceipt } from "./moodle-assign-core.js";
+import { resolveSubmissionPath } from "./submit.js";
 import { formatSkillSummary, installSkill, writeGeneratedSkill } from "./skills.js";
 import {
   getAuthStatus,
@@ -61,8 +76,12 @@ import {
   keepaliveStatus,
   uninstallKeepalive,
 } from "./keepalive.js";
-import { authenticateWithPastedCookie, getAuthenticatedSessionWithBrowserFallback } from "./auth.js";
+import { authenticateWithPastedCookie, getAuthenticatedSession, getAuthenticatedSessionWithBrowserFallback, invalidateCachedSession } from "./auth.js";
+import { browserCookieStores, cookieStoresBlocked } from "./cookie-stores.js";
+import { signInInteractively } from "./onboarding.js";
 import { readSecretLine } from "./secret-input.js";
+import { configureTerminalTables } from "./terminal-table.js";
+import { MOODLE_TAGLINE, MOODLE_WORDMARK, showWordmark } from "./wordmark.js";
 import { VERSION } from "./version.js";
 import { filterDiscussionToPost, parseDiscussionReference, parseForumReference } from "./forum.js";
 import { looksLikeUrl, resolveTopLevelUrl } from "./url-resolver.js";
@@ -84,6 +103,8 @@ interface CliIO {
 
 interface Runtime {
   client: MoodleClient | null;
+  /** A spinner owns stderr while this is set, so the request indicator stays quiet. */
+  busy: boolean;
   getClient: () => Promise<MoodleClient>;
   baseUrl: () => Promise<string>;
   output: (data: unknown, formatter: () => string, options: OutputCommandOptions) => Promise<void>;
@@ -102,12 +123,12 @@ interface OutputCommandOptions {
 
 const NOUNS: readonly NounSpec[] = [
   { name: "units", aliases: ["courses"], verbs: ["list", "show"], defaultByArity: { 0: "list", 1: "show" } },
-  { name: "activities", verbs: ["list", "show"], defaultByArity: { 1: "list" }, valueFlags: ["--limit", "--section"] },
+  { name: "activities", verbs: ["list", "show"], defaultByArity: { 0: "list", 1: "list" }, valueFlags: ["--limit", "--section"] },
   { name: "grades", verbs: ["list"], defaultByArity: { 0: "list", 1: "list" } },
   {
     name: "forums",
     verbs: ["list", "show", "search"],
-    defaultByArity: { 1: "list" },
+    defaultByArity: { 0: "list", 1: "list" },
     valueFlags: ["--limit", "--course", "--forum", "--limit-forums", "--limit-discussions", "--unit"],
   },
   { name: "threads", verbs: ["show"], defaultByArity: { 1: "show" }, valueFlags: ["--post", "--limit", "--offset"] },
@@ -116,7 +137,8 @@ const NOUNS: readonly NounSpec[] = [
 export function buildProgram(io: CliIO = {}): Command {
   const stdout = io.stdout ?? process.stdout;
   const stderr = io.stderr ?? process.stderr;
-  const program = createProgram({ name: "moodle", version: VERSION, description: "Terminal-first CLI for Moodle LMS." });
+  const program = createProgram({ name: "moodle", version: VERSION, description: MOODLE_TAGLINE });
+  banner(program, MOODLE_WORDMARK);
   program.configureOutput({
     writeOut: (text) => stdout.write(text),
     writeErr: (text) => stderr.write(text),
@@ -141,6 +163,7 @@ export function buildProgram(io: CliIO = {}): Command {
     width: (stdout as Partial<NodeJS.WriteStream>).columns || undefined,
     color: !process.env.NO_COLOR && program.opts().color !== false && outputFormat({ ...program.opts(), ...options }, stdout) === "table",
   });
+  configureTerminalTables({ color: () => colorEnabled(stdout as { isTTY?: boolean }, io.env) && program.opts().color !== false });
 
   // Commander hands a flag declared on both the program and a subcommand to the
   // program, so a local --limit or --days never arrives. What the user typed wins,
@@ -149,6 +172,7 @@ export function buildProgram(io: CliIO = {}): Command {
 
   const runtime: Runtime = {
     client: null,
+    busy: false,
     screen,
     count,
     baseUrl: async () => (await loadConfig({ env: io.env, cwd: io.cwd, homeDir: io.homeDir, stdin: io.stdin, stderr: stderr as NodeJS.WritableStream, fetch: io.fetchImpl })).baseUrl,
@@ -159,11 +183,11 @@ export function buildProgram(io: CliIO = {}): Command {
         let inflight = 0;
         let displayed = false;
         let timer: ReturnType<typeof setTimeout> | undefined;
-        runtime.client = await createMoodleClient(baseUrl, {
+        const connect = () => createMoodleClient(baseUrl, {
           env: io.env,
           fetchImpl: async (input, init) => {
             const started = Date.now();
-            const tty = Boolean("isTTY" in stderr && stderr.isTTY) && !program.opts().json && !io.rootArgs?.includes("--json");
+            const tty = Boolean("isTTY" in stderr && stderr.isTTY) && !program.opts().json && !io.rootArgs?.includes("--json") && !runtime.busy;
             if (tty && inflight++ === 0) timer = setTimeout(() => { displayed = true; stderr.write("Loading Moodle…"); }, 300);
             try { return await (io.fetchImpl ?? fetch)(input, init); }
             finally {
@@ -181,6 +205,14 @@ export function buildProgram(io: CliIO = {}): Command {
           homeDir: io.homeDir,
           noCache: Boolean(program.opts().cache === false),
         });
+        try {
+          runtime.client = await connect();
+        } catch (error) {
+          // A person with no session is walked through the browser sign-in once; an agent gets the auth error.
+          if (!(error instanceof AuthError) || !human()) throw error;
+          await signIn(baseUrl);
+          runtime.client = await connect();
+        }
       }
       return runtime.client;
     },
@@ -189,7 +221,7 @@ export function buildProgram(io: CliIO = {}): Command {
       const format = outputFormat(merged, stdout);
       const human = format === "table" ? formatter() : "";
       const text = format === "table"
-        ? `${human}${human.includes("Try  ") ? "" : "\n\nTry  moodle due · moodle units · moodle --help"}\n`
+        ? `${human}${human.includes("Try  ") ? "" : `\n\n${tryLines(["moodle due", "moodle units", "moodle --help"])}`}\n`
         : format === "json"
           ? `${JSON.stringify(JSON.parse(render(data, { format, fields: parseFields(data, merged.fields) })), null, merged.pretty ? 2 : undefined)}\n`
           : render(data, { format, fields: parseFields(data, merged.fields) });
@@ -210,6 +242,10 @@ export function buildProgram(io: CliIO = {}): Command {
       stdout: stdout as NodeJS.WritableStream,
       stderr: stderr as NodeJS.WritableStream,
       fetchImpl: io.fetchImpl,
+      // Progress goes to stderr and the summary to stdout, so both streams must want colour.
+      color: () => colorEnabled(stdout as { isTTY?: boolean }, io.env)
+        && colorEnabled(stderr as { isTTY?: boolean }, io.env)
+        && program.opts().color !== false,
     });
     return mcpService;
   };
@@ -220,17 +256,47 @@ export function buildProgram(io: CliIO = {}): Command {
     await runtime.output(result, () => screen(result, options), options);
   };
 
+  // One rule for who is on the other end: a person at a terminal reading a table. Anyone
+  // else (a pipe, --json, an agent's shell) gets errors with the flag to pass, never a prompt.
+  const human = () => detectAudience({
+    stdin: io.stdin ?? process.stdin,
+    stdout: { isTTY: Boolean(stdout && "isTTY" in stdout && stdout.isTTY) },
+    env: io.env ?? process.env,
+    format: outputFormat(program.opts(), stdout),
+  }) === "human";
+
+  const theme = (): Theme => createTheme(colorEnabled(stderr as { isTTY?: boolean }, io.env) && program.opts().color !== false);
+
+  // First run on this machine: the wordmark, one note, then whichever sign-in the person picks.
+  const signIn = async (baseUrl: string): Promise<void> => {
+    const ui = createUi({ input: io.stdin ?? process.stdin, output: stderr as Writable, interactive: true });
+    const auth = { env: io.env, fetch: io.fetchImpl, homeDir: io.homeDir, captureMobileToken: true };
+    runtime.busy = true;
+    try {
+      await signInInteractively(ui, {
+        baseUrl,
+        platform: process.platform,
+        showWordmark,
+        storesBlocked: async () => cookieStoresBlocked(await browserCookieStores({ homeDir: io.homeDir })),
+        openInBrowser,
+        readBrowserSession: () => getAuthenticatedSession(baseUrl, { ...auth, noCache: true, nonInteractive: true }),
+        browserLogin: onBrowserOpened => getAuthenticatedSessionWithBrowserFallback(baseUrl, { ...auth, onBrowserOpened }),
+        pasteLogin: () => pasteLogin(baseUrl, true),
+        keepaliveInstalled: async () => (await keepaliveStatus(io.homeDir)).installed,
+        installKeepalive: () => installKeepalive({ homeDir: io.homeDir }),
+      });
+    } finally {
+      runtime.busy = false;
+    }
+  };
+
   const choose = async <T>(action: () => Promise<T>, retry: (id: number) => Promise<T>): Promise<T> => {
     try { return await action(); } catch (error) {
-      if (!(error instanceof ReferenceError) || error.code !== "ambiguous" || !(io.stdin?.isTTY ?? process.stdin.isTTY) || outputFormat(program.opts(), stdout) !== "table") throw error;
-      stderr.write(`${error.message}\n${error.candidates.map((c, i) => `  ${i + 1}  ${c.name}`).join("\n")}\n`);
-      const reader = createInterface({ input: io.stdin ?? process.stdin, output: stderr as NodeJS.WritableStream });
-      try {
-        const answer = await reader.question(`Pick [1-${error.candidates.length}]: `);
-        const chosen = error.candidates[Number(answer) - 1];
-        if (!chosen) throw error;
-        return await retry(chosen.id);
-      } finally { reader.close(); }
+      if (!(error instanceof ReferenceError) || error.code !== "ambiguous" || !human()) throw error;
+      const ui = createUi({ input: io.stdin ?? process.stdin, output: stderr as Writable, interactive: true });
+      const hint = (c: Candidate) => c.code ?? c.type;
+      const chosen = await ui.select(error.message, error.candidates.map(c => ({ value: c.id, label: c.name, ...(hint(c) ? { hint: hint(c) } : {}) })));
+      return await retry(chosen);
     }
   };
 
@@ -295,7 +361,7 @@ export function buildProgram(io: CliIO = {}): Command {
       .option("--limit <number>", "Maximum returned rows.", parsePositiveInt)
       .action(async (unit: string | undefined, options: OutputCommandOptions & { days?: number; limit?: number }) => execute(name, { unit, limit: count("limit", options.limit), ...(name === "due" ? { days: count("days", options.days) } : {}) }, options));
   }
-  addOutputOptions(program.command("find").description(humanDescription("find")).argument("<query>").argument("[unit]"))
+  addOutputOptions(program.command("find").description(humanDescription("find")).argument("<query>", "Words to look for").argument("[unit]", "Unit code, name, id or URL"))
     .option("--limit <number>", "Maximum returned rows.", parsePositiveInt)
     .option("--types <types>", "Comma-separated activity types.")
     .action(async (query: string, unit: string | undefined, options: OutputCommandOptions & { limit?: number; types?: string }) => execute("find", { query, unit, limit: count("limit", options.limit), types: options.types?.split(",") }, options));
@@ -327,7 +393,7 @@ export function buildProgram(io: CliIO = {}): Command {
       const report = await runUpdate({ ...updateOptions, workerBehind: workerBehind ?? undefined });
       await runtime.output(report, () => report.note, options);
     });
-  addOutputOptions(program.command("get").description("Download a resource by id, URL, or UNIT TASK phrase.").argument("<ref>"))
+    addOutputOptions(program.command("get").description("Download a resource by id, URL, or UNIT TASK phrase.").argument("<ref>", "Resource id, URL, or UNIT TASK phrase"))
     .option("--to <directory>", "Destination directory.")
     .option("--force", "Replace an existing file atomically.")
     .action(async (ref: string, options: OutputCommandOptions & { to?: string; force?: boolean }) => {
@@ -337,7 +403,41 @@ export function buildProgram(io: CliIO = {}): Command {
       const receipt = await downloadMoodleFile(client, { source: String(source), directory: options.to ? path.resolve(io.cwd ?? process.cwd(), options.to) : undefined, force: options.force });
       await runtime.output(receipt, () => formatDownloadReceipt(receipt), options);
     });
-  addOutputOptions(program.command("open").description("Open a unit or activity reference in the browser.").argument("<ref>"))
+  addOutputOptions(mutating(program.command("submit").description(humanDescription("submit")).summary("Upload files into an assignment").argument("<ref>", "Assignment id, URL, or UNIT TASK phrase").argument("[files...]", "Local files to upload")))
+    .option("--final", "Also submit for grading. Moodle does not allow undoing this.")
+    .option("--replace", "Remove the files already in the submission first.")
+    .option("--accept-statement", "Agree to the site's submission statement when it requires one.")
+    .action(async (ref: string, files: string[], options: OutputCommandOptions & { final?: boolean; replace?: boolean; acceptStatement?: boolean }) => {
+      const interactive = human();
+      // Same rule cli-kit's confirm applies, checked before the plan touches the site or the files.
+      if (!program.opts().dryRun && !program.opts().yes && !interactive) throw new UsageError("Mutation requires --yes when stdin is not interactive.", "Run with --dry-run to see the plan first.");
+      const client = await runtime.getClient();
+      const service = createIntentService(createMoodleGateway(client));
+      const args = { files: files.map(file => resolveSubmissionPath(file, io.cwd ?? process.cwd())), final: Boolean(options.final), replace: Boolean(options.replace), accept_statement: Boolean(options.acceptStatement) };
+      // The plan reads the files and every Moodle page the upload needs, so most refusals happen before any prompt.
+      const plan = await choose(() => service.run("submit", { ref, ...args, dry_run: true }), id => service.run("submit", { ref: id, ...args, dry_run: true }));
+      const planned = plan.submission as SubmissionReceipt;
+      if (program.opts().dryRun) return runtime.output(plan, () => formatSubmissionReceipt(planned), options);
+      if (!await confirm({ summary: submissionSummary(planned, args.final, theme()) }, { yes: Boolean(program.opts().yes), dryRun: false, interactive })) return;
+      // The upload is the one long step a person watches, so it gets a spinner that names each file.
+      const spin = interactive ? createUi({ input: io.stdin ?? process.stdin, output: stderr as Writable, interactive: true }).spinner() : undefined;
+      runtime.busy = true;
+      spin?.start("Preparing the upload");
+      let result: Record<string, unknown>;
+      try {
+        const live = createIntentService(createMoodleGateway(client, { onSubmitProgress: message => spin?.message(message) }));
+        result = await live.run("submit", { ref: planned.id, ...args, dry_run: false });
+        const receipt = result.submission as SubmissionReceipt;
+        spin?.stop(receipt.uploads.length ? `Uploaded ${receipt.uploads.map(file => file.name).join(", ")} to ${receipt.name}` : `Submitted ${receipt.name}`);
+      } catch (error) {
+        spin?.error("The upload did not complete");
+        throw error;
+      } finally {
+        runtime.busy = false;
+      }
+      await runtime.output(result, () => formatSubmissionReceipt(result.submission as SubmissionReceipt), options);
+    });
+  addOutputOptions(program.command("open").description("Open a unit or activity reference in the browser.").argument("<ref>", "Unit or activity id, URL, or UNIT TASK phrase"))
     .action(async (ref: string, options: OutputCommandOptions) => {
       const client = await runtime.getClient();
       let url: string;
@@ -348,7 +448,7 @@ export function buildProgram(io: CliIO = {}): Command {
         else { const id = await createIntentService(createMoodleGateway(client)).resolveItem(ref); const item = await client.getActivity(id); url = item.url; }
       }
       if (!url || !/^https?:/u.test(url)) throw new UsageError("This item has no browser URL.");
-      await new Promise<void>((resolve, reject) => { const child = spawn(process.platform === "darwin" ? "open" : process.platform === "win32" ? "explorer.exe" : "xdg-open", [url], { stdio: "ignore" }); child.once("error", reject); child.once("exit", code => code === 0 ? resolve() : reject(new Error("Could not open the browser."))); });
+      await openInBrowser(url);
       await runtime.output({ opened: url }, () => `Opened ${url}`, options);
     });
 
@@ -406,7 +506,7 @@ export function buildProgram(io: CliIO = {}): Command {
       const result = stripEmpty({ activities: rows.slice(0, count("limit", options.limit)), total: rows.length }) as Record<string, unknown>;
       await runtime.output(result, () => runtime.screen(result, options), options);
     });
-  addOutputOptions(activities.command("show").description("Show activity details; resource and folder files can be passed to moodle get or download.").argument("<id>", "Course-module ID")).action(
+  addOutputOptions(activities.command("show").description("Show activity details; resource and folder files can be passed to moodle get or download.").summary("Show activity details").argument("<id>", "Course-module ID")).action(
     async (id: string, options: OutputCommandOptions) => {
       await execute("item", { ref: parsePositiveInt(id) }, options);
     },
@@ -480,20 +580,20 @@ export function buildProgram(io: CliIO = {}): Command {
 
   addForumSearchCommand(forums.command("search").description("Search forum discussion titles and post text."), runtime, 20);
 
-  addOutputOptions(program.command("doctor").description("Diagnose runtime, browser access, session, background jobs and MCP setup.")).action(async (options: OutputCommandOptions) => {
+  addOutputOptions(program.command("doctor").description("Diagnose runtime, browser access, session, background jobs and MCP setup.").summary("Diagnose runtime, session and MCP setup")).action(async (options: OutputCommandOptions) => {
     const result = await doctor(io);
-    await runtime.output(result, () => result.checks.map(c => `${c.status.toUpperCase()} ${c.name}: ${c.detail}${c.hint ? `\n  ${c.hint}` : ""}`).join("\n") + `\n\nTry  ${doctorNextSteps(result.checks).join(" · ")}`, options);
+    await runtime.output(result, () => result.checks.map(c => `${c.status.toUpperCase()} ${c.name}: ${c.detail}${c.hint ? `\n  ${c.hint}` : ""}`).join("\n") + `\n\n${tryLines(doctorNextSteps(result.checks))}`, options);
     // A health check that always succeeds cannot be scripted against.
     if (result.checks.some(c => c.status === "fail")) process.exitCode = 3;
   });
-  program.command("completion").description("Print shell completion for zsh, bash or fish.").argument("<shell>").action((shell: string) => {
+  program.command("completion").description("Print shell completion for zsh, bash or fish.").addArgument(program.createArgument("<shell>", "Shell to target").choices(["zsh", "bash", "fish"])).action((shell: string) => {
     const names = program.commands.filter(c => c.name() !== "help").flatMap(c => [c.name(), ...c.aliases()]);
     if (shell === "bash") stdout.write(`complete -W '${names.join(" ")}' moodle\n`);
     else if (shell === "zsh") stdout.write(`#compdef moodle\n_arguments '1:command:(${names.join(" ")})' '*:reference:'\n`);
     else if (shell === "fish") stdout.write(names.map(n => `complete -c moodle -f -a '${n}'`).join("\n") + "\n");
     else throw new UsageError("Choose zsh, bash or fish.");
   });
-  addOutputOptions(mutating(program.command("uninstall").description("Remove local background jobs; optionally remove the selected Worker and configuration.")))
+  addOutputOptions(mutating(program.command("uninstall").description("Remove local background jobs; optionally remove the selected Worker and configuration.").summary("Remove background jobs, Worker and config")))
     .option("--remote", "Also remove the configured managed MCP deployment.")
     .option("--purge", "Also delete local Moodle CLI configuration, receipts and cache.")
     .action(async (options: OutputCommandOptions & { remote?: boolean; purge?: boolean }) => {
@@ -504,7 +604,7 @@ export function buildProgram(io: CliIO = {}): Command {
       if (program.opts().dryRun) return runtime.output(result, () => JSON.stringify(result, null, 2), options);
       if (options.purge && receipts.length && !options.remote) throw new UsageError("Managed deployment receipts exist; remove the Worker before purging its recovery information.", "Run moodle mcp remove for each configured site, then moodle uninstall --purge.");
       if (options.purge && receipts.length > 1) throw new UsageError("Multiple managed deployment receipts exist; remove each Worker before purging configuration.");
-      if (!await confirm({ summary: `Remove Moodle background jobs${options.remote ? ", the configured Worker" : ""}${options.purge ? ", configuration and cache" : ""}.` }, { yes: Boolean(program.opts().yes), dryRun: false, interactive: Boolean(io.stdin?.isTTY ?? process.stdin.isTTY) })) return;
+      if (!await confirm({ summary: `Remove Moodle background jobs${options.remote ? ", the configured Worker" : ""}${options.purge ? ", configuration and cache" : ""}.` }, { yes: Boolean(program.opts().yes), dryRun: false, interactive: human() })) return;
       if (options.remote) await getMcpService().remove({ yes: true });
       if (process.platform === "darwin") await uninstallKeepalive({ homeDir: home });
       const renewal = new DefaultRenewalIntegration({ homeDirectory: home, executable: process.execPath });
@@ -569,7 +669,7 @@ export function buildProgram(io: CliIO = {}): Command {
   const keepalive = addOutputOptions(
     auth
       .command("keepalive")
-      .description("Renew the Moodle session once; used by the background keepalive agent.")
+      .description("Renew the Moodle session once; used by the background keepalive agent.").summary("Renew the session once")
       .option("--no-renew", "Only touch the session; skip re-login when it is expired."),
   ).action(async (options: OutputCommandOptions & { renew: boolean }) => {
     const baseUrl = await runtime.baseUrl();
@@ -586,7 +686,7 @@ export function buildProgram(io: CliIO = {}): Command {
     const globals = program.opts();
     if (!await confirm(
       { summary: `Install the Moodle session keepalive agent${options.interval ? ` with a ${options.interval}-minute interval` : ""}.` },
-      { yes: Boolean(globals.yes), dryRun: Boolean(globals.dryRun), interactive: Boolean(io.stdin?.isTTY ?? process.stdin.isTTY) },
+      { yes: Boolean(globals.yes), dryRun: Boolean(globals.dryRun), interactive: human() },
     )) return;
     const baseUrl = await runtime.baseUrl();
     await getAuthenticatedSessionWithBrowserFallback(baseUrl, { env: io.env, homeDir: io.homeDir, fetch: io.fetchImpl, noCache: true, nonInteractive: true, captureMobileToken: true });
@@ -599,7 +699,7 @@ export function buildProgram(io: CliIO = {}): Command {
       const globals = program.opts();
       if (!await confirm(
         { summary: "Remove the Moodle session keepalive agent." },
-        { yes: Boolean(globals.yes), dryRun: Boolean(globals.dryRun), interactive: Boolean(io.stdin?.isTTY ?? process.stdin.isTTY) },
+        { yes: Boolean(globals.yes), dryRun: Boolean(globals.dryRun), interactive: human() },
       )) return;
       const result = await uninstallKeepalive({ homeDir: io.homeDir });
       await runtime.output(result, () => `Keepalive removed (${result.plist_path})`, options);
@@ -613,7 +713,7 @@ export function buildProgram(io: CliIO = {}): Command {
     },
   );
 
-  const mcp = program.command("mcp").description("Deploy a private MCP Worker on Cloudflare; encrypted session storage and local renewal. Free-tier limits apply.");
+  const mcp = program.command("mcp").description("Deploy a private MCP Worker on Cloudflare; encrypted session storage and local renewal. Free-tier limits apply.").summary("Private MCP server on Cloudflare");
   addOutputOptions(mutating(mcp.command("deploy").description("Deploy or update the managed Moodle MCP server.")))
     .option("--dry-run", "Preview deployment changes without applying them.")
     .option("--repair", "Repair authentication and managed deployment state.")
@@ -627,7 +727,7 @@ export function buildProgram(io: CliIO = {}): Command {
         {
           yes: Boolean(program.opts().yes),
           dryRun: false,
-          interactive: Boolean(io.stdin?.isTTY ?? process.stdin.isTTY),
+          interactive: human(),
         },
       )) return;
       const result = await getMcpService().deploy({
@@ -679,14 +779,14 @@ export function buildProgram(io: CliIO = {}): Command {
   addOutputOptions(mcp.command("clients").description("List pending and approved OAuth clients.")).action(async (options: OutputCommandOptions) => {
     await outputMcpResult(runtime, await getMcpService().manageClients({}), options);
   });
-  addOutputOptions(mutating(mcp.command("revoke").description("Revoke an OAuth client or all OAuth access.").argument("[client-id]")))
+  addOutputOptions(mutating(mcp.command("revoke").description("Revoke an OAuth client or all OAuth access.").argument("[client-id]", "OAuth client id; omit with --all")))
     .option("--all", "Revoke every client, token, pending authorization, and pairing window.")
     .action(async (clientId: string | undefined, options: OutputCommandOptions & { all?: boolean }) => {
       if (Boolean(clientId) === Boolean(options.all)) throw new UsageError("Provide a client ID or --all.");
       await outputMcpResult(runtime, await getMcpService().manageClients({ revoke: true, clientId }), options);
     });
 
-  addOutputOptions(mutating(mcp.command("pair").description("Open a pairing window so Claude can connect to the remote MCP server."))).action(
+  addOutputOptions(mutating(mcp.command("pair").description("Open a pairing window so Claude can connect to the remote MCP server.").summary("Open a pairing window for Claude"))).action(
     async (options: OutputCommandOptions) => {
       await outputMcpResult(runtime, await getMcpService().pair(), options);
     },
@@ -733,7 +833,7 @@ export function buildProgram(io: CliIO = {}): Command {
     },
   );
 
-  const skills = program.command("skills").description("Show skill metadata or delegate to the shared skills CLI.");
+  const skills = program.command("skills").description("Show skill metadata or delegate to the shared skills CLI.").summary("Agent skill metadata");
   skills.action(() => {
     stdout.write(`${formatSkillSummary()}\n`);
   });
@@ -743,20 +843,45 @@ export function buildProgram(io: CliIO = {}): Command {
   });
   skills.command("add").description("Install the published skill through npx skills add.").allowUnknownOption(true).action((_options, command) => installSkill(command.args));
 
+  for (const [title, names] of Object.entries(HELP_SECTIONS)) {
+    // Placed in the order the list names them: that order is the help page.
+    for (const name of names) for (const command of program.commands) if (command.name() === name) helpSection(command, title);
+  }
+  examples(program, [
+    "moodle  # today: due items, alerts and news",
+    "moodle UNIT grades",
+    "moodle submit UNIT \"Assignment 2\" report.pdf",
+  ]);
   return program;
 }
+
+// Grouped the way `gh` does: what a person reaches for daily, then the rest, then what only an agent runs.
+const HELP_SECTIONS: Readonly<Record<string, readonly string[]>> = {
+  "Core commands": ["due", "news", "find", "get", "open", "submit", "units", "activities", "grades", "threads", "forums"],
+  "Additional commands": ["user", "todo", "alerts", "overview", "download", "auth", "doctor", "completion", "uninstall"],
+  "Agent commands": ["mcp", "commands", "skills"],
+};
 
 export async function runCli(argv = process.argv, io: CliIO = {}): Promise<number> {
   const stderr = io.stderr ?? process.stderr;
   const stdout = io.stdout ?? process.stdout;
   const args = insertDefaultVerb(argv.slice(2), NOUNS);
-  const program = buildProgram({ ...io, rootArgs: args });
+  const ui = createUi({
+    input: io.stdin ?? process.stdin,
+    output: stderr as Writable,
+    interactive: detectAudience({
+      stdin: io.stdin ?? process.stdin,
+      stdout: { isTTY: Boolean(stdout && "isTTY" in stdout && stdout.isTTY) },
+      env: io.env ?? process.env,
+      format: errorOutputFormat(args, stdout),
+    }) === "human",
+  });
   try {
     await startupUpdateNotice(args, stderr, { homeDir: io.homeDir, env: io.env });
-    await program.parseAsync(args, { from: "user" });
+    await parseWithPrompts(() => buildProgram({ ...io, rootArgs: args }), args, { ui, fillers: { unit: pickUnit(io, ui) } });
     return 0;
   } catch (error) {
-    if (isCommanderCompletion(error)) {
+    if (isInformationalExit(error)) {
       return 0;
     }
     const format = errorOutputFormat(args, stdout);
@@ -777,6 +902,14 @@ export async function runCli(argv = process.argv, io: CliIO = {}): Promise<numbe
  * user to run `moodle auth login` when the cookie store is unreadable sends
  * them straight back into the failure they just reported.
  */
+function openInBrowser(url: string): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    const child = spawn(process.platform === "darwin" ? "open" : process.platform === "win32" ? "explorer.exe" : "xdg-open", [url], { stdio: "ignore" });
+    child.once("error", reject);
+    child.once("exit", code => code === 0 ? resolve() : reject(new Error("Could not open the browser.")));
+  });
+}
+
 function doctorNextSteps(checks: ReadonlyArray<{ name: string; status: string }>): string[] {
   const failing = new Set(checks.filter(c => c.status !== "pass").map(c => c.name));
   const steps: string[] = [];
@@ -847,17 +980,35 @@ function addForumSearchCommand(command: Command, runtime: Runtime, defaultLimit:
     });
 }
 
+// Accepted after every command, but the root page already lists them as global options;
+// repeating the five on each page buried the flags that matter.
 function addOutputOptions(command: Command): Command {
-  return command
-    .option("--pretty", "Indent JSON output.")
-    .option("--json", "Output as JSON.")
-    .option("--yaml", "Output as YAML.")
-    .option("--table", "Force human output.")
-    .option("--fields <fields>", "Keep only listed top-level fields in structured output.");
+  for (const [flags, description] of [
+    ["--pretty", "Indent JSON output."],
+    ["--json", "Output as JSON."],
+    ["--yaml", "Output as YAML."],
+    ["--table", "Force human output."],
+    ["--fields <fields>", "Keep only listed top-level fields in structured output."],
+  ]) command.addOption(command.createOption(flags, description).hideHelp());
+  return command;
 }
 
 function outputFormat(options: OutputCommandOptions, stdout: CliIO["stdout"]): OutputFormat {
   return resolveFormat(options, Boolean(stdout && "isTTY" in stdout && stdout.isTTY));
+}
+
+// What is sent and where it lands are the two facts to check before saying yes, so each gets its own role and line.
+function submissionSummary(plan: SubmissionReceipt, final: boolean, theme: Theme): string {
+  const destination = `${theme.target(plan.name)}${plan.unit_id ? theme.dim(`  unit ${plan.unit_id}`) : ""}`;
+  const lines = plan.uploads.length
+    ? [`${theme.dim("Upload")}  ${theme.subject(plan.uploads.map(file => file.name).join(", "))}`, `${theme.dim("    to")}  ${destination}`]
+    : [`${theme.dim("Submit")}  ${destination}`, `${theme.dim("      ")}  ${theme.subject("the files already there")} for grading`];
+  if (plan.removed.length) lines.push(`${theme.dim("Remove")}  ${theme.tone("danger", plan.removed.join(", "))} ${theme.dim("first")}`);
+  if (plan.statement) lines.push(`${theme.dim(" Agree")}  "${plan.statement}"`);
+  lines.push(final
+    ? theme.tone("warning", "Then submit for grading. Moodle does not allow undoing this.")
+    : theme.dim("Moodle keeps a draft where the assignment allows drafts; otherwise it submits at once."));
+  return lines.join("\n");
 }
 
 function parsePositiveInt(value: string): number {
@@ -905,11 +1056,27 @@ function parseFields(data: unknown, value?: string): string[] | undefined {
   return fields;
 }
 
-function isCommanderCompletion(error: unknown): boolean {
-  if (!error || typeof error !== "object") return false;
-  if ("exitCode" in error && error.exitCode === 0) return true;
-  const code = "code" in error ? String(error.code) : "";
-  return code.startsWith("commander.help") || code === "commander.version";
+// A person who typed `moodle activities` is shown their units rather than a usage error.
+function pickUnit(io: CliIO, ui: Ui): ArgumentFiller {
+  return async () => {
+    const spin = ui.spinner();
+    spin.start("Loading your units");
+    try {
+      return await selectUnit(spin);
+    } catch (error) {
+      // Otherwise the spinner keeps drawing over the session error.
+      spin.stop("Could not load your units");
+      throw error;
+    }
+  };
+
+  async function selectUnit(spin: ReturnType<Ui["spinner"]>): Promise<string> {
+    const { baseUrl } = await loadConfig({ env: io.env, cwd: io.cwd, homeDir: io.homeDir, stdin: io.stdin, stderr: (io.stderr ?? process.stderr) as NodeJS.WritableStream, fetch: io.fetchImpl });
+    const client = await createMoodleClient(baseUrl, { env: io.env, fetchImpl: io.fetchImpl, homeDir: io.homeDir });
+    const courses = await client.getCourses();
+    spin.stop(`${courses.length} units`);
+    return ui.select("Which unit?", courses.map(course => ({ value: String(course.id), label: course.fullname, ...(course.shortname ? { hint: course.shortname } : {}) })));
+  }
 }
 
 function parseRootOutputOptions(args: string[]): OutputCommandOptions {

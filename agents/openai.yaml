@@ -1,4 +1,4 @@
 interface:
   display_name: "Moodle CLI"
-  short_description: "Inspect Moodle and retrieve authenticated course files"
+  short_description: "Inspect Moodle, retrieve authenticated course files and submit assignment files"
   default_prompt: "Use $moodle-cli to inspect my Moodle data, retrieve a file through MCP, or download selected files locally with the narrowest relevant operation."

@@ -73,6 +73,7 @@ describe("shared CLI contract", () => {
     ["auth", "keepalive", "install"],
     ["auth", "keepalive", "uninstall"],
     ["mcp", "deploy"],
+    ["submit", "12", "essay.pdf"],
   ])("requires --yes for non-interactive mutation %s %s %s", async (...args: string[]) => {
     const stderr = buffer(false);
     await expect(runCli(["node", "moodle", ...args, "--json"], {

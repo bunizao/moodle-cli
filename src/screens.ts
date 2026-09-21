@@ -1,4 +1,6 @@
-import { renderTerminalTable, sanitizeTerminalText } from "./terminal-table.js";
+import { createTheme, type Tone } from "@bunizao/cli-kit";
+
+import { renderTerminalTable, sanitizeTerminalText, type TerminalTableCell } from "./terminal-table.js";
 
 const record = (v: unknown): Record<string, unknown> => v && typeof v === "object" && !Array.isArray(v) ? v as Record<string, unknown> : {};
 const array = (v: unknown): Record<string, unknown>[] => Array.isArray(v) ? v.map(record) : [];
@@ -16,21 +18,33 @@ function moment(value: unknown, now: number): string {
   const sameYear = new Date(now).getFullYear() === Number(year);
   return `${weekday} ${Number(day)} ${MONTHS[Number(month) - 1]}${sameYear ? "" : ` ${year}`}${hour ? `, ${hour}:${minute}` : ""}`;
 }
+/** The commands worth typing next, one per line under a "Try" label, the way help pages list them. */
+export function tryLines(commands: readonly string[]): string {
+  return commands.map((command, index) => `${index ? "     " : "Try  "}${command}`).join("\n");
+}
+
 export function renderScreen(data: Record<string, unknown>, options: { width?: number; color?: boolean; now?: number } = {}): string {
   const lines: string[] = [];
   const now = options.now ?? Date.now();
-  const dueText = (row: Record<string, unknown>) => {
-    if (!row.due_at) return text(row.status || row.submission_status);
+  // Three levels on every row: the code a person types next, the name they read, the facts they glance at.
+  const theme = createTheme(Boolean(options.color));
+  // Text and tone stay apart until the last moment: a line paints them itself, a table cell hands both over.
+  const due = (row: Record<string, unknown>): { text: string; tone: Tone } => {
     const days = Math.ceil((Number(row.due_at) * 1000 - now) / 86400000);
     const value = `${days < 0 ? `${-days} days overdue` : days === 0 ? "today" : days === 1 ? "tomorrow" : `in ${days} days`} · ${moment(row.due, now)}`;
-    return options.color && days <= 2 ? `\x1b[${days < 0 ? 31 : 33}m${value}\x1b[0m` : value;
+    return { text: value, tone: days < 0 ? "danger" : days <= 2 ? "warning" : "muted" };
+  };
+  const dueText = (row: Record<string, unknown>) => {
+    if (!row.due_at) return theme.status(text(row.status || row.submission_status));
+    const { text: value, tone } = due(row);
+    return theme.tone(tone, value);
   };
   const rows = (items: Record<string, unknown>[], title: string) => {
-    lines.push(title);
-    if (!items.length) lines.push("  None");
-    for (const r of items) lines.push(`  ${text(r.unit_code || r.type)}  ${text(r.name)}${r.due_at ? `  ${dueText(r)}` : ""}${r.id ? `  #${r.id}` : ""}`);
+    lines.push(theme.subject(title));
+    if (!items.length) lines.push(theme.dim("  None"));
+    for (const r of items) lines.push(`  ${theme.key(text(r.unit_code || r.type))}  ${text(r.name)}${r.due_at ? `  ${dueText(r)}` : ""}${r.id ? `  ${theme.dim(`#${r.id}`)}` : ""}`);
   };
-  let next = "moodle due --days 30 · moodle grades";
+  let next = ["moodle due --days 30", "moodle grades"];
   if (data.home) {
     const h = record(data.home);
     lines.push(`${text(h.name)} · ${moment(h.today, now)} · ${text(h.timezone)}${h.timezone_source === "site" ? "" : ` (${text(h.timezone_source)})`}`, text(h.siteurl), "");
@@ -47,11 +61,12 @@ export function renderScreen(data: Record<string, unknown>, options: { width?: n
     if (data.due) { lines.push(""); rows(array(data.due), "Due in this unit"); }
     if (data.news) { lines.push(""); rows(array(data.news), "Latest news"); }
     const unit = JSON.stringify(u.code || u.name);
-    next = array(data.sections).some(s => s.activities) ? `moodle ${unit} "TASK" · moodle get "UNIT TASK" --to .` : `moodle ${unit} SECTION · moodle ${unit} grades`;
+    next = array(data.sections).some(s => s.activities) ? [`moodle ${unit} "TASK"`, `moodle get "UNIT TASK" --to .`] : [`moodle ${unit} SECTION`, `moodle ${unit} grades`];
   } else if (data.grades) {
     for (const g of array(data.grades)) {
       lines.push(`${text(g.code)} · ${g.graded} of ${g.total} graded`);
-      lines.push(renderTerminalTable([{ label: "Name", flex: true }, { label: "Grade" }, { label: "Range" }, { label: "Feedback", flex: true }], array(g.items).map(i => [text(i.name), text(i.grade), text(i.range), text(i.feedback || (i.due ? dueText(i) : ""))]), { width: options.width }));
+      const feedback = (i: Record<string, unknown>): TerminalTableCell => i.feedback ? text(i.feedback) : i.due_at ? due(i) : "";
+      lines.push(renderTerminalTable([{ label: "Name", flex: true }, { label: "Grade" }, { label: "Range" }, { label: "Feedback", flex: true }], array(g.items).map(i => [text(i.name), text(i.grade), text(i.range), feedback(i)]), { width: options.width }));
     }
   } else if (data.item) {
     const i = record(data.item); lines.push(`${text(i.name)} · ${text(i.type)} · #${i.id}`);
@@ -61,7 +76,7 @@ export function renderScreen(data: Record<string, unknown>, options: { width?: n
     for (const c of array(i.criteria)) lines.push(`${text(c.name)}  ${[c.score, c.level, c.remark].map(text).filter(Boolean).join("  ·  ")}`);
     for (const f of array(i.files)) lines.push(`File  ${text(f.name)}  ${text(f.url)}`);
     if (data.threads) rows(array(data.threads), "Threads");
-    next = `moodle get ${i.id} --to DIR`;
+    next = [`moodle get ${i.id} --to DIR`];
   } else if (data.attempt) {
     const a = record(data.attempt); lines.push(`Attempt #${a.id} · ${[a.status, a.marks, a.grade].map(text).filter(Boolean).join(" · ")}`);
     for (const q of array(a.questions)) {
@@ -69,23 +84,23 @@ export function renderScreen(data: Record<string, unknown>, options: { width?: n
       if (q.correct) lines.push(`Correct: ${text(q.correct)}`);
       if (q.feedback) lines.push(`Feedback: ${text(q.feedback)}`);
     }
-    next = `moodle item ${a.quiz_id}`;
+    next = [`moodle item ${a.quiz_id}`];
   } else if (data.thread) {
     const t = record(data.thread); lines.push(text(t.name));
     for (const p of array(t.posts)) lines.push("", `${text(record(p.author).name)} · ${moment(p.created, now)}`, text(p.message_text), ...array(p.links).map(l => `${text(l.text)} ${text(l.url)}`));
     lines.push(`Posts ${Number(t.offset) + array(t.posts).length} of ${t.posts_total}`);
-    next = `moodle threads show ${t.id} --offset ${Number(t.offset) + array(t.posts).length}`;
+    next = [`moodle threads show ${t.id} --offset ${Number(t.offset) + array(t.posts).length}`];
   } else if (data.news) {
     for (const n of array(data.news)) { const p = record(n.post); lines.push(`${text(n.unit_code)} · ${text(n.name)}`, `${text(record(p.author).name)} · ${moment(p.created, now)}`, text(p.message_text), ""); }
   } else if (data.units) {
     lines.push(renderTerminalTable([{ label: "ID" }, { label: "Code" }, { label: "Name", flex: true }], array(data.units).map(u => [text(u.id), text(u.code), text(u.name)]), { width: options.width }));
-    next = "moodle UNIT · moodle find QUERY";
+    next = ["moodle UNIT", "moodle find QUERY"];
   } else {
     const key = ["due", "results", "activities", "forums"].find(k => k in data);
     rows(array(key ? data[key] : []), key === "due" ? "Due" : "Matches");
     if (data.total !== undefined) lines.push(`${data.total} total`);
   }
-  lines.push("", `Try  ${next}`);
+  lines.push("", ...tryLines(next).split("\n").map(line => theme.dim(line)));
   const width = Math.max(40, options.width || 80);
   return lines.flatMap(line => {
     if (line.includes("\x1b[") || line.startsWith("│") || /^[┌└├]/u.test(line)) return [line];

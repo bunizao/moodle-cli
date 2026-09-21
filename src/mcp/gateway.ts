@@ -1,5 +1,7 @@
 import { parse } from "node-html-parser";
 
+import type { SubmissionReceipt } from "../moodle-assign-core.js";
+import type { SubmitLocalFilesRequest } from "../submit.js";
 import type {
   Activity,
   ActivityDetail,
@@ -93,6 +95,8 @@ export interface MoodleGateway {
   getFile(input: FileInput): Promise<MoodleFile>;
   listThreads?(forumId: number): Promise<ForumDiscussionRef[]>;
   listNewsForums?(courseId?: number): Promise<ForumActivityRef[]>;
+  /** Present only where the client can read local files; the remote Worker never offers it. */
+  submitAssignment?(input: SubmitLocalFilesRequest): Promise<SubmissionReceipt>;
 }
 
 export interface MoodleClientPort {
@@ -122,6 +126,7 @@ export interface MoodleClientPort {
   getForumDiscussion(discussionId: number, options?: { group?: boolean }): Promise<ForumDiscussion>;
   getForumDiscussionRefs?(forumId: number): Promise<ForumDiscussionRef[]>;
   getNewsForums?(courseId?: number): Promise<ForumActivityRef[]>;
+  submitAssignmentFiles?(input: SubmitLocalFilesRequest): Promise<SubmissionReceipt>;
   requestAbsolute(url: string, init?: RequestInit): Promise<Response>;
 }
 
@@ -135,13 +140,19 @@ export class MoodleGatewayError extends Error {
   }
 }
 
-export function createMoodleGateway(client: MoodleClientPort): MoodleGateway {
+export interface GatewayHooks {
+  /** Progress of a submission's slow steps, for a spinner; the intent contract carries no callbacks. */
+  readonly onSubmitProgress?: (message: string) => void;
+}
+
+export function createMoodleGateway(client: MoodleClientPort, hooks: GatewayHooks = {}): MoodleGateway {
   return {
     getUser: () => client.getSiteInfo(),
     listThreads: (id) => client.getForumDiscussionRefs ? client.getForumDiscussionRefs(id) : Promise.resolve([]),
     listNewsForums: (id) => client.getNewsForums ? client.getNewsForums(id) : Promise.resolve([]),
     getOverview: (input) => client.getOverview(input.todoLimit, input.todoDays, input.alertsLimit),
     ...(client.getTodo ? { getDue: (days: number, courseId?: number) => client.getTodo!(Number.MAX_SAFE_INTEGER, days, courseId) } : {}),
+    ...(client.submitAssignmentFiles ? { submitAssignment: (input: SubmitLocalFilesRequest) => client.submitAssignmentFiles!({ ...input, ...(hooks.onSubmitProgress ? { onProgress: hooks.onSubmitProgress } : {}) }) } : {}),
     listCourses: () => client.getCourses(),
     async getCourse({ courseId }) {
       const [courses, sections] = await Promise.all([

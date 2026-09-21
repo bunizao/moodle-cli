@@ -27,6 +27,7 @@ import {
   RESOURCE_VIEW_PATH,
   URL_VIEW_PATH,
 } from "./constants.js";
+import { submitAssignmentFiles, type SubmissionReceipt, type SubmitAssignmentRequest } from "./moodle-assign-core.js";
 import { ForumModule } from "./moodle-forum-core.js";
 import { searchForumContent as searchForumModule } from "./moodle-forum-search-core.js";
 import type {
@@ -99,6 +100,8 @@ export interface MoodleApiErrorLike extends Error {
 export interface MoodleClientErrorAdapter {
   api(message: string, moodleErrorCode?: string): MoodleApiErrorLike;
   notFound(message: string): Error;
+  /** The caller asked for something the site cannot do as given; defaults to a usage-coded core error. */
+  usage?(message: string, hint?: string): Error;
   isApi(error: unknown): error is MoodleApiErrorLike;
   isLoginRequired(error: unknown): boolean;
 }
@@ -590,8 +593,19 @@ export class MoodleClientCore {
     return parseFolderHtml(await this.get(FOLDER_VIEW_PATH, { id }), id, this.baseUrl);
   }
 
-  async requestAbsolute(url: string, init: RequestInit = {}): Promise<Response> {
-    return this.requestAbsoluteInternal(url, init, true);
+  async requestAbsolute(url: string, init: RequestInit = {}, options: { allowErrorStatus?: boolean } = {}): Promise<Response> {
+    return this.requestAbsoluteInternal(url, init, true, Boolean(options.allowErrorStatus));
+  }
+
+  /** Uploads files into an assignment and reads the receipt back from the site. */
+  async submitAssignment(request: SubmitAssignmentRequest): Promise<SubmissionReceipt> {
+    await this.ensureSession();
+    return submitAssignmentFiles({
+      baseUrl: this.baseUrl,
+      request: (url, init, options) => this.requestAbsolute(url, init, options),
+      fail: (message, moodleErrorCode) => this.errors.api(message, moodleErrorCode),
+      usage: (message, hint) => this.errors.usage ? this.errors.usage(message, hint) : new MoodleClientCoreError("usage", message, hint),
+    }, request);
   }
 
   async getNewsForums(courseId?: number): Promise<ForumActivityRef[]> {
@@ -763,16 +777,16 @@ export class MoodleClientCore {
     return (await this.requestAbsolute(url)).text();
   }
 
-  private async requestAbsoluteInternal(url: string, init: RequestInit, allowRetry: boolean): Promise<Response> {
+  private async requestAbsoluteInternal(url: string, init: RequestInit, allowRetry: boolean, allowErrorStatus = false): Promise<Response> {
     const response = await fetchWithSession(url, init, this.baseUrl, this.cookie, this.fetchImpl);
     if (response.url.includes("/login/")) {
       if (this.onLoginRequired && allowRetry && !this.retryingLogin) {
         await this.reauthenticate();
-        return this.requestAbsoluteInternal(url, init, false);
+        return this.requestAbsoluteInternal(url, init, false, allowErrorStatus);
       }
       throw this.errors.api("Session expired", "servicerequireslogin");
     }
-    if (!response.ok) {
+    if (!response.ok && !allowErrorStatus) {
       const context = `HTTP ${response.status} loading ${safeUrl(url)}`;
       const contentType = response.headers.get("content-type")?.toLowerCase() ?? "";
       if (contentType.includes("text/html") || contentType.includes("application/xhtml+xml")) {

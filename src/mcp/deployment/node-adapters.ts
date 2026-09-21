@@ -304,6 +304,11 @@ export class NodeWranglerDeploymentAdapter implements WranglerDeploymentAdapter 
     await this.wrangler(["delete", input.workerName, "--force"], input.accountId);
   }
 
+  /** Locate or download Wrangler now, so a first-use prompt is not drawn under a spinner later. */
+  async prepare(options: { yes?: boolean } = {}): Promise<void> {
+    if (!this.wranglerBinPath) await resolveWrangler(this.runner, options);
+  }
+
   private async wrangler(
     args: string[],
     accountId?: string,
@@ -546,28 +551,26 @@ export class FetchManagedWorkerClient implements ManagedWorkerClient {
     }
     await this.mcpCall(input.endpoint, input.mcpAccessToken, "server/discover", {}, 1);
     await this.mcpCall(input.endpoint, input.mcpAccessToken, "tools/list", {}, 2);
-    const userResult = await this.mcpCall(
-      input.endpoint,
-      input.mcpAccessToken,
-      "tools/call",
-      { name: "get_user", arguments: {} },
-      3,
-    );
-    const moodleUser = mcpUserFullname(userResult);
+    // The smoke calls the tools the server advertises. Anything else drifts the day a tool is renamed.
+    const homeResult = await this.mcpCall(input.endpoint, input.mcpAccessToken, "tools/call", { name: "home", arguments: {} }, 3);
+    const moodleUser = smokeMoodleUser(homeResult);
     if (!moodleUser) {
-      throw new DeploymentApplyError("MCP_SMOKE_FAILED", "MCP get_user check returned no Moodle user");
+      throw new DeploymentApplyError("MCP_SMOKE_FAILED", "MCP home check returned no Moodle user");
     }
-    const coursesResult = await this.mcpCall(input.endpoint, input.mcpAccessToken, "tools/call", { name: "list_courses", arguments: { limit: 1 } }, 4);
-    const courses = readableToolResult(coursesResult).courses;
-    if (!Array.isArray(courses)) throw new DeploymentApplyError("MCP_SMOKE_FAILED", "MCP list_courses returned no course list");
-    if (courses.length) {
-      const first = courses[0];
+    const unitsResult = await this.mcpCall(input.endpoint, input.mcpAccessToken, "tools/call", { name: "units", arguments: { limit: 1 } }, 4);
+    const units = readableToolResult(unitsResult).units;
+    if (!Array.isArray(units)) throw new DeploymentApplyError("MCP_SMOKE_FAILED", "MCP units returned no unit list");
+    if (units.length) {
+      const first = units[0];
       if (!isRecord(first) || !Number.isSafeInteger(first.id) || Number(first.id) <= 0) {
-        throw new DeploymentApplyError("MCP_SMOKE_FAILED", "MCP list_courses returned no usable course ID");
+        throw new DeploymentApplyError("MCP_SMOKE_FAILED", "MCP units returned no usable unit ID");
       }
-      const detail = readableToolResult(await this.mcpCall(input.endpoint, input.mcpAccessToken, "tools/call", { name: "get_course", arguments: { courseId: first.id } }, 5));
-      if (!isRecord(detail.course) || !isRecord(detail.course.course) || detail.course.course.id !== first.id || !Array.isArray(detail.course.sections)) {
-        throw new DeploymentApplyError("MCP_SMOKE_FAILED", "MCP course lookup did not match the listed course");
+      const detail = readableToolResult(await this.mcpCall(input.endpoint, input.mcpAccessToken, "tools/call", { name: "unit", arguments: { unit: first.id } }, 5));
+      if (!isRecord(detail.unit) || detail.unit.id !== first.id) {
+        throw new DeploymentApplyError("MCP_SMOKE_FAILED", "MCP unit lookup did not match the listed unit");
+      }
+      if (detail.sections !== undefined && !Array.isArray(detail.sections)) {
+        throw new DeploymentApplyError("MCP_SMOKE_FAILED", "MCP unit lookup returned an unusable section list");
       }
     }
     return { moodleUser };
@@ -830,7 +833,7 @@ function firstHealthCheck(body: Record<string, unknown>, name: string): Record<s
   return isRecord(check) ? check : null;
 }
 
-function readableToolResult(result: unknown): Record<string, unknown> {
+export function readableToolResult(result: unknown): Record<string, unknown> {
   if (isRecord(result) && result.isError !== true && Array.isArray(result.content)) {
     try {
       const text = result.content.filter((block) => isRecord(block) && block.type === "text")
@@ -844,10 +847,10 @@ function readableToolResult(result: unknown): Record<string, unknown> {
   throw new DeploymentApplyError("MCP_CONTENT_INCOMPLETE", "MCP text content is missing the complete structured result");
 }
 
-function mcpUserFullname(result: unknown): string | null {
-  const user = readableToolResult(result).user;
-  return isRecord(user) && typeof user.fullname === "string" && user.fullname.trim()
-    ? user.fullname.trim()
+export function smokeMoodleUser(result: unknown): string | null {
+  const home = readableToolResult(result).home;
+  return isRecord(home) && typeof home.name === "string" && home.name.trim()
+    ? home.name.trim()
     : null;
 }
 
