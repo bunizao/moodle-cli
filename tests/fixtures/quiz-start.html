@@ -1,0 +1,20 @@
+<!doctype html>
+<html>
+  <body>
+    <nav aria-label="Breadcrumb">
+      <a href="https://school.example.edu/course/view.php?id=101">Mathematics 101</a>
+    </nav>
+    <h1>Quiz 1</h1>
+    <div role="main">
+      <div class="singlebutton quizstartbuttondiv">
+        <form method="post" action="https://school.example.edu/mod/quiz/startattempt.php">
+          <input type="hidden" name="cmid" value="32">
+          <input type="hidden" name="sesskey" value="FIXTUREKEY">
+          <button type="submit" class="btn btn-primary">Attempt quiz</button>
+        </form>
+      </div>
+      <div class="box py-3 quizinfo"><p class="text-start">Grading method: Highest grade</p></div>
+      <div class="box py-3 quizattempt"></div>
+    </div>
+  </body>
+</html>

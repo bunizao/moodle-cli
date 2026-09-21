@@ -56,7 +56,7 @@ function isMutating(command: Command): boolean {
   if (VERB_SET.has(command.name())) {
     return ["send", "submit", "set", "mark-read"].includes(command.name());
   }
-  return ["install", "uninstall", "login", "deploy", "connect", "pair", "revoke", "remove", "push", "update"].includes(command.name());
+  return ["install", "uninstall", "login", "deploy", "connect", "pair", "revoke", "remove", "push", "update", "start", "answer", "finish"].includes(command.name());
 }
 
 export { intentContracts, intentDescription } from "./intent-contract.js";

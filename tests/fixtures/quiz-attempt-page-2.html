@@ -1,0 +1,49 @@
+<!doctype html>
+<html>
+  <head><title>Quiz 1 (page 3 of 3) | School</title></head>
+  <body>
+    <h1>Quiz 1</h1>
+    <section class="block block_fake">
+      <div class="qn_buttons clearfix multipages">
+        <a class="qnbutton answersaved free btn" id="quiznavbutton1" title="Question 1 - Answer saved" data-quiz-page="0" href="https://school.example.edu/mod/quiz/attempt.php?attempt=900&amp;cmid=32#">1</a>
+        <a class="qnbutton notyetanswered free btn" id="quiznavbutton2" title="Question i - Not yet viewed" data-quiz-page="1" href="https://school.example.edu/mod/quiz/attempt.php?attempt=900&amp;cmid=32&amp;page=1#">i</a>
+        <a class="qnbutton notyetanswered free btn" id="quiznavbutton3" title="Question 2 - Not yet answered" data-quiz-page="1" href="https://school.example.edu/mod/quiz/attempt.php?attempt=900&amp;cmid=32&amp;page=1#">2</a>
+        <a class="qnbutton notyetanswered free btn thispage" id="quiznavbutton4" title="Question 3 - Not yet answered" data-quiz-page="2" href="#question-4000-4">3</a>
+      </div>
+    </section>
+    <form action="https://school.example.edu/mod/quiz/processattempt.php?cmid=32" method="post" enctype="multipart/form-data" accept-charset="utf-8" id="responseform">
+      <div>
+        <div id="question-4000-4" class="que multichoice deferredfeedback notyetanswered">
+          <div class="info">
+            <h3 class="no">Question <span class="qno">3</span></h3>
+            <div class="state">Not yet answered</div>
+            <div class="grade">Marked out of 2.00</div>
+          </div>
+          <div class="content"><div class="formulation clearfix">
+            <input type="hidden" name="q4000:4_:sequencecheck" value="1" />
+            <div class="qtext"><p>Which of these are prime?</p></div>
+            <fieldset class="ablock">
+              <legend class="prompt">Select one or more:</legend>
+              <div class="answer">
+                <div class="r0"><input type="checkbox" name="q4000:4_choice0" value="1" id="q4000:4_choice0" aria-labelledby="q4000:4_choice0_label" /><div id="q4000:4_choice0_label" data-region="answer-label"><p>2</p></div></div>
+                <div class="r1"><input type="checkbox" name="q4000:4_choice1" value="1" id="q4000:4_choice1" aria-labelledby="q4000:4_choice1_label" /><div id="q4000:4_choice1_label" data-region="answer-label"><p>9</p></div></div>
+                <div class="r0"><input type="checkbox" name="q4000:4_choice2" value="1" id="q4000:4_choice2" aria-labelledby="q4000:4_choice2_label" /><div id="q4000:4_choice2_label" data-region="answer-label"><p>11</p></div></div>
+              </div>
+            </fieldset>
+          </div></div>
+        </div>
+        <div class="submitbtns">
+          <input type="submit" name="previous" value="Previous page" class="btn btn-secondary" />
+          <input type="submit" name="next" value="Finish attempt ..." class="mod_quiz-next-nav btn btn-primary" id="mod_quiz-next-nav" />
+        </div>
+        <input type="hidden" name="attempt" value="900" />
+        <input type="hidden" name="thispage" value="2" id="followingpage" />
+        <input type="hidden" name="nextpage" value="-1" />
+        <input type="hidden" name="timeup" value="0" id="timeup" />
+        <input type="hidden" name="sesskey" value="FIXTUREKEY" />
+        <input type="hidden" name="mdlscrollto" value="" id="mdlscrollto" />
+        <input type="hidden" name="slots" value="4" />
+      </div>
+    </form>
+  </body>
+</html>

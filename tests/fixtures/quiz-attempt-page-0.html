@@ -1,0 +1,58 @@
+<!doctype html>
+<html>
+  <head><title>Quiz 1 (page 1 of 3) | School</title></head>
+  <body>
+    <h1>Quiz 1</h1>
+    <section class="block block_fake">
+      <h3 class="card-title">Quiz navigation</h3>
+      <div class="qn_buttons clearfix multipages">
+        <a class="qnbutton notyetanswered free btn thispage" id="quiznavbutton1" title="Question 1 - Not yet answered" data-quiz-page="0" href="#question-4000-1"><span class="accesshide">Question </span>1</a>
+        <a class="qnbutton notyetanswered free btn" id="quiznavbutton2" title="Question i - Not yet viewed" data-quiz-page="1" href="https://school.example.edu/mod/quiz/attempt.php?attempt=900&amp;cmid=32&amp;page=1#"><span class="accesshide">Information </span>i</a>
+        <a class="qnbutton notyetanswered free btn" id="quiznavbutton3" title="Question 2 - Not yet answered" data-quiz-page="1" href="https://school.example.edu/mod/quiz/attempt.php?attempt=900&amp;cmid=32&amp;page=1#"><span class="accesshide">Question </span>2</a>
+        <a class="qnbutton notyetanswered free btn" id="quiznavbutton4" title="Question 3 - Not yet answered" data-quiz-page="2" href="https://school.example.edu/mod/quiz/attempt.php?attempt=900&amp;cmid=32&amp;page=2#"><span class="accesshide">Question </span>3</a>
+      </div>
+      <div class="othernav"><a class="endtestlink aalink" href="https://school.example.edu/mod/quiz/summary.php?attempt=900&amp;cmid=32">Finish attempt ...</a></div>
+    </section>
+    <form action="https://school.example.edu/mod/quiz/processattempt.php?cmid=32" method="post" enctype="multipart/form-data" accept-charset="utf-8" id="responseform">
+      <div>
+        <div id="question-4000-1" class="que multichoice deferredfeedback notyetanswered">
+          <div class="info">
+            <h3 class="no">Question <span class="qno">1</span></h3>
+            <div class="state">Not yet answered</div>
+            <div class="grade">Marked out of 1.00</div>
+            <div class="questionflag editable">
+              <input type="hidden" name="q4000:1_:flagged" value="0" />
+              <input type="checkbox" id="q4000:1_:flaggedcheckbox" name="q4000:1_:flagged" value="1" />
+            </div>
+          </div>
+          <div class="content">
+            <div class="formulation clearfix">
+              <input type="hidden" name="q4000:1_:sequencecheck" value="1" />
+              <div class="qtext" id="q4000:1_qtext"><p>Which value of x satisfies 2x + 1 = 7?</p></div>
+              <fieldset class="ablock">
+                <legend class="prompt">Select one:</legend>
+                <div class="answer">
+                  <div class="r0"><input type="radio" name="q4000:1_answer" value="0" id="q4000:1_answer0" aria-labelledby="q4000:1_answer0_label" /><div id="q4000:1_answer0_label" data-region="answer-label"><div><p>x = 2</p></div></div></div>
+                  <div class="r1"><input type="radio" name="q4000:1_answer" value="1" id="q4000:1_answer1" aria-labelledby="q4000:1_answer1_label" /><div id="q4000:1_answer1_label" data-region="answer-label"><div><p>x = 3</p></div></div></div>
+                  <div class="r0"><input type="radio" name="q4000:1_answer" value="2" id="q4000:1_answer2" aria-labelledby="q4000:1_answer2_label" /><div id="q4000:1_answer2_label" data-region="answer-label"><div><p>x = 4</p></div></div></div>
+                </div>
+                <div id="q4000:1_clearchoice" class="qtype_multichoice_clearchoice sr-only" aria-hidden="true">
+                  <input type="radio" name="q4000:1_answer" id="q4000:1_answer-1" value="-1" class="sr-only" aria-hidden="true" checked="checked" />
+                  <label for="q4000:1_answer-1"><a role="button" href="#">Clear my choice</a></label>
+                </div>
+              </fieldset>
+            </div>
+          </div>
+        </div>
+        <div class="submitbtns"><input type="submit" name="next" value="Next page" class="mod_quiz-next-nav btn btn-primary" id="mod_quiz-next-nav" /></div>
+        <input type="hidden" name="attempt" value="900" />
+        <input type="hidden" name="thispage" value="0" id="followingpage" />
+        <input type="hidden" name="nextpage" value="1" />
+        <input type="hidden" name="timeup" value="0" id="timeup" />
+        <input type="hidden" name="sesskey" value="FIXTUREKEY" />
+        <input type="hidden" name="mdlscrollto" value="" id="mdlscrollto" />
+        <input type="hidden" name="slots" value="1" />
+      </div>
+    </form>
+  </body>
+</html>

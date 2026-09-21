@@ -15,6 +15,7 @@ import type {
 } from "./models.js";
 import type { DownloadReceipt } from "./download.js";
 import type { SubmissionReceipt } from "./moodle-assign-core.js";
+import type { AttemptFinishReceipt, AttemptPage, AttemptQuestion, AttemptSummary } from "./moodle-quiz-core.js";
 import type { AuthStatus, KeepaliveRunResult } from "./keepalive.js";
 import { renderKeyValueTable, renderTerminalTable, sanitizeTerminalText } from "./terminal-table.js";
 
@@ -360,4 +361,52 @@ function formatTimestamp(value: number): string {
   const date = new Date(value * 1_000);
   const pad = (part: number): string => String(part).padStart(2, "0");
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
+export function formatAttemptPage(page: AttemptPage): string {
+  const lines = [`${page.name}  attempt ${page.attempt}  page ${page.page + 1} of ${page.pages}`, ""];
+  for (const question of page.questions) lines.push(...attemptQuestionLines(question), "");
+  const elsewhere = page.navigation.filter(entry => entry.page !== page.page && entry.number !== "i");
+  if (elsewhere.length) lines.push(`Other pages: ${elsewhere.map(entry => `Q${entry.number} p${entry.page + 1} (${entry.state.toLowerCase()})`).join(", ")}`);
+  return lines.join("\n").trimEnd();
+}
+
+function attemptQuestionLines(question: AttemptQuestion): string[] {
+  const head = question.kind === "info" ? "Information" : `Question ${question.number}  ${question.state}`;
+  const lines = [head, ...wrap(question.text)];
+  for (const option of question.options ?? []) {
+    const [first, ...rest] = wrap(option.text, 88);
+    lines.push(`  ${option.chosen ? "[x]" : "[ ]"} ${option.key})${first.slice(1)}`, ...rest.map(line => `     ${line}`));
+  }
+  if (question.kind === "text") lines.push(`  Answer: ${question.answer || "(empty)"}`);
+  if (question.kind === "unsupported") lines.push(`  (${question.type} questions can only be answered in a browser)`);
+  return lines;
+}
+
+function wrap(text: string, width = 96): string[] {
+  const lines: string[] = [];
+  let line = "";
+  for (const word of text.split(/\s+/u).filter(Boolean)) {
+    if (line && line.length + word.length + 1 > width) { lines.push(`  ${line}`); line = word; }
+    else line = line ? `${line} ${word}` : word;
+  }
+  if (line) lines.push(`  ${line}`);
+  return lines;
+}
+
+export function formatAttemptSummary(summary: AttemptSummary): string {
+  return renderTerminalTable([{ label: "Question" }, { label: "Status" }], summary.rows.map(row => [row.number, row.state]), { title: `${summary.name}  attempt ${summary.attempt}` });
+}
+
+export function formatAttemptFinish(receipt: AttemptFinishReceipt): string {
+  const result = receipt.review
+    ? [["Status", receipt.review.status], ["Marks", receipt.review.marks], ["Grade", receipt.review.grade], ["Completed", receipt.review.completed]]
+    : receipt.result ? [["Status", receipt.result.status], ["Marks", receipt.result.marks], ["Grade", receipt.result.grade], ["Completed", receipt.result.completed]] : [];
+  return renderKeyValueTable([
+    ["Quiz", receipt.name],
+    ["Attempt", String(receipt.attempt)],
+    ...result as [string, string][],
+    ["Answered", `${receipt.summary.filter(row => !/not yet answered/iu.test(row.state)).length} of ${receipt.summary.length}`],
+    ["URL", receipt.url],
+  ], { title: "Attempt submitted" });
 }

@@ -1,7 +1,7 @@
 import { activitySchema } from "./intent-contract.js";
 import { activityRow, itemRow, postRow, stripEmpty } from "./results.js";
 import { doctor, ownedJobs } from "./doctor.js";
-import { rm, readdir } from "node:fs/promises";
+import { readFile, rm, readdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import { DefaultRenewalIntegration } from "./mcp/renewal/index.js";
 import { CACHE_DIR_NAME, CONFIG_DIR_NAME, MOODLE_SESSION_COOKIE_PREFIX } from "./constants.js";
@@ -54,6 +54,9 @@ import {
   formatAuthStatus,
   formatCourseSections,
   formatCourses,
+  formatAttemptFinish,
+  formatAttemptPage,
+  formatAttemptSummary,
   formatDownloadReceipt,
   formatForumDiscussion,
   formatSubmissionReceipt,
@@ -67,6 +70,7 @@ import {
 } from "./formatters.js";
 import { downloadMoodleFile } from "./download.js";
 import type { SubmissionReceipt } from "./moodle-assign-core.js";
+import type { AttemptPage } from "./moodle-quiz-core.js";
 import { resolveSubmissionPath } from "./submit.js";
 import { formatSkillSummary, installSkill, writeGeneratedSkill } from "./skills.js";
 import {
@@ -375,7 +379,7 @@ export function buildProgram(io: CliIO = {}): Command {
       const client = await runtime.getClient();
       if (new URL(url).origin !== new URL(client.baseUrl).origin) throw new UsageError("The URL must belong to the configured Moodle site.");
       const html = await (await client.requestAbsolute(url)).text();
-      stdout.write(`${html.replaceAll(/sesskey(["=:\s]*)[A-Za-z0-9]+/g, "sesskey$1REDACTED")}\n`);
+      stdout.write(`${redactSesskey(html)}\n`);
     });
   addOutputOptions(mutating(program.command("update").description("Update the package and redeploy the managed MCP Worker when either is behind.")))
     .option("--check", "Report versions without installing or deploying.")
@@ -444,6 +448,68 @@ export function buildProgram(io: CliIO = {}): Command {
         runtime.busy = false;
       }
       await runtime.output(result, () => formatSubmissionReceipt(result.submission as SubmissionReceipt), options);
+    });
+  const quiz = program.command("quiz").description("Take a quiz: start an attempt, answer questions, finish it. Beta.").summary("Take a quiz (beta)");
+  quiz.addHelpText("after", `\n${QUIZ_NOTICE.join("\n")}\n`);
+  // Every quiz write needs an informed yes: the notice is part of the prompt, and a pipe must pass --yes.
+  const quizConsent = async (summary: string): Promise<boolean> => {
+    const palette = theme();
+    if (!program.opts().yes && !human()) throw new UsageError("Quiz actions need --yes when stdin is not interactive.", QUIZ_NOTICE.join(" "));
+    const notice = [palette.tone("warning", "BETA"), ...QUIZ_NOTICE.map(line => palette.dim(line))].join("\n");
+    return confirm({ summary: `${notice}\n\n${summary}` }, { yes: Boolean(program.opts().yes), dryRun: false, interactive: human() });
+  };
+  const attemptNext = (page: AttemptPage): string[] => {
+    const open = page.navigation.find(entry => entry.number !== "i" && /not yet|not answered/iu.test(entry.state));
+    if (!open) return [`moodle quiz finish ${page.attempt} ${page.quiz_id}`];
+    return [
+      `moodle quiz answer ${page.attempt} ${page.quiz_id} ${open.number} <answer>`,
+      ...(open.page === page.page ? [] : [`moodle quiz show ${page.attempt} ${page.quiz_id} --page ${open.page + 1}`]),
+    ];
+  };
+  const showPage = (page: AttemptPage, palette: Theme) => `${palette.tone("warning", "BETA")} ${formatAttemptPage(page)}\n\n${tryLines(attemptNext(page))}`;
+  addOutputOptions(mutating(quiz.command("start").description("Start a new attempt, or continue the one in progress, and show its first page.").argument("<ref>", "Quiz id, URL, or UNIT TASK phrase")))
+    .action(async (ref: string, options: OutputCommandOptions) => {
+      const client = await runtime.getClient();
+      const service = createIntentService(createMoodleGateway(client));
+      const id = await choose(() => service.resolveItem(ref), id => Promise.resolve(id));
+      if (!program.opts().dryRun && !await quizConsent(`Start or continue an attempt on quiz ${theme().target(String(id))}. Moodle records the attempt and its start time.`)) return;
+      if (program.opts().dryRun) return runtime.output({ planned: "start", quiz_id: id }, () => `Would start an attempt on quiz ${id}.`, options);
+      const page = await client.startQuizAttempt(id);
+      await runtime.output({ attempt: page }, () => showPage(page, theme()), options);
+    });
+  addOutputOptions(quiz.command("show").description("Show one page of an attempt in progress: questions, options and saved answers.").argument("<attempt>", "Attempt id").argument("<quiz>", "Quiz id"))
+    .option("--page <n>", "Page number, starting at 1.", parsePositiveInt)
+    .action(async (attempt: string, quizId: string, options: OutputCommandOptions & { page?: number }) => {
+      const client = await runtime.getClient();
+      const page = await client.getQuizAttemptPage(parsePositiveInt(attempt), parsePositiveInt(quizId), (options.page ?? 1) - 1);
+      await runtime.output({ attempt: page }, () => showPage(page, theme()), options);
+    });
+  addOutputOptions(mutating(quiz.command("answer").description("Save one answer: option letters for a choice question (b, or a,c), the text otherwise.").argument("<attempt>", "Attempt id").argument("<quiz>", "Quiz id").argument("<question>", "Question number as shown").argument("[answer]", "Option letters or answer text")))
+    .option("--from <file>", "Read the answer text from a file.")
+    .action(async (attempt: string, quizId: string, question: string, answer: string | undefined, options: OutputCommandOptions & { from?: string }) => {
+      const value = options.from ? await readFile(path.resolve(io.cwd ?? process.cwd(), options.from), "utf8") : answer;
+      if (!value?.trim()) throw new UsageError("Give the answer as an argument or with --from <file>.");
+      const request = { attemptId: parsePositiveInt(attempt), quizId: parsePositiveInt(quizId), question, value };
+      const palette = theme();
+      const preview = value.trim().length > 80 ? `${value.trim().slice(0, 77)}...` : value.trim();
+      if (program.opts().dryRun) return runtime.output({ planned: "answer", ...request }, () => `Would answer question ${question} of attempt ${attempt} with: ${preview}`, options);
+      if (!await quizConsent(`Save ${palette.subject(preview)} as the answer to question ${palette.target(question)} of attempt ${attempt}.`)) return;
+      const client = await runtime.getClient();
+      const page = await client.answerQuizQuestion(request);
+      await runtime.output({ attempt: page }, () => showPage(page, palette), options);
+    });
+  addOutputOptions(mutating(quiz.command("finish").description("Submit the attempt for grading. Moodle does not allow undoing this.").argument("<attempt>", "Attempt id").argument("<quiz>", "Quiz id")))
+    .action(async (attempt: string, quizId: string, options: OutputCommandOptions) => {
+      const client = await runtime.getClient();
+      const ids = [parsePositiveInt(attempt), parsePositiveInt(quizId)] as const;
+      const summary = await client.getQuizAttemptSummary(...ids);
+      if (program.opts().dryRun) return runtime.output({ planned: "finish", summary }, () => formatAttemptSummary(summary), options);
+      const palette = theme();
+      const open = summary.rows.filter(row => /not yet answered/iu.test(row.state));
+      const warning = open.length ? `\n${palette.tone("danger", `${open.length} question${open.length === 1 ? "" : "s"} not yet answered: ${open.map(row => row.number).join(", ")}`)}` : "";
+      if (!await quizConsent(`${formatAttemptSummary(summary)}${warning}\n${palette.tone("warning", "Submit all and finish. Moodle does not allow undoing this.")}`)) return;
+      const receipt = await client.finishQuizAttempt(...ids);
+      await runtime.output({ finished: receipt }, () => formatAttemptFinish(receipt), options);
     });
   addOutputOptions(program.command("open").description("Open a unit or activity reference in the browser.").argument("<ref>", "Unit or activity id, URL, or UNIT TASK phrase"))
     .action(async (ref: string, options: OutputCommandOptions) => {
@@ -865,7 +931,7 @@ export function buildProgram(io: CliIO = {}): Command {
 
 // Grouped the way `gh` does: what a person reaches for daily, then the rest, then what only an agent runs.
 const HELP_SECTIONS: Readonly<Record<string, readonly string[]>> = {
-  "Core commands": ["due", "news", "find", "get", "open", "submit", "units", "activities", "grades", "threads", "forums"],
+  "Core commands": ["due", "news", "find", "get", "open", "submit", "quiz", "units", "activities", "grades", "threads", "forums"],
   "Additional commands": ["user", "todo", "alerts", "overview", "download", "auth", "doctor", "completion", "uninstall"],
   "Agent commands": ["mcp", "commands", "skills"],
 };
@@ -1006,6 +1072,20 @@ function outputFormat(options: OutputCommandOptions, stdout: CliIO["stdout"]): O
 }
 
 // What is sent and where it lands are the two facts to check before saying yes, so each gets its own role and line.
+// Shown before every quiz write and in `moodle quiz --help`; the person must say yes to it.
+const QUIZ_NOTICE = [
+  "moodle quiz is beta: it replays the browser's quiz forms, and a Moodle update can break it without warning.",
+  "Academic integrity: answers you send are your own submission under your institution's rules. Only use this",
+  "where the quiz allows it, and check the attempt in a browser before you finish.",
+];
+
+// Two spellings appear in Moodle pages: a form field (name="sesskey" value="...") and a script or URL value.
+export function redactSesskey(html: string): string {
+  return html
+    .replace(/(name="sesskey"[^>]*?value=")[^"]+/gu, "$1REDACTED")
+    .replace(/(["']?sesskey["']?\s*[:=]\s*["']?)[A-Za-z0-9]{8,}/gu, "$1REDACTED");
+}
+
 function submissionSummary(plan: SubmissionReceipt, final: boolean, theme: Theme): string {
   const destination = `${theme.target(plan.name)}${plan.unit_id ? theme.dim(`  unit ${plan.unit_id}`) : ""}`;
   const lines = plan.uploads.length

@@ -406,7 +406,7 @@ function parseQuizQuestion(que: HTMLElement): QuizQuestion {
 }
 
 // Essays and feedback are paragraphs; joining them without a break glues sentences together.
-function blockText(node: HTMLElement | null | undefined): string {
+export function blockText(node: HTMLElement | null | undefined): string {
   if (!node) return "";
   return cleanTableCell(parse(node.toString().replace(/<br\s*\/?>|<\/(?:p|div|li|h\d|tr)>/giu, "$& ")));
 }

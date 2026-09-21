@@ -28,6 +28,7 @@ import {
   URL_VIEW_PATH,
 } from "./constants.js";
 import { submitAssignmentFiles, type SubmissionReceipt, type SubmitAssignmentRequest } from "./moodle-assign-core.js";
+import { answerQuizQuestion, finishQuizAttempt, getAttemptPage, getAttemptSummary, startQuizAttempt, type AnswerRequest, type AttemptFinishReceipt, type AttemptPage, type AttemptSummary, type QuizDeps } from "./moodle-quiz-core.js";
 import { ForumModule } from "./moodle-forum-core.js";
 import { searchForumContent as searchForumModule } from "./moodle-forum-search-core.js";
 import type {
@@ -606,6 +607,38 @@ export class MoodleClientCore {
       fail: (message, moodleErrorCode) => this.errors.api(message, moodleErrorCode),
       usage: (message, hint) => this.errors.usage ? this.errors.usage(message, hint) : new MoodleClientCoreError("usage", message, hint),
     }, request);
+  }
+
+  /** Starts a new attempt, or resumes the one already in progress, and returns its first page. */
+  async startQuizAttempt(quizId: number): Promise<AttemptPage> {
+    return startQuizAttempt(await this.quizDeps(), quizId);
+  }
+
+  async getQuizAttemptPage(attemptId: number, quizId: number, page = 0): Promise<AttemptPage> {
+    return getAttemptPage(await this.quizDeps(), attemptId, quizId, page);
+  }
+
+  async getQuizAttemptSummary(attemptId: number, quizId: number): Promise<AttemptSummary> {
+    return getAttemptSummary(await this.quizDeps(), attemptId, quizId);
+  }
+
+  async answerQuizQuestion(request: AnswerRequest): Promise<AttemptPage> {
+    return answerQuizQuestion(await this.quizDeps(), request);
+  }
+
+  /** Submits the attempt for grading. Moodle treats this as final. */
+  async finishQuizAttempt(attemptId: number, quizId: number): Promise<AttemptFinishReceipt> {
+    return finishQuizAttempt(await this.quizDeps(), attemptId, quizId);
+  }
+
+  private async quizDeps(): Promise<QuizDeps> {
+    await this.ensureSession();
+    return {
+      baseUrl: this.baseUrl,
+      request: (url, init, options) => this.requestAbsolute(url, init, options),
+      fail: (message, moodleErrorCode) => this.errors.api(message, moodleErrorCode),
+      usage: (message, hint) => this.errors.usage ? this.errors.usage(message, hint) : new MoodleClientCoreError("usage", message, hint),
+    };
   }
 
   async getNewsForums(courseId?: number): Promise<ForumActivityRef[]> {

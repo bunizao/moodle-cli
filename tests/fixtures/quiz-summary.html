@@ -1,0 +1,35 @@
+<!doctype html>
+<html>
+  <body>
+    <h2>Quiz 1</h2>
+    <h3>Summary of attempt</h3>
+    <table class="generaltable quizsummaryofattempt boxaligncenter">
+      <thead><tr><th scope="col">Question</th><th scope="col">Status</th></tr></thead>
+      <tbody>
+        <tr class="quizsummaryheading"><th colspan="2" scope="row"></th></tr>
+        <tr class="quizsummary1 answersaved"><td><a href="https://school.example.edu/mod/quiz/attempt.php?attempt=900&amp;cmid=32#">1</a></td><td>Answer saved</td></tr>
+        <tr class="quizsummary3 notyetanswered"><td><a href="https://school.example.edu/mod/quiz/attempt.php?attempt=900&amp;cmid=32&amp;page=1#">2</a></td><td>Not yet answered</td></tr>
+        <tr class="quizsummary4 answersaved lastrow"><td><a href="https://school.example.edu/mod/quiz/attempt.php?attempt=900&amp;cmid=32&amp;page=2#">3</a></td><td>Answer saved</td></tr>
+      </tbody>
+    </table>
+    <div class="submitbtns mdl-align"><div class="controls"><div class="singlebutton">
+      <form method="post" action="https://school.example.edu/mod/quiz/attempt.php">
+        <input type="hidden" name="attempt" value="900">
+        <input type="hidden" name="cmid" value="32">
+        <input type="hidden" name="sesskey" value="FIXTUREKEY">
+        <button type="submit" class="btn btn-secondary">Return to attempt</button>
+      </form>
+    </div></div></div>
+    <div class="submitbtns mdl-align"><div class="controls"><div class="btn-finishattempt">
+      <form method="post" action="https://school.example.edu/mod/quiz/processattempt.php" id="frm-finishattempt">
+        <input type="hidden" name="attempt" value="900">
+        <input type="hidden" name="finishattempt" value="1">
+        <input type="hidden" name="timeup" value="0">
+        <input type="hidden" name="slots" value="">
+        <input type="hidden" name="cmid" value="32">
+        <input type="hidden" name="sesskey" value="FIXTUREKEY">
+        <button type="submit" class="btn btn-primary">Submit all and finish</button>
+      </form>
+    </div></div></div>
+  </body>
+</html>

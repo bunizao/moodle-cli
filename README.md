@@ -141,6 +141,20 @@ the site's submission statement when one is required, and a file that is too lar
 the wrong type is refused before anything is uploaded. Assignments without drafts submit
 on save; the receipt reports what the site did.
 
+### Take a quiz (beta)
+
+`moodle quiz` starts an attempt, saves answers and submits it, replaying the forms a browser posts. It is beta: a Moodle update can break it, and it is deliberately CLI-only, never offered over MCP.
+
+```bash
+moodle quiz start UNIT "Practice quiz"        # or a quiz id or URL; resumes an attempt in progress
+moodle quiz show <attempt> <quiz> --page 2
+moodle quiz answer <attempt> <quiz> 1 b         # option letter, or "a,c" for several
+moodle quiz answer <attempt> <quiz> 3 --from essay.md
+moodle quiz finish <attempt> <quiz>             # "Submit all and finish"; Moodle does not allow undoing this
+```
+
+Every write shows the beta and academic-integrity notice and asks for a yes; a pipe must pass `--yes`, and `--dry-run` shows the plan. Answers you send are your own submission under your institution's rules: use it only where the quiz allows it, and check the attempt in a browser before you finish. Quizzes that need the Safe Exam Browser or a password are refused; question types without a plain choice or text input are shown but must be answered in a browser.
+
 ### Remote MCP for web AI
 
 A private remote MCP server lets a supported web AI client use Moodle when it cannot run the local CLI. You need a Cloudflare account.
