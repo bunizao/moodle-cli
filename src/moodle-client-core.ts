@@ -555,7 +555,8 @@ export class MoodleClientCore {
 
   async getQuizAttempt(attemptId: number): Promise<QuizAttemptReview> {
     await this.ensureSession();
-    return parseQuizReviewHtml(await this.get(QUIZ_REVIEW_PATH, { attempt: attemptId }), attemptId, this.baseUrl);
+    // Without showall Moodle pages a long review and the later questions would be silently missing.
+    return parseQuizReviewHtml(await this.get(QUIZ_REVIEW_PATH, { attempt: attemptId, showall: 1 }), attemptId, this.baseUrl);
   }
 
   async getResource(id: number): Promise<Resource> {

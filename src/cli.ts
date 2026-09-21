@@ -401,9 +401,17 @@ export function buildProgram(io: CliIO = {}): Command {
         ].join("\n"), options);
         return;
       }
+      if (program.opts().dryRun) {
+        const latest = await refreshLatestVersion(updateOptions);
+        const steps = [...(isNewerVersion(latest ?? undefined, VERSION) ? [`install moodle-cli ${latest}`] : []), ...(worker?.behind ? ["redeploy the Worker"] : [])];
+        await runtime.output({ planned: steps, current: VERSION, latest }, () => (steps.length ? `Would ${steps.join(", then ")}.` : "Nothing to do; everything is current."), options);
+        return;
+      }
       const report = await runUpdate({ ...updateOptions, workerBehind: worker?.behind });
       const stale = worker && !worker.ready && !report.deployed ? [`${palette.tone("warning", "The Worker is deployed but not answering.")} ${tryLines(["moodle mcp status"])}`] : [];
-      await runtime.output({ ...report, ...(worker ? { worker_ready: worker.ready } : {}) }, () => [palette.tone(report.updated || report.deployed ? "success" : "muted", report.note), ...stale].join("\n"), options);
+      await runtime.output({ ...report, ...(worker ? { worker_ready: worker.ready } : {}) }, () => [palette.tone(report.ok ? (report.updated || report.deployed ? "success" : "muted") : "danger", report.note), ...stale].join("\n"), options);
+      // Automation reads the exit code, so a failed installer or deploy cannot end in 0.
+      if (!report.ok) throw new CliError("upstream", report.note);
     });
     addOutputOptions(program.command("get").description("Download a resource by id, URL, or UNIT TASK phrase.").argument("<ref>", "Resource id, URL, or UNIT TASK phrase"))
     .option("--to <directory>", "Destination directory.")
@@ -1087,10 +1095,11 @@ const QUIZ_NOTICE = [
   "where the quiz allows it, and check the attempt in a browser before you finish.",
 ];
 
-// Two spellings appear in Moodle pages: a form field (name="sesskey" value="...") and a script or URL value.
+// The key appears as a form field (in either attribute order and either quote style),
+// as a script value and as a URL parameter; every spelling is hidden.
 export function redactSesskey(html: string): string {
   return html
-    .replace(/(name="sesskey"[^>]*?value=")[^"]+/gu, "$1REDACTED")
+    .replace(/<input\b[^>]*>/giu, (tag) => (/\bname\s*=\s*["']?sesskey["']?/iu.test(tag) ? tag.replace(/(\bvalue\s*=\s*)(?:"[^"]*"|'[^']*'|[^\s>]+)/iu, '$1"REDACTED"') : tag))
     .replace(/(["']?sesskey["']?\s*[:=]\s*["']?)[A-Za-z0-9]{8,}/gu, "$1REDACTED");
 }
 

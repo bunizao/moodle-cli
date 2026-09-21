@@ -40,10 +40,11 @@ describe("quiz attempt pages", () => {
     const page = parseAttemptPage(fixture("quiz-attempt-page-0.html"), ATTEMPT, deps);
     expect(page).toMatchObject({ attempt: 900, quiz_id: 32, name: "Quiz 1", page: 0, pages: 3 });
     expect(page.questions).toEqual([expect.objectContaining({ slot: 1, number: "1", kind: "choice", type: "multichoice", state: "Not yet answered", text: "Which value of x satisfies 2x + 1 = 7?" })]);
+    expect(page.questions[0].field).toBe("q4000:1_answer");
     expect(page.questions[0].options).toEqual([
-      { key: "a", value: "0", text: "x = 2", chosen: false },
-      { key: "b", value: "1", text: "x = 3", chosen: false },
-      { key: "c", value: "2", text: "x = 4", chosen: false },
+      { key: "a", field: "q4000:1_answer", value: "0", text: "x = 2", chosen: false },
+      { key: "b", field: "q4000:1_answer", value: "1", text: "x = 3", chosen: false },
+      { key: "c", field: "q4000:1_answer", value: "2", text: "x = 4", chosen: false },
     ]);
     expect(page.navigation).toEqual([
       { slot: 1, number: "1", page: 0, state: "Not yet answered" },
@@ -162,6 +163,29 @@ describe("answerQuizQuestion", () => {
     expect(post.body.get("nextpage")).toBe("1");
   });
 
+  it("sends a plain-text essay as typed when the format is not HTML", async () => {
+    const plain = (html: string) => html.replace('name="q4000:3_answerformat" value="1"', 'name="q4000:3_answerformat" value="2"');
+    const deps = fakeDeps({
+      "GET /mod/quiz/attempt.php": ({ url }) => ({ url, html: plain(fixture(`quiz-attempt-page-${new URL(url).searchParams.get("page") ?? "0"}.html`)) }),
+      "POST /mod/quiz/processattempt.php": () => ({ url: `${ATTEMPT}&page=1`, html: saved(plain(fixture("quiz-attempt-page-1.html")), 3) }),
+    });
+    await answerQuizQuestion(deps, { attemptId: 900, quizId: 32, question: "2", value: "def f():\n    return 1 < 2\n" });
+    expect(deps.calls.at(-1)!.body.get("q4000:3_answer")).toBe("def f():\n    return 1 < 2");
+  });
+
+  it("leaves a cloze question to the browser instead of posting to a field that does not exist", async () => {
+    const cloze = fixture("quiz-attempt-page-1.html")
+      .replace('<textarea id="q4000:3_answer_id" name="q4000:3_answer" rows="15" cols="60" class="form-control"></textarea>', '<input type="text" name="q4000:3_sub1_answer" value="old"><input type="text" name="q4000:3_sub2_answer" value="">')
+      .replace("que essay manualgraded", "que multianswer deferredfeedback");
+    const deps = fakeDeps({
+      "GET /mod/quiz/attempt.php": ({ url }) => ({ url, html: (new URL(url).searchParams.get("page") ?? "0") === "1" ? cloze : fixture("quiz-attempt-page-0.html") }),
+      "POST /mod/quiz/processattempt.php": () => { throw new Error("must not post"); },
+    });
+    const page = await getAttemptPage(deps, 900, 32, 1);
+    expect(page.questions[1]).toMatchObject({ number: "2", kind: "unsupported", type: "multianswer" });
+    await expect(answerQuizQuestion(deps, { attemptId: 900, quizId: 32, question: "2", value: "new" })).rejects.toThrow(/multianswer type the CLI cannot answer/u);
+  });
+
   it("ticks several boxes for a multiple-choice question", async () => {
     const deps = attemptDeps(() => ({ url: `${ATTEMPT}&page=2`, html: saved(fixture("quiz-attempt-page-2.html"), 4) }));
     await answerQuizQuestion(deps, { attemptId: 900, quizId: 32, question: "3", value: "a, c" });
@@ -198,6 +222,30 @@ describe("finishQuizAttempt", () => {
     expect(receipt.url).toContain("review.php");
   });
 
+  it("accepts a finished attempt that the quiz page lists without a review link", async () => {
+    // The attempt card has no link, so the list cannot name the attempt; the attempt page no longer serving it is the proof.
+    const listed = fixture("quiz.html").replace(/<div class="card-body">.*?<\/div><\/div>/su, "");
+    const deps = fakeDeps({
+      "GET /mod/quiz/summary.php": ({ url }) => ({ url, html: fixture("quiz-summary.html") }),
+      "POST /mod/quiz/processattempt.php": () => ({ url: `${BASE}/mod/quiz/view.php?id=32`, html: listed }),
+      "GET /mod/quiz/attempt.php": ({ url }) => ({ url: `${BASE}/mod/quiz/view.php?id=32`, html: `<div class="alert">This attempt has already been submitted.</div>` }),
+    });
+    const receipt = await finishQuizAttempt(deps, 900, 32);
+    expect(receipt.result).toBeUndefined();
+    expect(receipt.review).toBeUndefined();
+    expect(receipt.url).toContain("view.php?id=32");
+  });
+
+  it("fails when the attempt page still renders its form after the finish request", async () => {
+    const listed = fixture("quiz.html").replace(/<div class="card-body">.*?<\/div><\/div>/su, "");
+    const deps = fakeDeps({
+      "GET /mod/quiz/summary.php": ({ url }) => ({ url, html: fixture("quiz-summary.html") }),
+      "POST /mod/quiz/processattempt.php": () => ({ url: `${BASE}/mod/quiz/view.php?id=32`, html: listed }),
+      "GET /mod/quiz/attempt.php": ({ url }) => ({ url, html: fixture("quiz-attempt-page-0.html") }),
+    });
+    await expect(finishQuizAttempt(deps, 900, 32)).rejects.toThrow(/still open/u);
+  });
+
   it("falls back to the quiz page's attempt list when the review is withheld", async () => {
     const deps = fakeDeps({
       "GET /mod/quiz/summary.php": ({ url }) => ({ url, html: fixture("quiz-summary.html") }),
@@ -216,5 +264,11 @@ describe("redactSesskey", () => {
     expect(out).toContain('name="sesskey" value="REDACTED"');
     expect(out).toContain('"sesskey":"REDACTED"');
     expect(out).toContain("sesskey=REDACTED");
+  });
+
+  it("covers single quotes and value-before-name attribute order", () => {
+    const html = `<input value='abcDEF1234' name='sesskey' type='hidden'> <input type="hidden" value="abcDEF1234" name="sesskey"> <input name="other" value="abcDEF1234">`;
+    const out = redactSesskey(html);
+    expect(out).toBe(`<input value="REDACTED" name='sesskey' type='hidden'> <input type="hidden" value="REDACTED" name="sesskey"> <input name="other" value="abcDEF1234">`);
   });
 });

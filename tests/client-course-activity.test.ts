@@ -275,6 +275,15 @@ describe("MoodleClient course/activity modules", () => {
     ]);
   });
 
+  it("reads a short answer from the review's read-only input", () => {
+    const html = fixture("quiz-review.html").replace(
+      /<div id="question-1-3" class="que truefalse[\s\S]*?<div class="answer">[\s\S]*?<\/div>/u,
+      '<div id="question-1-3" class="que shortanswer deferredfeedback correct"><div class="info"><span class="qno">3</span><div class="state">Correct</div></div><div class="qtext">Capital of France?</div><div class="answer"><input type="text" name="q1:3_answer" value="Paris" readonly="readonly"></div>',
+    );
+    const review = parseQuizReviewHtml(html, 777, BASE_URL);
+    expect(review.questions[2]).toMatchObject({ type: "shortanswer", response: "Paris" });
+  });
+
   it("reads a quiz attempt review question by question", () => {
     const review = parseQuizReviewHtml(fixture("quiz-review.html"), 777, BASE_URL);
     expect(review).toMatchObject({ id: 777, quiz_id: 32, course_id: 101, status: "Finished", marks: "2.00/3.00", grade: "6.67 out of 10.00 (67%)" });

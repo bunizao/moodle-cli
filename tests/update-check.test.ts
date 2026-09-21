@@ -134,7 +134,7 @@ describe("runUpdate", () => {
     vi.doUnmock("../src/mcp/self-command.js");
 
     expect(report).toMatchObject({ current: VERSION, latest: "99.0.0", install: "npm", updated: true, deployed: true });
-    expect(calls).toEqual([["/bin/npm", "install", "-g", "moodle-cli@latest"], ["/new/bin/moodle", "mcp", "deploy"]]);
+    expect(calls).toEqual([["/bin/npm", "install", "-g", "moodle-cli@latest"], ["/new/bin/moodle", "mcp", "deploy", "--yes"]]);
     expect((await readUpdateCache(homeDir)).latest).toBe("99.0.0");
   });
 
@@ -152,6 +152,36 @@ describe("runUpdate", () => {
       runCommand: (command, args) => { calls.push([command, ...args]); return { status: 0 } as never; },
     });
     expect(report).toMatchObject({ updated: false, deployed: true });
-    expect(calls).toEqual([["/usr/bin/node", "/usr/local/lib/node_modules/moodle-cli/dist/moodle.js", "mcp", "deploy"]]);
+    expect(calls).toEqual([["/usr/bin/node", "/usr/local/lib/node_modules/moodle-cli/dist/moodle.js", "mcp", "deploy", "--yes"]]);
+  });
+
+  it("reports a failed installer as not ok so the CLI can exit non-zero", async () => {
+    vi.resetModules();
+    const { runUpdate } = await import("../src/update-check.js");
+    const report = await runUpdate({
+      homeDir,
+      env: {},
+      fetchImpl: async () => Response.json({ latest: "99.0.0" }),
+      argv: ["/usr/bin/node", "/usr/local/lib/node_modules/moodle-cli/dist/moodle.js"],
+      execPath: "/usr/bin/node",
+      runCommand: () => ({ status: 1 } as never),
+    });
+    expect(report).toMatchObject({ updated: false, ok: false });
+    expect(report.note).toMatch(/exited with 1/u);
+  });
+
+  it("reports a failed deploy as not ok", async () => {
+    vi.resetModules();
+    const { runUpdate } = await import("../src/update-check.js");
+    const report = await runUpdate({
+      homeDir,
+      env: {},
+      fetchImpl: async () => Response.json({ latest: VERSION }),
+      argv: ["/usr/bin/node", "/usr/local/lib/node_modules/moodle-cli/dist/moodle.js"],
+      execPath: "/usr/bin/node",
+      workerBehind: true,
+      runCommand: () => ({ status: 1 } as never),
+    });
+    expect(report).toMatchObject({ deployed: false, ok: false });
   });
 });

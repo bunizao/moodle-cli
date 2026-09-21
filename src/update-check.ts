@@ -148,24 +148,27 @@ export interface UpdateReport {
   install: InstallKind;
   updated: boolean;
   deployed: boolean;
+  /** False when an installer or the deploy exited non-zero. */
+  ok: boolean;
   note: string;
 }
 
 /** Upgrade the package with its own installer, then let the new binary redeploy the Worker. */
 export async function runUpdate(options: RunUpdateOptions): Promise<UpdateReport> {
-  const run = options.runCommand ?? ((command: string, args: string[]) => spawnSync(command, args, { stdio: "inherit", env: options.env }));
+  // Installer and deploy chatter goes to stderr, so `moodle update --json` keeps stdout for its report.
+  const run = options.runCommand ?? ((command: string, args: string[]) => spawnSync(command, args, { stdio: ["inherit", 2, "inherit"], env: options.env }));
   const install = detectInstallKind(options.argv, options.execPath);
   const latest = await refreshLatestVersion(options);
-  const report: UpdateReport = { current: VERSION, latest, install, updated: false, deployed: false, note: "" };
+  const report: UpdateReport = { current: VERSION, latest, install, updated: false, deployed: false, ok: true, note: "" };
   const newer = isNewerVersion(latest ?? undefined, VERSION);
   if (newer) {
     const command = installCommand(install);
     if (command) {
       const result = run(command.command, command.args);
-      if (result.status !== 0) { report.note = `${command.command} exited with ${result.status ?? "a signal"}; the package was not updated.`; return report; }
+      if (result.status !== 0) { report.ok = false; report.note = `${command.command} exited with ${result.status ?? "a signal"}; the package was not updated.`; return report; }
     } else {
       const failure = await replaceStandalone(options.execPath ?? process.execPath, latest!, options.fetchImpl);
-      if (failure) { report.note = `${standaloneUpdateHint(VERSION, latest!)} ${failure}`; return report; }
+      if (failure) { report.ok = false; report.note = `${standaloneUpdateHint(VERSION, latest!)} ${failure}`; return report; }
     }
     report.updated = true;
   }
@@ -178,9 +181,12 @@ export async function runUpdate(options: RunUpdateOptions): Promise<UpdateReport
   // PATH (or the freshly replaced standalone binary) deploys.
   const self = selfCommand(options.argv, options.execPath);
   const bin = newer && install !== "standalone" ? findExecutable("moodle") : undefined;
-  const deploy: SelfCommand = bin ? { command: bin, args: ["mcp", "deploy"] } : { command: self.command, args: [...self.args, "mcp", "deploy"] };
+  // The person already said yes to `moodle update`; the child must not ask again or refuse in a pipe.
+  const deployArgs = ["mcp", "deploy", "--yes"];
+  const deploy: SelfCommand = bin ? { command: bin, args: deployArgs } : { command: self.command, args: [...self.args, ...deployArgs] };
   const result = run(deploy.command, deploy.args);
   report.deployed = result.status === 0;
+  report.ok = report.deployed;
   report.note = report.deployed ? `Worker redeployed from ${newer ? latest : VERSION}.` : "Worker deploy failed; run moodle mcp deploy to retry.";
   return report;
 }

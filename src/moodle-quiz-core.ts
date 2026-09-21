@@ -24,6 +24,8 @@ export type QuestionKind = "choice" | "multi" | "text" | "info" | "unsupported";
 export interface AttemptOption {
   /** Letter shown to the user: a, b, c... */
   key: string;
+  /** The input this option belongs to; boxes of a multiple choice each have their own. */
+  field: string;
   /** The value Moodle stores for that input. */
   value: string;
   text: string;
@@ -38,6 +40,8 @@ export interface AttemptQuestion {
   kind: QuestionKind;
   state: string;
   text: string;
+  /** The input a written or single-choice answer is posted to. */
+  field?: string;
   options?: AttemptOption[];
   /** Current free-text answer, when the question takes one. */
   answer?: string;
@@ -211,9 +215,13 @@ export async function finishQuizAttempt(deps: QuizDeps, attemptId: number, quizI
   // Sites that hide the review send the learner back to the quiz page; its attempt list is the proof.
   const quiz = parseQuizHtml(onPath(response.url, QUIZ_VIEW_PATH) ? html : await pageText(deps, `${deps.baseUrl}${QUIZ_VIEW_PATH}?id=${quizId}`), quizId, deps.baseUrl);
   const row = quiz.attempts.find(attempt => attempt.id === attemptId);
-  if (!row || /in progress/iu.test(row.status)) throw deps.fail(`Moodle accepted the finish request but still lists attempt ${attemptId} as ${row?.status || "missing"}; check the quiz in a browser.`);
-  receipt.result = { status: row.status, marks: row.marks, grade: row.grade, completed: row.completed };
+  if (row && /in progress/iu.test(row.status)) throw deps.fail(`Moodle accepted the finish request but still lists attempt ${attemptId} as ${row.status}; check the quiz in a browser.`);
   receipt.url = quiz.url;
+  if (row) { receipt.result = { status: row.status, marks: row.marks, grade: row.grade, completed: row.completed }; return receipt; }
+  // A site that withholds the review lists the attempt without a link, so the list cannot name it.
+  // The attempt page itself is the tie-breaker: an open attempt still renders its response form.
+  const probe = await deps.request(attemptUrl(deps.baseUrl, attemptId, quizId, 0));
+  if (onPath(probe.url, QUIZ_ATTEMPT_PATH) && parse(await probe.text()).querySelector("form#responseform")) throw deps.fail(`Moodle accepted the finish request but attempt ${attemptId} is still open; check the quiz in a browser.`);
   return receipt;
 }
 
@@ -270,16 +278,25 @@ function parseAttemptQuestion(que: HTMLElement): AttemptQuestion {
     text: blockText(que.querySelector(".qtext")),
   };
   if (que.classList.contains("description")) return { ...base, number: "i", kind: "info" };
-  const inputs = que.querySelectorAll("input, textarea").filter(input => /_(?:answer|choice\d+|answer\d*)$/u.test(input.getAttribute("name") ?? "") && !/^(?:hidden|submit)$/u.test(input.getAttribute("type") ?? ""));
+  const inputs = que.querySelectorAll("input, textarea, select").filter(input => {
+    const name = input.getAttribute("name") ?? "";
+    return name.startsWith("q") && !/_:(?:flagged|sequencecheck)$|_-seen$|_answerformat$/u.test(name) && !/^(?:hidden|submit)$/u.test(input.getAttribute("type") ?? "");
+  });
   const radios = inputs.filter(input => input.getAttribute("type") === "radio" && input.getAttribute("value") !== "-1");
   const boxes = inputs.filter(input => input.getAttribute("type") === "checkbox");
-  if (radios.length) return { ...base, kind: "choice", options: radios.map((input, index) => option(que, input, index)) };
-  if (boxes.length) return { ...base, kind: "multi", options: boxes.map((input, index) => option(que, input, index)) };
-  const text = inputs.find(input => input.tagName.toLowerCase() === "textarea" || /^(?:text|number)$/u.test(input.getAttribute("type") ?? "text"));
-  if (text) {
+  const texts = inputs.filter(input => input.tagName.toLowerCase() === "textarea" || /^(?:text|number)$/u.test(input.getAttribute("type") ?? "text"));
+  const others = inputs.length - radios.length - boxes.length - texts.length - inputs.filter(input => input.getAttribute("value") === "-1").length;
+  // One group of inputs is answerable; a cloze or matching question mixes several and stays a browser job.
+  const radioNames = new Set(radios.map(input => input.getAttribute("name")));
+  if (radios.length && radioNames.size === 1 && !boxes.length && !texts.length && others === 0) {
+    return { ...base, kind: "choice", field: radios[0].getAttribute("name")!, options: radios.map((input, index) => option(que, input, index)) };
+  }
+  if (boxes.length && !radios.length && !texts.length && others === 0) return { ...base, kind: "multi", options: boxes.map((input, index) => option(que, input, index)) };
+  if (texts.length === 1 && !radios.length && !boxes.length && others === 0) {
+    const text = texts[0];
     // Editor-backed essays hold HTML in the textarea; a plain field holds the answer itself.
     const html = text.tagName.toLowerCase() === "textarea";
-    return { ...base, kind: "text", answer: html ? blockText(parse(text.textContent)) : cleanText(text.getAttribute("value") ?? "") };
+    return { ...base, kind: "text", field: text.getAttribute("name")!, answer: html ? blockText(parse(text.textContent)) : cleanText(text.getAttribute("value") ?? "") };
   }
   return base;
 }
@@ -288,18 +305,18 @@ function option(que: HTMLElement, input: HTMLElement, index: number): AttemptOpt
   const labelId = input.getAttribute("aria-labelledby");
   const id = input.getAttribute("id");
   const label = (labelId ? que.querySelector(`[id="${labelId}"]`) : null) ?? (id ? que.querySelector(`label[for="${id}"]`) : null) ?? input.parentNode;
-  return { key: String.fromCharCode(97 + index), value: input.getAttribute("value") ?? "", text: blockText(label), chosen: input.hasAttribute("checked") };
+  return { key: String.fromCharCode(97 + index), field: input.getAttribute("name") ?? "", value: input.getAttribute("value") ?? "", text: blockText(label), chosen: input.hasAttribute("checked") };
 }
 
 function encodeAnswer(deps: QuizDeps, form: ParsedForm, question: AttemptQuestion, value: string): Field[] {
   const raw = value.trim();
-  const prefix = question.kind === "info" ? "" : answerPrefix(form, question.slot);
   if (question.kind === "info") throw deps.usage(`Question ${question.number} is an information block; it takes no answer.`);
-  if (question.kind === "unsupported") throw deps.usage(`Question ${question.number} is a ${question.type || "question"} type the CLI cannot answer.`, "Answer it in a browser; other questions can still be answered here.");
+  if (question.kind === "unsupported" || (!question.field && question.kind !== "multi")) throw deps.usage(`Question ${question.number} is a ${question.type || "question"} type the CLI cannot answer.`, "Answer it in a browser; other questions can still be answered here.");
   if (question.kind === "text") {
     if (!raw) throw deps.usage(`Question ${question.number} needs a written answer.`);
-    const html = form.fields.some(([name]) => name === `${prefix}answerformat`);
-    return [...form.fields.filter(([name]) => name !== `${prefix}answer`), [`${prefix}answer`, html ? paragraphs(value) : raw]];
+    // answerformat 1 is HTML; plain (2), Markdown (4) and Moodle auto-format (0) take the text as typed.
+    const format = form.fields.find(([name]) => name === `${question.field}format`)?.[1];
+    return [...form.fields.filter(([name]) => name !== question.field), [question.field!, format === "1" ? paragraphs(value) : raw]];
   }
   const options = question.options ?? [];
   const picks = raw.split(",").map(part => part.trim()).filter(Boolean).map(part => {
@@ -310,20 +327,15 @@ function encodeAnswer(deps: QuizDeps, form: ParsedForm, question: AttemptQuestio
   if (!picks.length) throw deps.usage(`Question ${question.number} needs an option letter.`, `Choose from ${options.map(item => item.key).join(", ")}.`);
   if (question.kind === "choice") {
     if (picks.length > 1) throw deps.usage(`Question ${question.number} takes one option, not ${picks.length}.`);
-    return [...form.fields.filter(([name]) => name !== `${prefix}answer`), [`${prefix}answer`, picks[0].value]];
+    return [...form.fields.filter(([name]) => name !== question.field), [question.field!, picks[0].value]];
   }
   // Every checkbox carries value 1; the letter identifies the box, not the value.
   const chosen = new Set(picks.map(pick => pick.key));
+  const boxNames = new Set(options.map(item => item.field));
   return [
-    ...form.fields.filter(([name]) => !new RegExp(`^${escapeRegExp(prefix)}choice\\d+$`, "u").test(name)),
-    ...options.map((item, index): Field => [`${prefix}choice${index}`, chosen.has(item.key) ? "1" : "0"]),
+    ...form.fields.filter(([name]) => !boxNames.has(name)),
+    ...options.map((item): Field => [item.field, chosen.has(item.key) ? "1" : "0"]),
   ];
-}
-
-// Every field of a question shares the "q{usage}:{slot}_" prefix; the sequence check is always present.
-function answerPrefix(form: ParsedForm, slot: number): string {
-  const field = form.fields.find(([name]) => new RegExp(`^q\\d+:${slot}_:sequencecheck$`, "u").test(name));
-  return field ? field[0].replace(/:sequencecheck$/u, "") : `q0:${slot}_`;
 }
 
 export function noticesOf(html: string): string {
