@@ -392,8 +392,8 @@ function parseQuizQuestion(que: HTMLElement): QuizQuestion {
     const label = input.getAttribute("aria-labelledby");
     return cleanTableCell(label ? que.querySelector(`[id="${label}"]`) : input.parentNode);
   }).filter(Boolean) ?? [];
-  // Short answers and numbers sit in a read-only input's value, which has no text content.
-  const typed = cleanText(answer?.querySelector('input[type="text"], input[type="number"]')?.getAttribute("value") ?? "");
+  // Short answers and numbers sit in a read-only input's value; the gap layout puts that input inside .qtext.
+  const typed = cleanText(que.querySelector('input[type="text"], input[type="number"]')?.getAttribute("value") ?? "");
   const response = picked.length ? picked.join("; ") : typed || blockText(answer?.querySelector(".qtype_essay_response") ?? answer);
   return {
     number: Number(cleanNodeText(que.querySelector(".qno")) || 0),

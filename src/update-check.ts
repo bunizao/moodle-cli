@@ -134,8 +134,15 @@ export async function replaceStandalone(execPath: string, version: string, fetch
   }
 }
 
+function readOutput(command: string, args: string[]): string | null {
+  const result = spawnSync(command, args, { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
+  return result.status === 0 ? result.stdout : null;
+}
+
 export interface RunUpdateOptions extends UpdateCheckOptions {
   runCommand?: (command: string, args: string[]) => SpawnSyncReturns<Buffer>;
+  /** Runs a command for its stdout; used to read the version the updated install reports. */
+  readOutput?: (command: string, args: string[]) => string | null;
   argv?: readonly string[];
   execPath?: string;
   /** Present when a managed Worker exists; true when its release digest is behind this package. */
@@ -161,6 +168,10 @@ export async function runUpdate(options: RunUpdateOptions): Promise<UpdateReport
   const latest = await refreshLatestVersion(options);
   const report: UpdateReport = { current: VERSION, latest, install, updated: false, deployed: false, ok: true, note: "" };
   const newer = isNewerVersion(latest ?? undefined, VERSION);
+  // The process that ran the installer is still the old code. The install it belongs to
+  // was replaced in place, so its own script path (or the swapped standalone binary) is
+  // the updated one; a `moodle` found on PATH could be a different, older install.
+  const self = selfCommand(options.argv, options.execPath);
   if (newer) {
     const command = installCommand(install);
     if (command) {
@@ -170,23 +181,29 @@ export async function runUpdate(options: RunUpdateOptions): Promise<UpdateReport
       const failure = await replaceStandalone(options.execPath ?? process.execPath, latest!, options.fetchImpl);
       if (failure) { report.ok = false; report.note = `${standaloneUpdateHint(VERSION, latest!)} ${failure}`; return report; }
     }
+    const installed = (options.readOutput ?? readOutput)(self.command, [...self.args, "--version"])?.trim();
+    if (installed !== latest) {
+      report.ok = false;
+      report.note = `The installer finished but ${self.args[0] ?? self.command} reports ${installed || "no version"} instead of ${latest}; another moodle install may be on PATH.`;
+      return report;
+    }
     report.updated = true;
   }
+  const unreachable = latest === null ? "The npm registry could not be reached, so the installed version was not checked." : "";
   if (options.workerBehind === undefined) {
-    report.note = newer ? `Updated to ${latest}.` : "Already up to date.";
+    report.ok = !unreachable;
+    report.note = unreachable || (newer ? `Updated to ${latest}.` : "Already up to date.");
     return report;
   }
-  if (!newer && !options.workerBehind) { report.note = "Package and Worker are up to date."; return report; }
-  // The process that just ran the installer is still the old code; the new bin on
-  // PATH (or the freshly replaced standalone binary) deploys.
-  const self = selfCommand(options.argv, options.execPath);
-  const bin = newer && install !== "standalone" ? findExecutable("moodle") : undefined;
+  if (!newer && !options.workerBehind) {
+    report.ok = !unreachable;
+    report.note = unreachable ? `${unreachable} The Worker is current.` : "Package and Worker are up to date.";
+    return report;
+  }
   // The person already said yes to `moodle update`; the child must not ask again or refuse in a pipe.
-  const deployArgs = ["mcp", "deploy", "--yes"];
-  const deploy: SelfCommand = bin ? { command: bin, args: deployArgs } : { command: self.command, args: [...self.args, ...deployArgs] };
-  const result = run(deploy.command, deploy.args);
+  const result = run(self.command, [...self.args, "mcp", "deploy", "--yes"]);
   report.deployed = result.status === 0;
-  report.ok = report.deployed;
-  report.note = report.deployed ? `Worker redeployed from ${newer ? latest : VERSION}.` : "Worker deploy failed; run moodle mcp deploy to retry.";
+  report.ok = report.deployed && !unreachable;
+  report.note = [unreachable, report.deployed ? `Worker redeployed from ${newer ? latest : VERSION}.` : "Worker deploy failed; run moodle mcp deploy to retry."].filter(Boolean).join(" ");
   return report;
 }

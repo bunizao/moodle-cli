@@ -186,6 +186,43 @@ describe("answerQuizQuestion", () => {
     await expect(answerQuizQuestion(deps, { attemptId: 900, quizId: 32, question: "2", value: "new" })).rejects.toThrow(/multianswer type the CLI cannot answer/u);
   });
 
+  it("treats a single drop-down as a choice and posts the option's value", async () => {
+    const select = fixture("quiz-attempt-page-1.html")
+      .replace('<textarea id="q4000:3_answer_id" name="q4000:3_answer" rows="15" cols="60" class="form-control"></textarea>', '<select name="q4000:3_answer"><option value="">Choose...</option><option value="7">Paris</option><option value="9" selected="selected">Rome</option></select>');
+    const deps = fakeDeps({
+      "GET /mod/quiz/attempt.php": ({ url }) => ({ url, html: (new URL(url).searchParams.get("page") ?? "0") === "1" ? select : fixture("quiz-attempt-page-0.html") }),
+      "POST /mod/quiz/processattempt.php": () => ({ url: `${ATTEMPT}&page=1`, html: saved(select, 3) }),
+    });
+    const page = await getAttemptPage(deps, 900, 32, 1);
+    expect(page.questions[1]).toMatchObject({ kind: "choice", field: "q4000:3_answer" });
+    expect(page.questions[1].options).toEqual([
+      { key: "a", field: "q4000:3_answer", value: "7", text: "Paris", chosen: false },
+      { key: "b", field: "q4000:3_answer", value: "9", text: "Rome", chosen: true },
+    ]);
+    await answerQuizQuestion(deps, { attemptId: 900, quizId: 32, question: "2", value: "Paris" });
+    expect(deps.calls.at(-1)!.body.getAll("q4000:3_answer")).toEqual(["7"]);
+  });
+
+  it("keeps a numerical question answerable when its value is -1", async () => {
+    const numeric = fixture("quiz-attempt-page-1.html")
+      .replace('<textarea id="q4000:3_answer_id" name="q4000:3_answer" rows="15" cols="60" class="form-control"></textarea>', '<input type="text" name="q4000:3_answer" value="-1" size="30">')
+      .replace('<input type="hidden" name="q4000:3_answerformat" value="1" />', "");
+    const deps = fakeDeps({
+      "GET /mod/quiz/attempt.php": ({ url }) => ({ url, html: (new URL(url).searchParams.get("page") ?? "0") === "1" ? numeric : fixture("quiz-attempt-page-0.html") }),
+      "POST /mod/quiz/processattempt.php": () => ({ url: `${ATTEMPT}&page=1`, html: saved(numeric, 3) }),
+    });
+    const page = await getAttemptPage(deps, 900, 32, 1);
+    expect(page.questions[1]).toMatchObject({ kind: "text", answer: "-1" });
+    await answerQuizQuestion(deps, { attemptId: 900, quizId: 32, question: "2", value: "-3" });
+    expect(deps.calls.at(-1)!.body.get("q4000:3_answer")).toBe("-3");
+  });
+
+  it("gives an image-only option a usable label", () => {
+    const html = fixture("quiz-attempt-page-0.html").replace("<div><p>x = 3</p></div>", '<div><img src="graph.png" alt=""></div>');
+    const page = parseAttemptPage(html, ATTEMPT, { baseUrl: BASE, fail: (message) => new Error(message) });
+    expect(page.questions[0].options?.[1].text).toBe("(image; see the quiz in a browser)");
+  });
+
   it("ticks several boxes for a multiple-choice question", async () => {
     const deps = attemptDeps(() => ({ url: `${ATTEMPT}&page=2`, html: saved(fixture("quiz-attempt-page-2.html"), 4) }));
     await answerQuizQuestion(deps, { attemptId: 900, quizId: 32, question: "3", value: "a, c" });

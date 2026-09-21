@@ -390,7 +390,7 @@ function wrap(text: string, width = 96): string[] {
     if (line && line.length + word.length + 1 > width) { lines.push(`  ${line}`); line = word; }
     else line = line ? `${line} ${word}` : word;
   }
-  if (line) lines.push(`  ${line}`);
+  if (line || !lines.length) lines.push(`  ${line}`);
   return lines;
 }
 

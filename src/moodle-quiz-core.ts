@@ -282,20 +282,34 @@ function parseAttemptQuestion(que: HTMLElement): AttemptQuestion {
     const name = input.getAttribute("name") ?? "";
     return name.startsWith("q") && !/_:(?:flagged|sequencecheck)$|_-seen$|_answerformat$/u.test(name) && !/^(?:hidden|submit)$/u.test(input.getAttribute("type") ?? "");
   });
-  const radios = inputs.filter(input => input.getAttribute("type") === "radio" && input.getAttribute("value") !== "-1");
-  const boxes = inputs.filter(input => input.getAttribute("type") === "checkbox");
-  const texts = inputs.filter(input => input.tagName.toLowerCase() === "textarea" || /^(?:text|number)$/u.test(input.getAttribute("type") ?? "text"));
-  const others = inputs.length - radios.length - boxes.length - texts.length - inputs.filter(input => input.getAttribute("value") === "-1").length;
+  const tag = (input: HTMLElement) => input.tagName.toLowerCase();
+  const type = (input: HTMLElement) => (tag(input) === "input" ? (input.getAttribute("type") ?? "text").toLowerCase() : tag(input));
+  // "Clear my choice" is a hidden radio; it is told apart by its markup, not by its value,
+  // because -1 is a perfectly good numerical answer.
+  const isClearChoice = (input: HTMLElement) => type(input) === "radio" && (input.closest(".qtype_multichoice_clearchoice") !== null || input.getAttribute("aria-hidden") === "true");
+  const radios = inputs.filter(input => type(input) === "radio" && !isClearChoice(input));
+  const boxes = inputs.filter(input => type(input) === "checkbox");
+  const texts = inputs.filter(input => ["textarea", "text", "number"].includes(type(input)));
+  const selects = inputs.filter(input => type(input) === "select");
+  const others = inputs.length - radios.length - boxes.length - texts.length - selects.length - inputs.filter(isClearChoice).length;
   // One group of inputs is answerable; a cloze or matching question mixes several and stays a browser job.
   const radioNames = new Set(radios.map(input => input.getAttribute("name")));
-  if (radios.length && radioNames.size === 1 && !boxes.length && !texts.length && others === 0) {
+  const only = (group: HTMLElement[]) => group.length === inputs.length - inputs.filter(isClearChoice).length && others === 0;
+  if (radios.length && radioNames.size === 1 && only(radios)) {
     return { ...base, kind: "choice", field: radios[0].getAttribute("name")!, options: radios.map((input, index) => option(que, input, index)) };
   }
-  if (boxes.length && !radios.length && !texts.length && others === 0) return { ...base, kind: "multi", options: boxes.map((input, index) => option(que, input, index)) };
-  if (texts.length === 1 && !radios.length && !boxes.length && others === 0) {
+  if (boxes.length && only(boxes)) return { ...base, kind: "multi", options: boxes.map((input, index) => option(que, input, index)) };
+  if (selects.length === 1 && only(selects)) {
+    const select = selects[0];
+    const name = select.getAttribute("name")!;
+    // The blank "Choose..." entry is Moodle's placeholder, not an answer.
+    const choices = select.querySelectorAll("option").filter(item => (item.getAttribute("value") ?? "") !== "");
+    return { ...base, kind: "choice", field: name, options: choices.map((item, index) => ({ key: String.fromCharCode(97 + index), field: name, value: item.getAttribute("value") ?? "", text: cleanText(item.textContent), chosen: item.hasAttribute("selected") })) };
+  }
+  if (texts.length === 1 && only(texts)) {
     const text = texts[0];
     // Editor-backed essays hold HTML in the textarea; a plain field holds the answer itself.
-    const html = text.tagName.toLowerCase() === "textarea";
+    const html = tag(text) === "textarea";
     return { ...base, kind: "text", field: text.getAttribute("name")!, answer: html ? blockText(parse(text.textContent)) : cleanText(text.getAttribute("value") ?? "") };
   }
   return base;
@@ -305,7 +319,9 @@ function option(que: HTMLElement, input: HTMLElement, index: number): AttemptOpt
   const labelId = input.getAttribute("aria-labelledby");
   const id = input.getAttribute("id");
   const label = (labelId ? que.querySelector(`[id="${labelId}"]`) : null) ?? (id ? que.querySelector(`label[for="${id}"]`) : null) ?? input.parentNode;
-  return { key: String.fromCharCode(97 + index), field: input.getAttribute("name") ?? "", value: input.getAttribute("value") ?? "", text: blockText(label), chosen: input.hasAttribute("checked") };
+  // An option that is only an image has no text; its alt text, or a marker, keeps the letter usable.
+  const text = blockText(label) || label?.querySelectorAll("img").map(img => cleanText(img.getAttribute("alt"))).filter(Boolean).join(" ") || "(image; see the quiz in a browser)";
+  return { key: String.fromCharCode(97 + index), field: input.getAttribute("name") ?? "", value: input.getAttribute("value") ?? "", text, chosen: input.hasAttribute("checked") };
 }
 
 function encodeAnswer(deps: QuizDeps, form: ParsedForm, question: AttemptQuestion, value: string): Field[] {

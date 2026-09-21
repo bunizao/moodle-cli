@@ -113,7 +113,7 @@ describe("detectInstallKind", () => {
 });
 
 describe("runUpdate", () => {
-  it("installs with the detected package manager and deploys with the new bin", async () => {
+  it("installs with the detected package manager and deploys through the updated install itself", async () => {
     vi.resetModules();
     vi.doMock("../src/mcp/self-command.js", async (importOriginal) => ({
       ...(await importOriginal<typeof import("../src/mcp/self-command.js")>()),
@@ -130,11 +130,13 @@ describe("runUpdate", () => {
       execPath: "/usr/bin/node",
       workerBehind: false,
       runCommand: (command, args) => { calls.push([command, ...args]); return { status: 0 } as never; },
+      readOutput: (command, args) => { calls.push([command, ...args]); return "99.0.0\n"; },
     });
     vi.doUnmock("../src/mcp/self-command.js");
 
-    expect(report).toMatchObject({ current: VERSION, latest: "99.0.0", install: "npm", updated: true, deployed: true });
-    expect(calls).toEqual([["/bin/npm", "install", "-g", "moodle-cli@latest"], ["/new/bin/moodle", "mcp", "deploy", "--yes"]]);
+    expect(report).toMatchObject({ current: VERSION, latest: "99.0.0", install: "npm", updated: true, deployed: true, ok: true });
+    const script = "/usr/local/lib/node_modules/moodle-cli/dist/moodle.js";
+    expect(calls).toEqual([["/bin/npm", "install", "-g", "moodle-cli@latest"], ["/usr/bin/node", script, "--version"], ["/usr/bin/node", script, "mcp", "deploy", "--yes"]]);
     expect((await readUpdateCache(homeDir)).latest).toBe("99.0.0");
   });
 
@@ -168,6 +170,40 @@ describe("runUpdate", () => {
     });
     expect(report).toMatchObject({ updated: false, ok: false });
     expect(report.note).toMatch(/exited with 1/u);
+  });
+
+  it("refuses to call an install that still reports the old version after the installer ran", async () => {
+    vi.resetModules();
+    const { runUpdate } = await import("../src/update-check.js");
+    const calls: string[][] = [];
+    const report = await runUpdate({
+      homeDir,
+      env: {},
+      fetchImpl: async () => Response.json({ latest: "99.0.0" }),
+      argv: ["/usr/bin/node", "/usr/local/lib/node_modules/moodle-cli/dist/moodle.js"],
+      execPath: "/usr/bin/node",
+      workerBehind: true,
+      runCommand: (command, args) => { calls.push([command, ...args]); return { status: 0 } as never; },
+      readOutput: () => `${VERSION}\n`,
+    });
+    expect(report).toMatchObject({ updated: false, deployed: false, ok: false });
+    expect(report.note).toMatch(/reports .* instead of 99\.0\.0/u);
+    expect(calls.filter(call => call.includes("deploy"))).toEqual([]);
+  });
+
+  it("says so when npm cannot be reached instead of claiming the package is current", async () => {
+    vi.resetModules();
+    const { runUpdate } = await import("../src/update-check.js");
+    const report = await runUpdate({
+      homeDir,
+      env: {},
+      fetchImpl: async () => { throw new Error("offline"); },
+      argv: ["/usr/bin/node", "/usr/local/lib/node_modules/moodle-cli/dist/moodle.js"],
+      execPath: "/usr/bin/node",
+      runCommand: () => { throw new Error("must not run"); },
+    });
+    expect(report).toMatchObject({ latest: null, updated: false, ok: false });
+    expect(report.note).toMatch(/registry could not be reached/u);
   });
 
   it("reports a failed deploy as not ok", async () => {

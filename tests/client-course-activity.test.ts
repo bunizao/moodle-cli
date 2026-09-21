@@ -282,6 +282,9 @@ describe("MoodleClient course/activity modules", () => {
     );
     const review = parseQuizReviewHtml(html, 777, BASE_URL);
     expect(review.questions[2]).toMatchObject({ type: "shortanswer", response: "Paris" });
+    // The gap layout puts the input inside the question text and has no .answer block at all.
+    const gap = html.replace('<div class="qtext">Capital of France?</div><div class="answer"><input type="text" name="q1:3_answer" value="Paris" readonly="readonly"></div>', '<div class="qtext">The capital of France is <input type="text" name="q1:3_answer" value="Paris" readonly="readonly">.</div>');
+    expect(parseQuizReviewHtml(gap, 777, BASE_URL).questions[2].response).toBe("Paris");
   });
 
   it("reads a quiz attempt review question by question", () => {
