@@ -40,6 +40,17 @@ describe("Moodle gateway", () => {
     await expect(gateway.getThread({ discussionId: 701 })).resolves.toMatchObject({ id: 701, subject: "Exam" });
   });
 
+  it("reports a file under its Moodle address, not the signed CDN link it redirected to", async () => {
+    const moodleUrl = "https://moodle.example.edu/pluginfile.php/1/slides.pdf";
+    const cdnUrl = "https://cdn.example.net/files/abc?Key-Pair-Id=K123&Signature=xyz";
+    const gateway = createMoodleGateway({
+      ...fakeClient(),
+      requestAbsolute: async () => responseAt(cdnUrl, "slides", { "content-type": "application/pdf" }),
+    });
+
+    await expect(gateway.getFile({ source: moodleUrl })).resolves.toMatchObject({ uri: moodleUrl });
+  });
+
   it("reports a missing course at the gateway boundary", async () => {
     const gateway = createMoodleGateway({
       ...fakeClient(),
@@ -207,6 +218,11 @@ function fakeClient(): MoodleClientPort {
       grading_status: "Not graded",
       time_remaining: "1 day",
       grade: "-",
+      graded_on: "",
+      graded_by: "",
+      feedback_comments: "",
+      criteria: [],
+      file_entries: [],
       url: activity.url,
       type: "assign",
     }),

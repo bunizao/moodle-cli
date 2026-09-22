@@ -50,10 +50,12 @@ import {
 import {
   DefaultRenewalIntegration,
   decideRenewal,
+  describeRenewalJob,
   executeRenewalDecision,
   notifyRenewalSignInRequired,
   type RenewalActionExecutor,
   type RenewalDecision,
+  type RenewalJobDescription,
   type RenewalSnapshot,
 } from "./renewal/index.js";
 import { createMoodleGateway } from "./gateway.js";
@@ -66,6 +68,8 @@ const WORKER_COMPATIBILITY_DATE = "2026-08-09";
 export interface McpCommandOutput {
   data: unknown;
   text: string;
+  /** Commands worth typing next; the CLI prints them under "Try" instead of its generic footer. */
+  next?: string[];
 }
 
 export interface McpDeployInput {
@@ -89,6 +93,8 @@ export interface McpCommandService {
   bridge(profile?: string): Promise<void>;
   renew(profile: string): Promise<McpCommandOutput>;
   pushSessionFromStdin(): Promise<McpCommandOutput>;
+  /** Null without a deployment receipt; otherwise whether the Worker is behind this package and answering. */
+  workerState(): Promise<{ behind: boolean; ready: boolean } | null>;
 }
 
 export interface McpCommandServiceOptions {
@@ -177,7 +183,8 @@ class DefaultMcpCommandService implements McpCommandService {
         const recovery = await deployment.rollback(identity.profile);
         return {
           data: recovery,
-          text: `Moodle MCP restored release ${recovery.versionId}.`,
+          text: `${theme.tone("success", "Moodle MCP restored release")} ${theme.key(recovery.versionId)}.`,
+          next: ["moodle mcp status"],
         };
       }
 
@@ -200,11 +207,12 @@ class DefaultMcpCommandService implements McpCommandService {
             uploadCandidate: plan.uploadCandidate,
           },
           text: [
-            "Moodle MCP deployment plan",
-            `Operation: ${plan.operation}`,
-            `Worker: ${plan.intent.workerName}`,
-            `Candidate upload: ${plan.uploadCandidate ? "yes" : "no"}`,
+            theme.subject("Moodle MCP deployment plan"),
+            `  ${theme.dim("Operation:")} ${plan.operation}`,
+            `  ${theme.dim("Worker:")} ${theme.key(plan.intent.workerName)}`,
+            `  ${theme.dim("Candidate upload:")} ${plan.uploadCandidate ? "yes" : "no"}`,
           ].join("\n"),
+          next: ["moodle mcp deploy"],
         };
       }
 
@@ -241,7 +249,9 @@ class DefaultMcpCommandService implements McpCommandService {
         moodleSite: identity.moodleOrigin,
         moodleUser: events.find((event) => event.moodleUser)?.moodleUser ?? "Unknown Moodle user",
         clients: await this.connectedClientNames(identity.profile),
+        renewal: this.renewalJob(identity.profile),
       }, this.theme()),
+      next: ["moodle mcp status", "moodle mcp pair"],
     };
   }
 
@@ -310,10 +320,23 @@ class DefaultMcpCommandService implements McpCommandService {
       localAuthentication = { status: "unknown" };
     }
     const updateAvailable = await this.remoteWorkerBehindLocal(profile);
+    const [receipt, credentials] = await Promise.all([this.receipts.read(profile), this.credentials.read(profile)]);
+    const job = this.renewalJob(profile);
+    // Hosted clients live in the Worker; a Worker that cannot answer simply leaves the count unknown.
+    const hosted = receipt && credentials
+      ? await this.worker.manageClients({ endpoint: receipt.productionEndpoint, sessionSyncToken: credentials.sessionSyncToken }).then((data) => isClientList(data) ? data.clients.filter((client) => client.approved).length : null).catch(() => null)
+      : null;
+    const renewal = {
+      installed: managed.renewalInstalled,
+      ...(job ? { scheduler: job.scheduler, label: job.label, schedule: job.schedule, log: job.log } : {}),
+      lastRun: receipt?.lastRenewal ?? null,
+    };
     const data = {
       profile,
       localAuthentication,
       managed,
+      renewal,
+      hostedClients: hosted,
       protocols: [...SUPPORTED_PROTOCOL_VERSIONS],
       updateAvailable,
       ...(input.verbose ? { serviceVersion: VERSION } : {}),
@@ -330,11 +353,21 @@ class DefaultMcpCommandService implements McpCommandService {
         row("Worker", managed.worker?.workerName ?? "not deployed"),
         row("Credentials", managed.credentialsStored ? "stored" : "missing"),
         row("Renewal", managed.renewalInstalled ? "installed" : "missing"),
-        row("Clients", managed.clientsConnected ? "connected" : "not connected"),
+        ...(managed.renewalInstalled && job ? [`  ${theme.dim(`${job.schedule}; you only hear from it when Moodle signs you out`)}`] : []),
+        `  ${theme.dim("Last run:")} ${renewalRunText(renewal.lastRun, theme)}`,
+        ...(managed.renewalInstalled && job && input.verbose ? [`  ${theme.dim("Log:")} ${theme.dim(job.log)}`] : []),
+        row("Local clients", managed.clientsConnected ? "connected" : "not connected"),
+        `${theme.dim("Hosted clients:")} ${hosted === null ? theme.dim("unknown") : hosted ? `${hosted} approved` : theme.dim("none")}`,
         ...(managed.recoveryActive ? [`${theme.dim("Release:")} ${theme.tone("warning", "the recovery Worker is live; OAuth sign-in is disabled until")} ${theme.key("moodle mcp deploy")} ${theme.tone("warning", "succeeds.")}`] : []),
-        ...(updateAvailable ? [`${theme.dim("Update:")} remote Worker is behind this CLI. Run ${theme.key("moodle mcp deploy")} to update it.`] : []),
+        ...(updateAvailable ? [`${theme.dim("Update:")} remote Worker is behind this CLI. Run ${theme.key("moodle update")} to update it.`] : []),
         ...(input.logs ? [`${theme.dim("Logs:")} use a live sanitized tail from an interactive terminal`] : []),
       ].join("\n"),
+      next: [
+        ...(updateAvailable ? ["moodle update"] : []),
+        ...(managed.readiness === "fail" ? ["moodle mcp login"] : []),
+        ...(!managed.clientsConnected ? ["moodle mcp connect"] : []),
+        ...(hosted ? [] : ["moodle mcp pair"]),
+      ],
     };
   }
 
@@ -347,9 +380,12 @@ class DefaultMcpCommandService implements McpCommandService {
       // leaving the terminal blank.
       progress.begin("Reading your Moodle session (a browser sign-in may be required)");
       const recovery = await this.deployment(false).recover(profile);
+      const theme = this.theme();
+      const done = (line: string) => `${theme.tone("success", "✓")} ${line}`;
       return {
         data: recovery,
-        text: "✓ New Moodle session acquired.\n✓ Remote session updated.\n✓ MCP readiness restored.",
+        text: [done("New Moodle session acquired."), done("Remote session updated."), done("MCP readiness restored.")].join("\n"),
+        next: ["moodle mcp status"],
       };
     } finally {
       progress.clear();
@@ -380,13 +416,15 @@ class DefaultMcpCommandService implements McpCommandService {
     }
     const connected = [];
     for (const connector of selected) connected.push(await connectClient(connector));
+    const theme = this.theme();
     const text = [
-      ...connected.map((item) => `✓ ${item.client}`),
-      ...(input.showToken ? ["", "MCP access token", credentials.mcpAccessToken] : []),
+      ...connected.map((item) => `${theme.tone("success", "✓")} ${item.client} ${theme.dim(item.changed ? `· ${item.configPath}` : "· already connected")}`),
+      ...(input.showToken ? ["", theme.subject("MCP access token"), `  ${credentials.mcpAccessToken}`] : []),
     ].join("\n");
     return {
       data: { profile, mode: input.mode, connected: connected.map(({ client, configPath, changed }) => ({ client, configPath, changed })) },
       text,
+      next: ["moodle mcp status"],
     };
   }
 
@@ -397,7 +435,21 @@ class DefaultMcpCommandService implements McpCommandService {
     const credentials = await this.credentials.read(profile);
     if (!receipt || !credentials) throw new UsageError(`No managed Moodle MCP deployment exists for profile ${profile}.`);
     const data = await this.worker.manageClients({ endpoint: receipt.productionEndpoint, sessionSyncToken: credentials.sessionSyncToken, ...input });
-    return { data, text: input.revoke ? "OAuth authorization revoked." : JSON.stringify(data, null, 2) };
+    const theme = this.theme();
+    if (input.revoke) {
+      return { data, text: theme.tone("success", input.clientId ? "OAuth client revoked." : "All OAuth access revoked."), next: ["moodle mcp pair"] };
+    }
+    const clients = isClientList(data) ? data.clients : [];
+    return {
+      data,
+      text: clients.length
+        ? [
+          theme.subject("OAuth clients"),
+          ...clients.map((client) => `  ${theme.status(client.approved ? "approved" : "pending", { approved: "success", pending: "warning" }).padEnd(theme.enabled ? 18 : 9)} ${client.clientName}  ${theme.dim(client.clientId)}`),
+        ].join("\n")
+        : theme.dim("No OAuth clients."),
+      next: clients.length ? [`moodle mcp revoke ${clients[0].clientId}`, "moodle mcp pair"] : ["moodle mcp pair"],
+    };
   }
 
   async pair(): Promise<McpCommandOutput> {
@@ -421,17 +473,8 @@ class DefaultMcpCommandService implements McpCommandService {
         expiresAt: pairing.expiresAt,
         authorizationServer: pairing.authorizationServer,
       },
-      text: [
-        "Add this custom connector in Claude, then approve it with the pairing code.",
-        "",
-        "Connector URL",
-        `  ${endpoint}`,
-        "",
-        "Pairing code",
-        `  ${formatPairingCode(pairing.code)}`,
-        "",
-        `The code expires at ${pairing.expiresAt} and works for one approval.`,
-      ].join("\n"),
+      text: pairingCopy({ endpoint, code: pairing.code, expiresAt: pairing.expiresAt }, this.theme()),
+      next: ["moodle mcp clients"],
     };
   }
 
@@ -448,11 +491,12 @@ class DefaultMcpCommandService implements McpCommandService {
     return {
       data: result,
       text: [
-        "Moodle MCP has been removed.",
-        `Worker: ${result.workerRemoved ? "deleted" : "not present"}`,
-        "Local renewal, client registrations, and deployment credentials: deleted",
-        "Local Moodle configuration: kept; matching authentication cache: removed",
+        this.theme().tone("success", "Moodle MCP has been removed."),
+        `  ${this.theme().dim("Worker:")} ${result.workerRemoved ? "deleted" : "not present"}`,
+        `  ${this.theme().dim("Renewal job, client registrations, deployment credentials:")} deleted`,
+        `  ${this.theme().dim("Local Moodle configuration:")} kept ${this.theme().dim("(its authentication cache was removed)")}`,
       ].join("\n"),
+      next: ["moodle mcp deploy"],
     };
   }
 
@@ -572,17 +616,24 @@ class DefaultMcpCommandService implements McpCommandService {
     };
 
     const decision = await executeRenewalWithRecovery(decideRenewal(snapshot), snapshot, executor);
+    const outcome = uploaded ? { state: "healthy", reasonCode: "SESSION_VALID" } : { state: decision.state, reasonCode: decision.reasonCode };
+    // Status shows this instead of asking people to open the scheduler's log.
+    receipt = { ...receipt, lastRenewal: { at: new Date().toISOString(), ...outcome } };
+    await this.receipts.write(receipt);
+    const theme = this.theme();
     if (uploaded) {
       return {
-        data: { profile, state: "healthy", reasonCode: "SESSION_VALID", revision: receipt.sessionRevision },
-        text: "Moodle MCP session renewed.",
+        data: { profile, ...outcome, revision: receipt.sessionRevision },
+        text: theme.tone("success", "Moodle MCP session renewed."),
+        next: ["moodle mcp status"],
       };
     }
     // A background job cannot open a browser, so record why no replacement cookie was found.
     const detail = decision.state === "needs_sign_in" && signInDetail ? { detail: signInDetail } : {};
     return {
-      data: { profile, state: decision.state, reasonCode: decision.reasonCode, revision: receipt.sessionRevision, ...detail },
-      text: [renewalResultText(decision), signInDetail].filter(Boolean).join("\n"),
+      data: { profile, ...outcome, revision: receipt.sessionRevision, ...detail },
+      text: [renewalResultText(decision, theme), signInDetail].filter(Boolean).join("\n"),
+      next: [decision.state === "needs_sign_in" ? "moodle mcp login" : "moodle mcp status"],
     };
   }
 
@@ -626,7 +677,7 @@ class DefaultMcpCommandService implements McpCommandService {
       },
     });
     await this.receipts.write({ ...receipt, sessionRevision: uploaded.revision });
-    return { data: { profile, revision: uploaded.revision }, text: "Moodle MCP session updated." };
+    return { data: { profile, revision: uploaded.revision }, text: this.theme().tone("success", "Moodle MCP session updated."), next: ["moodle mcp status"] };
   }
 
   private deployment(background: boolean): ManagedMcpDeployment {
@@ -763,6 +814,20 @@ class DefaultMcpCommandService implements McpCommandService {
     return this.wranglerInstance;
   }
 
+  async workerState(): Promise<{ behind: boolean; ready: boolean } | null> {
+    try {
+      const profile = deriveMcpProfile((await this.config()).baseUrl);
+      const [receipt, credentials] = await Promise.all([this.receipts.read(profile), this.credentials.read(profile)]);
+      if (!receipt || !credentials) return null;
+      const behind = await this.remoteWorkerBehindLocal(profile);
+      // A receipt only proves a deploy once happened; the Worker itself says whether it still answers.
+      const readiness = await this.worker.getReadiness({ endpoint: receipt.productionEndpoint, sessionSyncToken: credentials.sessionSyncToken }).catch(() => null);
+      return { behind, ready: readiness?.status === "pass" };
+    } catch {
+      return null;
+    }
+  }
+
   // The first-use Wrangler download asks a question, so it runs before a spinner
   // owns the terminal rather than drawing its prompt underneath one.
   private async prepareToolchain(yes = false): Promise<void> {
@@ -796,6 +861,11 @@ class DefaultMcpCommandService implements McpCommandService {
   // One shared reporter, so anything else that writes can stop the animation first.
   private theme(): Theme {
     return createTheme(this.options.color?.() ?? false);
+  }
+
+  private renewalJob(profile: string): RenewalJobDescription | undefined {
+    const platform = process.platform;
+    return platform === "darwin" || platform === "linux" || platform === "win32" ? describeRenewalJob(platform, this.homeDirectory, profile) : undefined;
   }
 
   private progress(): ProgressReporter {
@@ -870,12 +940,39 @@ function isWranglerAuthRequired(error: unknown): boolean {
     && /not authenticated|not logged in|wrangler login/iu.test(`${error.stdout}\n${error.stderr}`);
 }
 
-function renewalResultText(decision: RenewalDecision): string {
-  if (decision.state === "offline") return "Moodle is unreachable. The remote session was preserved.";
-  if (decision.state === "needs_sign_in") return "Moodle MCP needs sign-in. Run `moodle mcp login`.";
+function renewalResultText(decision: RenewalDecision, theme: Theme): string {
+  if (decision.state === "offline") return `${theme.tone("warning", "Moodle is unreachable.")} The remote session was preserved.`;
+  if (decision.state === "needs_sign_in") return `${theme.tone("warning", "Moodle MCP needs sign-in.")} Run ${theme.key("moodle mcp login")}.`;
   if (decision.state === "conflict") return "Moodle MCP refreshed the remote session revision without overwriting it.";
-  if (decision.reasonCode === "RENEWAL_AGENT_MISSING") return "Moodle MCP renewal agent installed.";
-  return "Moodle MCP session is ready.";
+  if (decision.reasonCode === "RENEWAL_AGENT_MISSING") return theme.tone("success", "Moodle MCP renewal agent installed.");
+  return theme.tone("success", "Moodle MCP session is ready.");
+}
+
+function isClientList(value: unknown): value is { clients: Array<{ clientId: string; clientName: string; approved: boolean }> } {
+  return typeof value === "object" && value !== null && Array.isArray((value as { clients?: unknown }).clients);
+}
+
+function renewalRunText(lastRun: { at: string; state: string; reasonCode: string | null } | null, theme: Theme): string {
+  if (!lastRun) return theme.dim("never (the job has not reported yet)");
+  const ago = Math.max(0, Math.round((Date.now() - Date.parse(lastRun.at)) / 60000));
+  const when = ago < 1 ? "just now" : ago < 120 ? `${ago} min ago` : ago < 48 * 60 ? `${Math.round(ago / 60)} h ago` : `${Math.round(ago / 1440)} days ago`;
+  return `${when} ${theme.status(lastRun.state.replaceAll("_", " "), { healthy: "success", "needs sign in": "warning", offline: "warning", conflict: "warning" })}`;
+}
+
+function pairingCopy(input: { endpoint: string; code: string; expiresAt: string | number }, theme: Theme): string {
+  const expires = new Date(input.expiresAt);
+  const minutes = Math.max(0, Math.round((expires.getTime() - Date.now()) / 60000));
+  return [
+    "Add this custom connector in Claude, then approve it with the pairing code.",
+    "",
+    theme.subject("Connector URL"),
+    `  ${theme.key(input.endpoint)}`,
+    "",
+    theme.subject("Pairing code"),
+    `  ${theme.key(formatPairingCode(input.code))}`,
+    "",
+    theme.dim(`One approval, valid for ${minutes} minutes (until ${expires.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}).`),
+  ].join("\n");
 }
 
 async function selectConnectors(

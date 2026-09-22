@@ -64,8 +64,8 @@ try {
  });
  const approval=await page.goto(url.toString());
  await page.waitForLoadState('networkidle');
- evidence.approval={status:approval.status(),csp:approval.headers()['content-security-policy'],referrerPolicy:approval.headers()['referrer-policy'],buttons:await page.getByRole('button').allTextContents(),inputName:await page.getByLabel('Pairing code').getAttribute('name')};
- await page.getByLabel('Pairing code').fill(pairingCode);
+ evidence.approval={status:approval.status(),csp:approval.headers()['content-security-policy'],referrerPolicy:approval.headers()['referrer-policy'],buttons:await page.getByRole('button').allTextContents(),inputName:await page.locator('#pairing_code').getAttribute('name')};
+ await page.locator('#pairing_code').fill(pairingCode);
  try { await page.getByRole('button',{name:'Approve access',exact:true}).click({timeout:8000}); } catch(e){evidence.clickError=safe(e.message);}
  await page.waitForTimeout(1200);
  evidence.finalUrl=safe(page.url());

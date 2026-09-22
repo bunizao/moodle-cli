@@ -22,11 +22,13 @@ import {
   GRADE_REPORT_OVERVIEW_PATH,
   GRADE_REPORT_PATH,
   PAGE_VIEW_PATH,
+  QUIZ_REVIEW_PATH,
   QUIZ_VIEW_PATH,
   RESOURCE_VIEW_PATH,
   URL_VIEW_PATH,
 } from "./constants.js";
 import { submitAssignmentFiles, type SubmissionReceipt, type SubmitAssignmentRequest } from "./moodle-assign-core.js";
+import { answerQuizQuestion, finishQuizAttempt, getAttemptPage, getAttemptSummary, startQuizAttempt, type AnswerRequest, type AttemptFinishReceipt, type AttemptPage, type AttemptSummary, type QuizDeps, type StartOptions } from "./moodle-quiz-core.js";
 import { ForumModule } from "./moodle-forum-core.js";
 import { searchForumContent as searchForumModule } from "./moodle-forum-search-core.js";
 import type {
@@ -46,6 +48,7 @@ import type {
   Page,
   PageContext,
   Quiz,
+  QuizAttemptReview,
   Resource,
   Section,
   TodoItem,
@@ -74,6 +77,7 @@ import {
   parsePageContext,
   parsePageHtml,
   parseQuizHtml,
+  parseQuizReviewHtml,
   parseResourceHtml,
 } from "./scraper.js";
 
@@ -549,6 +553,12 @@ export class MoodleClientCore {
     return parseQuizHtml(await this.get(QUIZ_VIEW_PATH, { id }), id, this.baseUrl);
   }
 
+  async getQuizAttempt(attemptId: number): Promise<QuizAttemptReview> {
+    await this.ensureSession();
+    // Without showall Moodle pages a long review and the later questions would be silently missing.
+    return parseQuizReviewHtml(await this.get(QUIZ_REVIEW_PATH, { attempt: attemptId, showall: 1 }), attemptId, this.baseUrl);
+  }
+
   async getResource(id: number): Promise<Resource> {
     const url = `${this.baseUrl}${RESOURCE_VIEW_PATH}?id=${id}`;
     const response = await this.requestAbsolute(url);
@@ -598,6 +608,38 @@ export class MoodleClientCore {
       fail: (message, moodleErrorCode) => this.errors.api(message, moodleErrorCode),
       usage: (message, hint) => this.errors.usage ? this.errors.usage(message, hint) : new MoodleClientCoreError("usage", message, hint),
     }, request);
+  }
+
+  /** Starts a new attempt, or resumes the one already in progress, and returns its first page. */
+  async startQuizAttempt(quizId: number, options: StartOptions = {}): Promise<AttemptPage> {
+    return startQuizAttempt(await this.quizDeps(), quizId, options);
+  }
+
+  async getQuizAttemptPage(attemptId: number, quizId: number, page = 0): Promise<AttemptPage> {
+    return getAttemptPage(await this.quizDeps(), attemptId, quizId, page);
+  }
+
+  async getQuizAttemptSummary(attemptId: number, quizId: number): Promise<AttemptSummary> {
+    return getAttemptSummary(await this.quizDeps(), attemptId, quizId);
+  }
+
+  async answerQuizQuestion(request: AnswerRequest): Promise<AttemptPage> {
+    return answerQuizQuestion(await this.quizDeps(), request);
+  }
+
+  /** Submits the attempt for grading. Moodle treats this as final. */
+  async finishQuizAttempt(attemptId: number, quizId: number): Promise<AttemptFinishReceipt> {
+    return finishQuizAttempt(await this.quizDeps(), attemptId, quizId);
+  }
+
+  private async quizDeps(): Promise<QuizDeps> {
+    await this.ensureSession();
+    return {
+      baseUrl: this.baseUrl,
+      request: (url, init, options) => this.requestAbsolute(url, init, options),
+      fail: (message, moodleErrorCode) => this.errors.api(message, moodleErrorCode),
+      usage: (message, hint) => this.errors.usage ? this.errors.usage(message, hint) : new MoodleClientCoreError("usage", message, hint),
+    };
   }
 
   async getNewsForums(courseId?: number): Promise<ForumActivityRef[]> {

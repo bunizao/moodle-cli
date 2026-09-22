@@ -1,3 +1,4 @@
+import { LATEST_VERSION_URL } from "../src/update-core.js";
 import { VERSION } from "../src/version.js";
 import {
   SessionBroker,
@@ -277,6 +278,72 @@ describe("SessionBroker Durable Object", () => {
       },
     });
     expect(JSON.stringify(body)).not.toContain(OLD_COOKIE);
+  });
+
+  it("tells the client about a newer release on initialize and remembers the check for a day", async () => {
+    const objectState = state();
+    const registry = vi.fn(async () => Response.json({ latest: "99.0.0" }));
+    const fetchImpl = vi.fn<typeof fetch>(async (input) => {
+      if (String(input) === LATEST_VERSION_URL) return registry();
+      return Response.json([{ error: false, data: { userid: 42, username: "ada", fullname: "Ada", sitename: "S", siteurl: MOODLE_ORIGIN, sesskey: "sess" } }]);
+    });
+    let now = 900_000;
+    // A session that outlives the day-long cache, so the third initialize reaches the registry.
+    const upstream = validUpstream();
+    vi.mocked(upstream.validate).mockResolvedValue({ valid: true, sesskey: "sess", moodleUserId: 42, remainingSeconds: 48 * 60 * 60 });
+    const broker = new SessionBroker(objectState, env(), { upstream, fetchImpl, now: () => now });
+    expect((await putSession(broker, candidate(OLD_COOKIE, null))).status).toBe(201);
+
+    const initialize = () => broker.fetch(new Request("https://session-broker/mcp", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        request: { jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "claude-ai", version: "1" } } },
+        context: { protocolVersion: "2025-06-18", method: "initialize" },
+      }),
+    }));
+
+    const first = await (await initialize()).json() as { response: { result: { instructions: string } } };
+    expect(first.response.result.instructions).toContain("moodle-cli 99.0.0 is available");
+    expect(first.response.result.instructions).toContain("moodle update");
+    expect(registry).toHaveBeenCalledTimes(1);
+
+    now += 60_000;
+    const second = await (await initialize()).json() as { response: { result: { instructions: string } } };
+    expect(second.response.result.instructions).toContain("99.0.0");
+    expect(registry).toHaveBeenCalledTimes(1);
+
+    now += 25 * 60 * 60 * 1000;
+    await initialize();
+    expect(registry).toHaveBeenCalledTimes(2);
+
+    const ready = await (await broker.fetch(new Request("https://session-broker/readyz"))).json();
+    expect(ready).toMatchObject({ version: VERSION, latest_version: "99.0.0" });
+    expect(JSON.stringify(objectState.storage.values.get("latest_version"))).not.toContain(OLD_COOKIE);
+  });
+
+  it("leaves tool calls untouched by the registry lookup", async () => {
+    const registry = vi.fn(async () => Response.json({ latest: "99.0.0" }));
+    const fetchImpl = vi.fn<typeof fetch>(async (input) => {
+      if (String(input) === LATEST_VERSION_URL) return registry();
+      return Response.json([{ error: false, data: { userid: 42, username: "ada", fullname: "Ada", sitename: "S", siteurl: MOODLE_ORIGIN, sesskey: "sess" } }]);
+    });
+    const broker = new SessionBroker(state(), env(), { upstream: validUpstream(), fetchImpl, now: () => 950_000 });
+    expect((await putSession(broker, candidate(OLD_COOKIE, null))).status).toBe(201);
+
+    const response = await broker.fetch(new Request("https://session-broker/mcp", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        request: { jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "get_user", arguments: {} } },
+        context: { protocolVersion: "2025-06-18", method: "tools/call", toolName: "get_user" },
+      }),
+    }));
+
+    expect(response.status).toBe(200);
+    expect(registry).not.toHaveBeenCalled();
+    const ready = await (await broker.fetch(new Request("https://session-broker/readyz"))).json() as Record<string, unknown>;
+    expect(ready.latest_version).toBeUndefined();
   });
 
   it("returns authenticated Moodle file bytes through the remote MCP path", async () => {

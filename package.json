@@ -1,7 +1,7 @@
 {
   "name": "moodle-cli",
-  "version": "0.9.2",
-  "description": "Terminal-first CLI for Moodle LMS",
+  "version": "0.9.3",
+  "description": "Moodle for terminals and AI agents: deadlines, grades, files, feedback and quiz reviews from your browser session, plus a private MCP server on Cloudflare",
   "license": "MIT",
   "type": "module",
   "bin": {

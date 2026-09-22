@@ -116,6 +116,15 @@ export function createIntentService(gateway: MoodleGateway, now = () => Date.now
         result = { item: { ...itemRow(activity), ...due }, threads: threads?.slice(0, 20).map(t => ({ id: t.id, name: t.subject })), total: threads?.length };
         break;
       }
+      case "attempt": {
+        if (!gateway.getQuizAttempt) throw new ReferenceError("not_found", "This gateway cannot read quiz attempts.", []);
+        const raw = String(input.attempt);
+        const id = raw.includes("://") ? Number(new URL(raw).searchParams.get("attempt")) : Number(raw);
+        if (!Number.isInteger(id) || id <= 0) throw new ReferenceError("not_found", "Use a quiz attempt id or a review URL with ?attempt=.", []);
+        const { course_id, questions, ...attempt } = await gateway.getQuizAttempt(id);
+        result = { attempt: { ...attempt, unit_id: course_id || undefined, questions } };
+        break;
+      }
       case "home": case "due": {
         const data = name === "due" && gateway.getDue
           ? { user: await user(), courses: await courses(), todo: await gateway.getDue(Number(input.days)), errors: [] }

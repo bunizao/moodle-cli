@@ -6,6 +6,7 @@ import { describe, expect, it, vi } from "vitest";
 import { runCli } from "../src/cli";
 import { MoodleAPIError, MoodleClient, type AjaxCall } from "../src/client";
 import { ENV_MOODLE_BASE_URL, ENV_MOODLE_SESSION } from "../src/constants";
+import { parseAssignmentHtml, parseQuizReviewHtml } from "../src/scraper";
 import { resolveCourseReference, parseActivityReference, resolveTopLevelUrl } from "../src/url-resolver";
 
 const BASE_URL = "https://school.example.edu";
@@ -250,6 +251,50 @@ describe("MoodleClient course/activity modules", () => {
     expect(overview.todo).toHaveLength(1);
     expect(overview.alerts).toMatchObject({ direct_message_count: 2 });
     expect(overview.errors).toEqual([]);
+  });
+
+  it("reads marker feedback, marking guide rows and feedback files from a graded assignment", () => {
+    const graded = parseAssignmentHtml(fixture("assign-graded.html"), 31, BASE_URL);
+    expect(graded).toMatchObject({
+      grade: "2.50 / 3.00",
+      graded_on: "Sunday, 12 May 2026, 12:08 PM",
+      graded_by: "Dana Marker",
+      feedback_comments: "Clear argument. Cite the lecture notes next time.",
+      criteria: [
+        { name: "Q1", level: "", score: "1 / 1", remark: "" },
+        { name: "Q2", level: "", score: "1.5 / 2", remark: "- [definition almost correct]: the second probability is a detection rate" },
+      ],
+    });
+    expect(graded.file_entries.map((file) => file.name)).toEqual(["essay-marked.pdf", "combined.pdf"]);
+    expect(graded.file_entries.every((file) => file.requires_authentication)).toBe(true);
+
+    const rubric = parseAssignmentHtml(fixture("assign-rubric.html"), 32, BASE_URL);
+    expect(rubric.criteria).toEqual([
+      { name: "Structure", level: "Clear sections with a summary", score: "4 points", remark: "Good flow." },
+      { name: "Analysis", level: "Partial", score: "3 points", remark: "" },
+    ]);
+  });
+
+  it("reads a short answer from the review's read-only input", () => {
+    const html = fixture("quiz-review.html").replace(
+      /<div id="question-1-3" class="que truefalse[\s\S]*?<div class="answer">[\s\S]*?<\/div>/u,
+      '<div id="question-1-3" class="que shortanswer deferredfeedback correct"><div class="info"><span class="qno">3</span><div class="state">Correct</div></div><div class="qtext">Capital of France?</div><div class="answer"><input type="text" name="q1:3_answer" value="Paris" readonly="readonly"></div>',
+    );
+    const review = parseQuizReviewHtml(html, 777, BASE_URL);
+    expect(review.questions[2]).toMatchObject({ type: "shortanswer", response: "Paris" });
+    // The gap layout puts the input inside the question text and has no .answer block at all.
+    const gap = html.replace('<div class="qtext">Capital of France?</div><div class="answer"><input type="text" name="q1:3_answer" value="Paris" readonly="readonly"></div>', '<div class="qtext">The capital of France is <input type="text" name="q1:3_answer" value="Paris" readonly="readonly">.</div>');
+    expect(parseQuizReviewHtml(gap, 777, BASE_URL).questions[2].response).toBe("Paris");
+  });
+
+  it("reads a quiz attempt review question by question", () => {
+    const review = parseQuizReviewHtml(fixture("quiz-review.html"), 777, BASE_URL);
+    expect(review).toMatchObject({ id: 777, quiz_id: 32, course_id: 101, status: "Finished", marks: "2.00/3.00", grade: "6.67 out of 10.00 (67%)" });
+    expect(review.questions).toEqual([
+      { number: 1, type: "essay", state: "Complete", mark: "", text: "Reflect on the exercise (350 words). Keep an academic tone.", response: "I argued against a full ban. Next time I will pause before answering.", correct: "", feedback: "" },
+      { number: 2, type: "multichoice", state: "Correct", mark: "1.00 out of 1.00", text: "Which assumptions are least compatible? (Select all that apply)", response: "a. Validity is independent of consequences.; c. Interpretation should not vary.", correct: "Validity is independent of consequences., Interpretation should not vary.", feedback: "Well spotted. Relational knowledge ties validity to use." },
+      { number: 3, type: "truefalse", state: "Incorrect", mark: "0.00 out of 1.00", text: "Echo chambers only form online.", response: "True", correct: "False", feedback: "No: value frameworks do this offline too." },
+    ]);
   });
 
   it("loads course contents through AJAX and exposes a flattened activity list", async () => {
@@ -693,8 +738,8 @@ describe("MoodleClient course/activity modules", () => {
     ]);
     const client = new MoodleClient(BASE_URL, "session");
 
-    await expect(client.getAssignment(31)).resolves.toMatchObject({ name: "Essay 1", due_pretty: "Friday, 10 May 2026, 5:00 PM" });
-    await expect(client.getQuiz(32)).resolves.toMatchObject({ name: "Quiz 1", attempts_allowed: "2" });
+    await expect(client.getAssignment(31)).resolves.toMatchObject({ name: "Essay 1", due_pretty: "Friday, 10 May 2026, 5:00 PM", criteria: [], file_entries: [] });
+    await expect(client.getQuiz(32)).resolves.toMatchObject({ name: "Quiz 1", attempts_allowed: "2", time_limit: "55 mins", attempts: [{ id: 777, number: 1, status: "Finished", marks: "8.00/10.00" }] });
     await expect(client.getResource(33)).resolves.toMatchObject({
       target_name: "slides.pdf",
       file_entries: [{

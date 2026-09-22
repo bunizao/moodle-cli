@@ -72,9 +72,19 @@ export function renderScreen(data: Record<string, unknown>, options: { width?: n
     const i = record(data.item); lines.push(`${text(i.name)} · ${text(i.type)} · #${i.id}`);
     // Epoch twins of the ISO fields are for machines reading --json, not for this screen.
     for (const [k, v] of Object.entries(i)) if (!["id", "name", "type", "files"].includes(k) && !k.endsWith("_at") && typeof v !== "object") lines.push(`${k.replaceAll("_", " ")}: ${moment(v, now)}`);
+    for (const a of array(i.attempts)) lines.push(`Attempt ${a.number} · #${a.id}  ${[a.status, a.marks, a.grade, a.completed].map(text).filter(Boolean).join("  ·  ")}`);
+    for (const c of array(i.criteria)) lines.push(`${text(c.name)}  ${[c.score, c.level, c.remark].map(text).filter(Boolean).join("  ·  ")}`);
     for (const f of array(i.files)) lines.push(`File  ${text(f.name)}  ${text(f.url)}`);
     if (data.threads) rows(array(data.threads), "Threads");
     next = [`moodle get ${i.id} --to DIR`];
+  } else if (data.attempt) {
+    const a = record(data.attempt); lines.push(`Attempt #${a.id} · ${[a.status, a.marks, a.grade].map(text).filter(Boolean).join(" · ")}`);
+    for (const q of array(a.questions)) {
+      lines.push("", `Q${q.number} · ${[q.type, q.state, q.mark].map(text).filter(Boolean).join(" · ")}`, text(q.text), `You: ${text(q.response)}`);
+      if (q.correct) lines.push(`Correct: ${text(q.correct)}`);
+      if (q.feedback) lines.push(`Feedback: ${text(q.feedback)}`);
+    }
+    next = [`moodle item ${a.quiz_id}`];
   } else if (data.thread) {
     const t = record(data.thread); lines.push(text(t.name));
     for (const p of array(t.posts)) lines.push("", `${text(record(p.author).name)} · ${moment(p.created, now)}`, text(p.message_text), ...array(p.links).map(l => `${text(l.text)} ${text(l.url)}`));

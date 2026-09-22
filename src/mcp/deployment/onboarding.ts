@@ -1,6 +1,7 @@
 import { createTheme, type Theme } from "@bunizao/cli-kit";
 
 import { LEGACY_PROTOCOL_VERSION, MODERN_PROTOCOL_VERSION } from "../protocol.js";
+import type { RenewalJobDescription } from "../renewal/installers.js";
 
 // Copy is rendered plain unless a caller hands over the CLI's theme.
 const PLAIN = createTheme(false);
@@ -118,6 +119,7 @@ export function successfulDeploymentCopy(input: {
   moodleSite: string;
   moodleUser: string;
   clients: string[];
+  renewal?: RenewalJobDescription;
 }, theme: Theme = PLAIN): string {
   const connectedClients = input.clients.length
     ? input.clients.map((client) => `  ${theme.tone("success", "✓")} ${client}`).join("\n")
@@ -140,13 +142,14 @@ export function successfulDeploymentCopy(input: {
     field("Session", theme.status("ready", { ready: "success" })),
     "",
     theme.subject("Renewal"),
-    `  ${theme.dim("Installed on this computer")}`,
-    `  ${theme.dim("Next check: within 30 minutes")}`,
+    // People did not ask for a scheduler, so the first thing to say is what they will
+    // notice: nothing, unless Moodle signs them out. The mechanics come last and dim.
+    "  A silent background check every 30 minutes; you never see it.",
+    `  If Moodle signs you out it re-uploads your browser cookie, or sends one notification to run ${theme.key("moodle mcp login")}.`,
+    ...(input.renewal ? [`  ${theme.dim(`${input.renewal.scheduler} ${input.renewal.label} · log ${input.renewal.log} · remove with moodle mcp remove`)}`] : []),
     "",
     theme.subject("Connected clients"),
     connectedClients,
-    "",
-    `Run ${theme.key("moodle mcp status")} at any time.`,
   ].join("\n");
 }
 

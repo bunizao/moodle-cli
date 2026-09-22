@@ -9,7 +9,7 @@ export function describeProgram(program: Command): ProgramDescription {
     version: program.version() ?? "",
     description: program.description(),
     commands: program.commands
-      .filter((command) => command.name() !== "help")
+      .filter((command) => command.name() !== "help" && command.name() !== "dev")
       .map((command) => describeCommand(command)),
   };
 }
@@ -56,7 +56,7 @@ function isMutating(command: Command): boolean {
   if (VERB_SET.has(command.name())) {
     return ["send", "submit", "set", "mark-read"].includes(command.name());
   }
-  return ["install", "uninstall", "login", "deploy", "connect", "pair", "revoke", "remove", "push"].includes(command.name());
+  return ["install", "uninstall", "login", "deploy", "connect", "pair", "revoke", "remove", "push", "update", "start", "answer", "finish"].includes(command.name());
 }
 
 export { intentContracts, intentDescription } from "./intent-contract.js";

@@ -231,7 +231,7 @@ describe("managed MCP CLI service", () => {
       expect(result.text).toContain(`  ${receipt.productionEndpoint}/mcp`);
       expect(result.text).toContain(`  Site: ${receipt.moodleOrigin}`);
       expect(result.text).toContain("  User: Alice Example");
-      expect(result.text).toContain("  Next check: within 30 minutes");
+      expect(result.text).toContain("silent background check every 30 minutes; you never see it");
       expect(result.text).toContain("Connected clients\n  No supported clients detected");
       expect(result.text).not.toMatch(/Bearer|MoodleSession|private-token/iu);
     } finally {
@@ -422,7 +422,9 @@ describe("managed MCP CLI service", () => {
     });
     expect(sessions.loadValidated).not.toHaveBeenCalled();
     expect(worker.putSession).not.toHaveBeenCalled();
-    expect(receipts.write).not.toHaveBeenCalled();
+    // The only write is the run record status shows; the revision is untouched.
+    expect(receipts.write).toHaveBeenCalledOnce();
+    expect(receipts.write).toHaveBeenCalledWith(expect.objectContaining({ sessionRevision: receipt.sessionRevision, lastRenewal: expect.objectContaining({ state: "offline" }) }));
   });
 
   it("touches the remote session before reading readiness so a freshly killed session is detected", async () => {
@@ -522,8 +524,8 @@ describe("managed MCP CLI service", () => {
     const result = await service.renew(receipt.profile);
 
     expect(worker.putSession).toHaveBeenCalledWith(expect.objectContaining({ expectedRevision: null }));
-    expect(receipts.write).toHaveBeenCalledOnce();
     expect(receipts.write).toHaveBeenCalledWith(expect.objectContaining({ sessionRevision: 1 }));
+    expect(receipts.write).toHaveBeenLastCalledWith(expect.objectContaining({ sessionRevision: 1, lastRenewal: expect.objectContaining({ state: "healthy", reasonCode: "SESSION_VALID" }) }));
     expect(result.data).toMatchObject({ state: "healthy", reasonCode: "SESSION_VALID", revision: 1 });
   });
 

@@ -2,6 +2,8 @@ import { createEncryptionKeyring, decryptValue, encryptValue, type EncryptionKey
 import { createMoodleClientCore } from "../moodle-client-core.js";
 import { createMoodleGateway } from "../mcp/gateway.js";
 import { createMoodleMcpServer } from "../mcp/server.js";
+import { fetchLatestVersion, isNewerVersion, updateHint, UPDATE_CHECK_TTL_MS, type LatestVersionRecord } from "../update-core.js";
+import { VERSION } from "../version.js";
 import type { McpRequestContext } from "../mcp/protocol.js";
 import { FetchMoodleSessionUpstream } from "./moodle-upstream.js";
 import { problemResponse } from "./problems.js";
@@ -12,6 +14,7 @@ const DEFAULT_TOUCH_DELAY_MS = 30 * 60 * 1000;
 const MIN_TOUCH_DELAY_MS = 60 * 1000;
 const MAX_BACKOFF_MS = 30 * 60 * 1000;
 const SESSION_STALE_MS = 24 * 60 * 60 * 1000;
+const LATEST_VERSION_KEY = "latest_version";
 const SESSION_EXPIRING_MS = 15 * 60 * 1000;
 
 export interface DurableObjectStorageLike {
@@ -147,7 +150,12 @@ export class SessionBroker {
       userid: session.moodle_user_id,
       fetchImpl: this.dependencies.fetchImpl,
     });
-    const server = createMoodleMcpServer(createMoodleGateway(client));
+    // Only initialize pays for the registry lookup, and only once a day; every
+    // session then starts with the notice until the Worker is redeployed.
+    const initializing = isRecord(envelope.request) && envelope.request.method === "initialize";
+    const latest = initializing ? await this.latestVersion(true) : undefined;
+    const instructions = latest && isNewerVersion(latest, VERSION) ? [`${updateHint(VERSION, latest)} to redeploy this server.`] : undefined;
+    const server = createMoodleMcpServer(createMoodleGateway(client), { instructions });
     const response = await server.handle(envelope.request, envelope.context);
     return Response.json({ response }, { headers: { "cache-control": "private, no-store" } });
   }
@@ -160,10 +168,23 @@ export class SessionBroker {
     }
   }
 
+  // The Worker can only report a newer release; deploying one needs the owner's
+  // Cloudflare credentials, which stay on their machine.
+  private async latestVersion(refresh: boolean): Promise<string | undefined> {
+    const cached = await this.state.storage.get<LatestVersionRecord>(LATEST_VERSION_KEY);
+    if (cached && this.now() - cached.checked_at < UPDATE_CHECK_TTL_MS) return cached.latest;
+    if (!refresh) return cached?.latest;
+    const latest = await fetchLatestVersion(this.dependencies.fetchImpl, 3000);
+    if (!latest) return cached?.latest;
+    await this.state.storage.put<LatestVersionRecord>(LATEST_VERSION_KEY, { latest, checked_at: this.now() });
+    return latest;
+  }
+
   private async ready(): Promise<Response> {
     const session = await this.loadSession();
     const health = readiness(session, this.now());
-    return Response.json({ ...health, encryptionKeyId: (await this.keyring()).current.id, ...(this.env.SESSION_CREDENTIAL_ID ? { credentialId: this.env.SESSION_CREDENTIAL_ID } : {}) }, {
+    const latest = await this.latestVersion(false);
+    return Response.json({ ...health, version: VERSION, ...(latest ? { latest_version: latest } : {}), encryptionKeyId: (await this.keyring()).current.id, ...(this.env.SESSION_CREDENTIAL_ID ? { credentialId: this.env.SESSION_CREDENTIAL_ID } : {}) }, {
       status: health.status === "fail" ? 503 : 200,
       headers: { "content-type": "application/health+json; charset=utf-8" },
     });

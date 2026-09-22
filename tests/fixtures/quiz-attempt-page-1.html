@@ -1,0 +1,54 @@
+<!doctype html>
+<html>
+  <head><title>Quiz 1 (page 2 of 3) | School</title></head>
+  <body>
+    <h1>Quiz 1</h1>
+    <section class="block block_fake">
+      <div class="qn_buttons clearfix multipages">
+        <a class="qnbutton answersaved free btn" id="quiznavbutton1" title="Question 1 - Answer saved" data-quiz-page="0" href="https://school.example.edu/mod/quiz/attempt.php?attempt=900&amp;cmid=32#"><span class="accesshide">Question </span>1</a>
+        <a class="qnbutton notyetanswered free btn thispage" id="quiznavbutton2" title="Question i - Not yet viewed" data-quiz-page="1" href="#question-4000-2"><span class="accesshide">Information </span>i</a>
+        <a class="qnbutton notyetanswered free btn thispage" id="quiznavbutton3" title="Question 2 - Not yet answered" data-quiz-page="1" href="#question-4000-3"><span class="accesshide">Question </span>2</a>
+        <a class="qnbutton notyetanswered free btn" id="quiznavbutton4" title="Question 3 - Not yet answered" data-quiz-page="2" href="https://school.example.edu/mod/quiz/attempt.php?attempt=900&amp;cmid=32&amp;page=2#"><span class="accesshide">Question </span>3</a>
+      </div>
+    </section>
+    <form action="https://school.example.edu/mod/quiz/processattempt.php?cmid=32" method="post" enctype="multipart/form-data" accept-charset="utf-8" id="responseform">
+      <div>
+        <div id="question-4000-2" class="que description informationitem notyetanswered">
+          <div class="info"><h3 class="no">Information</h3><div class="state">Not yet answered</div></div>
+          <div class="content"><div class="formulation clearfix">
+            <input type="hidden" name="q4000:2_:sequencecheck" value="1" />
+            <input type="hidden" name="q4000:2_-seen" value="1" />
+            <div class="qtext"><p>Show your working for the next question.</p></div>
+          </div></div>
+        </div>
+        <div id="question-4000-3" class="que essay manualgraded notyetanswered">
+          <div class="info">
+            <h3 class="no">Question <span class="qno">2</span></h3>
+            <div class="state">Not yet answered</div>
+            <div class="grade">Marked out of 5.00</div>
+            <input type="hidden" name="q4000:3_:flagged" value="0" />
+          </div>
+          <div class="content"><div class="formulation clearfix">
+            <input type="hidden" name="q4000:3_:sequencecheck" value="1" />
+            <div class="qtext"><p>Explain why 0.999... equals 1.</p></div>
+            <div class="answer">
+              <textarea id="q4000:3_answer_id" name="q4000:3_answer" rows="15" cols="60" class="form-control"></textarea>
+              <input type="hidden" name="q4000:3_answerformat" value="1" />
+            </div>
+          </div></div>
+        </div>
+        <div class="submitbtns">
+          <input type="submit" name="previous" value="Previous page" class="btn btn-secondary" />
+          <input type="submit" name="next" value="Next page" class="mod_quiz-next-nav btn btn-primary" id="mod_quiz-next-nav" />
+        </div>
+        <input type="hidden" name="attempt" value="900" />
+        <input type="hidden" name="thispage" value="1" id="followingpage" />
+        <input type="hidden" name="nextpage" value="2" />
+        <input type="hidden" name="timeup" value="0" id="timeup" />
+        <input type="hidden" name="sesskey" value="FIXTUREKEY" />
+        <input type="hidden" name="mdlscrollto" value="" id="mdlscrollto" />
+        <input type="hidden" name="slots" value="2,3" />
+      </div>
+    </form>
+  </body>
+</html>

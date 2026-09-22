@@ -141,6 +141,20 @@ the site's submission statement when one is required, and a file that is too lar
 the wrong type is refused before anything is uploaded. Assignments without drafts submit
 on save; the receipt reports what the site did.
 
+### Take a quiz (beta)
+
+`moodle quiz` starts an attempt, saves answers and submits it, replaying the forms a browser posts. It is beta: a Moodle update can break it, and it is deliberately CLI-only, never offered over MCP.
+
+```bash
+moodle quiz start UNIT "Practice quiz"        # or a quiz id or URL; resumes an attempt in progress
+moodle quiz show <attempt> <quiz> --page 2
+moodle quiz answer <attempt> <quiz> 1 b         # option letter, or "a,c" for several
+moodle quiz answer <attempt> <quiz> 3 --from essay.md
+moodle quiz finish <attempt> <quiz>             # "Submit all and finish"; Moodle does not allow undoing this
+```
+
+Every write shows the beta and academic-integrity notice and asks for a yes; a pipe must pass `--yes`, and `--dry-run` shows the plan. Answers you send are your own submission under your institution's rules: use it only where the quiz allows it, and check the attempt in a browser before you finish. A quiz with an access password asks for it at the terminal (not echoed, never stored); scripts pass `--password`. A quiz that requires the Safe Exam Browser cannot be taken here, because Moodle checks the browser itself. Question types without a plain choice or text input are shown but must be answered in a browser.
+
 ### Remote MCP for web AI
 
 A private remote MCP server lets a supported web AI client use Moodle when it cannot run the local CLI. You need a Cloudflare account.
@@ -159,11 +173,12 @@ The remote server is read-only. The local server (`moodle mcp serve`) also offer
 ### Update
 
 ```bash
-npm install -g moodle-cli@latest
-bun add --global moodle-cli@latest
+moodle update
 ```
 
-Standalone binaries print the latest GitHub Release URL instead of modifying themselves.
+`moodle update` upgrades the package with whichever installer put it there (npm, bun, or the standalone binary replacing itself), then runs `moodle mcp deploy` when a managed Worker exists and is behind the new release. `moodle update --check` only reports versions.
+
+The CLI checks npm once a day in the background and prints a one-line notice on stderr when a newer release exists. A deployed Worker performs the same daily check and tells connected MCP clients through the server instructions, because the Worker ships inside the package and only redeploys from your machine. Set `MOODLE_NO_UPDATE_CHECK=1` to disable the check; it is already off under `CI`.
 
 ## For developers and agents
 

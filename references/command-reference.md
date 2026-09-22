@@ -15,6 +15,7 @@ asks for confirmation (`--yes` skips it) and prints the receipt Moodle shows aft
 | moodle activities list | List activities in a unit; narrow by section. | <unit> | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required)<br>--section (value required)<br>--limit (value required)<br>--include-labels |
 | moodle activities show | Show activity details; resource and folder files can be passed to moodle get or download. | <id> | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required) |
 | moodle alerts | List notifications and message counts. |  | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required)<br>--limit (value required) |
+| moodle attempt | Each question with your response, and mark, correct answer and feedback when the site shows them. | <ref> | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required) |
 | moodle auth | Session and keepalive utilities. |  |  |
 | moodle auth keepalive | Renew the Moodle session once; used by the background keepalive agent. |  | --no-renew<br>--pretty<br>--json<br>--yaml<br>--table<br>--fields (value required) |
 | moodle auth keepalive install | Install a macOS launch agent that renews the session periodically. |  | --interval (value required)<br>--pretty<br>--json<br>--yaml<br>--table<br>--fields (value required) |
@@ -53,6 +54,11 @@ asks for confirmation (`--yes` skips it) and prints the receipt Moodle shows aft
 | moodle news | Latest announcement threads with first-post text. | [unit] | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required)<br>--limit (value required) |
 | moodle open | Open a unit or activity reference in the browser. | <ref> | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required) |
 | moodle overview | Show a compact multi-source overview. |  | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required)<br>--todo-limit (value required)<br>--todo-days (value required)<br>--alerts-limit (value required) |
+| moodle quiz | Take a quiz: start an attempt, answer questions, finish it. Beta. |  |  |
+| moodle quiz answer | Save one answer: option letters for a choice question (b, or a,c), the text otherwise. | <attempt> <quiz> <question> [answer] | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required)<br>--from (value required) |
+| moodle quiz finish | Submit the attempt for grading. Moodle does not allow undoing this. | <attempt> <quiz> | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required) |
+| moodle quiz show | Show one page of an attempt in progress: questions, options and saved answers. | <attempt> <quiz> | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required)<br>--page (value required) |
+| moodle quiz start | Start a new attempt, or continue the one in progress, and show its first page. | <ref> | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required)<br>--password (value required) |
 | moodle skills | Show skill metadata or delegate to the shared skills CLI. |  |  |
 | moodle skills add | Install the published skill through npx skills add. |  |  |
 | moodle skills generate | Regenerate the agent skill bundle from the CLI command tree. |  |  |
@@ -64,6 +70,7 @@ asks for confirmation (`--yes` skips it) and prints the receipt Moodle shows aft
 | moodle units | Inspect enrolled units. |  |  |
 | moodle units list | List enrolled units. |  | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required) |
 | moodle units show | Show unit detail with sections. | <unit> | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required) |
+| moodle update | Update the package and redeploy the managed MCP Worker when either is behind. |  | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required)<br>--check<br>--quiet |
 | moodle user | Show authenticated user info. |  | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required) |
 
 ### Output Contract

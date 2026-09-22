@@ -62,6 +62,8 @@ function compactSchema(value: unknown): unknown {
 export interface MoodleMcpServerOptions {
   name?: string;
   version?: string;
+  /** Extra lines appended to the initialize instructions, such as an update notice. */
+  instructions?: string[];
 }
 
 export interface MoodleMcpServer {
@@ -103,9 +105,12 @@ export function createMoodleMcpServer(
             protocolVersion,
             capabilities: { tools: { listChanged: false } },
             serverInfo,
-            instructions: gateway.submitAssignment
-              ? "Access to the authenticated user's Moodle data. Only submit writes; it defaults to a dry run."
-              : "Read-only access to the authenticated user's Moodle data.",
+            instructions: [
+              gateway.submitAssignment
+                ? "Access to the authenticated user's Moodle data. Only submit writes; it defaults to a dry run."
+                : "Read-only access to the authenticated user's Moodle data.",
+              ...(options.instructions ?? []),
+            ].join(" "),
           });
         }
         if (request.method === "ping") {
@@ -227,6 +232,10 @@ function toolContent(name: string, payload: unknown, structuredContent: unknown)
   // result here too, so IDs and details remain available for follow-up calls.
   const text = { type: "text", text: JSON.stringify(structuredContent) };
   if (name !== "get_file" || !isMoodleFile(payload)) return [text];
+  // Hosted clients render images but silently drop every other binary resource type.
+  if (payload.mimeType.startsWith("image/")) {
+    return [text, { type: "image", data: payload.blob, mimeType: payload.mimeType }];
+  }
   return [
     text,
     {

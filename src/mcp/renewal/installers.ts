@@ -72,6 +72,30 @@ export class RenewalInstaller {
   }
 }
 
+export interface RenewalJobDescription {
+  /** The scheduler that owns the job, in the words its platform uses. */
+  scheduler: string;
+  label: string;
+  schedule: string;
+  /** Where the job's output goes, or how to read it when the scheduler keeps it. */
+  log: string;
+}
+
+/** What `moodle mcp deploy` installed, for the people who never asked to run a scheduler. */
+export function describeRenewalJob(platform: RenewalPlatform, homeDirectory: string, profile: string, intervalMinutes = 30): RenewalJobDescription {
+  const schedule = `silent check every ${intervalMinutes} minutes`;
+  if (platform === "darwin") {
+    const label = `com.moodle-cli.mcp-renewal.${profile}`;
+    return { scheduler: "launchd agent", label, schedule, log: `${trimEnd(homeDirectory, "/")}/Library/Logs/${label}.log` };
+  }
+  if (platform === "linux") {
+    const label = `moodle-cli-mcp-renewal-${profile}`;
+    return { scheduler: "systemd user timer", label, schedule, log: `journalctl --user -u ${label}` };
+  }
+  const label = `Moodle CLI MCP Renewal (${profile})`;
+  return { scheduler: "Task Scheduler task", label, schedule, log: "Task Scheduler history" };
+}
+
 export function buildRenewalInstallPlan(options: RenewalInstallOptions): RenewalInstallPlan {
   validateOptions(options);
   const intervalMinutes = options.intervalMinutes ?? 30;

@@ -55,8 +55,8 @@ describe("Moodle MCP server", () => {
       },
     });
     const tools = (response as { result: { tools: Array<Record<string, unknown>> } }).result.tools;
-    expect(tools.map((tool) => tool.name)).toEqual(["home", "due", "units", "unit", "find", "item", "grades", "news", "thread", "search_forums", "file"]);
-    expect(tools).toHaveLength(11);
+    expect(tools.map((tool) => tool.name)).toEqual(["home", "due", "units", "unit", "find", "item", "attempt", "grades", "news", "thread", "search_forums", "file"]);
+    expect(tools).toHaveLength(12);
     expect(tools.every((tool) => (
       (tool.annotations as Record<string, unknown>).readOnlyHint === true
       && (tool.annotations as Record<string, unknown>).destructiveHint === false
@@ -76,6 +76,28 @@ describe("Moodle MCP server", () => {
     expect(item.properties.item.properties).toHaveProperty("files");
   });
 
+  it("sends an image as image content, which hosted clients do render", async () => {
+    const gateway = fakeGateway();
+    gateway.getFile = async () => ({
+      name: "diagram.png",
+      mimeType: "image/png",
+      bytes: 6,
+      uri: "https://moodle.example.edu/pluginfile.php/1/diagram.png",
+      blob: "c2xpZGVz",
+    });
+    const server = createMoodleMcpServer(gateway);
+
+    const response = await server.handle({
+      jsonrpc: "2.0",
+      id: "file",
+      method: "tools/call",
+      params: modernParams({ name: "get_file", arguments: { source: 91234 } }),
+    });
+
+    const content = (response as { result: { content: Array<Record<string, unknown>> } }).result.content;
+    expect(content[1]).toEqual({ type: "image", data: "c2xpZGVz", mimeType: "image/png" });
+  });
+
   it("lists and runs the submit tool only when the gateway can read local files", async () => {
     const readOnly = createMoodleMcpServer(fakeGateway());
     const missing = await readOnly.handle({ jsonrpc: "2.0", id: "no-submit", method: "tools/call", params: modernParams({ name: "submit", arguments: { ref: 555, files: ["essay.pdf"] } }) });
@@ -86,7 +108,7 @@ describe("Moodle MCP server", () => {
     const server = createMoodleMcpServer(gateway);
     const listed = await server.handle({ jsonrpc: "2.0", id: "tools", method: "tools/list", params: modernParams() });
     const tools = (listed as { result: { tools: Array<Record<string, unknown>> } }).result.tools;
-    expect(tools.map((tool) => tool.name)).toEqual(["home", "due", "units", "unit", "find", "item", "grades", "news", "thread", "search_forums", "submit", "file"]);
+    expect(tools.map((tool) => tool.name)).toEqual(["home", "due", "units", "unit", "find", "item", "attempt", "grades", "news", "thread", "search_forums", "submit", "file"]);
     expect(tools.find((tool) => tool.name === "submit")?.annotations).toEqual({ readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true });
     expect(tools.filter((tool) => tool.name !== "submit").every((tool) => (tool.annotations as Record<string, unknown>).readOnlyHint === true)).toBe(true);
 
@@ -521,6 +543,11 @@ function fakeGateway(): MoodleGateway {
       grading_status: "Not graded",
       time_remaining: "1 day",
       grade: "-",
+      graded_on: "",
+      graded_by: "",
+      feedback_comments: "",
+      criteria: [],
+      file_entries: [],
       url: "https://moodle.example.edu/mod/assign/view.php?id=501",
       type: "assign",
     }),

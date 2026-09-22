@@ -5,6 +5,7 @@ import type { SubmitLocalFilesRequest } from "../submit.js";
 import type {
   Activity,
   ActivityDetail,
+  QuizAttemptReview,
   Course,
   CourseGrades,
   ForumActivityRef,
@@ -86,6 +87,7 @@ export interface MoodleGateway {
   getCourse(input: CourseInput): Promise<CourseDetail>;
   listActivities(input: ActivityListInput): Promise<Activity[]>;
   getActivity(input: ActivityInput): Promise<ActivityDetail & { type: string }>;
+  getQuizAttempt?(attemptId: number): Promise<QuizAttemptReview>;
   getGrades(input: GradeInput): Promise<CourseGrades>;
   listForums(input: ForumListInput): Promise<ForumActivityRef[]>;
   searchForums(input: ForumSearchInput): Promise<ForumSearchHit[]>;
@@ -106,6 +108,7 @@ export interface MoodleClientPort {
   getCourseContents(courseId: number): Promise<Section[]>;
   getActivities(courseId: number): Promise<Activity[]>;
   getActivity(activityId: number): Promise<ActivityDetail & { type: string }>;
+  getQuizAttempt?(attemptId: number): Promise<QuizAttemptReview>;
   getCourseGrades(courseId: number): Promise<CourseGrades>;
   getForums(courseId?: number): Promise<ForumActivityRef[]>;
   searchForumContent(options: {
@@ -167,6 +170,7 @@ export function createMoodleGateway(client: MoodleClientPort, hooks: GatewayHook
       return limit === undefined ? activities : activities.slice(0, limit);
     },
     getActivity: ({ activityId }) => client.getActivity(activityId),
+    ...(client.getQuizAttempt ? { getQuizAttempt: (attemptId: number) => client.getQuizAttempt!(attemptId) } : {}),
     getGrades: ({ courseId }) => client.getCourseGrades(courseId),
     async listForums({ courseId, limit }) {
       const forums = await client.getForums(courseId);
@@ -211,7 +215,9 @@ export function createMoodleGateway(client: MoodleClientPort, hooks: GatewayHook
         name,
         mimeType: contentType(response),
         bytes: content.byteLength,
-        uri: publicFileUrl(response.url || target.url),
+        // The Moodle-origin URL, never the post-redirect CDN one: stripping query parameters from
+        // a signed CDN link leaves an address that can only ever answer MissingKey.
+        uri: publicFileUrl(target.url),
         blob: encodeBase64(content),
       };
     },
