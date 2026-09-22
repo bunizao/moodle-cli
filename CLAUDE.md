@@ -86,6 +86,12 @@ Credentials live in the OS keychain via `src/mcp/credentials/`. Session renewal 
 - Browser-cookie auth is the general path. Do not add site-specific or provider-specific login flows.
 - No new dependencies without a concrete reason.
 
+## Release Notes
+
+`.github/release-notes/<version>.md` is the GitHub release body. That renderer keeps single newlines as line breaks, so a hard-wrapped paragraph shows up as short ragged lines with a column of dead space on the right. Write one paragraph per line and let the browser wrap it; blank lines separate paragraphs.
+
+Lead with one sentence saying what the release is, then a `## Highlights` bullet list, then a section per change. Use bullets for lists of facts and prose for anything that needs a reason.
+
 ## Adding a New Command
 
 1. Register it in `src/cli.ts` with a `--json` option.
