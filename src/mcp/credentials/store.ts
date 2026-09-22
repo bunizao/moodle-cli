@@ -118,3 +118,19 @@ export function createDeploymentCredentials(createToken: () => string): Deployme
 function isUnavailable(error: unknown): error is CredentialBackendUnavailableError {
   return error instanceof CredentialBackendUnavailableError;
 }
+
+/**
+ * Read credentials for a read-only report. `SafeCredentialStore` refuses to fall back to an
+ * unprotected file when the OS keychain will not open, which is right for deploy and login but
+ * wrong for a status screen: there, an unopenable keychain is a fact to print, not a crash.
+ */
+export async function readCredentialsForReport(
+  read: () => Promise<DeploymentCredentials | null>,
+): Promise<{ value: DeploymentCredentials | null; available: boolean }> {
+  try {
+    return { value: await read(), available: true };
+  } catch (error) {
+    if (!isUnavailable(error)) throw error;
+    return { value: null, available: false };
+  }
+}

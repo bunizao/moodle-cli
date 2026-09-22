@@ -1,5 +1,6 @@
 import {
   createDeploymentCredentials,
+  readCredentialsForReport,
   rotateCredentials,
   type DeploymentCredentials,
 } from "../credentials/index.js";
@@ -221,6 +222,9 @@ export interface DeploymentStatus {
   profile: string;
   worker: RemoteWorker | null;
   credentialsStored: boolean;
+  // A keychain that will not open is a different problem from credentials that were never
+  // stored, and inspect() is the read-only path that has to say which one it is.
+  credentialsAvailable: boolean;
   renewalInstalled: boolean;
   clientsConnected: boolean;
   readiness: "pass" | "warn" | "fail" | "unknown";
@@ -560,6 +564,7 @@ export class ManagedMcpDeployment {
         profile,
         worker: null,
         credentialsStored: false,
+        credentialsAvailable: true,
         renewalInstalled: await this.dependencies.renewal.inspect(profile),
         clientsConnected: await this.dependencies.clients.inspect(profile),
         readiness: "unknown",
@@ -571,15 +576,16 @@ export class ManagedMcpDeployment {
 
     const [worker, credentials, renewalInstalled, clientsConnected] = await Promise.all([
       this.dependencies.wrangler.inspect(receipt.accountId, receipt.workerName),
-      this.dependencies.credentials.read(profile),
+      // Reporting is not worth failing over: an unopenable keychain is reported, not thrown.
+      readCredentialsForReport(() => this.dependencies.credentials.read(profile)),
       this.dependencies.renewal.inspect(profile),
       this.dependencies.clients.inspect(profile),
     ]);
     let readiness: DeploymentStatus["readiness"] = "unknown";
     let readinessReasonCode: string | null = null;
     let sessionRevision: number | null = null;
-    if (worker && credentials) {
-      const target = { endpoint: receipt.productionEndpoint, sessionSyncToken: credentials.sessionSyncToken };
+    if (worker && credentials.value) {
+      const target = { endpoint: receipt.productionEndpoint, sessionSyncToken: credentials.value.sessionSyncToken };
       await this.dependencies.worker.touchSession(target);
       const remoteReadiness = await this.dependencies.worker.getReadiness(target);
       readiness = remoteReadiness.status;
@@ -595,7 +601,8 @@ export class ManagedMcpDeployment {
     return {
       profile,
       worker: resolvedWorker,
-      credentialsStored: credentials !== null,
+      credentialsStored: credentials.value !== null,
+      credentialsAvailable: credentials.available,
       renewalInstalled,
       clientsConnected,
       readiness,

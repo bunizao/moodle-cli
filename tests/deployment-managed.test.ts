@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { AuthError } from "../src/errors.js";
+import { CredentialBackendUnavailableError } from "../src/mcp/credentials/index.js";
 import {
   DeploymentApplyError,
   DeploymentPlanError,
@@ -539,6 +540,15 @@ describe("ManagedMcpDeployment lifecycle", () => {
     expect(status).toMatchObject({ worker: null, credentialsStored: false, readinessReasonCode: "NOT_DEPLOYED" });
     expect(deps.credentials.read).not.toHaveBeenCalled();
     expect(deps.wrangler.inspect).not.toHaveBeenCalled();
+  });
+
+  it("reports a deployed profile whose keychain will not open instead of throwing", async () => {
+    const deps = dependencies();
+    vi.mocked(deps.credentials.read).mockRejectedValue(new CredentialBackendUnavailableError("Linux Secret Service"));
+    const status = await new ManagedMcpDeployment(deps).inspect(INTENT.profile);
+    expect(status).toMatchObject({ credentialsStored: false, credentialsAvailable: false, readiness: "unknown" });
+    // Without the sync token there is nothing to ask the Worker with, so it is never touched.
+    expect(deps.worker.getReadiness).not.toHaveBeenCalled();
   });
 
   it("inspects remote and local readiness through the session sync credential", async () => {
