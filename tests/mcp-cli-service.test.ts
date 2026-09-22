@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 
 import { AuthError } from "../src/errors.js";
+import { CredentialBackendUnavailableError } from "../src/mcp/credentials/index.js";
 import type {
   DeploymentIntent,
   ManagedMcpDeployment,
@@ -113,6 +114,37 @@ describe("managed MCP CLI service", () => {
       const result = await service.status({ verbose: false, logs: false });
       expect((result.data as { updateAvailable: boolean }).updateAvailable).toBe(false);
       expect(result.text).not.toContain("remote Worker is behind this CLI");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("reports an unopenable keychain instead of failing status", async () => {
+    const root = await mkdtemp(join(tmpdir(), "moodle-cli-service-"));
+    const bundle = join(root, "worker.js");
+    await writeFile(bundle, "export default {};\n");
+    const receipt = deploymentReceipt();
+    const credentials = {
+      read: vi.fn(async () => { throw new CredentialBackendUnavailableError("Linux Secret Service"); }),
+      write: vi.fn(async () => undefined),
+      delete: vi.fn(async () => undefined),
+    };
+    const service = createMcpCommandService({
+      homeDir: root,
+      workerBundlePath: bundle,
+      configLoader: async () => ({ baseUrl: "https://lms.example.edu" }),
+      receipts: receiptStore(receipt),
+      credentials,
+      worker: workerClient(),
+      createDeployment: () => managedInspect(receipt),
+    });
+
+    try {
+      // A headless box has no Secret Service at all; status is the command you run to find out.
+      const result = await service.status({ verbose: false, logs: false });
+      expect((result.data as { credentials: { state: string } }).credentials.state).toBe("unavailable");
+      expect((result.data as { hostedClients: number | null }).hostedClients).toBeNull();
+      expect(result.text).toContain("unavailable");
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -611,6 +643,7 @@ function managedInspect(receipt: ReturnType<typeof deploymentReceipt>): ManagedM
         releaseDigest: receipt.releaseDigest,
       },
       credentialsStored: true,
+      credentialsAvailable: true,
       renewalInstalled: true,
       clientsConnected: true,
       readiness: "pass" as const,

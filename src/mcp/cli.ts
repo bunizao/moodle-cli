@@ -18,7 +18,7 @@ import { VERSION } from "../version.js";
 import { bridgeRemoteMcp } from "./bridge.js";
 import { connectClient, type SupportedMcpClient } from "./connectors/connectors.js";
 import { createDefaultClientConnectors } from "./connectors/node-connectors.js";
-import { createDefaultCredentialStore } from "./credentials/index.js";
+import { createDefaultCredentialStore, readCredentialsForReport } from "./credentials/index.js";
 import {
   DeploymentApplyError,
   DeploymentPlanError,
@@ -320,12 +320,20 @@ class DefaultMcpCommandService implements McpCommandService {
       localAuthentication = { status: "unknown" };
     }
     const updateAvailable = await this.remoteWorkerBehindLocal(profile);
-    const [receipt, credentials] = await Promise.all([this.receipts.read(profile), this.credentials.read(profile)]);
+    // status is the command you run when something is wrong, so it reports an unopenable
+    // keychain rather than exiting on it. Headless boxes have no Secret Service at all.
+    const [receipt, credentials] = await Promise.all([
+      this.receipts.read(profile),
+      readCredentialsForReport(() => this.credentials.read(profile)),
+    ]);
     const job = this.renewalJob(profile);
     // Hosted clients live in the Worker; a Worker that cannot answer simply leaves the count unknown.
-    const hosted = receipt && credentials
-      ? await this.worker.manageClients({ endpoint: receipt.productionEndpoint, sessionSyncToken: credentials.sessionSyncToken }).then((data) => isClientList(data) ? data.clients.filter((client) => client.approved).length : null).catch(() => null)
+    const hosted = receipt && credentials.value
+      ? await this.worker.manageClients({ endpoint: receipt.productionEndpoint, sessionSyncToken: credentials.value.sessionSyncToken }).then((data) => isClientList(data) ? data.clients.filter((client) => client.approved).length : null).catch(() => null)
       : null;
+    const credentialsState = !credentials.available || !managed.credentialsAvailable
+      ? "unavailable"
+      : managed.credentialsStored ? "stored" : "missing";
     const renewal = {
       installed: managed.renewalInstalled,
       ...(job ? { scheduler: job.scheduler, label: job.label, schedule: job.schedule, log: job.log } : {}),
@@ -335,6 +343,7 @@ class DefaultMcpCommandService implements McpCommandService {
       profile,
       localAuthentication,
       managed,
+      credentials: { state: credentialsState },
       renewal,
       hostedClients: hosted,
       protocols: [...SUPPORTED_PROTOCOL_VERSIONS],
@@ -345,13 +354,13 @@ class DefaultMcpCommandService implements McpCommandService {
     const theme = this.theme();
     // "missing", "not deployed" and the recovery warning are the words a person scans for,
     // so they carry the tone; the labels stay quiet.
-    const row = (label: string, value: string) => `${theme.dim(`${label}:`)} ${theme.status(value, { pass: "success", warn: "warning", fail: "danger", unknown: "muted", "not deployed": "warning", missing: "warning", "not connected": "warning", stored: "success", installed: "success", connected: "success" })}`;
+    const row = (label: string, value: string) => `${theme.dim(`${label}:`)} ${theme.status(value, { pass: "success", warn: "warning", fail: "danger", unknown: "muted", "not deployed": "warning", missing: "warning", "not connected": "warning", unavailable: "warning", stored: "success", installed: "success", connected: "success" })}`;
     return {
       data,
       text: [
         row("Moodle MCP", managed.readiness),
         row("Worker", managed.worker?.workerName ?? "not deployed"),
-        row("Credentials", managed.credentialsStored ? "stored" : "missing"),
+        row("Credentials", credentialsState),
         row("Renewal", managed.renewalInstalled ? "installed" : "missing"),
         ...(managed.renewalInstalled && job ? [`  ${theme.dim(`${job.schedule}; you only hear from it when Moodle signs you out`)}`] : []),
         `  ${theme.dim("Last run:")} ${renewalRunText(renewal.lastRun, theme)}`,
@@ -817,11 +826,14 @@ class DefaultMcpCommandService implements McpCommandService {
   async workerState(): Promise<{ behind: boolean; ready: boolean } | null> {
     try {
       const profile = deriveMcpProfile((await this.config()).baseUrl);
-      const [receipt, credentials] = await Promise.all([this.receipts.read(profile), this.credentials.read(profile)]);
-      if (!receipt || !credentials) return null;
+      const [receipt, credentials] = await Promise.all([
+        this.receipts.read(profile),
+        readCredentialsForReport(() => this.credentials.read(profile)),
+      ]);
+      if (!receipt || !credentials.value) return null;
       const behind = await this.remoteWorkerBehindLocal(profile);
       // A receipt only proves a deploy once happened; the Worker itself says whether it still answers.
-      const readiness = await this.worker.getReadiness({ endpoint: receipt.productionEndpoint, sessionSyncToken: credentials.sessionSyncToken }).catch(() => null);
+      const readiness = await this.worker.getReadiness({ endpoint: receipt.productionEndpoint, sessionSyncToken: credentials.value.sessionSyncToken }).catch(() => null);
       return { behind, ready: readiness?.status === "pass" };
     } catch {
       return null;
