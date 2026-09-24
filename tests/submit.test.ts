@@ -94,6 +94,21 @@ describe("assignment submission flow", () => {
     expect([...site.calls, ...typed.calls].filter(call => call.url.includes("upload"))).toHaveLength(0);
   });
 
+  it("treats an empty accepted-types list as any type, as Moodle does when none are configured", async () => {
+    // Moodle 4.5 renders `"accepted_types":[]` for an assignment with no file type restriction.
+    const site = fakeSite({ accepted: [] });
+    const receipt = await submitAssignmentFiles(site.deps, request({}));
+    expect(receipt.limits.accepted_types).toBeUndefined();
+    const upload = site.calls.find(call => call.url.includes("action=upload"));
+    expect((upload?.body as FormData).getAll("accepted_types[]")).toEqual(["*"]);
+  });
+
+  it("reads accepted types that PHP serialised as an object", () => {
+    // A PHP array with gaps in its keys becomes a JSON object, not a list.
+    const html = editPage({ accepted: { "0": ".pdf", "2": ".docx" } });
+    expect(parseSubmissionForm(html, { baseUrl: BASE, fail: message => new MoodleAPIError(message) }).acceptedTypes).toEqual([".pdf", ".docx"]);
+  });
+
   it("surfaces Moodle's own refusals", async () => {
     const closed = fakeSite({ closed: true });
     await expect(submitAssignmentFiles(closed.deps, request({}))).rejects.toMatchObject({ code: "upstream", message: "Moodle is not accepting a submission: Submissions closed" });
@@ -141,7 +156,7 @@ interface SiteOptions {
   status?: "none" | "draft" | "submitted";
   maxfiles?: number;
   maxbytes?: number;
-  accepted?: string[];
+  accepted?: unknown;
   closed?: boolean;
   confirmStatement?: boolean;
   uploadError?: string;
@@ -219,7 +234,7 @@ ${files.length ? `<tr><th>File submissions</th><td>${rows}</td></tr>` : ""}
 </body></html>`;
 }
 
-function editPage(options: { statement?: boolean; maxfiles?: number; maxbytes?: number; accepted?: string[]; notice?: string } = {}): string {
+function editPage(options: { statement?: boolean; maxfiles?: number; maxbytes?: number; accepted?: unknown; notice?: string } = {}): string {
   const statement = options.statement
     ? `<div class="form-check"><input type="checkbox" name="submissionstatement" id="id_submissionstatement" value="1" class="form-check-input"><label class="form-check-label" for="id_submissionstatement">${STATEMENT}</label></div>`
     : "";

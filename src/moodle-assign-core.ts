@@ -221,8 +221,6 @@ export function parseSubmissionForm(html: string, deps: Pick<AssignSubmitDeps, "
   const repositories = (Array.isArray(picker.repositories) ? picker.repositories : Object.values(record(picker.repositories))).map(record);
   const upload = repositories.find(repo => repo.type === "upload");
   if (!upload || upload.id === undefined) throw deps.fail("The site does not allow direct file uploads for this assignment.");
-  const accepted = options.accepted_types;
-  const acceptedTypes = Array.isArray(accepted) ? accepted.map(String).filter(Boolean) : accepted === undefined || accepted === "*" ? "*" : [String(accepted)];
   return {
     action: resolveUrl(deps.baseUrl, form.getAttribute("action") || `${deps.baseUrl}${ASSIGN_VIEW_PATH}`),
     fields,
@@ -236,7 +234,7 @@ export function parseSubmissionForm(html: string, deps: Pick<AssignSubmitDeps, "
     maxBytes: integer(options.maxbytes),
     areaMaxBytes: integer(options.areamaxbytes),
     maxFiles: integer(options.maxfiles),
-    acceptedTypes: acceptedTypes.length === 1 && acceptedTypes[0] === "*" ? "*" : acceptedTypes,
+    acceptedTypes: acceptedTypesOf(options.accepted_types),
     ...statementOf(form),
   };
 }
@@ -339,6 +337,14 @@ function filemanagerOptions(html: string, itemid: string): Record<string, unknow
     } catch { /* Not JSON; keep scanning for the next initialiser. */ }
   }
   return null;
+}
+
+// An assignment with no file type restriction renders `"accepted_types":[]`, so an empty
+// list means any type, not none. A PHP array with gaps in its keys arrives as an object.
+function acceptedTypesOf(value: unknown): string[] | "*" {
+  const list = Array.isArray(value) ? value : isRecord(value) ? Object.values(value) : value === undefined ? [] : [value];
+  const types = list.map(type => String(type).trim()).filter(Boolean);
+  return types.length === 0 || types.includes("*") ? "*" : types;
 }
 
 function balancedObject(text: string, start: number): string | null {
