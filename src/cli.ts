@@ -69,7 +69,7 @@ import {
   formatUser,
 } from "./formatters.js";
 import { downloadMoodleFile } from "./download.js";
-import type { SubmissionReceipt } from "./moodle-assign-core.js";
+import { submissionReceiptOf, type SubmissionReceipt } from "./moodle-assign-core.js";
 import type { AttemptPage } from "./moodle-quiz-core.js";
 import { resolveSubmissionPath } from "./submit.js";
 import { formatSkillSummary, installSkill, writeGeneratedSkill } from "./skills.js";
@@ -436,7 +436,7 @@ export function buildProgram(io: CliIO = {}): Command {
       const args = { files: files.map(file => resolveSubmissionPath(file, io.cwd ?? process.cwd())), final: Boolean(options.final), replace: Boolean(options.replace), accept_statement: Boolean(options.acceptStatement) };
       // The plan reads the files and every Moodle page the upload needs, so most refusals happen before any prompt.
       const plan = await choose(() => service.run("submit", { ref, ...args, dry_run: true }), id => service.run("submit", { ref: id, ...args, dry_run: true }));
-      const planned = plan.submission as SubmissionReceipt;
+      const planned = submissionReceiptOf(plan.submission);
       if (program.opts().dryRun) return runtime.output(plan, () => formatSubmissionReceipt(planned), options);
       if (!await confirm({ summary: submissionSummary(planned, args.final, theme()) }, { yes: Boolean(program.opts().yes), dryRun: false, interactive })) return;
       // The upload is the one long step a person watches, so it gets a spinner that names each file.
@@ -447,7 +447,7 @@ export function buildProgram(io: CliIO = {}): Command {
       try {
         const live = createIntentService(createMoodleGateway(client, { onSubmitProgress: message => spin?.message(message) }));
         result = await live.run("submit", { ref: planned.id, ...args, dry_run: false });
-        const receipt = result.submission as SubmissionReceipt;
+        const receipt = submissionReceiptOf(result.submission);
         spin?.stop(receipt.uploads.length ? `Uploaded ${receipt.uploads.map(file => file.name).join(", ")} to ${receipt.name}` : `Submitted ${receipt.name}`);
       } catch (error) {
         spin?.error("The upload did not complete");
@@ -455,7 +455,7 @@ export function buildProgram(io: CliIO = {}): Command {
       } finally {
         runtime.busy = false;
       }
-      await runtime.output(result, () => formatSubmissionReceipt(result.submission as SubmissionReceipt), options);
+      await runtime.output(result, () => formatSubmissionReceipt(submissionReceiptOf(result.submission)), options);
     });
   const quiz = program.command("quiz").description("Take a quiz: start an attempt, answer questions, finish it. Beta.").summary("Take a quiz (beta)");
   quiz.addHelpText("after", `\n${QUIZ_NOTICE.join("\n")}\n`);

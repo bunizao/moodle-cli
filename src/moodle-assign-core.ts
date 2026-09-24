@@ -198,6 +198,16 @@ export async function submitAssignmentFiles(deps: AssignSubmitDeps, request: Sub
   };
 }
 
+/**
+ * A receipt that went through the intent layer has lost its empty lists and objects to
+ * stripEmpty. Callers that render it need them back; a first submission has no files
+ * and removes nothing, so this is the ordinary case, not an edge.
+ */
+export function submissionReceiptOf(value: unknown): SubmissionReceipt {
+  const receipt = record(value) as Partial<SubmissionReceipt>;
+  return { ...receipt, files: receipt.files ?? [], uploads: receipt.uploads ?? [], removed: receipt.removed ?? [], limits: receipt.limits ?? {} } as SubmissionReceipt;
+}
+
 // --- Page parsing -----------------------------------------------------------
 
 export function parseSubmissionForm(html: string, deps: Pick<AssignSubmitDeps, "baseUrl" | "fail">): SubmissionForm {

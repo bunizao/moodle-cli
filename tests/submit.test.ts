@@ -6,7 +6,8 @@ import { describe, expect, it } from "vitest";
 
 import { MoodleAPIError, UsageError } from "../src/errors.js";
 import { intentContracts } from "../src/intent-contract.js";
-import { parseSubmissionForm, submitAssignmentFiles, type AssignSubmitDeps, type SubmitAssignmentRequest } from "../src/moodle-assign-core.js";
+import { formatSubmissionReceipt } from "../src/formatters.js";
+import { parseSubmissionForm, submissionReceiptOf, submitAssignmentFiles, type AssignSubmitDeps, type SubmitAssignmentRequest } from "../src/moodle-assign-core.js";
 import { stripEmpty } from "../src/results.js";
 import { readSubmissionFiles } from "../src/submit.js";
 
@@ -107,6 +108,17 @@ describe("assignment submission flow", () => {
     // A PHP array with gaps in its keys becomes a JSON object, not a list.
     const html = editPage({ accepted: { "0": ".pdf", "2": ".docx" } });
     expect(parseSubmissionForm(html, { baseUrl: BASE, fail: message => new MoodleAPIError(message) }).acceptedTypes).toEqual([".pdf", ".docx"]);
+  });
+
+  it("restores the lists the intent layer strips from a first-time plan", async () => {
+    // A first submission has no files and removes nothing, so stripEmpty drops both lists.
+    const site = fakeSite({ accepted: [] });
+    const stripped = stripEmpty({ submission: await submitAssignmentFiles(site.deps, request({ dryRun: true })) }) as { submission: unknown };
+    expect(stripped.submission).not.toHaveProperty("removed");
+    const receipt = submissionReceiptOf(stripped.submission);
+    expect(receipt).toMatchObject({ files: [], removed: [], uploads: [{ name: "essay.pdf" }], limits: { max_files: 2 } });
+    expect(formatSubmissionReceipt(receipt)).toContain("Submission plan");
+    expect(submissionReceiptOf({ id: 555, name: "Essay 1", action: "saved" })).toMatchObject({ files: [], uploads: [], removed: [], limits: {} });
   });
 
   it("surfaces Moodle's own refusals", async () => {
