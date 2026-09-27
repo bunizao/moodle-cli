@@ -81,7 +81,9 @@ export function createIntentService(gateway: MoodleGateway, now = () => Date.now
     const parsed = splitUnitPhrase(raw, await courses());
     // Items are activities; a miss must not trigger the discussion-subject crawl.
     const matches = (await find(parsed?.query || raw, parsed?.course.id, undefined, false)).filter(r => r.type !== "section");
-    if (matches.length === 1) return matches[0].id;
+    // An item named exactly what was typed wins over ones that merely contain the words.
+    const exact = matches.filter(m => m.score === 100);
+    if (matches.length === 1 || exact.length === 1) return (exact[0] ?? matches[0]).id;
     throw new ReferenceError(matches.length ? "ambiguous" : "not_found", `${matches.length ? "Several items match" : "No item matches"} '${raw}'.`, matches.map(({ id, name, type, unit_code }) => ({ id, name, type, code: unit_code })));
   }
 
@@ -91,7 +93,7 @@ export function createIntentService(gateway: MoodleGateway, now = () => Date.now
     const limit = Number(input.limit ?? 20);
     let result: unknown;
     switch (name) {
-      case "units": { const rows = await courses(); result = { units: rows.slice(0, limit).map(c => unitRow(c)), total: rows.length }; break; }
+      case "units": { const rows = await courses(); const tz = await timezone(); result = { units: rows.slice(0, limit).map(c => unitRow(c, tz)), total: rows.length }; break; }
       case "unit": {
         const c = await course(ref!);
         const { sections } = await courseDetail(c.id);

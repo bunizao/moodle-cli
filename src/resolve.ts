@@ -11,6 +11,8 @@ export class ReferenceError extends Error {
 }
 
 export const normalize = (value: string): string => value.normalize("NFKC").toLocaleLowerCase().trim().replace(/\s+/gu, " ");
+// The words alone, so "Week 9 - Mini Test" is exactly what someone typing "week 9 mini test" meant.
+const words = (value: string): string => normalize(value).replace(/[^\p{L}\p{N}]+/gu, " ").trim();
 export const tokensMatch = (text: string, query: string): boolean => normalize(query).split(" ").every(token => tokenMatches(normalize(text), token));
 
 function tokenMatches(text: string, token: string): boolean {
@@ -85,11 +87,11 @@ export function searchSections(course: Course, sections: readonly Section[], que
     const context = { unit_id: course.id, unit_code: course.shortname || course.fullname, section_id: s.id, section: label };
     // A section matches on its own name; its items also match on the parent in the label,
     // so "week 5 slides" finds slides in a nested "Week 5 › Own-time".
-    if (tokensMatch(s.name, query)) rows.push({ ...context, id: s.id, name: s.name, type: "section", score: normalize(s.name) === normalize(query) ? 100 : 70 });
+    if (tokensMatch(s.name, query)) rows.push({ ...context, id: s.id, name: s.name, type: "section", score: words(s.name) === words(query) ? 100 : 70 });
     for (const a of s.activities) {
       if (!tokensMatch(`${a.name} ${label}`, query)) continue;
       const chrome = ["label", "cms"].includes(a.modname);
-      const score = chrome ? 1 : normalize(a.name) === normalize(query) ? 100 : tokensMatch(a.name, query) ? 80 : 60;
+      const score = chrome ? 1 : words(a.name) === words(query) ? 100 : tokensMatch(a.name, query) ? 80 : 60;
       rows.push({ ...context, id: a.id, name: a.name, type: a.modname, score, activity: a });
     }
   }

@@ -41,6 +41,13 @@ describe("shared intent contract", () => {
     expect(await call("item", { ref: "algo-2 week 7 mini test" })).toMatchObject({ structuredContent: { item: { id: 201 } } });
     expect(await call("unit", { unit: "Ethics", section: 7 })).toMatchObject({ structuredContent: { unit: { id: 4 }, sections: [{ name: "Week 7" }] } });
   });
+  it("prefers the item named exactly what was typed, ignoring punctuation", async () => {
+    const [week7] = sections();
+    const activity = (id: number, name: string, modname: string) => ({ id, name, modname, description: "", url: "", visible: true });
+    const week9 = { ...week7, id: 90, name: "Week 9", activities: [activity(901, "Week 9 - Mini Test", "assign"), activity(902, "Week 9 MiniTest: Sample Questions", "resource")] };
+    const gateway = { ...fixtureGateway(), getCourse: async ({ courseId }: { courseId: number }) => ({ course: units.find(c => c.id === courseId)!, sections: [week9] }) };
+    expect(await call("item", { ref: "algo-2 week 9 mini test" }, gateway)).toMatchObject({ structuredContent: { item: { id: 901 } } });
+  });
   it("returns a week with the child sections a nested format renders inside it", async () => {
     const child = (id: number, name: string, current = false): Section => ({ id, section: id, name, visible: true, summary: "", current, activities: [
       { id: id * 10, name: `${name} slides`, modname: "resource", description: "", url: "", visible: true },
