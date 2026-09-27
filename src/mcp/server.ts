@@ -5,7 +5,7 @@ import { activityRow, stripEmpty } from "../results.js";
 import { z, ZodError } from "zod";
 
 import { VERSION } from "../version.js";
-import type { MoodleFile, MoodleGateway } from "./gateway.js";
+import { MoodleGatewayError, type MoodleFile, type MoodleGateway } from "./gateway.js";
 import {
   jsonRpcFailure,
   jsonRpcSuccess,
@@ -253,8 +253,10 @@ function mapMoodleError(error: unknown, verbatim = false): { type: string; messa
   const record = isRecord(error) ? error : {};
   const code = typeof record.code === "string" ? record.code : "";
   // A refused write must say why (statement text, size limit, closed submissions); read tools keep the fixed phrasing.
-  const own = verbatim && typeof record.message === "string" && record.message.trim() && code !== "auth" ? record.message : undefined;
-  const ownHint = verbatim && typeof record.hint === "string" && record.hint.trim() ? record.hint : undefined;
+  // Gateway errors are this package's own wording, so read tools may show them too.
+  const trusted = verbatim || error instanceof MoodleGatewayError;
+  const own = trusted && typeof record.message === "string" && record.message.trim() && code !== "auth" ? record.message : undefined;
+  const ownHint = trusted && typeof record.hint === "string" && record.hint.trim() ? record.hint : undefined;
   const typeByCode: Record<string, string> = {
     auth: "MOODLE_AUTH_REQUIRED",
     not_found: "MOODLE_NOT_FOUND",

@@ -410,6 +410,41 @@ describe("MoodleClient course/activity modules", () => {
     expect(methods).toEqual(["core_course_get_course_module", "core_course_get_contents"]);
   });
 
+  it("describes the activity a shortcut plugin redirects to, and never fetches standard module pages", async () => {
+    const modules: Record<number, string> = { 24: "shadow", 31: "lti" };
+    installFetch([
+      dashboardRoute,
+      (request) => {
+        const url = new URL(request.url);
+        if (request.init?.method !== "POST" || !url.searchParams.get("info")?.includes("core_course_get_course_module")) return undefined;
+        const [call] = JSON.parse(String(request.init.body)) as AjaxCall[];
+        const cmid = Number(call.args?.cmid);
+        return jsonResponse([{ index: 0, error: false, data: { cm: { id: cmid, course: 101, modname: modules[cmid] } } }]);
+      },
+      (request) => request.url === `${BASE_URL}/mod/shadow/view.php?id=24`
+        ? new Response(null, { status: 303, headers: { location: `${BASE_URL}/mod/lti/view.php?id=31` } })
+        : undefined,
+      // Real fetch reports the URL it answered for; a constructed Response does not.
+      (request) => request.url === `${BASE_URL}/mod/lti/view.php?id=31`
+        ? Object.defineProperty(htmlResponse("<html></html>"), "url", { value: request.url })
+        : undefined,
+      ajaxRoute("core_course_get_contents", [{
+        id: 11,
+        name: "Week 1",
+        section: 1,
+        visible: true,
+        summary: "",
+        modules: [
+          { id: 24, name: "Essay", modname: "shadow", url: `${BASE_URL}/mod/shadow/view.php?id=24`, visible: true },
+          { id: 31, name: "Essay", modname: "lti", url: `${BASE_URL}/mod/lti/view.php?id=31`, visible: true },
+        ],
+      }]),
+    ]);
+    const client = new MoodleClient(BASE_URL, "session");
+
+    await expect(client.getActivity(24)).resolves.toMatchObject({ id: 31, name: "Essay", type: "lti" });
+  });
+
   it("returns not found when one unrelated course cannot be searched", async () => {
     installFetch([
       dashboardRoute,

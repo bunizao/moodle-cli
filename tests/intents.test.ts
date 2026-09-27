@@ -4,6 +4,7 @@ import { createIntentService } from "../src/intents.js";
 import { intentContracts, intentDescription, type Intent } from "../src/intent-contract.js";
 import { createMoodleMcpServer, TOOL_CATALOG, TOOL_OUTPUT_SCHEMAS } from "../src/mcp/server.js";
 import { fixtureGateway, intentCalls, sections, units } from "./fixtures/intent-site.js";
+import { MoodleGatewayError } from "../src/mcp/gateway.js";
 import type { Section } from "../src/models.js";
 import { renderScreen } from "../src/screens.js";
 
@@ -57,6 +58,13 @@ describe("shared intent contract", () => {
     expect((await call("unit", { unit: "algo-2" }, gateway)).structuredContent).toMatchObject({
       sections: [{ id: week7.id, name: "Week 7", activity_count: 1 }, { id: week17.id, name: "Week 17", activity_count: 1 }],
       total: 2,
+    });
+  });
+  it("shows the gateway's own file error and hint instead of a generic outage", async () => {
+    const gateway = { ...fixtureGateway(), getFile: async () => { throw new MoodleGatewayError("MOODLE_FILE_SOURCE_AMBIGUOUS", "Activity 201 has 3 files.", "Call item 201 for their URLs, then file with one URL."); } };
+    expect(await call("file", { ref: 201 }, gateway)).toMatchObject({
+      isError: true,
+      structuredContent: { error: { type: "MOODLE_FILE_SOURCE_AMBIGUOUS", message: "Activity 201 has 3 files.", hint: "Call item 201 for their URLs, then file with one URL." } },
     });
   });
   it("filters before counting and paginates posts without repeating the subject", async () => {
