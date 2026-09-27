@@ -886,6 +886,11 @@ export function buildProgram(io: CliIO = {}): Command {
     .option("--all", "Revoke every client, token, pending authorization, and pairing window.")
     .action(async (clientId: string | undefined, options: OutputCommandOptions & { all?: boolean }) => {
       if (Boolean(clientId) === Boolean(options.all)) throw new UsageError("Provide a client ID or --all.");
+      const summary = clientId
+        ? `Revoke OAuth client ${clientId}. It loses access at once and has to pair again to reconnect.`
+        : "Revoke all OAuth access: every client, token, pending authorization, and pairing window. Claude and every other connected client lose access at once and have to pair again.";
+      if (program.opts().dryRun) return runtime.output({ planned: "revoke", client_id: clientId ?? null, all: Boolean(options.all) }, () => summary, options);
+      if (!await confirm({ summary }, { yes: Boolean(program.opts().yes), dryRun: false, interactive: human() })) return;
       await outputMcpResult(runtime, await getMcpService().manageClients({ revoke: true, clientId }), options);
     });
 
