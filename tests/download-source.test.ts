@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
-import type { Ui } from "@bunizao/cli-kit";
+import { BACK, type Ui } from "@bunizao/cli-kit";
 
 import type { MoodleClient } from "../src/client.js";
 import { chooseDownloadSource } from "../src/download-source.js";
@@ -46,14 +46,41 @@ describe("download source choice", () => {
     await expect(chooseDownloadSource(client, service, "algo-2 mini test")).rejects.toMatchObject({ code: "ambiguous" });
   });
 
-  it("browses unit, section, then item at a terminal", async () => {
+  it("browses unit, section, then item, and Escape steps back with the last choice highlighted", async () => {
     const { client, service } = setup();
+    const pick = (label: string) => async (_message: string, choices: Array<{ label: string; value: unknown }>) => choices.find(c => c.label.includes(label))!.value;
+    const warn = vi.fn();
     const select = vi.fn()
-      .mockResolvedValueOnce(2)
-      .mockResolvedValueOnce(71)
-      .mockImplementationOnce(async (_message: string, choices: Array<{ value: string }>) => choices[0].value);
-    const ui = { select } as unknown as Ui;
+      .mockImplementationOnce(pick("Algorithms"))
+      .mockResolvedValueOnce(BACK)
+      .mockImplementationOnce(pick("Algorithms"))
+      .mockImplementationOnce(pick("Week 7"))
+      .mockImplementationOnce(pick("Week 17"))
+      .mockResolvedValueOnce(BACK)
+      .mockImplementationOnce(pick("Week 17"))
+      .mockImplementationOnce(pick("Everything"));
+    const ui = { select, warn } as unknown as Ui;
     await expect(chooseDownloadSource(client, service, "", ui)).resolves.toBe(`${BASE_URL}/course/view.php?id=2&section=2`);
-    expect(select.mock.calls[2][1].map((c: { label: string }) => c.label)).toEqual(["Everything in this section", "Week 17 Lecture slides", "Mini Test"]);
+
+    const [unit, back, , sections, , items, again, last] = select.mock.calls;
+    expect(unit[2]).toMatchObject({ search: true });
+    expect(back[0]).toBe("algo-2 › Section");
+    expect(sections[1].map((c: { hint?: string }) => c.hint)).toEqual(["current", undefined]);
+    expect(sections[2]).toMatchObject({ back: true, initial: 70 });
+    // Week 7's page is missing from the fixture: a warning, and the section list again.
+    expect(warn).toHaveBeenCalledWith("Week 7 has no files to download.");
+    expect(items[0]).toBe("algo-2 › Week 17");
+    expect(again[2]).toMatchObject({ initial: 71 });
+    expect(last[0]).toBe("algo-2 › Week 17");
+    expect(last[1].map((c: { label: string; hint: string }) => `${c.label} (${c.hint})`)).toEqual(["Everything in Week 17 (2 items)", "Week 17 Lecture slides (file)", "Mini Test (assignment)"]);
+  });
+
+  it("asks which unit when the leading words name several", async () => {
+    const { client, service } = setup();
+    const select = vi.fn(async (_message: string, choices: Array<{ label: string; value: unknown }>) => choices.find(c => c.label === "Algorithms")!.value);
+    const ui = { select } as unknown as Ui;
+    await expect(chooseDownloadSource(client, service, "s week 7", ui)).resolves.toBe(`${BASE_URL}/course/view.php?id=2&section=1`);
+    expect(select.mock.calls[0][0]).toBe("'s' matches several units");
+    await expect(chooseDownloadSource(client, service, "s week 7")).rejects.toMatchObject({ code: "ambiguous" });
   });
 });
