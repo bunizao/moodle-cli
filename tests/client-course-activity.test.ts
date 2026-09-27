@@ -6,7 +6,7 @@ import { describe, expect, it, vi } from "vitest";
 import { runCli } from "../src/cli";
 import { MoodleAPIError, MoodleClient, type AjaxCall } from "../src/client";
 import { ENV_MOODLE_BASE_URL, ENV_MOODLE_SESSION } from "../src/constants";
-import { parseAssignmentHtml, parseQuizReviewHtml } from "../src/scraper";
+import { parseAssignmentHtml, parseCourseContentsHtml, parseQuizReviewHtml } from "../src/scraper";
 import { resolveCourseReference, parseActivityReference, resolveTopLevelUrl } from "../src/url-resolver";
 
 const BASE_URL = "https://school.example.edu";
@@ -251,6 +251,22 @@ describe("MoodleClient course/activity modules", () => {
     expect(overview.todo).toHaveLength(1);
     expect(overview.alerts).toMatchObject({ direct_message_count: 2 });
     expect(overview.errors).toEqual([]);
+  });
+
+  it("drops screen-reader text from activity names on a course page", () => {
+    const html = `<li id="section-1" class="section course-section main" data-for="section" data-id="11" data-number="1"><h3 class="sectionname">Week 1</h3><ul class="section">
+      <li class="activity activity-wrapper resource modtype_resource" id="module-5" data-for="cmitem" data-id="5"><div class="activityname"><a href="${BASE_URL}/mod/resource/view.php?id=5"><span class="instancename">Lecture slides <span class="accesshide"> File</span></span></a></div></li></ul></li>`;
+    expect(parseCourseContentsHtml(html, BASE_URL)[0].activities[0].name).toBe("Lecture slides");
+  });
+
+  it("lists an assignment's attached files before any feedback files", () => {
+    const tree = (href: string, name: string) => `<li><div class="fileuploadsubmission"><a target="_blank" href="${href}">${name}</a></div></li>`;
+    const html = `<title>Task: Assignment 2</title><div class="activity-description" id="intro"><ul>
+      ${tree(`${BASE_URL}/pluginfile.php/9/mod_assign/introattachment/0/Brief%20(v2).pdf?forcedownload=1`, "Brief (v2).pdf")}
+      ${tree(`${BASE_URL}/pluginfile.php/9/mod_assign/introattachment/0/data.csv?forcedownload=1`, "data.csv")}
+    </ul></div>
+    <table>${tree(`${BASE_URL}/pluginfile.php/9/assignsubmission_file/submission_files/5/mine.pdf?forcedownload=1`, "mine.pdf")}</table>`;
+    expect(parseAssignmentHtml(html, 33, BASE_URL).file_entries.map(f => f.name)).toEqual(["Brief (v2).pdf", "data.csv"]);
   });
 
   it("reads marker feedback, marking guide rows and feedback files from a graded assignment", () => {
