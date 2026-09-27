@@ -332,7 +332,7 @@ describe("MoodleClient course/activity modules", () => {
         section: [
           { id: "11", section: 1, title: "Week 1", cmlist: ["21", "22"], visible: true },
           { id: "12", section: 2, title: "Week 2", cmlist: ["23"], visible: false },
-          { id: "13", section: 3, title: "Week 3", cmlist: [], visible: true },
+          { id: "13", section: 3, title: "Week 3", cmlist: [], visible: true, parentid: "11", parentsectionid: null },
         ],
         cm: [
           { id: "21", name: "Syllabus", sectionid: "11", module: "resource", url: `${BASE_URL}/mod/resource/view.php?id=21`, visible: true, uservisible: true },
@@ -374,6 +374,7 @@ describe("MoodleClient course/activity modules", () => {
         section: 3,
         visible: true,
         summary: "",
+        parent: 11,
         activities: [],
       },
     ]);

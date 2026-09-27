@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { currentSection, resolveSection, resolveUnit, searchSections, splitUnitPhrase, tokensMatch, withChildSections } from "../src/resolve.js";
+import { currentSection, resolveSection, resolveUnit, searchSections, sectionLabels, sectionTree, splitUnitPhrase, tokensMatch, withChildSections } from "../src/resolve.js";
 import type { Course, Section } from "../src/models.js";
 
 export const fixtureUnits: Course[] = [
@@ -61,6 +61,14 @@ describe("site vocabulary resolution", () => {
     expect(() => resolveSection("own time", nested)).toThrow(expect.objectContaining({ candidates: [{ id: 2, name: "Week 7 › Own time" }, { id: 5, name: "Week 17 › Own time" }] }));
     expect(withChildSections(week7, nested).map(s => s.id)).toEqual([70, 2, 3]);
     expect(withChildSections(week17, nested).map(s => s.id)).toEqual([71, 5, 6]);
+  });
+  it("folds only the innermost level when the site gives parent ids", () => {
+    const at = (id: number, name: string, parent?: number): Section => ({ id, section: id, name, visible: true, summary: "", ...(parent ? { parent } : {}), activities: [] });
+    // A tab of weeks holds sections that hold sections, so it stays a heading.
+    const sections = [at(1, "Learning"), at(2, "Getting started", 1), at(3, "Week 7", 1), at(4, "Own time", 3), at(5, "Assessments"), at(6, "1. Written", 5), at(7, "2. Written", 5)];
+    expect([...sectionLabels(sections).values()]).toEqual(["Learning", "Getting started", "Week 7", "Week 7 › Own time", "Assessments", "Assessments › 1. Written", "Assessments › 2. Written"]);
+    expect(sectionTree(sections).map(n => [n.section.id, n.children.map(c => c.id)])).toEqual([[1, []], [2, []], [3, [4]], [5, [6, 7]]]);
+    expect(resolveSection("2. written", sections).section.id).toBe(7);
   });
   it("uses the site marker and never guesses without one", () => {
     expect(currentSection(fixtureSections())?.id).toBe(70);

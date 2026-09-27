@@ -98,35 +98,56 @@ export function searchSections(course: Course, sections: readonly Section[], que
   return (useful.length ? useful : rows).sort((a, b) => b.score - a.score || a.id - b.id);
 }
 
-// Formats that nest sections ("Week 5" holding "Own-time", "Real-time") flatten into a
-// list where the child names repeat; the nearest uniquely named section before a
-// repeated one is the only context left, so the label carries it.
-export function sectionLabels(sections: readonly Section[]): Map<number, string> {
+// Which section each nested one folds into. Only the innermost level folds: a section
+// holding sections that hold sections (a tab of weeks) is a heading, and its children
+// stay at the top level. Without parent ids from the site, a nested format still shows
+// in the flat list as child names ("Own time") repeating after each parent.
+function parentsOf(sections: readonly Section[]): Map<number, Section> {
+  const byId = new Map(sections.map(s => [s.id, s]));
+  const parents = new Map<number, Section>();
+  if (sections.some(s => s.parent !== undefined)) {
+    const holders = new Set(sections.map(s => s.parent));
+    const headings = new Set(sections.filter(s => holders.has(s.id)).map(s => s.parent));
+    for (const s of sections) {
+      const parent = s.parent === undefined || headings.has(s.parent) ? undefined : byId.get(s.parent);
+      if (parent) parents.set(s.id, parent);
+    }
+    return parents;
+  }
   const counts = new Map<string, number>();
   for (const s of sections) counts.set(s.name, (counts.get(s.name) ?? 0) + 1);
-  const labels = new Map<number, string>();
-  let parent = "";
+  let last: Section | undefined;
   for (const s of sections) {
-    const name = s.name || `Section ${s.section}`;
-    if ((counts.get(s.name) ?? 0) > 1 && parent) labels.set(s.id, `${parent} › ${name}`);
-    else {
-      labels.set(s.id, name);
-      parent = name;
-    }
+    if ((counts.get(s.name) ?? 0) < 2) last = s;
+    else if (last) parents.set(s.id, last);
   }
-  return labels;
+  return parents;
 }
 
-// A nested course format renders child sections inside their parent's page, and the
-// flat list puts them right after it. The tree is what the course page shows at the top
-// level, each entry with the children it holds.
+// A child's own name ("Own time") says nothing on its own, so its label carries the parent.
+export function sectionLabels(sections: readonly Section[]): Map<number, string> {
+  const parents = parentsOf(sections);
+  const name = (s: Section) => s.name || `Section ${s.section}`;
+  return new Map(sections.map(s => {
+    const parent = parents.get(s.id);
+    return [s.id, parent ? `${name(parent)} › ${name(s)}` : name(s)];
+  }));
+}
+
+// What the course page shows at the top level, each entry with the child sections it
+// renders inside it.
 export function sectionTree(sections: readonly Section[]): Array<{ section: Section; children: Section[] }> {
-  const labels = sectionLabels(sections);
+  const parents = parentsOf(sections);
   const tree: Array<{ section: Section; children: Section[] }> = [];
+  const nodes = new Map<number, (typeof tree)[number]>();
   for (const s of sections) {
-    const parent = tree.at(-1);
-    if (parent && labels.get(s.id)!.startsWith(`${labels.get(parent.section.id)} › `)) parent.children.push(s);
-    else tree.push({ section: s, children: [] });
+    const node = nodes.get(parents.get(s.id)?.id ?? NaN);
+    if (node) node.children.push(s);
+    else {
+      const entry = { section: s, children: [] };
+      tree.push(entry);
+      nodes.set(s.id, entry);
+    }
   }
   return tree;
 }
