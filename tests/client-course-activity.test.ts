@@ -6,7 +6,7 @@ import { describe, expect, it, vi } from "vitest";
 import { runCli } from "../src/cli";
 import { MoodleAPIError, MoodleClient, type AjaxCall } from "../src/client";
 import { ENV_MOODLE_BASE_URL, ENV_MOODLE_SESSION } from "../src/constants";
-import { parseAssignmentHtml, parseQuizReviewHtml } from "../src/scraper";
+import { parseAssignmentHtml, parseCourseContentsHtml, parseQuizReviewHtml } from "../src/scraper";
 import { resolveCourseReference, parseActivityReference, resolveTopLevelUrl } from "../src/url-resolver";
 
 const BASE_URL = "https://school.example.edu";
@@ -253,6 +253,22 @@ describe("MoodleClient course/activity modules", () => {
     expect(overview.errors).toEqual([]);
   });
 
+  it("drops screen-reader text from activity names on a course page", () => {
+    const html = `<li id="section-1" class="section course-section main" data-for="section" data-id="11" data-number="1"><h3 class="sectionname">Week 1</h3><ul class="section">
+      <li class="activity activity-wrapper resource modtype_resource" id="module-5" data-for="cmitem" data-id="5"><div class="activityname"><a href="${BASE_URL}/mod/resource/view.php?id=5"><span class="instancename">Lecture slides <span class="accesshide"> File</span></span></a></div></li></ul></li>`;
+    expect(parseCourseContentsHtml(html, BASE_URL)[0].activities[0].name).toBe("Lecture slides");
+  });
+
+  it("lists an assignment's attached files before any feedback files", () => {
+    const tree = (href: string, name: string) => `<li><div class="fileuploadsubmission"><a target="_blank" href="${href}">${name}</a></div></li>`;
+    const html = `<title>Task: Assignment 2</title><div class="activity-description" id="intro"><ul>
+      ${tree(`${BASE_URL}/pluginfile.php/9/mod_assign/introattachment/0/Brief%20(v2).pdf?forcedownload=1`, "Brief (v2).pdf")}
+      ${tree(`${BASE_URL}/pluginfile.php/9/mod_assign/introattachment/0/data.csv?forcedownload=1`, "data.csv")}
+    </ul></div>
+    <table>${tree(`${BASE_URL}/pluginfile.php/9/assignsubmission_file/submission_files/5/mine.pdf?forcedownload=1`, "mine.pdf")}</table>`;
+    expect(parseAssignmentHtml(html, 33, BASE_URL).file_entries.map(f => f.name)).toEqual(["Brief (v2).pdf", "data.csv"]);
+  });
+
   it("reads marker feedback, marking guide rows and feedback files from a graded assignment", () => {
     const graded = parseAssignmentHtml(fixture("assign-graded.html"), 31, BASE_URL);
     expect(graded).toMatchObject({
@@ -316,7 +332,7 @@ describe("MoodleClient course/activity modules", () => {
         section: [
           { id: "11", section: 1, title: "Week 1", cmlist: ["21", "22"], visible: true },
           { id: "12", section: 2, title: "Week 2", cmlist: ["23"], visible: false },
-          { id: "13", section: 3, title: "Week 3", cmlist: [], visible: true },
+          { id: "13", section: 3, title: "Week 3", cmlist: [], visible: true, parentid: "11", parentsectionid: null },
         ],
         cm: [
           { id: "21", name: "Syllabus", sectionid: "11", module: "resource", url: `${BASE_URL}/mod/resource/view.php?id=21`, visible: true, uservisible: true },
@@ -358,6 +374,7 @@ describe("MoodleClient course/activity modules", () => {
         section: 3,
         visible: true,
         summary: "",
+        parent: 11,
         activities: [],
       },
     ]);
@@ -392,6 +409,41 @@ describe("MoodleClient course/activity modules", () => {
     const methods = seen.filter((request) => request.init?.method === "POST")
       .flatMap((request) => (JSON.parse(String(request.init?.body)) as AjaxCall[]).map((call) => call.methodname));
     expect(methods).toEqual(["core_course_get_course_module", "core_course_get_contents"]);
+  });
+
+  it("describes the activity a shortcut plugin redirects to, and never fetches standard module pages", async () => {
+    const modules: Record<number, string> = { 24: "shadow", 31: "lti" };
+    installFetch([
+      dashboardRoute,
+      (request) => {
+        const url = new URL(request.url);
+        if (request.init?.method !== "POST" || !url.searchParams.get("info")?.includes("core_course_get_course_module")) return undefined;
+        const [call] = JSON.parse(String(request.init.body)) as AjaxCall[];
+        const cmid = Number(call.args?.cmid);
+        return jsonResponse([{ index: 0, error: false, data: { cm: { id: cmid, course: 101, modname: modules[cmid] } } }]);
+      },
+      (request) => request.url === `${BASE_URL}/mod/shadow/view.php?id=24`
+        ? new Response(null, { status: 303, headers: { location: `${BASE_URL}/mod/lti/view.php?id=31` } })
+        : undefined,
+      // Real fetch reports the URL it answered for; a constructed Response does not.
+      (request) => request.url === `${BASE_URL}/mod/lti/view.php?id=31`
+        ? Object.defineProperty(htmlResponse("<html></html>"), "url", { value: request.url })
+        : undefined,
+      ajaxRoute("core_course_get_contents", [{
+        id: 11,
+        name: "Week 1",
+        section: 1,
+        visible: true,
+        summary: "",
+        modules: [
+          { id: 24, name: "Essay", modname: "shadow", url: `${BASE_URL}/mod/shadow/view.php?id=24`, visible: true },
+          { id: 31, name: "Essay", modname: "lti", url: `${BASE_URL}/mod/lti/view.php?id=31`, visible: true },
+        ],
+      }]),
+    ]);
+    const client = new MoodleClient(BASE_URL, "session");
+
+    await expect(client.getActivity(24)).resolves.toMatchObject({ id: 31, name: "Essay", type: "lti" });
   });
 
   it("returns not found when one unrelated course cannot be searched", async () => {

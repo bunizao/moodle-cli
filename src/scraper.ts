@@ -110,13 +110,14 @@ export function parseCourseContentsHtml(html: string, baseUrl: string): Section[
       }
       const classes = (activityElement.getAttribute("class") ?? "").split(/\s+/).filter(Boolean);
       const modname = classes.find((item) => item.startsWith("modtype_"))?.slice("modtype_".length) ?? "";
-      const name = cleanNodeText(
-        firstDefined([
-          activityElement.querySelector(".activityname .instancename"),
-          activityElement.querySelector(".activityname"),
-          activityElement.querySelector("a.aalink"),
-        ]),
-      );
+      const nameNode = firstDefined([
+        activityElement.querySelector(".activityname .instancename"),
+        activityElement.querySelector(".activityname"),
+        activityElement.querySelector("a.aalink"),
+      ]);
+      // Screen-reader text ("File", "Folder") sits inside the name on the page.
+      for (const hidden of nameNode?.querySelectorAll(".accesshide") ?? []) hidden.remove();
+      const name = cleanNodeText(nameNode);
       if (!name) {
         continue;
       }
@@ -285,7 +286,7 @@ export function parseAssignmentHtml(html: string, assignmentId: number, baseUrl:
     graded_by: feedback ? findTableValue(feedback.toString(), "Graded by") : "",
     feedback_comments: feedback ? findTableValue(feedback.toString(), "Feedback comments") : "",
     criteria: feedback ? parseFeedbackCriteria(feedback) : [],
-    file_entries: feedback ? parseFeedbackFiles(feedback, baseUrl) : [],
+    file_entries: [...parseIntroAttachments(root, baseUrl), ...(feedback ? parseFeedbackFiles(feedback, baseUrl) : [])],
     url: `${baseUrl.replace(/\/$/, "")}/mod/assign/view.php?id=${assignmentId}`,
   };
 }
@@ -306,6 +307,18 @@ function parseFeedbackCriteria(feedback: HTMLElement): FeedbackCriterion[] {
     });
   }
   return criteria;
+}
+
+// The teacher's files (spec, datasets) render in the same file tree markup as the
+// student's own submission, so the pluginfile file area is the only reliable marker.
+function parseIntroAttachments(root: HTMLElement, baseUrl: string): FileEntry[] {
+  const entries: FileEntry[] = [];
+  for (const link of root.querySelectorAll('a[href*="/mod_assign/introattachment/"]')) {
+    const url = resolveUrl(baseUrl, link.getAttribute("href") ?? "");
+    const name = cleanNodeText(link) || decodeURIComponent(new URL(url).pathname.split("/").at(-1) || "file");
+    if (!entries.some((entry) => entry.url === url)) entries.push(fileEntry(name, url, baseUrl));
+  }
+  return entries;
 }
 
 // Feedback files and annotated PDFs both arrive as plain pluginfile links in the feedback table.

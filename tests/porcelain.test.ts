@@ -80,7 +80,7 @@ describe("porcelain through the real Commander and HTTP boundary", () => {
       const result = await command(["get", "algo-2 week 7 slides", "--to", directory]);
       expect(result.code, result.stderr).toBe(0);
       expect(await readFile(join(directory, "slides.pdf"), "utf8")).toBe("slides");
-      expect(JSON.parse(result.stdout).bytes_written).toBe(6);
+      expect(JSON.parse(result.stdout).files[0].bytes_written).toBe(6);
     } finally { await rm(directory, { recursive: true, force: true }); }
   });
   it("applies --limit after the command name and counts the unit list once", async () => {
@@ -91,6 +91,14 @@ describe("porcelain through the real Commander and HTTP boundary", () => {
     expect(JSON.parse(limited.stdout).results).toHaveLength(1);
     expect(JSON.parse((await command(["--limit", "1", "find", "week"])).stdout).results).toHaveLength(1);
     expect(calls.filter(name => name === "core_enrol_get_users_courses")).toHaveLength(1);
+  });
+  it("opens a bare activity id, and reads 'word N' as an item when no section has that word", async () => {
+    const byId = await command(["201"]);
+    expect(byId.code, byId.stderr).toBe(0);
+    expect(JSON.parse(byId.stdout)).toHaveProperty("item.id", 201);
+    const phrase = await command(["algo-2", "slides 7"]);
+    expect(phrase.code, phrase.stderr).toBe(0);
+    expect(JSON.parse(phrase.stdout)).not.toHaveProperty("sections");
   });
   it("reports an unmatched target instead of an empty search", async () => {
     const result = await command(["zzz-no-such-unit"]);

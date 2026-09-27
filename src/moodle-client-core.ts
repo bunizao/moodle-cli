@@ -81,6 +81,14 @@ import {
   parseResourceHtml,
 } from "./scraper.js";
 
+// Moodle's own activity modules. Anything else without a reader may be an alias whose
+// page redirects to the real activity.
+const STANDARD_MODULES = new Set([
+  "assign", "bigbluebuttonbn", "book", "chat", "choice", "data", "feedback", "folder", "forum", "glossary",
+  "h5pactivity", "imscp", "label", "lesson", "lti", "page", "qbank", "quiz", "resource", "scorm",
+  "subsection", "survey", "url", "wiki", "workshop",
+]);
+
 export interface AjaxCall {
   methodname: string;
   args?: Record<string, unknown>;
@@ -344,6 +352,10 @@ export class MoodleClientCore {
   }
 
   async getActivity(id: number): Promise<ActivityDetail & { type: string }> {
+    return this.readActivity(id, true);
+  }
+
+  private async readActivity(id: number, followAlias: boolean): Promise<ActivityDetail & { type: string }> {
     await this.ensureSession();
     let activity: Activity | null = null;
     let courseId: number | undefined;
@@ -370,10 +382,25 @@ export class MoodleClientCore {
     };
     const load = loaders[type];
     if (!load) {
+      // Some plugins only place a shortcut to another activity in a second section, and
+      // their page redirects there; describe the real activity, which has the due date
+      // and files. Standard modules are real content, so their pages are not fetched.
+      const alias = followAlias && /^[a-z][a-z0-9_]*$/u.test(type) && !STANDARD_MODULES.has(type)
+        ? await this.redirectedActivity(type, id)
+        : undefined;
+      if (alias) return this.readActivity(alias, false);
       activity ??= await this.findActivity(id, courseId);
       return { ...activity, type: type || activity.modname || "unknown" };
     }
     return { ...(await load()), type: type === "url" ? "link" : type };
+  }
+
+  private async redirectedActivity(type: string, id: number): Promise<number | undefined> {
+    const response = await this.requestAbsolute(`${this.baseUrl}/mod/${type}/view.php?id=${id}`, {}, { allowErrorStatus: true });
+    await response.body?.cancel().catch(() => undefined);
+    const match = /\/mod\/\w+\/view\.php\?(?:.*&)?id=(\d+)/u.exec(response.url);
+    const target = match ? Number(match[1]) : undefined;
+    return target && target !== id ? target : undefined;
   }
 
   async getTodo(limit = 20, days?: number, courseId?: number): Promise<TodoItem[]> {

@@ -15,11 +15,20 @@ export async function fetchWithSession(
   let method = (init.method ?? "GET").toUpperCase();
   let body = init.body;
   const headers = new Headers(init.headers);
-  const deadline = AbortSignal.timeout(REQUEST_TIMEOUT_MS);
-  const signal = init.signal ? AbortSignal.any([init.signal, deadline]) : deadline;
+  // An idle limit, not a total one: a 200 MB lecture recording streams for minutes, and only
+  // a connection that stops sending is dead. It covers each hop's headers, then each body chunk.
+  const deadline = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const arm = () => {
+    clearTimeout(timer);
+    timer = setTimeout(() => deadline.abort(), REQUEST_TIMEOUT_MS);
+    (timer as { unref?: () => void }).unref?.();
+  };
+  const signal = init.signal ? AbortSignal.any([init.signal, deadline.signal]) : deadline.signal;
 
   for (let hop = 0; ; hop += 1) {
     signal.throwIfAborted();
+    arm();
     if (!["https:", "http:"].includes(url.protocol) || url.username || url.password) {
       throw new Error("The request destination is not allowed.");
     }
@@ -33,11 +42,11 @@ export async function fetchWithSession(
     try {
       response = await fetchImpl(url.toString(), { ...init, method, body, headers: Object.fromEntries(headers), signal, redirect: "manual" });
     } catch (error) {
-      throw requestFailure(error, url, deadline);
+      clearTimeout(timer);
+      throw requestFailure(error, url, deadline.signal);
     }
-    if (!REDIRECT_STATUSES.has(response.status)) return response;
-    const location = response.headers.get("location");
-    if (!location) return response;
+    if (!REDIRECT_STATUSES.has(response.status) || !response.headers.get("location")) return watchBody(response, arm, () => clearTimeout(timer));
+    const location = response.headers.get("location")!;
     await response.body?.cancel();
     if (hop >= MAX_REDIRECTS) throw new Error("The request exceeded its redirect limit.");
     const next = new URL(location, url);
@@ -54,6 +63,25 @@ export async function fetchWithSession(
     }
     url = next;
   }
+}
+
+function watchBody(response: Response, arm: () => void, done: () => void): Response {
+  if (!response.body) {
+    done();
+    return response;
+  }
+  arm();
+  const body = response.body.pipeThrough(new TransformStream({
+    transform(chunk, controller) {
+      arm();
+      controller.enqueue(chunk);
+    },
+    flush: done,
+  }));
+  const watched = new Response(body, response);
+  // A constructed Response has no URL, and callers name files and report sources from it.
+  Object.defineProperty(watched, "url", { value: response.url });
+  return watched;
 }
 
 /**

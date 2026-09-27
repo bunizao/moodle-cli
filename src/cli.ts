@@ -9,7 +9,7 @@ import { runtimeSupportsCookies } from "./mcp/self-command.js";
 import { createMoodleGateway } from "./mcp/gateway.js";
 import { createIntentService, type IntentService } from "./intents.js";
 import { humanDescription, type Intent } from "./intent-contract.js";
-import { ReferenceError, normalize, resolveSection, splitUnitPhrase, type Candidate } from "./resolve.js";
+import { ReferenceError, normalize, resolveSection, splitUnitPhrase, withChildSections, type Candidate } from "./resolve.js";
 import { renderScreen, tryLines } from "./screens.js";
 import type { Writable } from "node:stream";
 import { spawn } from "node:child_process";
@@ -57,7 +57,7 @@ import {
   formatAttemptFinish,
   formatAttemptPage,
   formatAttemptSummary,
-  formatDownloadReceipt,
+  formatDownloadResult,
   formatForumDiscussion,
   formatSubmissionReceipt,
   formatForumDiscussionRefs,
@@ -68,7 +68,8 @@ import {
   formatTodo,
   formatUser,
 } from "./formatters.js";
-import { downloadMoodleFile } from "./download.js";
+import { downloadMoodleFiles } from "./download.js";
+import { chooseDownloadSource } from "./download-source.js";
 import { submissionReceiptOf, type SubmissionReceipt } from "./moodle-assign-core.js";
 import type { AttemptPage } from "./moodle-quiz-core.js";
 import { resolveSubmissionPath } from "./submit.js";
@@ -111,7 +112,8 @@ interface Runtime {
   busy: boolean;
   getClient: () => Promise<MoodleClient>;
   baseUrl: () => Promise<string>;
-  output: (data: unknown, formatter: () => string, options: OutputCommandOptions) => Promise<void>;
+  // hints: false for a receipt, where the generic "Try" commands are noise.
+  output: (data: unknown, formatter: () => string, options: OutputCommandOptions, hints?: boolean) => Promise<void>;
   screen: (data: Record<string, unknown>, options?: OutputCommandOptions) => string;
   count: (key: "limit" | "days", local?: number, fallback?: number) => number | undefined;
 }
@@ -162,7 +164,8 @@ export function buildProgram(io: CliIO = {}): Command {
 
   // Screens are the only place the terminal's real width matters; one helper keeps
   // every call site honest about it.
-  const screen = (data: Record<string, unknown>, options: OutputCommandOptions = {}) => renderScreen(data, {
+  const screen = (data: Record<string, unknown>, options: OutputCommandOptions = {}, intent?: Intent) => renderScreen(data, {
+    intent,
     // Terminals without a size report 0 columns; the default is better than 40.
     width: (stdout as Partial<NodeJS.WriteStream>).columns || undefined,
     color: !process.env.NO_COLOR && program.opts().color !== false && outputFormat({ ...program.opts(), ...options }, stdout) === "table",
@@ -220,12 +223,12 @@ export function buildProgram(io: CliIO = {}): Command {
       }
       return runtime.client;
     },
-    output: async (data, formatter, options) => {
+    output: async (data, formatter, options, hints = true) => {
       const merged = { ...program.opts(), ...options } as OutputCommandOptions;
       const format = outputFormat(merged, stdout);
       const human = format === "table" ? formatter() : "";
       const text = format === "table"
-        ? `${human}${human.includes("Try  ") ? "" : `\n\n${tryLines(["moodle due", "moodle units", "moodle --help"])}`}\n`
+        ? `${human}${!hints || human.includes("Try  ") ? "" : `\n\n${tryLines(["moodle due", "moodle units", "moodle --help"])}`}\n`
         : format === "json"
           ? `${JSON.stringify(JSON.parse(render(data, { format, fields: parseFields(data, merged.fields) })), null, merged.pretty ? 2 : undefined)}\n`
           : render(data, { format, fields: parseFields(data, merged.fields) });
@@ -257,7 +260,7 @@ export function buildProgram(io: CliIO = {}): Command {
   const execute = async (name: Intent, args: Record<string, unknown>, options: OutputCommandOptions = {}, service?: IntentService) => {
     const runner = service ?? createIntentService(createMoodleGateway(await runtime.getClient()));
     const result = await runner.run(name, args);
-    await runtime.output(result, () => screen(result, options), options);
+    await runtime.output(result, () => screen(result, options, name), options);
   };
 
   // One rule for who is on the other end: a person at a terminal reading a table. Anyone
@@ -313,6 +316,8 @@ export function buildProgram(io: CliIO = {}): Command {
     const courses = await client.getCourses();
     const service = createIntentService(createMoodleGateway(client));
     const parsed = await choose(async () => splitUnitPhrase(targets.join(" "), courses), async id => ({ course: courses.find(c => c.id === id)!, query: targets.slice(1).join(" ") }));
+    // A bare number that is not a unit id is an activity id, as every screen prints them.
+    if (!parsed && targets.length === 1 && /^\d+$/u.test(targets[0])) return execute("item", { ref: Number(targets[0]) }, merged, service);
     if (!parsed) {
       // A bare target is a place to go, not a forum search: an unmatched one is an
       // error with the site's own unit list, not an empty result and exit 0.
@@ -330,11 +335,12 @@ export function buildProgram(io: CliIO = {}): Command {
     if (!query) {
       let data = await service.run("unit", { unit });
       if (outputFormat(merged, stdout) === "table") {
-        const current = (data.unit as { current_section?: { id: number } }).current_section;
-        if (current) {
-          const section = (await service.sections(unit)).find(s => s.id === current.id);
-          if (section) data = await service.run("unit", { unit, section: section.name });
-        }
+        // The label, not the bare name: a nested child's own name ("Own time") repeats.
+        const current = (data.unit as { current_section?: { name: string } }).current_section;
+        if (current) data = await service.run("unit", { unit, section: current.name }).catch((error: unknown) => {
+          if (error instanceof ReferenceError) return data;
+          throw error;
+        });
         data = { ...data, ...await service.run("due", { unit }), ...await service.run("news", { unit, limit: 1 }) };
       }
       return runtime.output(data, () => screen(data), merged);
@@ -412,16 +418,6 @@ export function buildProgram(io: CliIO = {}): Command {
       await runtime.output({ ...report, ...(worker ? { worker_ready: worker.ready } : {}) }, () => [palette.tone(report.ok ? (report.updated || report.deployed ? "success" : "muted") : "danger", report.note), ...stale].join("\n"), options);
       // Automation reads the exit code, so a failed installer or deploy cannot end in 0.
       if (!report.ok) throw new CliError("upstream", report.note);
-    });
-    addOutputOptions(program.command("get").description("Download a resource by id, URL, or UNIT TASK phrase.").argument("<ref>", "Resource id, URL, or UNIT TASK phrase"))
-    .option("--to <directory>", "Destination directory.")
-    .option("--force", "Replace an existing file atomically.")
-    .action(async (ref: string, options: OutputCommandOptions & { to?: string; force?: boolean }) => {
-      const client = await runtime.getClient();
-      const service = createIntentService(createMoodleGateway(client));
-      const source = await choose(() => service.fileSource(ref), id => Promise.resolve(id));
-      const receipt = await downloadMoodleFile(client, { source: String(source), directory: options.to ? path.resolve(io.cwd ?? process.cwd(), options.to) : undefined, force: options.force });
-      await runtime.output(receipt, () => formatDownloadReceipt(receipt), options);
     });
   addOutputOptions(mutating(program.command("submit").description(humanDescription("submit")).summary("Upload files into an assignment").argument("<ref>", "Assignment id, URL, or UNIT TASK phrase").argument("[files...]", "Local files to upload")))
     .option("--final", "Also submit for grading. Moodle does not allow undoing this.")
@@ -591,12 +587,12 @@ export function buildProgram(io: CliIO = {}): Command {
       const client = await runtime.getClient();
       const courseId = await client.resolveCourseReference(unit);
       const sections = await client.getCourseContents(courseId);
-      const chosen = options.section ? [resolveSection(options.section, sections).section] : sections;
+      const chosen = options.section ? withChildSections(resolveSection(options.section, sections).section, sections) : sections;
       const rows = chosen.flatMap(section => section.activities.filter(a => options.includeLabels || a.modname !== "label").map(a => activitySchema.parse(stripEmpty(activityRow(a, section)))));
       const result = stripEmpty({ activities: rows.slice(0, count("limit", options.limit)), total: rows.length }) as Record<string, unknown>;
       await runtime.output(result, () => runtime.screen(result, options), options);
     });
-  addOutputOptions(activities.command("show").description("Show activity details; resource and folder files can be passed to moodle get or download.").summary("Show activity details").argument("<id>", "Course-module ID")).action(
+  addOutputOptions(activities.command("show").description("Show activity details, including the files moodle download would save.").summary("Show activity details").argument("<id>", "Course-module ID")).action(
     async (id: string, options: OutputCommandOptions) => {
       await execute("item", { ref: parsePositiveInt(id) }, options);
     },
@@ -605,21 +601,45 @@ export function buildProgram(io: CliIO = {}): Command {
   addOutputOptions(
     program
       .command("download")
-      .alias("dl")
-      .description("Download one authenticated Moodle file.")
-      .argument("<source>", "Course-module ID or authenticated Moodle file URL")
-      .option("--dest <path>", "Exact downloaded file path")
-      .option("--force", "Atomically replace an existing destination"),
-  ).action(async (source: string, options: OutputCommandOptions & { dest?: string; force?: boolean }) => {
-    const destination = options.dest
-      ? path.resolve(io.cwd ?? process.cwd(), options.dest)
-      : undefined;
-    const receipt = await downloadMoodleFile(await runtime.getClient(), {
-      source,
-      destination,
-      force: options.force,
-    });
-    await runtime.output(receipt, () => formatDownloadReceipt(receipt), options);
+      .aliases(["dl", "get"])
+      .description("Download files: one activity, a whole section, or a file URL. With no argument, browse.")
+      .argument("[ref...]", "Activity id, same-site activity/section/file URL, or UNIT TASK phrase")
+      .option("--to <directory>", "Destination directory; created when missing.")
+      .option("--dest <path>", "Exact path for a single downloaded file.")
+      .option("--force", "Atomically replace existing files."),
+  ).action(async (ref: string[], options: OutputCommandOptions & { to?: string; dest?: string; force?: boolean }) => {
+    const cwd = io.cwd ?? process.cwd();
+    const client = await runtime.getClient();
+    const service = createIntentService(createMoodleGateway(client));
+    const ui = human() ? createUi({ input: io.stdin ?? process.stdin, output: stderr as Writable, interactive: true }) : undefined;
+    const source = await chooseDownloadSource(client, service, ref.join(" "), ui);
+    // Ctrl+C mid-file must remove the partial temp file, so the first one aborts cleanly
+    // and a second one falls back to the default exit.
+    const abort = new AbortController();
+    const onInterrupt = () => abort.abort();
+    process.once("SIGINT", onInterrupt);
+    const spin = ui?.spinner();
+    spin?.start("Finding files");
+    // The spinner already says Moodle is busy; the request indicator would draw into it,
+    // and into the cancel message while lookups started before Ctrl+C wind down.
+    runtime.busy = Boolean(spin);
+    try {
+      const result = await downloadMoodleFiles(client, {
+        source,
+        destination: options.dest ? path.resolve(cwd, options.dest) : undefined,
+        directory: options.to ? path.resolve(cwd, options.to) : undefined,
+        force: options.force,
+        dryRun: Boolean(program.opts().dryRun),
+        onFile: (index, total, name) => spin?.message(total > 1 ? `Downloading ${index}/${total}${name ? ` · ${name}` : ""}` : `Downloading${name ? ` ${name}` : ""}`),
+      }, abort.signal);
+      spin?.clear();
+      await runtime.output(result, () => formatDownloadResult(result, cwd), options, false);
+    } catch (error) {
+      spin?.clear();
+      throw error;
+    } finally {
+      process.off("SIGINT", onInterrupt);
+    }
   });
 
   const grades = program.command("grades").description("Inspect grades.");

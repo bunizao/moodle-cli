@@ -2,9 +2,11 @@
 
 Generated from the live command tree. UNIT is a code/name, id or URL from `moodle units`.
 `moodle UNIT SECTION` resolves a section; `moodle UNIT "TASK"` resolves an item.
-Resources and folders return `files` with names and URLs. Pass a selected file URL to
-`moodle get URL --to DIR`. Validate the receipt: path, byte count and content type.
-`moodle download SOURCE --dest PATH --force` retains the exact-path replacement flow.
+Resources, folders and assignments return `files` with names and URLs.
+`moodle download REF --to DIR` saves one file, every file of an activity, or a whole
+section (`moodle download "UNIT week 3"` or a section URL). The receipt lists `files`
+with path, byte count and content type, and `skipped` with a reason: `exists` (already
+saved; `--force` replaces it) or `unavailable`. `--dest PATH` names the file when there is one.
 `moodle submit "UNIT TASK" FILE... --dry-run` shows the upload plan; without `--dry-run` it
 asks for confirmation (`--yes` skips it) and prints the receipt Moodle shows afterwards.
 `--final` also submits for grading, which Moodle does not let anyone undo.

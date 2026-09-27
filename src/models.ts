@@ -41,6 +41,8 @@ export interface Section {
   visible: boolean;
   summary: string;
   current?: boolean;
+  // The section this one is nested in, when the site's format says.
+  parent?: number;
   activities: Activity[];
 }
 

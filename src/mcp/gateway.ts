@@ -130,13 +130,17 @@ export interface MoodleClientPort {
   requestAbsolute(url: string, init?: RequestInit): Promise<Response>;
 }
 
+// Messages are this package's own wording with numeric ids only, never upstream text,
+// so the MCP server may show them as they are.
 export class MoodleGatewayError extends Error {
   readonly code: string;
+  readonly hint: string | undefined;
 
-  constructor(code: string, message: string) {
+  constructor(code: string, message: string, hint?: string) {
     super(message);
     this.name = "MoodleGatewayError";
     this.code = code;
+    this.hint = hint;
   }
 }
 
@@ -244,7 +248,7 @@ async function resolveFileTarget(
   const site = new URL(client.baseUrl);
   const sitePath = site.pathname.replace(/\/$/u, "");
   if (url.origin !== site.origin) throw invalidFileSource();
-  if (url.pathname === `${sitePath}/mod/resource/view.php`) {
+  if (url.pathname.startsWith(`${sitePath}/`) && /^\/mod\/\w+\/view\.php$/u.test(url.pathname.slice(sitePath.length))) {
     const activityId = Number(url.searchParams.get("id"));
     if (!Number.isSafeInteger(activityId) || activityId < 1) throw invalidFileSource();
     return validateFileTarget(client, await fileFromActivity(client, activityId));
@@ -273,25 +277,23 @@ async function fileFromActivity(
   activityId: number,
 ): Promise<{ url: string; name?: string }> {
   const activity = await client.getActivity(activityId);
-  if (activity.type !== "resource" || !("file_entries" in activity) || !Array.isArray(activity.file_entries)) {
-    throw new MoodleGatewayError(
-      "MOODLE_FILE_SOURCE_INVALID",
-      `Activity ${activityId} is not a downloadable resource.`,
-    );
+  // Resources, folders and assignments all list their files; one file is unambiguous.
+  const entries = "file_entries" in activity && Array.isArray(activity.file_entries) ? activity.file_entries : undefined;
+  if (!entries) {
+    throw new MoodleGatewayError("MOODLE_FILE_SOURCE_INVALID", `Activity ${activityId} has no files.`, "Call find for a resource, folder or assignment in the same section.");
   }
-  if (activity.file_entries.length !== 1) {
-    if (activity.file_entries.length === 0) {
-      const resource = activity as typeof activity & { target_name?: string; target_url?: string; url?: string };
-      const url = resource.target_url || resource.url;
-      if (url) return { url, name: resource.target_name || undefined };
-    }
-    throw new MoodleGatewayError(
-      "MOODLE_FILE_SOURCE_AMBIGUOUS",
-      `Activity ${activityId} did not resolve to exactly one file. Inspect file_entries and request one URL.`,
-    );
+  if (entries.length === 1) return { url: entries[0].url, name: entries[0].name };
+  if (!entries.length && activity.type === "resource") {
+    const resource = activity as typeof activity & { target_name?: string; target_url?: string; url?: string };
+    const url = resource.target_url || resource.url;
+    if (url) return { url, name: resource.target_name || undefined };
   }
-  const [entry] = activity.file_entries;
-  return { url: entry.url, name: entry.name };
+  if (!entries.length) throw new MoodleGatewayError("MOODLE_FILE_NOT_FOUND", `Activity ${activityId} has no attached files.`);
+  throw new MoodleGatewayError(
+    "MOODLE_FILE_SOURCE_AMBIGUOUS",
+    `Activity ${activityId} has ${entries.length} files.`,
+    `Call item ${activityId} for their URLs, then file with one URL.`,
+  );
 }
 
 function resourceLinks(html: string, baseUrl: string): Array<{ name: string; url: string }> {
@@ -333,7 +335,7 @@ async function readBoundedBody(response: Response, maxBytes: number): Promise<Ui
 function invalidFileSource(): MoodleGatewayError {
   return new MoodleGatewayError(
     "MOODLE_FILE_SOURCE_INVALID",
-    "Use a positive resource activity ID, a same-site resource URL, or a same-site pluginfile URL.",
+    "Use a positive activity ID, a same-site activity URL, or a same-site pluginfile URL.",
   );
 }
 

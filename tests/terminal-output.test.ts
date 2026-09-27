@@ -59,6 +59,13 @@ describe("terminal output", () => {
     expect(output).not.toContain("\t");
   });
 
+  it("shows a long name whole when the terminal has room, and treats 0 columns as unknown", () => {
+    const name = "UNIT - A deliberately long unit name that runs past forty characters";
+    const wide = renderTerminalTable([{ label: "ID" }, { label: "Name", flex: true }], [["1", name]], { width: 100 });
+    expect(wide).toContain(`│ ${name} │`);
+    expect(renderTerminalTable([{ label: "ID" }, { label: "Name", flex: true }], [["1", name]], { width: 0 })).toContain("┌");
+  });
+
   it("fits many columns within a narrow terminal", () => {
     const columns = Array.from({ length: 9 }, (_, index) => ({ label: `Column ${index + 1}` }));
     const output = renderTerminalTable(
