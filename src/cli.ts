@@ -609,13 +609,29 @@ export function buildProgram(io: CliIO = {}): Command {
     const service = createIntentService(createMoodleGateway(client));
     const ui = human() ? createUi({ input: io.stdin ?? process.stdin, output: stderr as Writable, interactive: true }) : undefined;
     const source = await chooseDownloadSource(client, service, ref.join(" "), ui);
-    const result = await downloadMoodleFiles(client, {
-      source,
-      destination: options.dest ? path.resolve(cwd, options.dest) : undefined,
-      directory: options.to ? path.resolve(cwd, options.to) : undefined,
-      force: options.force,
-    });
-    await runtime.output(result, () => formatDownloadResult(result, cwd), options, false);
+    // Ctrl+C mid-file must remove the partial temp file, so the first one aborts cleanly
+    // and a second one falls back to the default exit.
+    const abort = new AbortController();
+    const onInterrupt = () => abort.abort();
+    process.once("SIGINT", onInterrupt);
+    const spin = ui?.spinner();
+    spin?.start("Finding files");
+    try {
+      const result = await downloadMoodleFiles(client, {
+        source,
+        destination: options.dest ? path.resolve(cwd, options.dest) : undefined,
+        directory: options.to ? path.resolve(cwd, options.to) : undefined,
+        force: options.force,
+        onFile: (index, total, name) => spin?.message(total > 1 ? `Downloading ${index}/${total}${name ? ` · ${name}` : ""}` : `Downloading${name ? ` ${name}` : ""}`),
+      }, abort.signal);
+      spin?.clear();
+      await runtime.output(result, () => formatDownloadResult(result, cwd), options, false);
+    } catch (error) {
+      spin?.clear();
+      throw error;
+    } finally {
+      process.off("SIGINT", onInterrupt);
+    }
   });
 
   const grades = program.command("grades").description("Inspect grades.");

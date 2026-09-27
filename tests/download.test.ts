@@ -9,6 +9,7 @@ import type { MoodleClient } from "../src/client.js";
 import { runCli } from "../src/cli.js";
 import { ENV_MOODLE_BASE_URL, ENV_MOODLE_SESSION } from "../src/constants.js";
 import { downloadMoodleFiles } from "../src/download.js";
+import { NotFoundError } from "../src/errors.js";
 import { formatDownloadResult } from "../src/formatters.js";
 
 // Most cases here resolve to one file; the batch cases below read the whole result.
@@ -158,6 +159,35 @@ describe("Moodle file downloads", () => {
     await expect(readdir(directory)).resolves.toEqual(["slides.pdf"]);
   });
 
+  it("stops mid-file on abort, rejects as cancelled and leaves no partial file", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "moodle-abort-"));
+    const abort = new AbortController();
+    // One chunk arrives, then the body stalls the way a slow file does when Ctrl+C lands.
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new Uint8Array(1024));
+        setTimeout(() => abort.abort(), 10);
+      },
+    });
+    const url = `${BASE_URL}/pluginfile.php/1/big.pdf`;
+    const moodle = client({ requestAbsolute: async () => responseAt(url, body, { "content-type": "application/pdf" }) });
+
+    await expect(downloadMoodleFiles(moodle, { source: url, directory }, abort.signal)).rejects.toMatchObject({ code: "cancelled" });
+    expect(await readdir(directory)).toEqual([]);
+  });
+
+  it("reports an abort during the request as cancelled, not as a network failure", async () => {
+    const abort = new AbortController();
+    const moodle = client({
+      requestAbsolute: async () => {
+        abort.abort();
+        throw new Error("Could not reach school.example.edu: This operation was aborted");
+      },
+    });
+
+    await expect(downloadMoodleFiles(moodle, { source: `${BASE_URL}/pluginfile.php/1/a.pdf` }, abort.signal)).rejects.toMatchObject({ code: "cancelled" });
+  });
+
   it("rejects unsupported sources and activity types with usage guidance", async () => {
     await expect(downloadMoodleFile(client({}), { source: "not-a-source" })).rejects.toMatchObject({ code: "usage" });
     await expect(downloadMoodleFile(client({
@@ -233,16 +263,17 @@ describe("Moodle file downloads", () => {
     await expect(readdir(directory)).resolves.toEqual([]);
   });
 
-  it("rejects a server-derived destination conflict without replacing the file", async () => {
+  it("leaves a file that is already there alone and reports it, so a rerun resumes", async () => {
     const directory = await mkdtemp(join(tmpdir(), "moodle-download-"));
     const cwd = vi.spyOn(process, "cwd").mockReturnValue(directory);
     const destination = join(directory, "slides.pdf");
     const source = `${BASE_URL}/pluginfile.php/1/slides.pdf`;
     await writeFile(destination, "keep", "utf8");
     try {
-      await expect(downloadMoodleFile(client({
+      const result = await downloadMoodleFiles(client({
         requestAbsolute: async () => responseAt(source, "new", { "content-type": "application/pdf" }),
-      }), { source })).rejects.toMatchObject({ code: "usage" });
+      }), { source });
+      expect(result).toMatchObject({ files: [], total: 0, skipped: [{ name: "slides.pdf", reason: "exists", file_path: destination }] });
       await expect(readFile(destination, "utf8")).resolves.toBe("keep");
     } finally {
       cwd.mockRestore();
@@ -302,6 +333,18 @@ describe("Moodle file downloads", () => {
     await expect(readdir(directory)).resolves.toEqual(["slides (2).pdf", "slides.pdf"]);
   });
 
+  it("saves one document linked twice under different URLs once, now and on a rerun", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "moodle-download-"));
+    const file = (n: number) => `${BASE_URL}/pluginfile.php/${n}/brief.pdf`;
+    const folder = client({
+      getActivity: async () => ({ id: 5, type: "folder", file_entries: [1, 2].map(n => ({ name: "brief.pdf", url: file(n), requires_authentication: true })) }) as never,
+      requestAbsolute: async (url: string) => responseAt(url, "same", { "content-type": "application/pdf" }),
+    });
+    expect((await downloadMoodleFiles(folder, { source: "5", directory })).files.map(f => f.filename)).toEqual(["brief.pdf"]);
+    expect(await downloadMoodleFiles(folder, { source: "5", directory })).toMatchObject({ files: [], skipped: [{ name: "brief.pdf", reason: "exists" }] });
+    await expect(readdir(directory)).resolves.toEqual(["brief.pdf"]);
+  });
+
   it("downloads an assignment's attached files from its activity URL", async () => {
     const directory = await mkdtemp(join(tmpdir(), "moodle-download-"));
     const spec = `${BASE_URL}/pluginfile.php/9/mod_assign/introattachment/0/spec.pdf?forcedownload=1`;
@@ -334,6 +377,54 @@ describe("Moodle file downloads", () => {
 
     expect(getActivity.mock.calls.map(([id]) => id)).toEqual([1, 2, 4]);
     expect(result.files.map(f => f.filename)).toEqual(["f1.pdf", "f4.pdf"]);
+  });
+
+  it("skips a broken file, an unavailable activity and a repeat, and keeps the rest of the section", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "moodle-download-"));
+    const sectionUrl = `${BASE_URL}/course/view.php?id=100&section=3`;
+    // A shortcut ("shadow") in the section names the real assignment through its link.
+    const shadow = `<li class="activity activity-wrapper shadow modtype_shadow" id="module-9" data-for="cmitem" data-id="9"><div class="activityname"><a href="${BASE_URL}/mod/assign/view.php?id=2"><span class="instancename">Essay</span></a></div></li>`;
+    const page = sectionHtml(3, "Week 3", cm(1, "folder") + cm(2, "assign") + shadow + cm(5, "resource"));
+    const file = (name: string) => ({ name, url: `${BASE_URL}/pluginfile.php/1/${name}`, requires_authentication: true });
+    const getActivity = vi.fn(async (id: number) => {
+      if (id === 5) throw new NotFoundError("Activity 5 is not available to you.");
+      return { id, type: id === 1 ? "folder" : "assign", url: `${BASE_URL}/mod/x/view.php?id=${id}`, file_entries: id === 1
+        ? [file("Slides.pdf"), file("gone.pdf"), file("slides.pdf")]
+        : [file("Slides.pdf")] } as never;
+    });
+    const result = await downloadMoodleFiles(client({
+      getActivity,
+      requestAbsolute: async (url: string) => url === sectionUrl
+        ? responseAt(url, page, { "content-type": "text/html" })
+        : url.endsWith("gone.pdf")
+          ? responseAt(url, "<p>Sorry, the requested file could not be found</p>", { "content-type": "text/html" })
+          : responseAt(url, url.slice(-10), { "content-disposition": "attachment" }),
+    }), { source: sectionUrl, directory });
+
+    expect(getActivity.mock.calls.map(([id]) => id)).toEqual([1, 2, 5]);
+    // The assignment links the folder's first file again, so it is saved once; case never collides.
+    expect(result.files.map(f => f.filename)).toEqual(["Slides.pdf", "slides (2).pdf"]);
+    expect(result.skipped.map(s => `${s.reason} ${s.name}`)).toEqual(["unavailable a5", "unavailable gone.pdf"]);
+  });
+
+  it("reads a section linked by its id", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "moodle-download-"));
+    const sectionUrl = `${BASE_URL}/course/section.php?id=44`;
+    const result = await downloadMoodleFiles(client({
+      getActivity: async (id: number) => ({ id, type: "resource", file_entries: [{ name: "f.pdf", url: `${BASE_URL}/pluginfile.php/1/f.pdf`, requires_authentication: true }] }) as never,
+      requestAbsolute: async (url: string) => url === sectionUrl
+        ? responseAt(url, sectionHtml(4, "Week 4", cm(1, "resource")), { "content-type": "text/html" })
+        : responseAt(url, "x", { "content-disposition": "attachment" }),
+    }), { source: sectionUrl, directory });
+    expect(result.files.map(f => f.filename)).toEqual(["f.pdf"]);
+  });
+
+  it("refuses --dest with --to, and --dest naming a directory", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "moodle-download-"));
+    await expect(downloadMoodleFiles(client({}), { source: "5", destination: join(directory, "a.pdf"), directory }))
+      .rejects.toMatchObject({ code: "usage" });
+    await expect(downloadMoodleFiles(client({}), { source: "5", destination: directory }))
+      .rejects.toMatchObject({ code: "usage", hint: `Pass --to ${directory} to save into it.` });
   });
 
   it("refuses --dest for a source with several files and a course URL without a section", async () => {
@@ -457,14 +548,26 @@ describe("download receipt screen", () => {
   const receipt = (file_path: string, bytes_written: number) => ({ file_path, filename: file_path.split("/").at(-1)!, bytes_written, content_type: "application/pdf", source_url: "", final_url: "" });
 
   it("prints one line for one file, relative to the working directory", () => {
-    expect(formatDownloadResult({ files: [receipt("/work/Lecture 5.pdf", 8906445)], total: 1 }, "/work"))
+    expect(formatDownloadResult({ files: [receipt("/work/Lecture 5.pdf", 8906445)], skipped: [], total: 1 }, "/work"))
       .toBe("✓ Saved Lecture 5.pdf (8.5 MiB) → ./Lecture 5.pdf");
-    expect(formatDownloadResult({ files: [receipt("/elsewhere/a.pdf", 10)], total: 1 }, "/work"))
+    expect(formatDownloadResult({ files: [receipt("/elsewhere/a.pdf", 10)], skipped: [], total: 1 }, "/work"))
       .toBe("✓ Saved a.pdf (10 B) → /elsewhere/a.pdf");
   });
 
+  it("says what was already there and what Moodle would not provide", () => {
+    const skip = (name: string, reason: "exists" | "unavailable", detail?: string) => ({ name, reason, source_url: "", file_path: `/work/w5/${name}`, ...(detail ? { detail } : {}) });
+    expect(formatDownloadResult({ files: [], skipped: [skip("a.pdf", "exists")], total: 0 }, "/work"))
+      .toBe("✓ Already have a.pdf → ./w5/a.pdf; --force downloads it again.");
+    expect(formatDownloadResult({ files: [receipt("/work/w5/c.pdf", 1)], skipped: [skip("a.pdf", "exists"), skip("b.pdf", "exists"), skip("Quiz notes", "unavailable", "Activity 5 is not available to you.")], total: 1 }, "/work"))
+      .toBe("✓ Saved c.pdf (1 B) → ./w5/c.pdf\n2 files were already in ./w5; --force downloads them again.\n! Skipped Quiz notes: Activity 5 is not available to you.");
+    expect(formatDownloadResult({ files: [], skipped: [skip("a.pdf", "exists"), skip("b.pdf", "exists")], total: 0 }, "/work/w5"))
+      .toBe("✓ 2 files were already here; --force downloads them again.");
+    expect(formatDownloadResult({ files: [], skipped: [skip("gone.pdf", "unavailable")], total: 0 }, "/work"))
+      .toBe("Saved nothing.\n! Skipped gone.pdf: Moodle did not provide it.");
+  });
+
   it("titles a batch with its count, size and folder", () => {
-    const text = formatDownloadResult({ files: [receipt("/work/w5/a.pdf", 2048), receipt("/work/w5/b.csv", 1024)], total: 2 }, "/work");
+    const text = formatDownloadResult({ files: [receipt("/work/w5/a.pdf", 2048), receipt("/work/w5/b.csv", 1024)], skipped: [], total: 2 }, "/work");
     expect(text).toContain("✓ Saved 2 files (3.0 KiB) → ./w5");
     expect(text).toContain("b.csv");
   });

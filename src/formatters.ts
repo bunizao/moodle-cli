@@ -151,16 +151,31 @@ export function formatDownloadResult(result: DownloadResult, cwd = process.cwd()
     if (!relative) return ".";
     return relative && !relative.startsWith("..") && !path.isAbsolute(relative) ? `./${relative}` : file;
   };
-  if (result.files.length === 1) {
-    const [file] = result.files;
-    return `✓ Saved ${file.filename} (${size(file.bytes_written)}) → ${shown(file.file_path)}`;
+  const lines: string[] = [];
+  const saved = result.files;
+  if (saved.length === 1) {
+    lines.push(`✓ Saved ${saved[0].filename} (${size(saved[0].bytes_written)}) → ${shown(saved[0].file_path)}`);
+  } else if (saved.length > 1) {
+    const total = saved.reduce((sum, file) => sum + file.bytes_written, 0);
+    lines.push(renderTerminalTable(
+      // A saved name is what the person looks for on disk, so it only shrinks to fit the terminal.
+      [{ label: "File", flex: true, width: Math.max(...saved.map((file) => Array.from(file.filename).length)) }, { label: "Size" }],
+      saved.map((file) => [file.filename, size(file.bytes_written)]),
+      { title: `✓ Saved ${saved.length} files (${size(total)}) → ${shown(path.dirname(saved[0].file_path))}` },
+    ));
   }
-  const total = result.files.reduce((sum, file) => sum + file.bytes_written, 0);
-  return renderTerminalTable(
-    [{ label: "File", flex: true }, { label: "Size" }],
-    result.files.map((file) => [file.filename, size(file.bytes_written)]),
-    { title: `✓ Saved ${result.files.length} files (${size(total)}) → ${shown(path.dirname(result.files[0].file_path))}` },
-  );
+  const present = result.skipped.filter((item) => item.reason === "exists");
+  if (present.length === 1 && !saved.length) {
+    lines.push(`✓ Already have ${present[0].name} → ${shown(present[0].file_path ?? "")}; --force downloads it again.`);
+  } else if (present.length) {
+    const where = shown(path.dirname(present[0].file_path ?? ""));
+    lines.push(`${saved.length ? "" : "✓ "}${present.length} ${present.length === 1 ? "file was" : "files were"} already ${where === "." ? "here" : `in ${where}`}; --force downloads ${present.length === 1 ? "it" : "them"} again.`);
+  }
+  for (const item of result.skipped.filter((entry) => entry.reason === "unavailable")) {
+    lines.push(`! Skipped ${item.name}: ${item.detail ?? "Moodle did not provide it."}`);
+  }
+  if (!saved.length && !present.length) lines.unshift("Saved nothing.");
+  return lines.join("\n");
 }
 
 export function formatSubmissionReceipt(receipt: SubmissionReceipt): string {

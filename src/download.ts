@@ -1,5 +1,5 @@
 import { createWriteStream } from "node:fs";
-import { link, lstat, mkdir, rename, unlink } from "node:fs/promises";
+import { link, lstat, mkdir, readFile, rename, unlink } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { Readable, Transform } from "node:stream";
@@ -9,7 +9,7 @@ import { parse } from "node-html-parser";
 
 import type { MoodleClient } from "./client.js";
 import { CliError, ConfigError, NotFoundError, UsageError } from "./errors.js";
-import type { Resource, Section } from "./models.js";
+import type { Activity, Resource, Section } from "./models.js";
 import { parseCourseContentsHtml } from "./scraper.js";
 
 export interface DownloadRequest {
@@ -17,6 +17,8 @@ export interface DownloadRequest {
   destination?: string;
   directory?: string;
   force?: boolean;
+  /** Called before each file, so a terminal can say which one is moving. */
+  onFile?: (index: number, total: number, name: string) => void;
 }
 
 export interface DownloadReceipt {
@@ -28,8 +30,19 @@ export interface DownloadReceipt {
   final_url: string;
 }
 
+// "exists": a file with that name is already in the directory, so a rerun resumes
+// instead of failing. "unavailable": Moodle would not hand over that one item.
+export interface SkippedDownload {
+  name: string;
+  reason: "exists" | "unavailable";
+  source_url: string;
+  file_path?: string;
+  detail?: string;
+}
+
 export interface DownloadResult {
   files: DownloadReceipt[];
+  skipped: SkippedDownload[];
   total: number;
 }
 
@@ -72,24 +85,31 @@ export async function downloadMoodleFiles(
   request: DownloadRequest,
   signal?: AbortSignal,
 ): Promise<DownloadResult> {
+  try {
+    return await downloadAll(client, request, signal);
+  } catch (error) {
+    // An abort surfaces from whichever request was in flight, often as a network error.
+    throwIfCancelled(signal);
+    throw error;
+  }
+}
+
+async function downloadAll(client: MoodleClient, request: DownloadRequest, signal?: AbortSignal): Promise<DownloadResult> {
   throwIfCancelled(signal);
+  if (request.destination && request.directory) {
+    throw new UsageError("Pass either --dest FILE or --to DIR, not both.");
+  }
   const explicitDestination = request.destination ? path.resolve(request.destination) : undefined;
   if (explicitDestination && !request.force) {
     await ensureDestinationAvailable(explicitDestination);
   }
 
-  const targets = await resolveTargets(client, request.source);
+  const skipped: SkippedDownload[] = [];
+  const targets = await resolveTargets(client, request.source, skipped, signal);
   if (explicitDestination && targets.length > 1) {
     throw new UsageError(`This source has ${targets.length} files, and --dest names exactly one.`, "Pass --to DIR to save them all.");
   }
   const directory = path.resolve(request.directory ?? process.cwd());
-  if (!explicitDestination && !request.force) {
-    // Known names are checked up front so a clash stops the batch before anything is written.
-    for (const target of targets) {
-      const name = sanitizeFilename(target.name);
-      if (name) await ensureDestinationAvailable(path.join(directory, name));
-    }
-  }
   if (!explicitDestination && request.directory) {
     await mkdir(directory, { recursive: true }).catch(() => {
       throw new ConfigError(`Cannot create local directory '${directory}'.`);
@@ -98,18 +118,43 @@ export async function downloadMoodleFiles(
 
   const files: DownloadReceipt[] = [];
   const used = new Set<string>();
-  for (const target of targets) {
+  // The first file this batch saved or found under each name. A course that attaches the
+  // same document to an assignment and a resource links it twice under different URLs;
+  // a second copy with identical bytes is dropped instead of kept as "name (2)".
+  const firstByName = new Map<string, string>();
+  for (const [index, target] of targets.entries()) {
     throwIfCancelled(signal);
-    const resolved = await responseOrWrapper(client, target.url, target.sourceUrl, target.name, signal);
+    request.onFile?.(index + 1, targets.length, target.name ?? "");
+    let resolved: ResolvedDownload;
+    try {
+      resolved = await responseOrWrapper(client, target.url, target.sourceUrl, target.name, signal);
+    } catch (error) {
+      // One broken link in a folder should not cost the rest of the section.
+      if (targets.length > 1 && error instanceof CliError && error.code === "not_found") {
+        skipped.push({ name: target.name ?? publicUrl(target.url), reason: "unavailable", source_url: publicUrl(target.sourceUrl), detail: error.message });
+        continue;
+      }
+      throw error;
+    }
     throwIfCancelled(signal);
-    const filename = explicitDestination
-      ? path.basename(explicitDestination)
-      : uniqueFilename(chooseUpstreamFilename(resolved), used);
+    const upstream = chooseUpstreamFilename(resolved);
+    const first = firstByName.get(upstream.toLowerCase());
+    const filename = explicitDestination ? path.basename(explicitDestination) : uniqueFilename(upstream, used);
     const destination = explicitDestination ?? path.join(directory, filename);
-    if (!explicitDestination && !request.force) {
-      await ensureDestinationAvailable(destination);
+    if (!explicitDestination && !request.force && await exists(destination)) {
+      // Rerunning a section download picks up where it stopped; --force refreshes.
+      await resolved.response.body?.cancel().catch(() => undefined);
+      if (!first) firstByName.set(upstream.toLowerCase(), destination);
+      skipped.push({ name: filename, reason: "exists", source_url: publicUrl(resolved.sourceUrl), file_path: destination });
+      continue;
     }
     const bytesWritten = await writeResponse(resolved.response, destination, Boolean(request.force), signal);
+    if (!first) firstByName.set(upstream.toLowerCase(), destination);
+    else if (!explicitDestination && await sameBytes(first, destination)) {
+      await unlink(destination);
+      used.delete(filename.toLowerCase());
+      continue;
+    }
     files.push({
       file_path: destination,
       filename,
@@ -119,10 +164,10 @@ export async function downloadMoodleFiles(
       final_url: publicUrl(resolved.response.url || resolved.requestUrl),
     });
   }
-  return { files, total: files.length };
+  return { files, skipped, total: files.length };
 }
 
-async function resolveTargets(client: MoodleClient, rawSource: string): Promise<DownloadTarget[]> {
+async function resolveTargets(client: MoodleClient, rawSource: string, skipped: SkippedDownload[], signal?: AbortSignal): Promise<DownloadTarget[]> {
   const source = rawSource.trim();
   if (/^\d+$/u.test(source)) {
     return activityTargets(client, positiveId(source, "An activity ID must be a positive integer."), true);
@@ -150,8 +195,8 @@ async function resolveTargets(client: MoodleClient, rawSource: string): Promise<
   if (/^\/mod\/\w+\/view\.php$/u.test(route)) {
     return activityTargets(client, positiveId(url.searchParams.get("id"), "An activity URL must include a positive ?id= value."), true);
   }
-  if (route === "/course/view.php") {
-    return sectionTargets(client, url);
+  if (route === "/course/view.php" || route === "/course/section.php") {
+    return dedupe(await sectionTargets(client, url, route === "/course/section.php", skipped, signal));
   }
   throw new UsageError(`Unsupported download source '${publicUrl(url.toString())}'.`, ACCEPTED_SOURCE_HINT);
 }
@@ -159,24 +204,50 @@ async function resolveTargets(client: MoodleClient, rawSource: string): Promise<
 // A section download is what the section's own web page shows: every file of every
 // resource, folder and assignment on it. Some course formats render child sections
 // inside a parent's page, so the page, not the flat section list, decides what is in it.
-async function sectionTargets(client: MoodleClient, url: URL): Promise<DownloadTarget[]> {
-  const courseId = positiveId(url.searchParams.get("id"), "A course URL must include a positive ?id= value.");
-  const raw = url.searchParams.get("section") ?? url.hash.match(/^#section-(\d+)$/u)?.[1];
-  if (raw === null || raw === undefined || !/^\d+$/u.test(raw)) {
-    throw new UsageError("A course URL downloads one section; this one names none.", "Add &section=N, or run `moodle dl UNIT` to pick a section.");
-  }
-  const section = await sectionPage(client, courseId, Number(raw));
+async function sectionTargets(client: MoodleClient, url: URL, bySectionId: boolean, skipped: SkippedDownload[], signal?: AbortSignal): Promise<DownloadTarget[]> {
+  const section = bySectionId ? await sectionById(client, url) : await sectionPage(client, positiveId(url.searchParams.get("id"), "A course URL must include a positive ?id= value."), sectionNumber(url));
   const activities = downloadableActivities(section);
   const targets: DownloadTarget[] = [];
   // A few pages at a time: each activity is one Moodle request before any file moves.
   for (let index = 0; index < activities.length; index += 4) {
-    const batch = await Promise.all(activities.slice(index, index + 4).map((activity) => activityTargets(client, activity.id, false)));
+    throwIfCancelled(signal);
+    const batch = await Promise.all(activities.slice(index, index + 4).map(async (activity) => {
+      try {
+        return await activityTargets(client, activity.id, false);
+      } catch (error) {
+        // A restricted or broken activity is reported, not fatal: the rest of the section still saves.
+        if (!(error instanceof CliError) || !["not_found", "upstream", "usage"].includes(error.code)) throw error;
+        skipped.push({ name: activity.name, reason: "unavailable", source_url: publicUrl(activity.url), detail: error.message });
+        return [];
+      }
+    }));
     targets.push(...batch.flat());
   }
   if (!targets.length) {
-    throw new NotFoundError(`Section '${section.name || raw}' has no files to download.`);
+    throw new NotFoundError(`Section '${section.name || section.section}' has no files to download.`);
   }
   return targets;
+}
+
+function sectionNumber(url: URL): number {
+  const raw = url.searchParams.get("section") ?? url.hash.match(/^#section-(\d+)$/u)?.[1];
+  if (raw === null || raw === undefined || !/^\d+$/u.test(raw)) {
+    throw new UsageError("A course URL downloads one section; this one names none.", "Add &section=N, or run `moodle dl UNIT` to pick a section.");
+  }
+  return Number(raw);
+}
+
+// Newer Moodle links a section by its database id (course/section.php?id=...), and that
+// page renders the section on its own.
+async function sectionById(client: MoodleClient, url: URL): Promise<Section> {
+  const id = positiveId(url.searchParams.get("id"), "A section URL must include a positive ?id= value.");
+  const html = await (await client.requestAbsolute(url.toString())).text();
+  if (looksLikeLoginPage(html)) {
+    throw new CliError("auth", "Moodle returned a login page instead of the course section.", "Run `moodle auth login`.");
+  }
+  const section = parseCourseContentsHtml(html, client.baseUrl).find((candidate) => candidate.id === id);
+  if (!section) throw new NotFoundError(`Section ${id} was not found.`, "Run `moodle dl UNIT` to pick a section.");
+  return section;
 }
 
 export async function sectionPage(client: MoodleClient, courseId: number, sectionNumber: number): Promise<Section> {
@@ -192,9 +263,16 @@ export async function sectionPage(client: MoodleClient, courseId: number, sectio
   return section;
 }
 
+// Some sites place shortcuts to an activity in other sections (a "shadow" of the real
+// assignment); its link names the real activity, so that is what gets saved.
 export function downloadableActivities(section: Section): Section["activities"] {
-  const activities = section.activities.filter((activity) => DOWNLOADABLE_TYPES.includes(activity.modname));
+  const activities = section.activities.map(linkedActivity).filter((activity) => DOWNLOADABLE_TYPES.includes(activity.modname));
   return activities.filter((activity, index) => activities.findIndex((candidate) => candidate.id === activity.id) === index);
+}
+
+function linkedActivity(activity: Activity): Activity {
+  const match = /\/mod\/(\w+)\/view\.php\?(?:.*&)?id=(\d+)/u.exec(activity.url ?? "");
+  return match && match[1] !== activity.modname ? { ...activity, modname: match[1], id: Number(match[2]) } : activity;
 }
 
 async function activityTargets(client: MoodleClient, activityId: number, single: boolean): Promise<DownloadTarget[]> {
@@ -224,16 +302,22 @@ function positiveId(value: string | null, message: string): number {
 }
 
 // Two folders in one section often both hold "slides.pdf"; the second one gets a suffix
-// instead of silently replacing the first.
+// instead of silently replacing the first. Case is ignored because the default macOS
+// and Windows file systems ignore it too.
 function uniqueFilename(filename: string, used: Set<string>): string {
   const extension = path.extname(filename);
   const stem = filename.slice(0, filename.length - extension.length);
   let candidate = filename;
-  for (let count = 2; used.has(candidate); count++) {
+  for (let count = 2; used.has(candidate.toLowerCase()); count++) {
     candidate = `${stem} (${count})${extension}`;
   }
-  used.add(candidate);
+  used.add(candidate.toLowerCase());
   return candidate;
+}
+
+// The same file linked from two activities is saved once.
+function dedupe(targets: DownloadTarget[]): DownloadTarget[] {
+  return targets.filter((target, index) => targets.findIndex((candidate) => candidate.url === target.url) === index);
 }
 
 async function responseOrWrapper(
@@ -355,12 +439,25 @@ function sanitizeFilename(value: string | undefined): string | undefined {
   return basename && basename !== "." && basename !== ".." ? basename : undefined;
 }
 
-async function ensureDestinationAvailable(destination: string): Promise<void> {
+async function sameBytes(left: string, right: string): Promise<boolean> {
+  const [a, b] = await Promise.all([lstat(left), lstat(right)]);
+  return a.size === b.size && (await readFile(left)).equals(await readFile(right));
+}
+
+async function exists(destination: string): Promise<boolean> {
   try {
     await lstat(destination);
+    return true;
   } catch (error) {
-    if (isNodeError(error, "ENOENT")) return;
+    if (isNodeError(error, "ENOENT")) return false;
     throw new ConfigError(`Cannot inspect local destination '${destination}'.`);
+  }
+}
+
+async function ensureDestinationAvailable(destination: string): Promise<void> {
+  if (!await exists(destination)) return;
+  if ((await lstat(destination)).isDirectory()) {
+    throw new UsageError(`--dest names a file, and ${destination} is a directory.`, `Pass --to ${destination} to save into it.`);
   }
   throw new UsageError(`Destination already exists: ${destination}`, "Choose another --dest path or pass --force to replace this exact file.");
 }
@@ -396,7 +493,7 @@ async function writeResponse(response: Response, destination: string, force: boo
     return bytesWritten;
   } catch (error) {
     if (signal?.aborted || (error instanceof Error && error.name === "AbortError")) {
-      throw new CliError("cancelled", "Download cancelled.");
+      throw new CliError("cancelled", "Download cancelled.", CANCELLED_HINT);
     }
     if (error instanceof CliError) throw error;
     if (isFileSystemError(error)) {
@@ -428,9 +525,12 @@ function publicUrl(value: string): string {
   }
 }
 
+// Finished files stay, and a rerun skips them, so starting again costs nothing.
+const CANCELLED_HINT = "Run it again to pick up where it stopped.";
+
 function throwIfCancelled(signal?: AbortSignal): void {
   if (signal?.aborted) {
-    throw new CliError("cancelled", "Download cancelled.");
+    throw new CliError("cancelled", "Download cancelled.", CANCELLED_HINT);
   }
 }
 
