@@ -43,7 +43,7 @@ url: https://moodle.example.edu/mod/assign/view.php?id=201
 submission status: Not submitted
 grading status: Not graded
 
-Try  moodle get 201 --to DIR"
+"
 `;
 
 exports[`shared intent contract > pins the home, section, item and grades screens at 80 columns > unit 1`] = `
@@ -55,5 +55,5 @@ Week 7
   assign  Mini Test  #201
 
 Try  moodle "algo-2" "TASK"
-     moodle get "UNIT TASK" --to ."
+     moodle dl "UNIT TASK""
 `;

@@ -57,7 +57,7 @@ import {
   formatAttemptFinish,
   formatAttemptPage,
   formatAttemptSummary,
-  formatDownloadReceipt,
+  formatDownloadResult,
   formatForumDiscussion,
   formatSubmissionReceipt,
   formatForumDiscussionRefs,
@@ -68,7 +68,8 @@ import {
   formatTodo,
   formatUser,
 } from "./formatters.js";
-import { downloadMoodleFile } from "./download.js";
+import { downloadMoodleFiles } from "./download.js";
+import { chooseDownloadSource } from "./download-source.js";
 import { submissionReceiptOf, type SubmissionReceipt } from "./moodle-assign-core.js";
 import type { AttemptPage } from "./moodle-quiz-core.js";
 import { resolveSubmissionPath } from "./submit.js";
@@ -413,16 +414,6 @@ export function buildProgram(io: CliIO = {}): Command {
       // Automation reads the exit code, so a failed installer or deploy cannot end in 0.
       if (!report.ok) throw new CliError("upstream", report.note);
     });
-    addOutputOptions(program.command("get").description("Download a resource by id, URL, or UNIT TASK phrase.").argument("<ref>", "Resource id, URL, or UNIT TASK phrase"))
-    .option("--to <directory>", "Destination directory.")
-    .option("--force", "Replace an existing file atomically.")
-    .action(async (ref: string, options: OutputCommandOptions & { to?: string; force?: boolean }) => {
-      const client = await runtime.getClient();
-      const service = createIntentService(createMoodleGateway(client));
-      const source = await choose(() => service.fileSource(ref), id => Promise.resolve(id));
-      const receipt = await downloadMoodleFile(client, { source: String(source), directory: options.to ? path.resolve(io.cwd ?? process.cwd(), options.to) : undefined, force: options.force });
-      await runtime.output(receipt, () => formatDownloadReceipt(receipt), options);
-    });
   addOutputOptions(mutating(program.command("submit").description(humanDescription("submit")).summary("Upload files into an assignment").argument("<ref>", "Assignment id, URL, or UNIT TASK phrase").argument("[files...]", "Local files to upload")))
     .option("--final", "Also submit for grading. Moodle does not allow undoing this.")
     .option("--replace", "Remove the files already in the submission first.")
@@ -596,7 +587,7 @@ export function buildProgram(io: CliIO = {}): Command {
       const result = stripEmpty({ activities: rows.slice(0, count("limit", options.limit)), total: rows.length }) as Record<string, unknown>;
       await runtime.output(result, () => runtime.screen(result, options), options);
     });
-  addOutputOptions(activities.command("show").description("Show activity details; resource and folder files can be passed to moodle get or download.").summary("Show activity details").argument("<id>", "Course-module ID")).action(
+  addOutputOptions(activities.command("show").description("Show activity details, including the files moodle download would save.").summary("Show activity details").argument("<id>", "Course-module ID")).action(
     async (id: string, options: OutputCommandOptions) => {
       await execute("item", { ref: parsePositiveInt(id) }, options);
     },
@@ -605,21 +596,25 @@ export function buildProgram(io: CliIO = {}): Command {
   addOutputOptions(
     program
       .command("download")
-      .alias("dl")
-      .description("Download one authenticated Moodle file.")
-      .argument("<source>", "Course-module ID or authenticated Moodle file URL")
-      .option("--dest <path>", "Exact downloaded file path")
-      .option("--force", "Atomically replace an existing destination"),
-  ).action(async (source: string, options: OutputCommandOptions & { dest?: string; force?: boolean }) => {
-    const destination = options.dest
-      ? path.resolve(io.cwd ?? process.cwd(), options.dest)
-      : undefined;
-    const receipt = await downloadMoodleFile(await runtime.getClient(), {
+      .aliases(["dl", "get"])
+      .description("Download files: one activity, a whole section, or a file URL. With no argument, browse.")
+      .argument("[ref...]", "Activity id, same-site activity/section/file URL, or UNIT TASK phrase")
+      .option("--to <directory>", "Destination directory; created when missing.")
+      .option("--dest <path>", "Exact path for a single downloaded file.")
+      .option("--force", "Atomically replace existing files."),
+  ).action(async (ref: string[], options: OutputCommandOptions & { to?: string; dest?: string; force?: boolean }) => {
+    const cwd = io.cwd ?? process.cwd();
+    const client = await runtime.getClient();
+    const service = createIntentService(createMoodleGateway(client));
+    const ui = human() ? createUi({ input: io.stdin ?? process.stdin, output: stderr as Writable, interactive: true }) : undefined;
+    const source = await chooseDownloadSource(client, service, ref.join(" "), ui);
+    const result = await downloadMoodleFiles(client, {
       source,
-      destination,
+      destination: options.dest ? path.resolve(cwd, options.dest) : undefined,
+      directory: options.to ? path.resolve(cwd, options.to) : undefined,
       force: options.force,
     });
-    await runtime.output(receipt, () => formatDownloadReceipt(receipt), options);
+    await runtime.output(result, () => formatDownloadResult(result), options);
   });
 
   const grades = program.command("grades").description("Inspect grades.");

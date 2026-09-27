@@ -98,7 +98,7 @@ moodle UNIT
 moodle UNIT 7
 moodle UNIT "TASK"
 moodle find "week 7 slides" UNIT
-moodle get "UNIT week 7 slides" --to ./downloads
+moodle dl "UNIT week 7 slides" --to ./downloads
 moodle grades
 moodle news UNIT
 ```
@@ -121,7 +121,13 @@ You can paste the same links into your agent and ask it to inspect the page, fin
 
 #### Download course files
 
-`moodle download` accepts an activity ID or an authenticated Moodle URL. `--dest` sets the exact local path, and `--force` replaces an existing file after the download completes. Folder activities expose `files` so you can choose which files to save.
+`moodle download` (alias `dl`) saves what the web page offers:
+
+- one activity: a resource, every file in a folder, or an assignment's attached files (brief, datasets);
+- a whole section: `moodle dl "UNIT week 5"` or a section URL such as `…/course/view.php?id=34637&section=5`, including child sections the page shows inside it;
+- a single `pluginfile.php` link.
+
+With no argument at a terminal, it walks unit → section → item the way the course page does, with type-to-filter. Files land in the current directory or `--to DIR` (created when missing); a repeated name gets a ` (2)` suffix. `--dest` names the file when there is exactly one, and `--force` replaces existing files. Quote URLs in zsh, whose `?` is a glob.
 
 #### Submit assignment files
 

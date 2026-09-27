@@ -80,7 +80,7 @@ describe("porcelain through the real Commander and HTTP boundary", () => {
       const result = await command(["get", "algo-2 week 7 slides", "--to", directory]);
       expect(result.code, result.stderr).toBe(0);
       expect(await readFile(join(directory, "slides.pdf"), "utf8")).toBe("slides");
-      expect(JSON.parse(result.stdout).bytes_written).toBe(6);
+      expect(JSON.parse(result.stdout).files[0].bytes_written).toBe(6);
     } finally { await rm(directory, { recursive: true, force: true }); }
   });
   it("applies --limit after the command name and counts the unit list once", async () => {

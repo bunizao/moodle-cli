@@ -61,7 +61,7 @@ export function renderScreen(data: Record<string, unknown>, options: { width?: n
     if (data.due) { lines.push(""); rows(array(data.due), "Due in this unit"); }
     if (data.news) { lines.push(""); rows(array(data.news), "Latest news"); }
     const unit = JSON.stringify(u.code || u.name);
-    next = array(data.sections).some(s => s.activities) ? [`moodle ${unit} "TASK"`, `moodle get "UNIT TASK" --to .`] : [`moodle ${unit} SECTION`, `moodle ${unit} grades`];
+    next = array(data.sections).some(s => s.activities) ? [`moodle ${unit} "TASK"`, `moodle dl "UNIT TASK"`] : [`moodle ${unit} SECTION`, `moodle ${unit} grades`];
   } else if (data.grades) {
     for (const g of array(data.grades)) {
       lines.push(`${text(g.code)} · ${g.graded} of ${g.total} graded`);
@@ -76,7 +76,7 @@ export function renderScreen(data: Record<string, unknown>, options: { width?: n
     for (const c of array(i.criteria)) lines.push(`${text(c.name)}  ${[c.score, c.level, c.remark].map(text).filter(Boolean).join("  ·  ")}`);
     for (const f of array(i.files)) lines.push(`File  ${text(f.name)}  ${text(f.url)}`);
     if (data.threads) rows(array(data.threads), "Threads");
-    next = [`moodle get ${i.id} --to DIR`];
+    next = array(i.files).length ? [`moodle dl ${i.id}`] : [];
   } else if (data.attempt) {
     const a = record(data.attempt); lines.push(`Attempt #${a.id} · ${[a.status, a.marks, a.grade].map(text).filter(Boolean).join(" · ")}`);
     for (const q of array(a.questions)) {

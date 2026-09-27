@@ -1,3 +1,5 @@
+import path from "node:path";
+
 import type {
   Activity,
   ActivityDetail,
@@ -13,7 +15,7 @@ import type {
   TodoItem,
   UserInfo,
 } from "./models.js";
-import type { DownloadReceipt } from "./download.js";
+import type { DownloadResult } from "./download.js";
 import type { SubmissionReceipt } from "./moodle-assign-core.js";
 import type { AttemptFinishReceipt, AttemptPage, AttemptQuestion, AttemptSummary } from "./moodle-quiz-core.js";
 import type { AuthStatus, KeepaliveRunResult } from "./keepalive.js";
@@ -141,15 +143,23 @@ function cellText(value: unknown): string {
   return Object.values(value as Record<string, unknown>).filter((v) => typeof v === "string" && v !== "").join("  ");
 }
 
-export function formatDownloadReceipt(receipt: DownloadReceipt): string {
-  return renderKeyValueTable([
-    ["File", receipt.file_path],
-    ["Filename", receipt.filename],
-    ["Bytes", String(receipt.bytes_written)],
-    ["Content type", receipt.content_type],
-    ["Source", receipt.source_url],
-    ["Final URL", receipt.final_url],
-  ], { title: "Download" });
+export function formatDownloadResult(result: DownloadResult): string {
+  if (result.files.length === 1) {
+    const [receipt] = result.files;
+    return renderKeyValueTable([
+      ["File", receipt.file_path],
+      ["Bytes", String(receipt.bytes_written)],
+      ["Content type", receipt.content_type],
+      ["Source", receipt.source_url],
+    ], { title: "Download" });
+  }
+  const size = (bytes: number) => bytes >= 1024 * 1024 ? `${(bytes / (1024 * 1024)).toFixed(1)} MiB` : bytes >= 1024 ? `${(bytes / 1024).toFixed(1)} KiB` : `${bytes} B`;
+  const total = result.files.reduce((sum, file) => sum + file.bytes_written, 0);
+  return renderTerminalTable(
+    [{ label: "File", flex: true }, { label: "Size" }],
+    result.files.map((file) => [file.filename, size(file.bytes_written)]),
+    { title: `Downloaded ${result.files.length} files (${size(total)}) to ${path.dirname(result.files[0].file_path)}` },
+  );
 }
 
 export function formatSubmissionReceipt(receipt: SubmissionReceipt): string {

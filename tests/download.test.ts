@@ -8,7 +8,10 @@ import { describe, expect, it, vi } from "vitest";
 import type { MoodleClient } from "../src/client.js";
 import { runCli } from "../src/cli.js";
 import { ENV_MOODLE_BASE_URL, ENV_MOODLE_SESSION } from "../src/constants.js";
-import { downloadMoodleFile } from "../src/download.js";
+import { downloadMoodleFiles } from "../src/download.js";
+
+// Most cases here resolve to one file; the batch cases below read the whole result.
+const downloadMoodleFile = async (...args: Parameters<typeof downloadMoodleFiles>) => (await downloadMoodleFiles(...args)).files[0];
 
 const BASE_URL = "https://school.example.edu";
 
@@ -157,10 +160,10 @@ describe("Moodle file downloads", () => {
   it("rejects unsupported sources and activity types with usage guidance", async () => {
     await expect(downloadMoodleFile(client({}), { source: "not-a-source" })).rejects.toMatchObject({ code: "usage" });
     await expect(downloadMoodleFile(client({
-      getActivity: async () => ({ id: 9, type: "folder" }) as never,
+      getActivity: async () => ({ id: 9, type: "quiz" }) as never,
     }), { source: "9" })).rejects.toMatchObject({
       code: "usage",
-      hint: expect.stringContaining("resource activity ID"),
+      message: expect.stringContaining("'quiz'"),
     });
     await expect(downloadMoodleFile(client({}), {
       source: "https://other.example.edu/pluginfile.php/1/slides.pdf",
@@ -281,6 +284,68 @@ describe("Moodle file downloads", () => {
     expect(receipt.source_url).toBe(`${BASE_URL}/pluginfile.php/1/slides.pdf?forcedownload=1`);
   });
 
+  it("saves every file of a folder into --to, suffixing a repeated name", async () => {
+    const directory = join(await mkdtemp(join(tmpdir(), "moodle-download-")), "week-3");
+    const file = (n: number) => `${BASE_URL}/pluginfile.php/7/mod_folder/content/0/${n}/slides.pdf`;
+    const requestAbsolute = vi.fn(async (url: string) => responseAt(url, url.slice(-12), { "content-type": "application/pdf" }));
+    const result = await downloadMoodleFiles(client({
+      getActivity: async () => ({ id: 5, type: "folder", url: `${BASE_URL}/mod/folder/view.php?id=5`, file_entries: [
+        { name: "slides.pdf", url: file(1), requires_authentication: true },
+        { name: "slides.pdf", url: file(2), requires_authentication: true },
+      ] }) as never,
+      requestAbsolute,
+    }), { source: `${BASE_URL}/mod/folder/view.php?id=5`, directory });
+
+    expect(result.total).toBe(2);
+    expect(result.files.map(f => f.filename)).toEqual(["slides.pdf", "slides (2).pdf"]);
+    await expect(readdir(directory)).resolves.toEqual(["slides (2).pdf", "slides.pdf"]);
+  });
+
+  it("downloads an assignment's attached files from its activity URL", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "moodle-download-"));
+    const spec = `${BASE_URL}/pluginfile.php/9/mod_assign/introattachment/0/spec.pdf?forcedownload=1`;
+    const data = `${BASE_URL}/pluginfile.php/9/mod_assign/introattachment/0/data.csv?forcedownload=1`;
+    const result = await downloadMoodleFiles(client({
+      getActivity: async () => ({ id: 77, type: "assign", url: `${BASE_URL}/mod/assign/view.php?id=77`, file_entries: [
+        { name: "spec.pdf", url: spec, requires_authentication: true },
+        { name: "data.csv", url: data, requires_authentication: true },
+      ] }) as never,
+      requestAbsolute: async (url: string) => responseAt(url, "x", { "content-disposition": "attachment" }),
+    }), { source: `${BASE_URL}/mod/assign/view.php?id=77`, directory });
+
+    expect(result.files.map(f => f.filename)).toEqual(["spec.pdf", "data.csv"]);
+  });
+
+  it("downloads what a section's page shows, including a nested child section", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "moodle-download-"));
+    const sectionUrl = `${BASE_URL}/course/view.php?id=100&section=3`;
+    const page = sectionHtml(3, "Week 3", cm(1, "resource") + cm(2, "assign") + cm(3, "forum") + sectionHtml(4, "Real-time", cm(4, "resource") + cm(1, "resource")));
+    const getActivity = vi.fn(async (id: number) => ({
+      id, type: id === 2 ? "assign" : "resource", url: `${BASE_URL}/mod/x/view.php?id=${id}`,
+      file_entries: id === 2 ? [] : [{ name: `f${id}.pdf`, url: `${BASE_URL}/pluginfile.php/${id}/f.pdf`, requires_authentication: true }],
+    }) as never);
+    const result = await downloadMoodleFiles(client({
+      getActivity,
+      requestAbsolute: async (url: string) => url === sectionUrl
+        ? responseAt(url, page, { "content-type": "text/html" })
+        : responseAt(url, "x", { "content-disposition": "attachment" }),
+    }), { source: sectionUrl, directory });
+
+    expect(getActivity.mock.calls.map(([id]) => id)).toEqual([1, 2, 4]);
+    expect(result.files.map(f => f.filename)).toEqual(["f1.pdf", "f4.pdf"]);
+  });
+
+  it("refuses --dest for a source with several files and a course URL without a section", async () => {
+    const getActivity = async () => ({ id: 5, type: "folder", file_entries: [
+      { name: "a.pdf", url: `${BASE_URL}/pluginfile.php/1/a.pdf`, requires_authentication: true },
+      { name: "b.pdf", url: `${BASE_URL}/pluginfile.php/1/b.pdf`, requires_authentication: true },
+    ] }) as never;
+    await expect(downloadMoodleFiles(client({ getActivity }), { source: "5", destination: join(tmpdir(), "x.pdf") }))
+      .rejects.toMatchObject({ code: "usage", hint: expect.stringContaining("--to") });
+    await expect(downloadMoodleFiles(client({}), { source: `${BASE_URL}/course/view.php?id=100` }))
+      .rejects.toMatchObject({ code: "usage" });
+  });
+
   it.each(["download", "dl"])("exposes %s with one JSON receipt on non-TTY stdout", async (command) => {
     const directory = await mkdtemp(join(tmpdir(), "moodle-download-cli-"));
     const destination = join(directory, `${command}.pdf`);
@@ -288,7 +353,7 @@ describe("Moodle file downloads", () => {
     const result = await runDownloadCli([command, source, "--dest", destination], source);
 
     expect(result).toMatchObject({ code: 0, stderr: "" });
-    expect(JSON.parse(result.stdout)).toMatchObject({
+    expect(JSON.parse(result.stdout).files[0]).toMatchObject({
       file_path: destination,
       filename: `${command}.pdf`,
       bytes_written: 6,
@@ -303,7 +368,7 @@ describe("Moodle file downloads", () => {
     const source = `${BASE_URL}/pluginfile.php/1/slides.pdf`;
     const commandTree = await runDownloadCli(["commands", "--json"], source);
     const download = JSON.parse(commandTree.stdout).commands.find((command: { name: string }) => command.name === "download");
-    expect(download).toMatchObject({ aliases: ["dl"], mutating: false });
+    expect(download).toMatchObject({ aliases: ["dl", "get"], mutating: false });
 
     const result = await runDownloadCli([
       "download",
@@ -317,7 +382,7 @@ describe("Moodle file downloads", () => {
 
     expect(result).toMatchObject({ code: 0, stdout: "", stderr: "" });
     await expect(readFile(destination, "utf8")).resolves.toBe("slides");
-    expect(JSON.parse(await readFile(receiptPath, "utf8"))).toMatchObject({ file_path: destination });
+    expect(JSON.parse(await readFile(receiptPath, "utf8"))).toMatchObject({ files: [{ file_path: destination }], total: 1 });
   });
 });
 
@@ -329,6 +394,14 @@ function client(overrides: Partial<MoodleClient>): MoodleClient {
     },
     ...overrides,
   } as MoodleClient;
+}
+
+function cm(id: number, modname: string): string {
+  return `<li class="activity activity-wrapper ${modname} modtype_${modname}" id="module-${id}" data-for="cmitem" data-id="${id}"><div class="activityname"><a href="${BASE_URL}/mod/${modname}/view.php?id=${id}"><span class="instancename">a${id}</span></a></div></li>`;
+}
+
+function sectionHtml(number: number, name: string, inner: string): string {
+  return `<li id="section-${number}" class="section course-section main" data-for="section" data-id="${40 + number}" data-number="${number}"><h3 class="sectionname">${name}</h3><ul class="section">${inner}</ul></li>`;
 }
 
 function responseAt(url: string, body: BodyInit, headers: HeadersInit = {}): Response {
