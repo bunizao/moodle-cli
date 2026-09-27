@@ -166,6 +166,8 @@ export function formatSubmissionReceipt(receipt: SubmissionReceipt): string {
     ["URL", receipt.url],
     ["Action", receipt.action],
     ["Draft stage", receipt.draft_stage === undefined ? "" : receipt.draft_stage ? "yes" : "no; saving submits for grading"],
+    ["Group", receipt.group ?? ""],
+    ["Waiting for", receipt.awaiting?.join(", ") ?? ""],
     ["Status", receipt.submission_status],
     ["Grading", receipt.grading_status],
     ["Due", receipt.due],
@@ -180,10 +182,14 @@ export function formatSubmissionReceipt(receipt: SubmissionReceipt): string {
   ], { title: receipt.action === "planned" ? "Submission plan" : "Submission" });
   const note = receipt.action === "planned"
     ? "Plan only; nothing was uploaded. Re-run without --dry-run to upload."
-    : receipt.action === "saved" && /draft|not submitted/iu.test(receipt.submission_status)
-      ? "Saved as a draft. Re-run with --final to submit it for grading."
-      : "";
-  return note ? `${table}\n${note}` : table;
+    : receipt.action === "submitted" && receipt.awaiting?.length
+      ? "Your part is submitted. The group's submission goes for grading once everyone listed under Waiting for has submitted too."
+      : receipt.action === "saved" && /draft|not submitted/iu.test(receipt.submission_status)
+        ? "Saved as a draft. Re-run with --final to submit it for grading."
+        : "";
+  // Table cells truncate, so the warning that the files are shared goes below the table.
+  const shared = receipt.group ? `Group submission: the files are shared, so this changes the submission for everyone in ${receipt.group}.` : "";
+  return [table, shared, note].filter(Boolean).join("\n");
 }
 
 export function formatForumDiscussion(

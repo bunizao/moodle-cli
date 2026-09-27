@@ -135,6 +135,26 @@ describe("assignment submission flow", () => {
     expect(new URLSearchParams(String(remove?.body)).get("selected")).toBe(JSON.stringify([{ filename: "old.pdf", filepath: "/" }, { filename: "notes.txt", filepath: "/" }]));
   });
 
+  it("refuses --replace with no files instead of emptying the submission", async () => {
+    const site = fakeSite({ draft: [{ filename: "old.pdf", size: 10 }], status: "draft", statement: false });
+    await expect(submitAssignmentFiles(site.deps, request({ files: [], replace: true, final: true }))).rejects.toMatchObject({ code: "usage", message: expect.stringContaining("would empty the submission") });
+    expect(site.calls).toHaveLength(0);
+  });
+
+  it("names the group whose shared files a group submission changes", async () => {
+    const site = fakeSite({ group: "Team 7", draft: [{ filename: "theirs.pdf", size: 10 }], status: "draft" });
+    const receipt = await submitAssignmentFiles(site.deps, request({ dryRun: true, replace: true }));
+    expect(receipt).toMatchObject({ group: "Team 7", removed: ["theirs.pdf"] });
+    expect(formatSubmissionReceipt(receipt)).toContain("the files are shared, so this changes the submission for everyone in Team 7");
+  });
+
+  it("reports a submitted part when the group still waits for other members", async () => {
+    const site = fakeSite({ group: "Team 7", waitsFor: ["Student B"], draft: [{ filename: "essay.pdf", size: 5 }], status: "draft", statement: false });
+    const receipt = await submitAssignmentFiles(site.deps, request({ files: [], final: true, acceptStatement: true }));
+    expect(receipt).toMatchObject({ action: "submitted", group: "Team 7", awaiting: ["Student B"], submission_status: "Draft (not submitted)" });
+    expect(formatSubmissionReceipt(receipt)).toContain("Your part is submitted");
+  });
+
   it("rejects oversized or wrong-type files before touching the site", async () => {
     const site = fakeSite({ maxbytes: 3, accepted: [".pdf", ".docx"] });
     await expect(submitAssignmentFiles(site.deps, request({}))).rejects.toMatchObject({ code: "usage", message: "essay.pdf is 5 B; the limit is 3 B." });
@@ -227,6 +247,10 @@ interface SiteOptions {
   uploadError?: string;
   saveNotice?: string;
   forgetUploads?: boolean;
+  /** A group submission for this group. */
+  group?: string;
+  /** Other members Moodle waits for: every member has to submit, so the group stays a draft until they do. */
+  waitsFor?: string[];
 }
 
 // A tiny stateful Moodle: the draft area, the saved files and the status move only when the right POST arrives.
@@ -239,6 +263,8 @@ function fakeSite(options: SiteOptions = {}) {
   let draft = [...(options.draft ?? [])];
   let saved = options.status && options.status !== "none" ? [...draft] : [];
   let status = options.status ?? "none";
+  let awaiting = options.waitsFor ? ["Student A", ...options.waitsFor] : [];
+  const view = () => viewPage(status, saved, drafts, options.group, awaiting);
   const deps: AssignSubmitDeps = {
     baseUrl: BASE,
     now: () => new Date("2026-05-13T09:00:00Z"),
@@ -247,7 +273,7 @@ function fakeSite(options: SiteOptions = {}) {
     async request(url, init = {}, requestOptions) {
       const method = (init.method ?? "GET").toUpperCase();
       calls.push({ method, url, body: init.body, headers: init.headers as Record<string, string> | undefined, options: requestOptions });
-      if (url === VIEW) return page(url, viewPage(status, saved, drafts));
+      if (url === VIEW) return page(url, view());
       if (url === `${VIEW}&action=editsubmission` && method === "GET") return page(url, options.closed || (drafts && status === "submitted") ? closedPage() : editPage({ statement: statement && !drafts, maxfiles: options.maxfiles, maxbytes: options.maxbytes, accepted: options.accepted }));
       if (url === `${VIEW}&action=submit` && method === "GET") return page(url, confirmPage(statement));
       if (url.endsWith("draftfiles_ajax.php?action=list")) return json(url, { list: draft.map(file => ({ ...file, filepath: "/", fullname: file.filename, type: "file" })), filecount: draft.length });
@@ -262,11 +288,12 @@ function fakeSite(options: SiteOptions = {}) {
         if (options.saveNotice) return page(url, editPage({ notice: options.saveNotice }));
         saved = options.forgetUploads ? [] : [...draft];
         status = drafts && !options.saveSubmits ? "draft" : "submitted";
-        return page(`${VIEW}&action=view`, viewPage(status, saved, drafts));
+        return page(`${VIEW}&action=view`, view());
       }
       if (url === `${VIEW}&action=submit` && method === "POST") {
-        status = "submitted";
-        return page(`${VIEW}&action=view`, viewPage(status, saved, drafts));
+        awaiting = options.waitsFor ?? [];
+        status = awaiting.length ? "draft" : "submitted";
+        return page(`${VIEW}&action=view`, view());
       }
       throw new Error(`Unexpected request ${method} ${url}`);
     },
@@ -286,7 +313,7 @@ function json(url: string, body: unknown): Response {
   return response;
 }
 
-function viewPage(status: "none" | "draft" | "submitted", files: Array<{ filename: string }>, drafts = true): string {
+function viewPage(status: "none" | "draft" | "submitted", files: Array<{ filename: string }>, drafts = true, group?: string, awaiting: string[] = []): string {
   const label = status === "none" ? "No submission" : status === "draft" ? "Draft (not submitted)" : "Submitted for grading";
   const rows = files.map(file => `<div class="fileuploadsubmission"><a href="/pluginfile.php/9001/assignsubmission_file/submission_files/1/${file.filename}" target="_blank">${file.filename}</a></div>`).join("");
   return `<!doctype html><html><body>
@@ -295,7 +322,8 @@ function viewPage(status: "none" | "draft" | "submitted", files: Array<{ filenam
 ${drafts && status === "draft" && files.length ? `<div class="singlebutton"><form method="get" action="${BASE}/mod/assign/view.php"><input type="hidden" name="id" value="555"><input type="hidden" name="action" value="submit"><button type="submit" class="btn btn-primary">Submit assignment</button></form></div>` : ""}
 <p><strong>Due:</strong> Friday, 15 May 2026, 5:00 PM</p>
 <table class="generaltable">
-<tr><th>Submission status</th><td>${label}</td></tr>
+${group ? `<tr><th>Group</th><td>${group}</td></tr>` : ""}
+<tr><th>Submission status</th><td>${label}${awaiting.length && status !== "none" ? `<div class="box py-3">Users who need to submit: ${awaiting.map(name => `<a href="${BASE}/user/view.php?id=1">${name}</a>`).join(", ")}</div>` : ""}</td></tr>
 <tr><th>Grading status</th><td>Not graded</td></tr>
 <tr><th>Time remaining</th><td>2 days</td></tr>
 ${status === "none" ? "" : "<tr><th>Last modified</th><td>Wednesday, 13 May 2026, 9:00 AM</td></tr>"}

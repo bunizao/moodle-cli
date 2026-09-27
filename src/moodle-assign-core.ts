@@ -53,6 +53,10 @@ export interface SubmissionReceipt {
   action: "planned" | "saved" | "submitted";
   /** False when saving submits for grading at once; absent when Moodle's pages do not show it. */
   draft_stage?: boolean;
+  /** The group sharing this submission; absent when it is an individual one. */
+  group?: string;
+  /** Group members Moodle still waits for before the group's submission counts as submitted. */
+  awaiting?: string[];
   submission_status: string;
   grading_status: string;
   due: string;
@@ -113,6 +117,7 @@ export async function submitAssignmentFiles(deps: AssignSubmitDeps, request: Sub
   const id = request.activityId;
   if (!Number.isSafeInteger(id) || id <= 0) throw deps.usage("The assignment id must be a positive integer.");
   if (!request.files.length && !request.final) throw deps.usage("Give at least one file to upload, or use --final to submit the existing draft.");
+  if (!request.files.length && request.replace) throw deps.usage("--replace with no files would empty the submission.", "Give the files that should replace the current ones.");
   const seen = new Set<string>();
   for (const file of request.files) {
     if (!file.name || /[\\/]/u.test(file.name)) throw deps.usage(`'${file.name}' is not a plain file name.`);
@@ -205,7 +210,8 @@ export async function submitAssignmentFiles(deps: AssignSubmitDeps, request: Sub
     const errorHtml = await postForm(deps, confirm.action, [...confirm.fields, ...(confirm.statement ? [["submissionstatement", "1"] as Field] : []), ["submitbutton", "Continue"]]);
     if (errorHtml !== null) throw deps.fail(`Moodle did not submit the assignment for grading: ${noticesOf(errorHtml) || "it returned the confirmation page again without a reason"}`);
     receipt = parseReceiptPage(await pageText(deps, viewUrl), id, deps.baseUrl);
-    if (!isSubmitted(receipt.submission_status)) throw deps.fail(`Moodle accepted the confirmation but still reports "${receipt.submission_status || "no status"}"; check the assignment in a browser.`);
+    // When every member has to submit, the group's status stays a draft until the last one does.
+    if (!isSubmitted(receipt.submission_status) && !receipt.awaiting?.length) throw deps.fail(`Moodle accepted the confirmation but still reports "${receipt.submission_status || "no status"}"; check the assignment in a browser.`);
     action = "submitted";
   }
 
@@ -293,12 +299,20 @@ export function parseReceiptPage(html: string, activityId: number, baseUrl: stri
   };
   for (const link of root.querySelectorAll(".fileuploadsubmission a[href]")) add(link);
   for (const link of tableCell(root, "File submissions")?.querySelectorAll("a[href]") ?? []) add(link);
+  // A group submission has a "Group" row. Its files are shared, so every change reaches the
+  // whole group. The row holds an error notice instead when the user has no usable group.
+  const groupCell = tableCell(root, "Group");
+  const group = groupCell && !groupCell.querySelector(".alert") ? cleanText(groupCell.textContent) : "";
+  const pending = tableCell(root, "Submission status")?.querySelectorAll("div").find(div => /^Users who need to submit:/iu.test(cleanText(div.textContent)));
+  const awaiting = pending?.querySelectorAll("a").map(link => cleanText(link.textContent)).filter(Boolean) ?? [];
   return {
     id: activityId,
     name: page.name,
     ...(page.course_id ? { unit_id: page.course_id } : {}),
     url: page.url,
-    submission_status: page.submission_status,
+    ...(group ? { group } : {}),
+    ...(awaiting.length ? { awaiting } : {}),
+    submission_status: page.submission_status.replace(/\s*Users who need to submit:.*$/isu, ""),
     grading_status: page.grading_status,
     due: page.due_pretty || cleanText(tableCell(root, "Due date")?.textContent),
     time_remaining: page.time_remaining,

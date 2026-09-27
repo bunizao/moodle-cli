@@ -141,7 +141,10 @@ the site's submission statement when one is required, and a file that is too lar
 the wrong type is refused before anything is uploaded. Some assignments have no draft
 stage, so saving the files is the submission for grading; without `--final`, `submit`
 refuses those (and any assignment whose pages do not show which kind it is) before
-uploading anything. The plan reports `draft_stage`.
+uploading anything. The plan reports `draft_stage`. `--replace` with no files is refused
+rather than emptying the submission. In a group submission the plan names the `group`:
+its files are shared, so an upload or `--replace` changes everyone's submission. When every
+member has to submit, the receipt lists who Moodle is still `awaiting`.
 
 ### Take a quiz (beta)
 
@@ -155,7 +158,7 @@ moodle quiz answer <attempt> <quiz> 3 --from essay.md
 moodle quiz finish <attempt> <quiz>             # "Submit all and finish"; Moodle does not allow undoing this
 ```
 
-Every write shows the beta and academic-integrity notice and asks for a yes; a pipe must pass `--yes`, and `--dry-run` shows the plan. Answers you send are your own submission under your institution's rules: use it only where the quiz allows it, and check the attempt in a browser before you finish. A quiz with an access password asks for it at the terminal (not echoed, never stored); scripts pass `--password`. A quiz that requires the Safe Exam Browser cannot be taken here, because Moodle checks the browser itself. Question types without a plain choice or text input are shown but must be answered in a browser.
+Before `quiz start` asks, it names the time limit (the timer starts at once and does not pause) and how many attempts are left. A quiz that moves forward only is refused an earlier page, and `quiz show --page` asks before opening the next page, because that locks the current one. Every write shows the beta and academic-integrity notice and asks for a yes; a pipe must pass `--yes`, and `--dry-run` shows the plan. Answers you send are your own submission under your institution's rules: use it only where the quiz allows it, and check the attempt in a browser before you finish. A quiz with an access password asks for it at the terminal (not echoed, never stored); scripts pass `--password`. A quiz that requires the Safe Exam Browser cannot be taken here, because Moodle checks the browser itself. Question types without a plain choice or text input are shown but must be answered in a browser.
 
 ### Remote MCP for web AI
 
