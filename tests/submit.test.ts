@@ -21,11 +21,12 @@ describe("assignment submission flow", () => {
     const site = fakeSite();
     const receipt = await submitAssignmentFiles(site.deps, request({ dryRun: true }));
 
-    expect(receipt).toMatchObject({ id: 555, name: "Essay 1", unit_id: 101, url: VIEW, action: "planned", submission_status: "No submission", files: [], uploads: [{ name: "essay.pdf", bytes: 5, path: "/work/essay.pdf" }], removed: [], limits: { max_bytes: 1048576, max_files: 2 }, checked_at: "2026-05-13T09:00:00.000Z" });
+    expect(receipt).toMatchObject({ id: 555, name: "Essay 1", unit_id: 101, url: VIEW, action: "planned", draft_stage: true, submission_status: "No submission", files: [], uploads: [{ name: "essay.pdf", bytes: 5, path: "/work/essay.pdf" }], removed: [], limits: { max_bytes: 1048576, max_files: 2 }, checked_at: "2026-05-13T09:00:00.000Z" });
     expect(site.calls.map(call => `${call.method} ${call.url}`)).toEqual([
       `GET ${VIEW}`,
       `GET ${VIEW}&action=editsubmission`,
       `POST ${BASE}/repository/draftfiles_ajax.php?action=list`,
+      `GET ${VIEW}&action=submit`,
     ]);
     expect(intentContracts.submit.output.safeParse({ submission: stripEmpty(receipt) }).success).toBe(true);
   });
@@ -34,30 +35,31 @@ describe("assignment submission flow", () => {
     const site = fakeSite();
     const receipt = await submitAssignmentFiles(site.deps, request({}));
 
-    expect(receipt).toMatchObject({ action: "saved", submission_status: "Draft (not submitted)", last_modified: "Wednesday, 13 May 2026, 9:00 AM", files: [{ name: "essay.pdf", url: `${BASE}/pluginfile.php/9001/assignsubmission_file/submission_files/1/essay.pdf` }] });
+    expect(receipt).toMatchObject({ action: "saved", draft_stage: true, submission_status: "Draft (not submitted)", last_modified: "Wednesday, 13 May 2026, 9:00 AM", files: [{ name: "essay.pdf", url: `${BASE}/pluginfile.php/9001/assignsubmission_file/submission_files/1/essay.pdf` }] });
     expect(site.calls.map(call => `${call.method} ${call.url}`)).toEqual([
       `GET ${VIEW}`,
       `GET ${VIEW}&action=editsubmission`,
       `POST ${BASE}/repository/draftfiles_ajax.php?action=list`,
+      `GET ${VIEW}&action=submit`,
       `POST ${BASE}/repository/repository_ajax.php?action=upload`,
       `POST ${VIEW}&action=editsubmission`,
       `GET ${VIEW}`,
     ]);
-    const upload = site.calls[3].body as FormData;
+    const upload = site.calls[4].body as FormData;
     expect(Object.fromEntries([...upload.entries()].filter(([key]) => key !== "repo_upload_file"))).toEqual({
       sesskey: "fixture-sesskey", client_id: "c1", repo_id: "3", itemid: ITEMID, env: "filemanager", ctx_id: "9001", title: "essay.pdf", author: "Alex", license: "allrightsreserved", savepath: "/", maxbytes: "1048576", areamaxbytes: "-1", "accepted_types[]": "*", overwrite: "1",
     });
     const file = upload.get("repo_upload_file") as File;
     expect(file.name).toBe("essay.pdf");
     expect(await file.text()).toBe("hello");
-    expect(site.calls[3].options).toEqual({ allowErrorStatus: true });
+    expect(site.calls[4].options).toEqual({ allowErrorStatus: true });
     // Ordered replay: the page's own `action=editsubmission` comes first, the form's `savesubmission` last, so PHP keeps the latter.
-    expect(site.calls[4].body).toBe(`id=555&action=editsubmission&lastmodified=1715000000&sesskey=fixture-sesskey&_qf__mod_assign_submission_form=1&id=555&userid=7&action=savesubmission&files_filemanager=${ITEMID}&submitbutton=Save+changes`);
-    expect(site.calls[4].headers).toEqual({ "content-type": "application/x-www-form-urlencoded" });
+    expect(site.calls[5].body).toBe(`id=555&action=editsubmission&lastmodified=1715000000&sesskey=fixture-sesskey&_qf__mod_assign_submission_form=1&id=555&userid=7&action=savesubmission&files_filemanager=${ITEMID}&submitbutton=Save+changes`);
+    expect(site.calls[5].headers).toEqual({ "content-type": "application/x-www-form-urlencoded" });
   });
 
   it("submits for grading only after the statement was accepted, and verifies the final status", async () => {
-    const site = fakeSite({ confirmStatement: true });
+    const site = fakeSite();
     await expect(submitAssignmentFiles(site.deps, request({ final: true }))).rejects.toMatchObject({ code: "usage", message: `Moodle requires you to accept this statement: "${STATEMENT}"` });
     expect(site.calls.filter(call => call.method === "POST" && !call.url.includes("action=list"))).toHaveLength(0);
 
@@ -69,11 +71,57 @@ describe("assignment submission flow", () => {
   });
 
   it("finalises an existing draft without re-saving when no files are given", async () => {
-    const site = fakeSite({ draft: [{ filename: "old.pdf", size: 10 }], status: "draft" });
+    // No statement here, so the draft stage is read off the view page's "Submit assignment" button.
+    const site = fakeSite({ draft: [{ filename: "old.pdf", size: 10 }], status: "draft", statement: false });
     const receipt = await submitAssignmentFiles(site.deps, { ...request({ final: true }), files: [] });
     expect(receipt.action).toBe("submitted");
     expect(site.calls.map(call => `${call.method} ${call.url}`)).not.toContain(`POST ${VIEW}&action=editsubmission`);
     await expect(submitAssignmentFiles(site.deps, { ...request({}), files: [] })).rejects.toBeInstanceOf(UsageError);
+  });
+
+  it("refuses to save without --final when saving would submit for grading", async () => {
+    // The statement sits on the edit form only when the assignment has no draft stage.
+    const site = fakeSite({ drafts: false });
+    const refusal = { code: "usage", message: "This assignment has no draft stage: Moodle submits it for grading as soon as the files are saved.", hint: expect.stringContaining("Nothing was uploaded") };
+    await expect(submitAssignmentFiles(site.deps, request({ dryRun: true, acceptStatement: true }))).rejects.toMatchObject(refusal);
+    await expect(submitAssignmentFiles(site.deps, request({ acceptStatement: true }))).rejects.toMatchObject(refusal);
+    expect(site.calls.filter(call => call.method === "POST" && !call.url.includes("action=list"))).toHaveLength(0);
+
+    const plan = await submitAssignmentFiles(site.deps, request({ final: true, acceptStatement: true, dryRun: true }));
+    expect(plan).toMatchObject({ action: "planned", draft_stage: false, statement: STATEMENT });
+    expect(formatSubmissionReceipt(plan)).toContain("no; saving submits for grading");
+
+    site.calls.length = 0;
+    const receipt = await submitAssignmentFiles(site.deps, request({ final: true, acceptStatement: true }));
+    expect(receipt).toMatchObject({ action: "submitted", draft_stage: false, submission_status: "Submitted for grading" });
+    // Saving was the submission: one form post, carrying the statement, and no confirmation step.
+    const posts = site.calls.filter(call => call.method === "POST" && !call.url.includes("_ajax.php"));
+    expect(posts.map(call => call.url)).toEqual([`${VIEW}&action=editsubmission`]);
+    expect(String(posts[0].body)).toContain("submissionstatement=1");
+    expect(site.calls.map(call => call.url)).not.toContain(`${VIEW}&action=submit`);
+  });
+
+  it("reads a missing draft stage off a submitted submission that is still editable", async () => {
+    // Moodle locks a submitted submission when there is a draft stage.
+    const site = fakeSite({ drafts: false, statement: false, status: "submitted", draft: [{ filename: "old.pdf", size: 10 }] });
+    await expect(submitAssignmentFiles(site.deps, request({ replace: true }))).rejects.toMatchObject({ code: "usage", message: expect.stringContaining("no draft stage") });
+    expect(site.calls.filter(call => call.method === "POST" && !call.url.includes("action=list"))).toHaveLength(0);
+  });
+
+  it("treats a draft stage Moodle's pages do not show as saving that submits", async () => {
+    // Without a statement or an existing draft, no student-facing page shows the setting.
+    const site = fakeSite({ statement: false });
+    await expect(submitAssignmentFiles(site.deps, request({}))).rejects.toMatchObject({ code: "usage", message: expect.stringContaining("does not show whether this assignment keeps drafts") });
+    expect(site.calls.filter(call => call.method === "POST" && !call.url.includes("action=list"))).toHaveLength(0);
+
+    const receipt = await submitAssignmentFiles(site.deps, request({ final: true }));
+    expect(receipt).toMatchObject({ action: "submitted", submission_status: "Submitted for grading" });
+    expect(receipt).not.toHaveProperty("draft_stage");
+  });
+
+  it("fails loudly when Moodle submits on a save that should have been a draft", async () => {
+    const site = fakeSite({ saveSubmits: true });
+    await expect(submitAssignmentFiles(site.deps, request({}))).rejects.toMatchObject({ code: "upstream", message: expect.stringContaining("Moodle submitted the assignment for grading when the files were saved") });
   });
 
   it("replaces existing files on request and otherwise enforces the file limit", async () => {
@@ -85,6 +133,26 @@ describe("assignment submission flow", () => {
     expect(receipt.removed).toEqual(["old.pdf", "notes.txt"]);
     const remove = site.calls.find(call => call.url.includes("action=deleteselected"));
     expect(new URLSearchParams(String(remove?.body)).get("selected")).toBe(JSON.stringify([{ filename: "old.pdf", filepath: "/" }, { filename: "notes.txt", filepath: "/" }]));
+  });
+
+  it("refuses --replace with no files instead of emptying the submission", async () => {
+    const site = fakeSite({ draft: [{ filename: "old.pdf", size: 10 }], status: "draft", statement: false });
+    await expect(submitAssignmentFiles(site.deps, request({ files: [], replace: true, final: true }))).rejects.toMatchObject({ code: "usage", message: expect.stringContaining("would empty the submission") });
+    expect(site.calls).toHaveLength(0);
+  });
+
+  it("names the group whose shared files a group submission changes", async () => {
+    const site = fakeSite({ group: "Team 7", draft: [{ filename: "theirs.pdf", size: 10 }], status: "draft" });
+    const receipt = await submitAssignmentFiles(site.deps, request({ dryRun: true, replace: true }));
+    expect(receipt).toMatchObject({ group: "Team 7", removed: ["theirs.pdf"] });
+    expect(formatSubmissionReceipt(receipt)).toContain("the files are shared, so this changes the submission for everyone in Team 7");
+  });
+
+  it("reports a submitted part when the group still waits for other members", async () => {
+    const site = fakeSite({ group: "Team 7", waitsFor: ["Student B"], draft: [{ filename: "essay.pdf", size: 5 }], status: "draft", statement: false });
+    const receipt = await submitAssignmentFiles(site.deps, request({ files: [], final: true, acceptStatement: true }));
+    expect(receipt).toMatchObject({ action: "submitted", group: "Team 7", awaiting: ["Student B"], submission_status: "Draft (not submitted)" });
+    expect(formatSubmissionReceipt(receipt)).toContain("Your part is submitted");
   });
 
   it("rejects oversized or wrong-type files before touching the site", async () => {
@@ -166,22 +234,37 @@ interface Call { method: string; url: string; body?: BodyInit | null; headers?: 
 interface SiteOptions {
   draft?: Array<{ filename: string; size: number }>;
   status?: "none" | "draft" | "submitted";
+  /** The assignment's "require students to click the submit button"; on unless false. */
+  drafts?: boolean;
+  /** The site requires a submission statement; on unless false. */
+  statement?: boolean;
+  /** Moodle submits on save despite rendering a draft stage. */
+  saveSubmits?: boolean;
   maxfiles?: number;
   maxbytes?: number;
   accepted?: unknown;
   closed?: boolean;
-  confirmStatement?: boolean;
   uploadError?: string;
   saveNotice?: string;
   forgetUploads?: boolean;
+  /** A group submission for this group. */
+  group?: string;
+  /** Other members Moodle waits for: every member has to submit, so the group stays a draft until they do. */
+  waitsFor?: string[];
 }
 
 // A tiny stateful Moodle: the draft area, the saved files and the status move only when the right POST arrives.
+// It renders the draft-stage setting the way Moodle does: the statement sits on the edit form only
+// without a draft stage, "Submit assignment" appears only with one, and saving without one submits.
 function fakeSite(options: SiteOptions = {}) {
   const calls: Call[] = [];
+  const drafts = options.drafts !== false;
+  const statement = options.statement !== false;
   let draft = [...(options.draft ?? [])];
   let saved = options.status && options.status !== "none" ? [...draft] : [];
   let status = options.status ?? "none";
+  let awaiting = options.waitsFor ? ["Student A", ...options.waitsFor] : [];
+  const view = () => viewPage(status, saved, drafts, options.group, awaiting);
   const deps: AssignSubmitDeps = {
     baseUrl: BASE,
     now: () => new Date("2026-05-13T09:00:00Z"),
@@ -190,9 +273,9 @@ function fakeSite(options: SiteOptions = {}) {
     async request(url, init = {}, requestOptions) {
       const method = (init.method ?? "GET").toUpperCase();
       calls.push({ method, url, body: init.body, headers: init.headers as Record<string, string> | undefined, options: requestOptions });
-      if (url === VIEW) return page(url, viewPage(status, saved));
-      if (url === `${VIEW}&action=editsubmission` && method === "GET") return page(url, options.closed ? closedPage() : editPage({ maxfiles: options.maxfiles, maxbytes: options.maxbytes, accepted: options.accepted }));
-      if (url === `${VIEW}&action=submit` && method === "GET") return page(url, confirmPage(Boolean(options.confirmStatement)));
+      if (url === VIEW) return page(url, view());
+      if (url === `${VIEW}&action=editsubmission` && method === "GET") return page(url, options.closed || (drafts && status === "submitted") ? closedPage() : editPage({ statement: statement && !drafts, maxfiles: options.maxfiles, maxbytes: options.maxbytes, accepted: options.accepted }));
+      if (url === `${VIEW}&action=submit` && method === "GET") return page(url, confirmPage(statement));
       if (url.endsWith("draftfiles_ajax.php?action=list")) return json(url, { list: draft.map(file => ({ ...file, filepath: "/", fullname: file.filename, type: "file" })), filecount: draft.length });
       if (url.endsWith("draftfiles_ajax.php?action=deleteselected")) { draft = []; return json(url, ["/"]); }
       if (url.endsWith("repository_ajax.php?action=upload")) {
@@ -204,12 +287,13 @@ function fakeSite(options: SiteOptions = {}) {
       if (url === `${VIEW}&action=editsubmission` && method === "POST") {
         if (options.saveNotice) return page(url, editPage({ notice: options.saveNotice }));
         saved = options.forgetUploads ? [] : [...draft];
-        status = "draft";
-        return page(`${VIEW}&action=view`, viewPage(status, saved));
+        status = drafts && !options.saveSubmits ? "draft" : "submitted";
+        return page(`${VIEW}&action=view`, view());
       }
       if (url === `${VIEW}&action=submit` && method === "POST") {
-        status = "submitted";
-        return page(`${VIEW}&action=view`, viewPage(status, saved));
+        awaiting = options.waitsFor ?? [];
+        status = awaiting.length ? "draft" : "submitted";
+        return page(`${VIEW}&action=view`, view());
       }
       throw new Error(`Unexpected request ${method} ${url}`);
     },
@@ -229,15 +313,17 @@ function json(url: string, body: unknown): Response {
   return response;
 }
 
-function viewPage(status: "none" | "draft" | "submitted", files: Array<{ filename: string }>): string {
+function viewPage(status: "none" | "draft" | "submitted", files: Array<{ filename: string }>, drafts = true, group?: string, awaiting: string[] = []): string {
   const label = status === "none" ? "No submission" : status === "draft" ? "Draft (not submitted)" : "Submitted for grading";
   const rows = files.map(file => `<div class="fileuploadsubmission"><a href="/pluginfile.php/9001/assignsubmission_file/submission_files/1/${file.filename}" target="_blank">${file.filename}</a></div>`).join("");
   return `<!doctype html><html><body>
 <nav aria-label="Breadcrumb"><a href="${BASE}/course/view.php?id=101">Mathematics 101</a></nav>
 <h1>Essay 1</h1>
+${drafts && status === "draft" && files.length ? `<div class="singlebutton"><form method="get" action="${BASE}/mod/assign/view.php"><input type="hidden" name="id" value="555"><input type="hidden" name="action" value="submit"><button type="submit" class="btn btn-primary">Submit assignment</button></form></div>` : ""}
 <p><strong>Due:</strong> Friday, 15 May 2026, 5:00 PM</p>
 <table class="generaltable">
-<tr><th>Submission status</th><td>${label}</td></tr>
+${group ? `<tr><th>Group</th><td>${group}</td></tr>` : ""}
+<tr><th>Submission status</th><td>${label}${awaiting.length && status !== "none" ? `<div class="box py-3">Users who need to submit: ${awaiting.map(name => `<a href="${BASE}/user/view.php?id=1">${name}</a>`).join(", ")}</div>` : ""}</td></tr>
 <tr><th>Grading status</th><td>Not graded</td></tr>
 <tr><th>Time remaining</th><td>2 days</td></tr>
 ${status === "none" ? "" : "<tr><th>Last modified</th><td>Wednesday, 13 May 2026, 9:00 AM</td></tr>"}

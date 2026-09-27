@@ -9,7 +9,7 @@ import { runtimeSupportsCookies } from "./mcp/self-command.js";
 import { createMoodleGateway } from "./mcp/gateway.js";
 import { createIntentService, type IntentService } from "./intents.js";
 import { humanDescription, type Intent } from "./intent-contract.js";
-import { ReferenceError, normalize, resolveSection, splitUnitPhrase, type Candidate } from "./resolve.js";
+import { ReferenceError, normalize, resolveSection, splitUnitPhrase, withChildSections, type Candidate } from "./resolve.js";
 import { renderScreen, tryLines } from "./screens.js";
 import type { Writable } from "node:stream";
 import { spawn } from "node:child_process";
@@ -57,7 +57,7 @@ import {
   formatAttemptFinish,
   formatAttemptPage,
   formatAttemptSummary,
-  formatDownloadReceipt,
+  formatDownloadResult,
   formatForumDiscussion,
   formatSubmissionReceipt,
   formatForumDiscussionRefs,
@@ -68,9 +68,10 @@ import {
   formatTodo,
   formatUser,
 } from "./formatters.js";
-import { downloadMoodleFile } from "./download.js";
+import { downloadMoodleFiles } from "./download.js";
+import { chooseDownloadSource } from "./download-source.js";
 import { submissionReceiptOf, type SubmissionReceipt } from "./moodle-assign-core.js";
-import type { AttemptPage } from "./moodle-quiz-core.js";
+import type { AttemptPage, QuizStartPlan } from "./moodle-quiz-core.js";
 import { resolveSubmissionPath } from "./submit.js";
 import { formatSkillSummary, installSkill, writeGeneratedSkill } from "./skills.js";
 import {
@@ -111,7 +112,8 @@ interface Runtime {
   busy: boolean;
   getClient: () => Promise<MoodleClient>;
   baseUrl: () => Promise<string>;
-  output: (data: unknown, formatter: () => string, options: OutputCommandOptions) => Promise<void>;
+  // hints: false for a receipt, where the generic "Try" commands are noise.
+  output: (data: unknown, formatter: () => string, options: OutputCommandOptions, hints?: boolean) => Promise<void>;
   screen: (data: Record<string, unknown>, options?: OutputCommandOptions) => string;
   count: (key: "limit" | "days", local?: number, fallback?: number) => number | undefined;
 }
@@ -162,7 +164,8 @@ export function buildProgram(io: CliIO = {}): Command {
 
   // Screens are the only place the terminal's real width matters; one helper keeps
   // every call site honest about it.
-  const screen = (data: Record<string, unknown>, options: OutputCommandOptions = {}) => renderScreen(data, {
+  const screen = (data: Record<string, unknown>, options: OutputCommandOptions = {}, intent?: Intent) => renderScreen(data, {
+    intent,
     // Terminals without a size report 0 columns; the default is better than 40.
     width: (stdout as Partial<NodeJS.WriteStream>).columns || undefined,
     color: !process.env.NO_COLOR && program.opts().color !== false && outputFormat({ ...program.opts(), ...options }, stdout) === "table",
@@ -220,12 +223,12 @@ export function buildProgram(io: CliIO = {}): Command {
       }
       return runtime.client;
     },
-    output: async (data, formatter, options) => {
+    output: async (data, formatter, options, hints = true) => {
       const merged = { ...program.opts(), ...options } as OutputCommandOptions;
       const format = outputFormat(merged, stdout);
       const human = format === "table" ? formatter() : "";
       const text = format === "table"
-        ? `${human}${human.includes("Try  ") ? "" : `\n\n${tryLines(["moodle due", "moodle units", "moodle --help"])}`}\n`
+        ? `${human}${!hints || human.includes("Try  ") ? "" : `\n\n${tryLines(["moodle due", "moodle units", "moodle --help"])}`}\n`
         : format === "json"
           ? `${JSON.stringify(JSON.parse(render(data, { format, fields: parseFields(data, merged.fields) })), null, merged.pretty ? 2 : undefined)}\n`
           : render(data, { format, fields: parseFields(data, merged.fields) });
@@ -257,7 +260,7 @@ export function buildProgram(io: CliIO = {}): Command {
   const execute = async (name: Intent, args: Record<string, unknown>, options: OutputCommandOptions = {}, service?: IntentService) => {
     const runner = service ?? createIntentService(createMoodleGateway(await runtime.getClient()));
     const result = await runner.run(name, args);
-    await runtime.output(result, () => screen(result, options), options);
+    await runtime.output(result, () => screen(result, options, name), options);
   };
 
   // One rule for who is on the other end: a person at a terminal reading a table. Anyone
@@ -313,6 +316,8 @@ export function buildProgram(io: CliIO = {}): Command {
     const courses = await client.getCourses();
     const service = createIntentService(createMoodleGateway(client));
     const parsed = await choose(async () => splitUnitPhrase(targets.join(" "), courses), async id => ({ course: courses.find(c => c.id === id)!, query: targets.slice(1).join(" ") }));
+    // A bare number that is not a unit id is an activity id, as every screen prints them.
+    if (!parsed && targets.length === 1 && /^\d+$/u.test(targets[0])) return execute("item", { ref: Number(targets[0]) }, merged, service);
     if (!parsed) {
       // A bare target is a place to go, not a forum search: an unmatched one is an
       // error with the site's own unit list, not an empty result and exit 0.
@@ -330,11 +335,12 @@ export function buildProgram(io: CliIO = {}): Command {
     if (!query) {
       let data = await service.run("unit", { unit });
       if (outputFormat(merged, stdout) === "table") {
-        const current = (data.unit as { current_section?: { id: number } }).current_section;
-        if (current) {
-          const section = (await service.sections(unit)).find(s => s.id === current.id);
-          if (section) data = await service.run("unit", { unit, section: section.name });
-        }
+        // The label, not the bare name: a nested child's own name ("Own time") repeats.
+        const current = (data.unit as { current_section?: { name: string } }).current_section;
+        if (current) data = await service.run("unit", { unit, section: current.name }).catch((error: unknown) => {
+          if (error instanceof ReferenceError) return data;
+          throw error;
+        });
         data = { ...data, ...await service.run("due", { unit }), ...await service.run("news", { unit, limit: 1 }) };
       }
       return runtime.output(data, () => screen(data), merged);
@@ -413,16 +419,6 @@ export function buildProgram(io: CliIO = {}): Command {
       // Automation reads the exit code, so a failed installer or deploy cannot end in 0.
       if (!report.ok) throw new CliError("upstream", report.note);
     });
-    addOutputOptions(program.command("get").description("Download a resource by id, URL, or UNIT TASK phrase.").argument("<ref>", "Resource id, URL, or UNIT TASK phrase"))
-    .option("--to <directory>", "Destination directory.")
-    .option("--force", "Replace an existing file atomically.")
-    .action(async (ref: string, options: OutputCommandOptions & { to?: string; force?: boolean }) => {
-      const client = await runtime.getClient();
-      const service = createIntentService(createMoodleGateway(client));
-      const source = await choose(() => service.fileSource(ref), id => Promise.resolve(id));
-      const receipt = await downloadMoodleFile(client, { source: String(source), directory: options.to ? path.resolve(io.cwd ?? process.cwd(), options.to) : undefined, force: options.force });
-      await runtime.output(receipt, () => formatDownloadReceipt(receipt), options);
-    });
   addOutputOptions(mutating(program.command("submit").description(humanDescription("submit")).summary("Upload files into an assignment").argument("<ref>", "Assignment id, URL, or UNIT TASK phrase").argument("[files...]", "Local files to upload")))
     .option("--final", "Also submit for grading. Moodle does not allow undoing this.")
     .option("--replace", "Remove the files already in the submission first.")
@@ -467,12 +463,12 @@ export function buildProgram(io: CliIO = {}): Command {
     return confirm({ summary: `${notice}\n\n${summary}` }, { yes: Boolean(program.opts().yes), dryRun: false, interactive: human() });
   };
   const attemptNext = (page: AttemptPage): string[] => {
-    const open = page.navigation.find(entry => entry.number !== "i" && /not yet|not answered/iu.test(entry.state));
+    const sequential = page.navigation_method === "sequential";
+    // A sequential quiz has locked its earlier pages, so their gaps are no longer the next step.
+    const open = page.navigation.find(entry => entry.number !== "i" && /not yet|not answered/iu.test(entry.state) && (!sequential || entry.page >= page.page));
     if (!open) return [`moodle quiz finish ${page.attempt} ${page.quiz_id}`];
-    return [
-      `moodle quiz answer ${page.attempt} ${page.quiz_id} ${open.number} <answer>`,
-      ...(open.page === page.page ? [] : [`moodle quiz show ${page.attempt} ${page.quiz_id} --page ${open.page + 1}`]),
-    ];
+    if (open.page === page.page) return [`moodle quiz answer ${page.attempt} ${page.quiz_id} ${open.number} <answer>`];
+    return [`moodle quiz show ${page.attempt} ${page.quiz_id} --page ${sequential ? page.page + 2 : open.page + 1}`];
   };
   const showPage = (page: AttemptPage, palette: Theme) => `${palette.tone("warning", "BETA")} ${formatAttemptPage(page)}\n\n${tryLines(attemptNext(page))}`;
   addOutputOptions(mutating(quiz.command("start").description("Start a new attempt, or continue the one in progress, and show its first page.").argument("<ref>", "Quiz id, URL, or UNIT TASK phrase")))
@@ -481,8 +477,11 @@ export function buildProgram(io: CliIO = {}): Command {
       const client = await runtime.getClient();
       const service = createIntentService(createMoodleGateway(client));
       const id = await choose(() => service.resolveItem(ref), id => Promise.resolve(id));
-      if (!program.opts().dryRun && !await quizConsent(`Start or continue an attempt on quiz ${theme().target(String(id))}. Moodle records the attempt and its start time.`)) return;
-      if (program.opts().dryRun) return runtime.output({ planned: "start", quiz_id: id }, () => `Would start an attempt on quiz ${id}.`, options);
+      // Read the quiz first: the consent has to name the time limit and the attempt it uses,
+      // because the start below clicks through Moodle's own pre-flight confirmation.
+      const plan = await client.planQuizStart(id);
+      if (program.opts().dryRun) return runtime.output({ planned: plan }, () => quizStartSummary(plan, theme()), options);
+      if (!await quizConsent(quizStartSummary(plan, theme()))) return;
       // The password is only asked for when Moodle's pre-flight form wants one, so most quizzes never see a prompt.
       const password = async (): Promise<string | null> => {
         if (options.password) return options.password;
@@ -497,7 +496,17 @@ export function buildProgram(io: CliIO = {}): Command {
     .option("--page <n>", "Page number, starting at 1.", parsePositiveInt)
     .action(async (attempt: string, quizId: string, options: OutputCommandOptions & { page?: number }) => {
       const client = await runtime.getClient();
-      const page = await client.getQuizAttemptPage(parsePositiveInt(attempt), parsePositiveInt(quizId), (options.page ?? 1) - 1);
+      const ids = [parsePositiveInt(attempt), parsePositiveInt(quizId)] as const;
+      let page = await client.getQuizAttemptPage(...ids);
+      const wanted = options.page === undefined ? page.page : options.page - 1;
+      if (wanted !== page.page) {
+        // In a sequential quiz, opening the next page is a write: the current page locks for good.
+        const advance = page.navigation_method === "sequential" && wanted === page.page + 1;
+        const lock = `Open page ${wanted + 1}. This quiz moves forward only: page ${page.page + 1} locks and you cannot go back to it.`;
+        if (advance && program.opts().dryRun) return runtime.output({ planned: "advance", attempt: ids[0], quiz_id: ids[1], page: wanted + 1 }, () => `Would ${lock.charAt(0).toLowerCase()}${lock.slice(1)}`, options);
+        if (advance && !await quizConsent(theme().tone("warning", lock))) return;
+        page = await client.getQuizAttemptPage(...ids, wanted, { advance });
+      }
       await runtime.output({ attempt: page }, () => showPage(page, theme()), options);
     });
   addOutputOptions(mutating(quiz.command("answer").description("Save one answer: option letters for a choice question (b, or a,c), the text otherwise.").argument("<attempt>", "Attempt id").argument("<quiz>", "Quiz id").argument("<question>", "Question number as shown").argument("[answer]", "Option letters or answer text")))
@@ -591,12 +600,12 @@ export function buildProgram(io: CliIO = {}): Command {
       const client = await runtime.getClient();
       const courseId = await client.resolveCourseReference(unit);
       const sections = await client.getCourseContents(courseId);
-      const chosen = options.section ? [resolveSection(options.section, sections).section] : sections;
+      const chosen = options.section ? withChildSections(resolveSection(options.section, sections).section, sections) : sections;
       const rows = chosen.flatMap(section => section.activities.filter(a => options.includeLabels || a.modname !== "label").map(a => activitySchema.parse(stripEmpty(activityRow(a, section)))));
       const result = stripEmpty({ activities: rows.slice(0, count("limit", options.limit)), total: rows.length }) as Record<string, unknown>;
       await runtime.output(result, () => runtime.screen(result, options), options);
     });
-  addOutputOptions(activities.command("show").description("Show activity details; resource and folder files can be passed to moodle get or download.").summary("Show activity details").argument("<id>", "Course-module ID")).action(
+  addOutputOptions(activities.command("show").description("Show activity details, including the files moodle download would save.").summary("Show activity details").argument("<id>", "Course-module ID")).action(
     async (id: string, options: OutputCommandOptions) => {
       await execute("item", { ref: parsePositiveInt(id) }, options);
     },
@@ -605,21 +614,45 @@ export function buildProgram(io: CliIO = {}): Command {
   addOutputOptions(
     program
       .command("download")
-      .alias("dl")
-      .description("Download one authenticated Moodle file.")
-      .argument("<source>", "Course-module ID or authenticated Moodle file URL")
-      .option("--dest <path>", "Exact downloaded file path")
-      .option("--force", "Atomically replace an existing destination"),
-  ).action(async (source: string, options: OutputCommandOptions & { dest?: string; force?: boolean }) => {
-    const destination = options.dest
-      ? path.resolve(io.cwd ?? process.cwd(), options.dest)
-      : undefined;
-    const receipt = await downloadMoodleFile(await runtime.getClient(), {
-      source,
-      destination,
-      force: options.force,
-    });
-    await runtime.output(receipt, () => formatDownloadReceipt(receipt), options);
+      .aliases(["dl", "get"])
+      .description("Download files: one activity, a whole section, or a file URL. With no argument, browse.")
+      .argument("[ref...]", "Activity id, same-site activity/section/file URL, or UNIT TASK phrase")
+      .option("--to <directory>", "Destination directory; created when missing.")
+      .option("--dest <path>", "Exact path for a single downloaded file.")
+      .option("--force", "Atomically replace existing files."),
+  ).action(async (ref: string[], options: OutputCommandOptions & { to?: string; dest?: string; force?: boolean }) => {
+    const cwd = io.cwd ?? process.cwd();
+    const client = await runtime.getClient();
+    const service = createIntentService(createMoodleGateway(client));
+    const ui = human() ? createUi({ input: io.stdin ?? process.stdin, output: stderr as Writable, interactive: true }) : undefined;
+    const source = await chooseDownloadSource(client, service, ref.join(" "), ui);
+    // Ctrl+C mid-file must remove the partial temp file, so the first one aborts cleanly
+    // and a second one falls back to the default exit.
+    const abort = new AbortController();
+    const onInterrupt = () => abort.abort();
+    process.once("SIGINT", onInterrupt);
+    const spin = ui?.spinner();
+    spin?.start("Finding files");
+    // The spinner already says Moodle is busy; the request indicator would draw into it,
+    // and into the cancel message while lookups started before Ctrl+C wind down.
+    runtime.busy = Boolean(spin);
+    try {
+      const result = await downloadMoodleFiles(client, {
+        source,
+        destination: options.dest ? path.resolve(cwd, options.dest) : undefined,
+        directory: options.to ? path.resolve(cwd, options.to) : undefined,
+        force: options.force,
+        dryRun: Boolean(program.opts().dryRun),
+        onFile: (index, total, name) => spin?.message(total > 1 ? `Downloading ${index}/${total}${name ? ` · ${name}` : ""}` : `Downloading${name ? ` ${name}` : ""}`),
+      }, abort.signal);
+      spin?.clear();
+      await runtime.output(result, () => formatDownloadResult(result, cwd), options, false);
+    } catch (error) {
+      spin?.clear();
+      throw error;
+    } finally {
+      process.off("SIGINT", onInterrupt);
+    }
   });
 
   const grades = program.command("grades").description("Inspect grades.");
@@ -808,7 +841,7 @@ export function buildProgram(io: CliIO = {}): Command {
     .option("--dry-run", "Preview deployment changes without applying them.")
     .option("--repair", "Repair authentication and managed deployment state.")
     .option("--rotate-key", "Rotate the session encryption key and migrate the active session.")
-    .option("--rotate-token", "Rotate the MCP access token with an overlap window.")
+    .option("--rotate-token", "Rotate the MCP access token. The old token and every connected OAuth client stop working at once; reconnect them after.")
     .option("--rollback", "Restore the previous healthy Worker release.")
     .action(async (options: OutputCommandOptions & { dryRun?: boolean; repair?: boolean; rotateToken?: boolean; rotateKey?: boolean; rollback?: boolean }) => {
       const dryRun = Boolean(options.dryRun || program.opts().dryRun);
@@ -873,6 +906,11 @@ export function buildProgram(io: CliIO = {}): Command {
     .option("--all", "Revoke every client, token, pending authorization, and pairing window.")
     .action(async (clientId: string | undefined, options: OutputCommandOptions & { all?: boolean }) => {
       if (Boolean(clientId) === Boolean(options.all)) throw new UsageError("Provide a client ID or --all.");
+      const summary = clientId
+        ? `Revoke OAuth client ${clientId}. It loses access at once and has to pair again to reconnect.`
+        : "Revoke all OAuth access: every client, token, pending authorization, and pairing window. Claude and every other connected client lose access at once and have to pair again.";
+      if (program.opts().dryRun) return runtime.output({ planned: "revoke", client_id: clientId ?? null, all: Boolean(options.all) }, () => summary, options);
+      if (!await confirm({ summary }, { yes: Boolean(program.opts().yes), dryRun: false, interactive: human() })) return;
       await outputMcpResult(runtime, await getMcpService().manageClients({ revoke: true, clientId }), options);
     });
 
@@ -1103,6 +1141,21 @@ export function redactSesskey(html: string): string {
     .replace(/(["']?sesskey["']?\s*[:=]\s*["']?)[A-Za-z0-9]{8,}/gu, "$1REDACTED");
 }
 
+function quizStartSummary(plan: QuizStartPlan, theme: Theme): string {
+  const lines = [`${theme.dim(plan.action === "continue" ? "Continue" : "   Start")}  ${theme.target(plan.name || `quiz ${plan.quiz_id}`)}`];
+  if (plan.action === "start") {
+    const allowed = Number.parseInt(plan.attempts_allowed, 10);
+    const number = plan.attempts_used + 1;
+    lines.push(`${theme.dim(" Attempt")}  ${number}${Number.isFinite(allowed) ? ` of ${allowed}` : ""}${Number.isFinite(allowed) && number >= allowed ? ` ${theme.tone("danger", "(your last)")}` : ""}`);
+    if (plan.grading_method) lines.push(`${theme.dim(" Grading")}  ${plan.grading_method}`);
+  }
+  lines.push(plan.time_limit
+    ? `${theme.dim("    Time")}  ${plan.time_limit}; ${theme.tone("warning", plan.action === "continue" ? "the clock is already running" : "the timer starts now and does not pause")}`
+    : `${theme.dim("    Time")}  no time limit shown`);
+  lines.push(theme.dim(plan.action === "continue" ? "Moodle reopens the attempt in progress." : "Moodle records the attempt and its start time."));
+  return lines.join("\n");
+}
+
 function submissionSummary(plan: SubmissionReceipt, final: boolean, theme: Theme): string {
   const destination = `${theme.target(plan.name)}${plan.unit_id ? theme.dim(`  unit ${plan.unit_id}`) : ""}`;
   const lines = plan.uploads.length
@@ -1110,9 +1163,13 @@ function submissionSummary(plan: SubmissionReceipt, final: boolean, theme: Theme
     : [`${theme.dim("Submit")}  ${destination}`, `${theme.dim("      ")}  ${theme.subject("the files already there")} for grading`];
   if (plan.removed.length) lines.push(`${theme.dim("Remove")}  ${theme.tone("danger", plan.removed.join(", "))} ${theme.dim("first")}`);
   if (plan.statement) lines.push(`${theme.dim(" Agree")}  "${plan.statement}"`);
-  lines.push(final
-    ? theme.tone("warning", "Then submit for grading. Moodle does not allow undoing this.")
-    : theme.dim("Moodle keeps a draft where the assignment allows drafts; otherwise it submits at once."));
+  if (plan.group) lines.push(`${theme.dim(" Group")}  ${theme.subject(plan.group)} ${theme.dim("shares these files: every change reaches the whole group")}`);
+  // The plan refuses a non-final save unless Moodle showed a draft stage, so each line states a fact.
+  lines.push(!final
+    ? theme.dim("Saved as a draft; nothing is submitted for grading.")
+    : plan.draft_stage === false
+      ? theme.tone("warning", "This assignment has no draft stage: saving submits it for grading. Moodle does not allow undoing this.")
+      : theme.tone("warning", `Then submit ${plan.group ? "the group's work " : ""}for grading. Moodle does not allow undoing this.`));
   return lines.join("\n");
 }
 

@@ -21,7 +21,7 @@ Never assume code patterns or ask for ids; `moodle units` shows the vocabulary.
 | announcements | moodle news [UNIT] |
 | forum post text | moodle forums search "QUERY" --unit UNIT |
 | upload assignment files | moodle submit "UNIT TASK" FILE... [--final] |
-| download a file | moodle get "UNIT TASK" --to DIR |
+| download a file | moodle dl "UNIT TASK" --to DIR |
 
 Pipes emit compact JSON; `--json` forces it, `--pretty` indents it.
 Ambiguity returns `candidates`: pick or refine, never guess.

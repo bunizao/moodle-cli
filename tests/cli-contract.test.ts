@@ -1,5 +1,5 @@
 import { insertDefaultVerb, VERBS, type CommandDescription, type NounSpec } from "@bunizao/cli-kit";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { buildProgram, runCli } from "../src/cli.js";
 import { describeProgram } from "../src/command-contract.js";
@@ -155,6 +155,26 @@ describe("shared CLI contract", () => {
     })).resolves.toBe(0);
 
     expect(JSON.parse(stdout.text())).toMatchObject({ code: "ABCD2345" });
+  });
+
+  it("refuses to revoke OAuth access without --yes when nobody can be asked", async () => {
+    const manageClients = vi.fn(async () => ({ data: {}, text: "ok" }));
+    const stderr = buffer(false);
+    await expect(runCli(["node", "moodle", "mcp", "revoke", "--all", "--json"], {
+      stdout: buffer(false),
+      stderr,
+      stdin: { isTTY: false } as NodeJS.ReadStream,
+      mcpService: mcpService({ manageClients }),
+    })).resolves.toBe(2);
+    expect(manageClients).not.toHaveBeenCalled();
+
+    await expect(runCli(["node", "moodle", "--yes", "mcp", "revoke", "--all", "--json"], {
+      stdout: buffer(false),
+      stderr: buffer(false),
+      stdin: { isTTY: false } as NodeJS.ReadStream,
+      mcpService: mcpService({ manageClients }),
+    })).resolves.toBe(0);
+    expect(manageClients).toHaveBeenCalledWith({ revoke: true, clientId: undefined });
   });
 
   it("rejects unsupported managed MCP connection modes", async () => {

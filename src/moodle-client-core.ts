@@ -28,7 +28,7 @@ import {
   URL_VIEW_PATH,
 } from "./constants.js";
 import { submitAssignmentFiles, type SubmissionReceipt, type SubmitAssignmentRequest } from "./moodle-assign-core.js";
-import { answerQuizQuestion, finishQuizAttempt, getAttemptPage, getAttemptSummary, startQuizAttempt, type AnswerRequest, type AttemptFinishReceipt, type AttemptPage, type AttemptSummary, type QuizDeps, type StartOptions } from "./moodle-quiz-core.js";
+import { answerQuizQuestion, finishQuizAttempt, getAttemptPage, getAttemptSummary, planQuizStart, startQuizAttempt, type AnswerRequest, type AttemptFinishReceipt, type AttemptPage, type AttemptSummary, type QuizDeps, type QuizStartPlan, type StartOptions } from "./moodle-quiz-core.js";
 import { ForumModule } from "./moodle-forum-core.js";
 import { searchForumContent as searchForumModule } from "./moodle-forum-search-core.js";
 import type {
@@ -80,6 +80,14 @@ import {
   parseQuizReviewHtml,
   parseResourceHtml,
 } from "./scraper.js";
+
+// Moodle's own activity modules. Anything else without a reader may be an alias whose
+// page redirects to the real activity.
+const STANDARD_MODULES = new Set([
+  "assign", "bigbluebuttonbn", "book", "chat", "choice", "data", "feedback", "folder", "forum", "glossary",
+  "h5pactivity", "imscp", "label", "lesson", "lti", "page", "qbank", "quiz", "resource", "scorm",
+  "subsection", "survey", "url", "wiki", "workshop",
+]);
 
 export interface AjaxCall {
   methodname: string;
@@ -344,6 +352,10 @@ export class MoodleClientCore {
   }
 
   async getActivity(id: number): Promise<ActivityDetail & { type: string }> {
+    return this.readActivity(id, true);
+  }
+
+  private async readActivity(id: number, followAlias: boolean): Promise<ActivityDetail & { type: string }> {
     await this.ensureSession();
     let activity: Activity | null = null;
     let courseId: number | undefined;
@@ -370,10 +382,25 @@ export class MoodleClientCore {
     };
     const load = loaders[type];
     if (!load) {
+      // Some plugins only place a shortcut to another activity in a second section, and
+      // their page redirects there; describe the real activity, which has the due date
+      // and files. Standard modules are real content, so their pages are not fetched.
+      const alias = followAlias && /^[a-z][a-z0-9_]*$/u.test(type) && !STANDARD_MODULES.has(type)
+        ? await this.redirectedActivity(type, id)
+        : undefined;
+      if (alias) return this.readActivity(alias, false);
       activity ??= await this.findActivity(id, courseId);
       return { ...activity, type: type || activity.modname || "unknown" };
     }
     return { ...(await load()), type: type === "url" ? "link" : type };
+  }
+
+  private async redirectedActivity(type: string, id: number): Promise<number | undefined> {
+    const response = await this.requestAbsolute(`${this.baseUrl}/mod/${type}/view.php?id=${id}`, {}, { allowErrorStatus: true });
+    await response.body?.cancel().catch(() => undefined);
+    const match = /\/mod\/\w+\/view\.php\?(?:.*&)?id=(\d+)/u.exec(response.url);
+    const target = match ? Number(match[1]) : undefined;
+    return target && target !== id ? target : undefined;
   }
 
   async getTodo(limit = 20, days?: number, courseId?: number): Promise<TodoItem[]> {
@@ -611,12 +638,16 @@ export class MoodleClientCore {
   }
 
   /** Starts a new attempt, or resumes the one already in progress, and returns its first page. */
+  async planQuizStart(quizId: number): Promise<QuizStartPlan> {
+    return planQuizStart(await this.quizDeps(), quizId);
+  }
+
   async startQuizAttempt(quizId: number, options: StartOptions = {}): Promise<AttemptPage> {
     return startQuizAttempt(await this.quizDeps(), quizId, options);
   }
 
-  async getQuizAttemptPage(attemptId: number, quizId: number, page = 0): Promise<AttemptPage> {
-    return getAttemptPage(await this.quizDeps(), attemptId, quizId, page);
+  async getQuizAttemptPage(attemptId: number, quizId: number, page?: number, options: { advance?: boolean } = {}): Promise<AttemptPage> {
+    return getAttemptPage(await this.quizDeps(), attemptId, quizId, page, options);
   }
 
   async getQuizAttemptSummary(attemptId: number, quizId: number): Promise<AttemptSummary> {

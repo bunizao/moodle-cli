@@ -1,6 +1,6 @@
 {
   "name": "moodle-cli",
-  "version": "0.9.5",
+  "version": "0.9.6",
   "description": "Moodle for terminals and AI agents: deadlines, grades, files, feedback and quiz reviews from your browser session, plus a private MCP server on Cloudflare",
   "license": "MIT",
   "type": "module",
@@ -34,7 +34,7 @@
     "measure:mcp": "node scripts/measure-mcp.mjs"
   },
   "dependencies": {
-    "@bunizao/cli-kit": "^0.5.0",
+    "@bunizao/cli-kit": "^0.6.0",
     "@steipete/sweet-cookie": "^0.4.0",
     "commander": "^13.1.0",
     "node-html-parser": "^7.0.1",

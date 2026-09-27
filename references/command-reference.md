@@ -2,9 +2,11 @@
 
 Generated from the live command tree. UNIT is a code/name, id or URL from `moodle units`.
 `moodle UNIT SECTION` resolves a section; `moodle UNIT "TASK"` resolves an item.
-Resources and folders return `files` with names and URLs. Pass a selected file URL to
-`moodle get URL --to DIR`. Validate the receipt: path, byte count and content type.
-`moodle download SOURCE --dest PATH --force` retains the exact-path replacement flow.
+Resources, folders and assignments return `files` with names and URLs.
+`moodle download REF --to DIR` saves one file, every file of an activity, or a whole
+section (`moodle download "UNIT week 3"` or a section URL). The receipt lists `files`
+with path, byte count and content type, and `skipped` with a reason: `exists` (already
+saved; `--force` replaces it) or `unavailable`. `--dest PATH` names the file when there is one.
 `moodle submit "UNIT TASK" FILE... --dry-run` shows the upload plan; without `--dry-run` it
 asks for confirmation (`--yes` skips it) and prints the receipt Moodle shows afterwards.
 `--final` also submits for grading, which Moodle does not let anyone undo.
@@ -13,7 +15,7 @@ asks for confirmation (`--yes` skips it) and prints the receipt Moodle shows aft
 | --- | --- | --- | --- |
 | moodle activities | Inspect activities. |  |  |
 | moodle activities list | List activities in a unit; narrow by section. | <unit> | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required)<br>--section (value required)<br>--limit (value required)<br>--include-labels |
-| moodle activities show | Show activity details; resource and folder files can be passed to moodle get or download. | <id> | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required) |
+| moodle activities show | Show activity details, including the files moodle download would save. | <id> | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required) |
 | moodle alerts | List notifications and message counts. |  | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required)<br>--limit (value required) |
 | moodle attempt | Each question with your response, and mark, correct answer and feedback when the site shows them. | <ref> | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required) |
 | moodle auth | Session and keepalive utilities. |  |  |
@@ -26,14 +28,13 @@ asks for confirmation (`--yes` skips it) and prints the receipt Moodle shows aft
 | moodle commands | Describe the complete command tree. |  | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required) |
 | moodle completion | Print shell completion for zsh, bash or fish. | <shell> |  |
 | moodle doctor | Diagnose runtime, browser access, session, background jobs and MCP setup. |  | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required) |
-| moodle download | Download one authenticated Moodle file. | <source> | --dest (value required)<br>--force<br>--pretty<br>--json<br>--yaml<br>--table<br>--fields (value required) |
+| moodle download | Download files: one activity, a whole section, or a file URL. With no argument, browse. | [ref...] | --to (value required)<br>--dest (value required)<br>--force<br>--pretty<br>--json<br>--yaml<br>--table<br>--fields (value required) |
 | moodle due | Items due in a date window. | [unit] | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required)<br>--days (value required)<br>--limit (value required) |
 | moodle find | Ranked sections, activities and discussion subjects. | <query> [unit] | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required)<br>--limit (value required)<br>--types (value required) |
 | moodle forums | Inspect forums. |  |  |
 | moodle forums list | List forum activities in a unit. | <unit> | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required)<br>--limit (value required) |
 | moodle forums search | Search forum discussion titles and post text. | <query> | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required)<br>--unit (value required)<br>--course (value required)<br>--forum (value required)<br>--titles-only<br>--unread-only<br>--recent<br>--limit-forums (value required)<br>--limit-discussions (value required)<br>--limit (value required) |
 | moodle forums show | List discussions from a forum. | <forum> | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required)<br>--limit (value required)<br>--query (value required) |
-| moodle get | Download a resource by id, URL, or UNIT TASK phrase. | <ref> | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required)<br>--to (value required)<br>--force |
 | moodle grades | Inspect grades. |  |  |
 | moodle grades list | Show grade details for a unit. | [unit] | --graded-only<br>--pretty<br>--json<br>--yaml<br>--table<br>--fields (value required) |
 | moodle mcp | Deploy a private MCP Worker on Cloudflare; encrypted session storage and local renewal. Free-tier limits apply. |  |  |

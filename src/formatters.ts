@@ -1,3 +1,5 @@
+import path from "node:path";
+
 import type {
   Activity,
   ActivityDetail,
@@ -13,7 +15,7 @@ import type {
   TodoItem,
   UserInfo,
 } from "./models.js";
-import type { DownloadReceipt } from "./download.js";
+import type { DownloadResult } from "./download.js";
 import type { SubmissionReceipt } from "./moodle-assign-core.js";
 import type { AttemptFinishReceipt, AttemptPage, AttemptQuestion, AttemptSummary } from "./moodle-quiz-core.js";
 import type { AuthStatus, KeepaliveRunResult } from "./keepalive.js";
@@ -141,15 +143,42 @@ function cellText(value: unknown): string {
   return Object.values(value as Record<string, unknown>).filter((v) => typeof v === "string" && v !== "").join("  ");
 }
 
-export function formatDownloadReceipt(receipt: DownloadReceipt): string {
-  return renderKeyValueTable([
-    ["File", receipt.file_path],
-    ["Filename", receipt.filename],
-    ["Bytes", String(receipt.bytes_written)],
-    ["Content type", receipt.content_type],
-    ["Source", receipt.source_url],
-    ["Final URL", receipt.final_url],
-  ], { title: "Download" });
+export function formatDownloadResult(result: DownloadResult, cwd = process.cwd()): string {
+  const size = (bytes: number) => bytes >= 1024 * 1024 ? `${(bytes / (1024 * 1024)).toFixed(1)} MiB` : bytes >= 1024 ? `${(bytes / 1024).toFixed(1)} KiB` : `${bytes} B`;
+  // Paths under the working directory read shorter as ./name; anything else stays absolute.
+  const shown = (file: string) => {
+    const relative = path.relative(cwd, file);
+    if (!relative) return ".";
+    return relative && !relative.startsWith("..") && !path.isAbsolute(relative) ? `./${relative}` : file;
+  };
+  const lines: string[] = [];
+  const saved = result.files;
+  if (result.dry_run) {
+    if (saved.length) lines.push(`Would save ${saved.length === 1 ? saved[0].filename : `${saved.length} files`} → ${shown(saved.length === 1 ? saved[0].file_path : path.dirname(saved[0].file_path))}`);
+    if (saved.length > 1) lines.push(...saved.map((file) => `  ${file.filename}`));
+  } else if (saved.length === 1) {
+    lines.push(`✓ Saved ${saved[0].filename} (${size(saved[0].bytes_written)}) → ${shown(saved[0].file_path)}`);
+  } else if (saved.length > 1) {
+    const total = saved.reduce((sum, file) => sum + file.bytes_written, 0);
+    lines.push(renderTerminalTable(
+      // A saved name is what the person looks for on disk, so it only shrinks to fit the terminal.
+      [{ label: "File", flex: true, width: Math.max(...saved.map((file) => Array.from(file.filename).length)) }, { label: "Size" }],
+      saved.map((file) => [file.filename, size(file.bytes_written)]),
+      { title: `✓ Saved ${saved.length} files (${size(total)}) → ${shown(path.dirname(saved[0].file_path))}` },
+    ));
+  }
+  const present = result.skipped.filter((item) => item.reason === "exists");
+  if (present.length === 1 && !saved.length) {
+    lines.push(`✓ Already have ${present[0].name} → ${shown(present[0].file_path ?? "")}; --force downloads it again.`);
+  } else if (present.length) {
+    const where = shown(path.dirname(present[0].file_path ?? ""));
+    lines.push(`${saved.length ? "" : "✓ "}${present.length} ${present.length === 1 ? "file was" : "files were"} already ${where === "." ? "here" : `in ${where}`}; --force downloads ${present.length === 1 ? "it" : "them"} again.`);
+  }
+  for (const item of result.skipped.filter((entry) => entry.reason === "unavailable")) {
+    lines.push(`! Skipped ${item.name}: ${item.detail ?? "Moodle did not provide it."}`);
+  }
+  if (!saved.length && !present.length) lines.unshift(result.dry_run ? "Would save nothing." : "Saved nothing.");
+  return lines.join("\n");
 }
 
 export function formatSubmissionReceipt(receipt: SubmissionReceipt): string {
@@ -165,6 +194,9 @@ export function formatSubmissionReceipt(receipt: SubmissionReceipt): string {
     ["Unit id", receipt.unit_id ? String(receipt.unit_id) : ""],
     ["URL", receipt.url],
     ["Action", receipt.action],
+    ["Draft stage", receipt.draft_stage === undefined ? "" : receipt.draft_stage ? "yes" : "no; saving submits for grading"],
+    ["Group", receipt.group ?? ""],
+    ["Waiting for", receipt.awaiting?.join(", ") ?? ""],
     ["Status", receipt.submission_status],
     ["Grading", receipt.grading_status],
     ["Due", receipt.due],
@@ -179,10 +211,14 @@ export function formatSubmissionReceipt(receipt: SubmissionReceipt): string {
   ], { title: receipt.action === "planned" ? "Submission plan" : "Submission" });
   const note = receipt.action === "planned"
     ? "Plan only; nothing was uploaded. Re-run without --dry-run to upload."
-    : receipt.action === "saved" && /draft|not submitted/iu.test(receipt.submission_status)
-      ? "Saved as a draft. Re-run with --final to submit it for grading."
-      : "";
-  return note ? `${table}\n${note}` : table;
+    : receipt.action === "submitted" && receipt.awaiting?.length
+      ? "Your part is submitted. The group's submission goes for grading once everyone listed under Waiting for has submitted too."
+      : receipt.action === "saved" && /draft|not submitted/iu.test(receipt.submission_status)
+        ? "Saved as a draft. Re-run with --final to submit it for grading."
+        : "";
+  // Table cells truncate, so the warning that the files are shared goes below the table.
+  const shared = receipt.group ? `Group submission: the files are shared, so this changes the submission for everyone in ${receipt.group}.` : "";
+  return [table, shared, note].filter(Boolean).join("\n");
 }
 
 export function formatForumDiscussion(
@@ -368,6 +404,7 @@ export function formatAttemptPage(page: AttemptPage): string {
   for (const question of page.questions) lines.push(...attemptQuestionLines(question), "");
   const elsewhere = page.navigation.filter(entry => entry.page !== page.page && entry.number !== "i");
   if (elsewhere.length) lines.push(`Other pages: ${elsewhere.map(entry => `Q${entry.number} p${entry.page + 1} (${entry.state.toLowerCase()})`).join(", ")}`);
+  if (page.navigation_method === "sequential") lines.push("This quiz moves forward only: earlier pages are locked, and opening the next page locks this one.");
   return lines.join("\n").trimEnd();
 }
 

@@ -48,4 +48,59 @@ describe("session-aware redirect handling", () => {
     });
     await expect(fetchWithSession(`${origin}/my`, { signal: abort.signal }, origin, cookie, fetcher)).rejects.toThrow();
   });
+
+  it("gives each redirect hop its own idle limit", async () => {
+    vi.useFakeTimers();
+    try {
+      // Three hops of 20 s each: 60 s in total, but no single hop goes quiet for 30 s.
+      const fetcher = vi.fn<typeof fetch>(async (input, init) => {
+        await new Promise((resolve, reject) => {
+          setTimeout(resolve, 20_000);
+          init?.signal?.addEventListener("abort", () => reject(new Error("aborted")));
+        });
+        const url = String(input);
+        if (url.endsWith("/start")) return Response.redirect(`${origin}/sso`, 302);
+        if (url.endsWith("/sso")) return Response.redirect(`${origin}/file`, 302);
+        return new Response("file");
+      });
+      const response = fetchWithSession(`${origin}/start`, {}, origin, cookie, fetcher);
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(await (await response).text()).toBe("file");
+      expect(fetcher).toHaveBeenCalledTimes(3);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("lets a slow body run past the limit while chunks keep arriving, and stops a stalled one", async () => {
+    vi.useFakeTimers();
+    try {
+      // Like a real socket, the body errors as soon as the request signal aborts.
+      const streamed = (chunks: number, stallAfter?: number) => vi.fn<typeof fetch>(async (_url, init) => {
+        let sent = 0;
+        const aborted = new Promise((_, reject) => init?.signal?.addEventListener("abort", () => reject(new Error("aborted"))));
+        aborted.catch(() => undefined);
+        return new Response(new ReadableStream<Uint8Array>({
+          async pull(controller) {
+            const wait = sent === stallAfter ? new Promise(() => undefined) : new Promise((resolve) => setTimeout(resolve, 20_000));
+            await Promise.race([wait, aborted]);
+            controller.enqueue(new Uint8Array([sent++]));
+            if (sent === chunks) controller.close();
+          },
+        }));
+      });
+
+      const slow = await fetchWithSession(`${origin}/pluginfile.php/1/big.pdf`, {}, origin, cookie, streamed(4));
+      const body = slow.arrayBuffer();
+      await vi.advanceTimersByTimeAsync(80_000);
+      expect(new Uint8Array(await body)).toEqual(new Uint8Array([0, 1, 2, 3]));
+
+      const stalled = await fetchWithSession(`${origin}/pluginfile.php/1/big.pdf`, {}, origin, cookie, streamed(4, 1));
+      const failing = expect(stalled.arrayBuffer()).rejects.toThrow();
+      await vi.advanceTimersByTimeAsync(60_000);
+      await failing;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });

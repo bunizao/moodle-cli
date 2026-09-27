@@ -51,6 +51,12 @@ export interface SubmissionReceipt {
   unit_id?: number;
   url: string;
   action: "planned" | "saved" | "submitted";
+  /** False when saving submits for grading at once; absent when Moodle's pages do not show it. */
+  draft_stage?: boolean;
+  /** The group sharing this submission; absent when it is an individual one. */
+  group?: string;
+  /** Group members Moodle still waits for before the group's submission counts as submitted. */
+  awaiting?: string[];
   submission_status: string;
   grading_status: string;
   due: string;
@@ -111,6 +117,7 @@ export async function submitAssignmentFiles(deps: AssignSubmitDeps, request: Sub
   const id = request.activityId;
   if (!Number.isSafeInteger(id) || id <= 0) throw deps.usage("The assignment id must be a positive integer.");
   if (!request.files.length && !request.final) throw deps.usage("Give at least one file to upload, or use --final to submit the existing draft.");
+  if (!request.files.length && request.replace) throw deps.usage("--replace with no files would empty the submission.", "Give the files that should replace the current ones.");
   const seen = new Set<string>();
   for (const file of request.files) {
     if (!file.name || /[\\/]/u.test(file.name)) throw deps.usage(`'${file.name}' is not a plain file name.`);
@@ -120,7 +127,8 @@ export async function submitAssignmentFiles(deps: AssignSubmitDeps, request: Sub
 
   const viewUrl = `${deps.baseUrl}${ASSIGN_VIEW_PATH}?id=${id}`;
   request.onProgress?.("Reading the assignment");
-  const before = parseReceiptPage(await pageText(deps, viewUrl), id, deps.baseUrl);
+  const viewHtml = await pageText(deps, viewUrl);
+  const before = parseReceiptPage(viewHtml, id, deps.baseUrl);
   const form = parseSubmissionForm(await pageText(deps, `${viewUrl}&action=editsubmission`), deps);
   const draft = await listDraftFiles(deps, form);
 
@@ -128,10 +136,24 @@ export async function submitAssignmentFiles(deps: AssignSubmitDeps, request: Sub
   const kept = request.replace ? [] : draft.filter(file => !seen.has(file.name.toLowerCase()));
   checkLimits(deps, form, kept, request.files);
 
+  // Saving is only a draft when the assignment has a draft stage; otherwise Moodle submits
+  // for grading on save. That must be known before anything is written, and an unknown
+  // answer counts as "it submits", because a submission for grading cannot be taken back.
+  const confirmHtml = form.statement ? undefined : await pageText(deps, `${viewUrl}&action=submit`);
+  const draftStage = draftStageOf(viewHtml, before.submission_status, form, confirmHtml);
+  if (draftStage !== true && !request.final) {
+    throw deps.usage(
+      draftStage === false
+        ? "This assignment has no draft stage: Moodle submits it for grading as soon as the files are saved."
+        : "Moodle does not show whether this assignment keeps drafts, so saving the files may submit it for grading at once.",
+      "Nothing was uploaded. Re-run with --final only if you want it submitted for grading now; to keep working, upload later.",
+    );
+  }
+
   let statement = form.statement;
   let confirm: ConfirmForm | undefined;
-  if (request.final && !statement) {
-    confirm = parseConfirmForm(await pageText(deps, `${viewUrl}&action=submit`), deps);
+  if (request.final && draftStage !== false && confirmHtml !== undefined) {
+    confirm = parseConfirmForm(confirmHtml, deps);
     statement = confirm.statement;
   }
   if (statement && !request.acceptStatement) {
@@ -144,6 +166,7 @@ export async function submitAssignmentFiles(deps: AssignSubmitDeps, request: Sub
     return {
       ...before,
       action: "planned",
+      ...(draftStage === undefined ? {} : { draft_stage: draftStage }),
       files: draft.map(file => ({ name: file.name, bytes: file.bytes })),
       uploads,
       removed,
@@ -154,6 +177,7 @@ export async function submitAssignmentFiles(deps: AssignSubmitDeps, request: Sub
   }
 
   // With nothing to upload or remove, --final only confirms the draft that is already there.
+  // Without a draft stage, saving below is itself the submission for grading.
   if (removed.length) {
     request.onProgress?.(`Removing ${removed.join(", ")}`);
     await deleteDraftFiles(deps, form, draft);
@@ -176,6 +200,9 @@ export async function submitAssignmentFiles(deps: AssignSubmitDeps, request: Sub
   if (missing.length) throw deps.fail(`Moodle saved the submission but its page does not list ${missing.join(", ")}; check the assignment in a browser before submitting.`);
 
   let action: SubmissionReceipt["action"] = "saved";
+  if (isSubmitted(receipt.submission_status) && !request.final) {
+    throw deps.fail(`Moodle submitted the assignment for grading when the files were saved, although its pages showed a draft stage. It now reports "${receipt.submission_status}"; check it in a browser.`);
+  }
   if (isSubmitted(receipt.submission_status)) action = "submitted";
   else if (request.final) {
     request.onProgress?.("Submitting for grading");
@@ -183,13 +210,15 @@ export async function submitAssignmentFiles(deps: AssignSubmitDeps, request: Sub
     const errorHtml = await postForm(deps, confirm.action, [...confirm.fields, ...(confirm.statement ? [["submissionstatement", "1"] as Field] : []), ["submitbutton", "Continue"]]);
     if (errorHtml !== null) throw deps.fail(`Moodle did not submit the assignment for grading: ${noticesOf(errorHtml) || "it returned the confirmation page again without a reason"}`);
     receipt = parseReceiptPage(await pageText(deps, viewUrl), id, deps.baseUrl);
-    if (!isSubmitted(receipt.submission_status)) throw deps.fail(`Moodle accepted the confirmation but still reports "${receipt.submission_status || "no status"}"; check the assignment in a browser.`);
+    // When every member has to submit, the group's status stays a draft until the last one does.
+    if (!isSubmitted(receipt.submission_status) && !receipt.awaiting?.length) throw deps.fail(`Moodle accepted the confirmation but still reports "${receipt.submission_status || "no status"}"; check the assignment in a browser.`);
     action = "submitted";
   }
 
   return {
     ...receipt,
     action,
+    ...(draftStage === undefined ? {} : { draft_stage: draftStage }),
     uploads,
     removed,
     limits,
@@ -270,18 +299,45 @@ export function parseReceiptPage(html: string, activityId: number, baseUrl: stri
   };
   for (const link of root.querySelectorAll(".fileuploadsubmission a[href]")) add(link);
   for (const link of tableCell(root, "File submissions")?.querySelectorAll("a[href]") ?? []) add(link);
+  // A group submission has a "Group" row. Its files are shared, so every change reaches the
+  // whole group. The row holds an error notice instead when the user has no usable group.
+  const groupCell = tableCell(root, "Group");
+  const group = groupCell && !groupCell.querySelector(".alert") ? cleanText(groupCell.textContent) : "";
+  const pending = tableCell(root, "Submission status")?.querySelectorAll("div").find(div => /^Users who need to submit:/iu.test(cleanText(div.textContent)));
+  const awaiting = pending?.querySelectorAll("a").map(link => cleanText(link.textContent)).filter(Boolean) ?? [];
   return {
     id: activityId,
     name: page.name,
     ...(page.course_id ? { unit_id: page.course_id } : {}),
     url: page.url,
-    submission_status: page.submission_status,
+    ...(group ? { group } : {}),
+    ...(awaiting.length ? { awaiting } : {}),
+    submission_status: page.submission_status.replace(/\s*Users who need to submit:.*$/isu, ""),
     grading_status: page.grading_status,
     due: page.due_pretty || cleanText(tableCell(root, "Due date")?.textContent),
     time_remaining: page.time_remaining,
     last_modified: cleanText(tableCell(root, "Last modified")?.textContent),
     files: [...files.values()],
   };
+}
+
+/**
+ * Whether saving keeps a draft: the assignment's "require students to click the submit
+ * button" setting. No page states it, but Moodle's rendering gives it away:
+ * - the edit form carries the submission statement only when there is no draft stage;
+ * - so a statement on the confirm page but not on the edit form means there is one;
+ * - "Submit assignment" on the view page is only offered when there is one;
+ * - a submitted submission that can still be edited means there is none, because Moodle
+ *   locks a submitted submission when there is a draft stage.
+ * Anything else is unknown.
+ */
+export function draftStageOf(viewHtml: string, status: string, form: Pick<SubmissionForm, "statement">, confirmHtml?: string): boolean | undefined {
+  if (form.statement) return false;
+  const confirm = confirmHtml === undefined ? null : formWithAction(parse(confirmHtml), "confirmsubmit");
+  if (confirm && statementOf(confirm).statement) return true;
+  if (formWithAction(parse(viewHtml), "submit")) return true;
+  if (isSubmitted(status)) return false;
+  return undefined;
 }
 
 /** Alerts and validation messages on a Moodle page, joined for an error message. */

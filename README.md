@@ -98,7 +98,7 @@ moodle UNIT
 moodle UNIT 7
 moodle UNIT "TASK"
 moodle find "week 7 slides" UNIT
-moodle get "UNIT week 7 slides" --to ./downloads
+moodle dl "UNIT week 7 slides" --to ./downloads
 moodle grades
 moodle news UNIT
 ```
@@ -121,7 +121,13 @@ You can paste the same links into your agent and ask it to inspect the page, fin
 
 #### Download course files
 
-`moodle download` accepts an activity ID or an authenticated Moodle URL. `--dest` sets the exact local path, and `--force` replaces an existing file after the download completes. Folder activities expose `files` so you can choose which files to save.
+`moodle download` (alias `dl`) saves what the web page offers:
+
+- one activity: a resource, every file in a folder, or an assignment's attached files (brief, datasets);
+- a whole section: `moodle dl "UNIT week 5"` or a section URL such as `…/course/view.php?id=34637&section=5`, including child sections the page shows inside it;
+- a single `pluginfile.php` link.
+
+With no argument at a terminal, it walks unit → section → item the way the course page does: type to filter, Escape to go back a step. `moodle dl UNIT` starts at that unit's sections. Files land in the current directory or `--to DIR` (created when missing). A file already there is skipped, so rerunning a section after Ctrl+C or a dropped connection fetches only what is missing; `--force` downloads everything again. The same document linked twice is saved once, and two different files with one name get a ` (2)` suffix. `--dest` names the file when there is exactly one. Quote URLs in zsh, whose `?` is a glob.
 
 #### Submit assignment files
 
@@ -131,15 +137,20 @@ time it was checked. It is the only command that writes to Moodle.
 
 ```bash
 moodle submit "UNIT TASK" essay.pdf --dry-run          # plan only: limits, statement, existing files
-moodle submit "UNIT TASK" essay.pdf                    # upload; Moodle keeps a draft where drafts are allowed
+moodle submit "UNIT TASK" essay.pdf                    # upload as a draft; refused if the assignment has no draft stage
 moodle submit "UNIT TASK" --final --accept-statement   # submit the draft for grading (cannot be undone)
 ```
 
 Every run plans first and asks for confirmation; `--yes` skips the prompt for scripts.
 `--replace` removes the files already in the submission, `--accept-statement` agrees to
 the site's submission statement when one is required, and a file that is too large or of
-the wrong type is refused before anything is uploaded. Assignments without drafts submit
-on save; the receipt reports what the site did.
+the wrong type is refused before anything is uploaded. Some assignments have no draft
+stage, so saving the files is the submission for grading; without `--final`, `submit`
+refuses those (and any assignment whose pages do not show which kind it is) before
+uploading anything. The plan reports `draft_stage`. `--replace` with no files is refused
+rather than emptying the submission. In a group submission the plan names the `group`:
+its files are shared, so an upload or `--replace` changes everyone's submission. When every
+member has to submit, the receipt lists who Moodle is still `awaiting`.
 
 ### Take a quiz (beta)
 
@@ -153,7 +164,7 @@ moodle quiz answer <attempt> <quiz> 3 --from essay.md
 moodle quiz finish <attempt> <quiz>             # "Submit all and finish"; Moodle does not allow undoing this
 ```
 
-Every write shows the beta and academic-integrity notice and asks for a yes; a pipe must pass `--yes`, and `--dry-run` shows the plan. Answers you send are your own submission under your institution's rules: use it only where the quiz allows it, and check the attempt in a browser before you finish. A quiz with an access password asks for it at the terminal (not echoed, never stored); scripts pass `--password`. A quiz that requires the Safe Exam Browser cannot be taken here, because Moodle checks the browser itself. Question types without a plain choice or text input are shown but must be answered in a browser.
+Before `quiz start` asks, it names the time limit (the timer starts at once and does not pause) and how many attempts are left. A quiz that moves forward only is refused an earlier page, and `quiz show --page` asks before opening the next page, because that locks the current one. Every write shows the beta and academic-integrity notice and asks for a yes; a pipe must pass `--yes`, and `--dry-run` shows the plan. Answers you send are your own submission under your institution's rules: use it only where the quiz allows it, and check the attempt in a browser before you finish. A quiz with an access password asks for it at the terminal (not echoed, never stored); scripts pass `--password`. A quiz that requires the Safe Exam Browser cannot be taken here, because Moodle checks the browser itself. Question types without a plain choice or text input are shown but must be answered in a browser.
 
 ### Remote MCP for web AI
 
