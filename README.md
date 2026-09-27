@@ -127,7 +127,7 @@ You can paste the same links into your agent and ask it to inspect the page, fin
 - a whole section: `moodle dl "UNIT week 5"` or a section URL such as `…/course/view.php?id=34637&section=5`, including child sections the page shows inside it;
 - a single `pluginfile.php` link.
 
-With no argument at a terminal, it walks unit → section → item the way the course page does, with type-to-filter. Files land in the current directory or `--to DIR` (created when missing); a repeated name gets a ` (2)` suffix. `--dest` names the file when there is exactly one, and `--force` replaces existing files. Quote URLs in zsh, whose `?` is a glob.
+With no argument at a terminal, it walks unit → section → item the way the course page does: type to filter, Escape to go back a step. `moodle dl UNIT` starts at that unit's sections. Files land in the current directory or `--to DIR` (created when missing). A file already there is skipped, so rerunning a section after Ctrl+C or a dropped connection fetches only what is missing; `--force` downloads everything again. The same document linked twice is saved once, and two different files with one name get a ` (2)` suffix. `--dest` names the file when there is exactly one. Quote URLs in zsh, whose `?` is a glob.
 
 #### Submit assignment files
 
