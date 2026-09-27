@@ -2,12 +2,12 @@
 
 exports[`shared intent contract > pins the home, section, item and grades screens at 80 columns > grades 1`] = `
 "algo-2 · 1 of 2 graded
-┌───────────┬───────┬───────┬───────────────────────────────┐
-│ Name      │ Grade │ Range │ Feedback                      │
-├───────────┼───────┼───────┼───────────────────────────────┤
-│ Mini Test │ -     │ 0–10  │ in 4 days · Sat 19 Sep, 15:55 │
-│ Quiz      │ 8     │ 0–10  │ Well done                     │
-└───────────┴───────┴───────┴───────────────────────────────┘
+┌───────────┬───────┬───────┬───────────────────────────────┬───────────┐
+│ Name      │ Grade │ Range │ Due                           │ Feedback  │
+├───────────┼───────┼───────┼───────────────────────────────┼───────────┤
+│ Mini Test │ -     │ 0–10  │ in 4 days · Sat 19 Sep, 15:55 │           │
+│ Quiz      │ 8     │ 0–10  │                               │ Well done │
+└───────────┴───────┴───────┴───────────────────────────────┴───────────┘
 
 Try  moodle due --days 30
      moodle grades"

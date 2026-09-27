@@ -1,6 +1,6 @@
 import { createTheme, type Tone } from "@bunizao/cli-kit";
 
-import { renderTerminalTable, sanitizeTerminalText, type TerminalTableCell } from "./terminal-table.js";
+import { renderTerminalTable, sanitizeTerminalText, type TerminalTableCell, type TerminalTableColumn } from "./terminal-table.js";
 
 const record = (v: unknown): Record<string, unknown> => v && typeof v === "object" && !Array.isArray(v) ? v as Record<string, unknown> : {};
 const array = (v: unknown): Record<string, unknown>[] => Array.isArray(v) ? v.map(record) : [];
@@ -81,8 +81,13 @@ export function renderScreen(data: Record<string, unknown>, options: { width?: n
   } else if (data.grades) {
     for (const g of array(data.grades)) {
       lines.push(`${text(g.code)} · ${g.graded} of ${g.total} graded`);
-      const feedback = (i: Record<string, unknown>): TerminalTableCell => i.feedback ? text(i.feedback) : i.due_at ? due(i) : "";
-      lines.push(renderTerminalTable([{ label: "Name", flex: true }, { label: "Grade" }, { label: "Range" }, { label: "Feedback", flex: true }], array(g.items).map(i => [text(i.name), text(i.grade), text(i.range), feedback(i)]), { width: options.width }));
+      const items = array(g.items);
+      // Due and Feedback only appear when some row fills them, so a unit with neither keeps a narrow table.
+      type Column = [TerminalTableColumn, (i: Record<string, unknown>) => TerminalTableCell];
+      const columns: Column[] = [[{ label: "Name", flex: true }, i => text(i.name)], [{ label: "Grade" }, i => text(i.grade)], [{ label: "Range" }, i => text(i.range)]];
+      if (items.some(i => i.due_at)) columns.push([{ label: "Due" }, i => i.due_at ? due(i) : ""]);
+      if (items.some(i => i.feedback)) columns.push([{ label: "Feedback", flex: true }, i => text(i.feedback)]);
+      lines.push(renderTerminalTable(columns.map(([c]) => c), items.map(i => columns.map(([, cell]) => cell(i))), { width: options.width }));
     }
   } else if (data.item) {
     const i = record(data.item); lines.push(`${text(i.name)} · ${text(i.type)} · #${i.id}`);
