@@ -72,6 +72,9 @@ describe("site vocabulary resolution", () => {
     expect([...sectionLabels(sections).values()]).toEqual(["Learning", "Getting started", "Week 7", "Week 7 › Own time", "Assessments", "Assessments › 1. Written", "Assessments › 2. Written"]);
     expect(sectionTree(sections).map(n => [n.section.id, n.children.map(c => c.id)])).toEqual([[1, []], [2, []], [3, [4]], [5, [6, 7]]]);
     expect(resolveSection("2. written", sections).section.id).toBe(7);
+    // A child listed ahead of its parent still belongs to it.
+    const [learning, started, week, own] = sections;
+    expect(withChildSections(week, [own, learning, started, week]).map(s => s.id)).toEqual([3, 4]);
   });
   it("uses the site marker and never guesses without one", () => {
     expect(currentSection(fixtureSections())?.id).toBe(70);

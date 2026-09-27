@@ -139,17 +139,10 @@ export function sectionLabels(sections: readonly Section[]): Map<number, string>
 // renders inside it.
 export function sectionTree(sections: readonly Section[]): Array<{ section: Section; children: Section[] }> {
   const parents = parentsOf(sections);
-  const tree: Array<{ section: Section; children: Section[] }> = [];
-  const nodes = new Map<number, (typeof tree)[number]>();
-  for (const s of sections) {
-    const node = nodes.get(parents.get(s.id)?.id ?? NaN);
-    if (node) node.children.push(s);
-    else {
-      const entry = { section: s, children: [] };
-      tree.push(entry);
-      nodes.set(s.id, entry);
-    }
-  }
+  const tree = sections.filter(s => !parents.has(s.id)).map(section => ({ section, children: [] as Section[] }));
+  const nodes = new Map(tree.map(node => [node.section.id, node]));
+  // A child the site lists before its parent still lands inside it.
+  for (const s of sections) nodes.get(parents.get(s.id)?.id ?? NaN)?.children.push(s);
   return tree;
 }
 
