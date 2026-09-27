@@ -72,9 +72,10 @@ async function unitAndQuery(raw: string, courses: readonly Course[], ui?: Ui): P
 // says so and stays on the section list.
 async function browse(client: MoodleClient, service: IntentService, courses: readonly Course[], ui: Ui, start?: Course): Promise<string> {
   let course = start;
+  let left: Course | undefined;
   let sectionId: number | undefined;
   for (;;) {
-    course ??= await pickUnit(ui, courses, "Unit");
+    course ??= await pickUnit(ui, courses, "Unit", left);
     const sections = await service.sections(course.id);
     const labels = sectionLabels(sections);
     const counts = itemCounts(sections);
@@ -93,6 +94,7 @@ async function browse(client: MoodleClient, service: IntentService, courses: rea
       ...(s.current ? { hint: "current" } : {}),
     })), { search: true, back: true, ...(initial !== undefined ? { initial } : {}) });
     if (picked === BACK) {
+      left = course;
       course = undefined;
       sectionId = undefined;
       continue;
@@ -128,12 +130,12 @@ function plural(count: number, noun: string): string {
   return `${count} ${noun}${count === 1 ? "" : "s"}`;
 }
 
-function pickUnit(ui: Ui, courses: readonly Course[], message: string): Promise<Course> {
+function pickUnit(ui: Ui, courses: readonly Course[], message: string, initial?: Course): Promise<Course> {
   return ui.select(message, courses.map(c => ({
     value: c,
     label: c.fullname || c.shortname,
     ...(c.shortname && c.shortname !== c.fullname ? { hint: c.shortname } : {}),
-  })), { search: true });
+  })), { search: true, ...(initial ? { initial } : {}) });
 }
 
 async function sectionOf(service: IntentService, row: { unit_id: number; section_id: number }): Promise<Section> {

@@ -62,9 +62,10 @@ describe("download source choice", () => {
     const ui = { select, warn } as unknown as Ui;
     await expect(chooseDownloadSource(client, service, "", ui)).resolves.toBe(`${BASE_URL}/course/view.php?id=2&section=2`);
 
-    const [unit, back, , sections, , items, again, last] = select.mock.calls;
+    const [unit, back, unitAgain, sections, , items, again, last] = select.mock.calls;
     expect(unit[2]).toMatchObject({ search: true });
     expect(back[0]).toBe("algo-2 › Section");
+    expect(unitAgain[2]).toMatchObject({ initial: { shortname: "algo-2" } });
     expect(sections[1].map((c: { hint?: string }) => c.hint)).toEqual(["current", undefined]);
     expect(sections[2]).toMatchObject({ back: true, initial: 70 });
     // Week 7's page is missing from the fixture: a warning, and the section list again.
