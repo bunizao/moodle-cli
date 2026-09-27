@@ -143,22 +143,23 @@ function cellText(value: unknown): string {
   return Object.values(value as Record<string, unknown>).filter((v) => typeof v === "string" && v !== "").join("  ");
 }
 
-export function formatDownloadResult(result: DownloadResult): string {
-  if (result.files.length === 1) {
-    const [receipt] = result.files;
-    return renderKeyValueTable([
-      ["File", receipt.file_path],
-      ["Bytes", String(receipt.bytes_written)],
-      ["Content type", receipt.content_type],
-      ["Source", receipt.source_url],
-    ], { title: "Download" });
-  }
+export function formatDownloadResult(result: DownloadResult, cwd = process.cwd()): string {
   const size = (bytes: number) => bytes >= 1024 * 1024 ? `${(bytes / (1024 * 1024)).toFixed(1)} MiB` : bytes >= 1024 ? `${(bytes / 1024).toFixed(1)} KiB` : `${bytes} B`;
+  // Paths under the working directory read shorter as ./name; anything else stays absolute.
+  const shown = (file: string) => {
+    const relative = path.relative(cwd, file);
+    if (!relative) return ".";
+    return relative && !relative.startsWith("..") && !path.isAbsolute(relative) ? `./${relative}` : file;
+  };
+  if (result.files.length === 1) {
+    const [file] = result.files;
+    return `✓ Saved ${file.filename} (${size(file.bytes_written)}) → ${shown(file.file_path)}`;
+  }
   const total = result.files.reduce((sum, file) => sum + file.bytes_written, 0);
   return renderTerminalTable(
     [{ label: "File", flex: true }, { label: "Size" }],
     result.files.map((file) => [file.filename, size(file.bytes_written)]),
-    { title: `Downloaded ${result.files.length} files (${size(total)}) to ${path.dirname(result.files[0].file_path)}` },
+    { title: `✓ Saved ${result.files.length} files (${size(total)}) → ${shown(path.dirname(result.files[0].file_path))}` },
   );
 }
 

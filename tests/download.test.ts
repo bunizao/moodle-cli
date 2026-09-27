@@ -9,6 +9,7 @@ import type { MoodleClient } from "../src/client.js";
 import { runCli } from "../src/cli.js";
 import { ENV_MOODLE_BASE_URL, ENV_MOODLE_SESSION } from "../src/constants.js";
 import { downloadMoodleFiles } from "../src/download.js";
+import { formatDownloadResult } from "../src/formatters.js";
 
 // Most cases here resolve to one file; the batch cases below read the whole result.
 const downloadMoodleFile = async (...args: Parameters<typeof downloadMoodleFiles>) => (await downloadMoodleFiles(...args)).files[0];
@@ -451,3 +452,20 @@ function buffer() {
     },
   };
 }
+
+describe("download receipt screen", () => {
+  const receipt = (file_path: string, bytes_written: number) => ({ file_path, filename: file_path.split("/").at(-1)!, bytes_written, content_type: "application/pdf", source_url: "", final_url: "" });
+
+  it("prints one line for one file, relative to the working directory", () => {
+    expect(formatDownloadResult({ files: [receipt("/work/Lecture 5.pdf", 8906445)], total: 1 }, "/work"))
+      .toBe("✓ Saved Lecture 5.pdf (8.5 MiB) → ./Lecture 5.pdf");
+    expect(formatDownloadResult({ files: [receipt("/elsewhere/a.pdf", 10)], total: 1 }, "/work"))
+      .toBe("✓ Saved a.pdf (10 B) → /elsewhere/a.pdf");
+  });
+
+  it("titles a batch with its count, size and folder", () => {
+    const text = formatDownloadResult({ files: [receipt("/work/w5/a.pdf", 2048), receipt("/work/w5/b.csv", 1024)], total: 2 }, "/work");
+    expect(text).toContain("✓ Saved 2 files (3.0 KiB) → ./w5");
+    expect(text).toContain("b.csv");
+  });
+});

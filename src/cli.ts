@@ -112,7 +112,8 @@ interface Runtime {
   busy: boolean;
   getClient: () => Promise<MoodleClient>;
   baseUrl: () => Promise<string>;
-  output: (data: unknown, formatter: () => string, options: OutputCommandOptions) => Promise<void>;
+  // hints: false for a receipt, where the generic "Try" commands are noise.
+  output: (data: unknown, formatter: () => string, options: OutputCommandOptions, hints?: boolean) => Promise<void>;
   screen: (data: Record<string, unknown>, options?: OutputCommandOptions) => string;
   count: (key: "limit" | "days", local?: number, fallback?: number) => number | undefined;
 }
@@ -221,12 +222,12 @@ export function buildProgram(io: CliIO = {}): Command {
       }
       return runtime.client;
     },
-    output: async (data, formatter, options) => {
+    output: async (data, formatter, options, hints = true) => {
       const merged = { ...program.opts(), ...options } as OutputCommandOptions;
       const format = outputFormat(merged, stdout);
       const human = format === "table" ? formatter() : "";
       const text = format === "table"
-        ? `${human}${human.includes("Try  ") ? "" : `\n\n${tryLines(["moodle due", "moodle units", "moodle --help"])}`}\n`
+        ? `${human}${!hints || human.includes("Try  ") ? "" : `\n\n${tryLines(["moodle due", "moodle units", "moodle --help"])}`}\n`
         : format === "json"
           ? `${JSON.stringify(JSON.parse(render(data, { format, fields: parseFields(data, merged.fields) })), null, merged.pretty ? 2 : undefined)}\n`
           : render(data, { format, fields: parseFields(data, merged.fields) });
@@ -614,7 +615,7 @@ export function buildProgram(io: CliIO = {}): Command {
       directory: options.to ? path.resolve(cwd, options.to) : undefined,
       force: options.force,
     });
-    await runtime.output(result, () => formatDownloadResult(result), options);
+    await runtime.output(result, () => formatDownloadResult(result, cwd), options, false);
   });
 
   const grades = program.command("grades").description("Inspect grades.");
