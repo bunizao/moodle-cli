@@ -18,21 +18,36 @@ function moment(value: unknown, now: number): string {
   const sameYear = new Date(now).getFullYear() === Number(year);
   return `${weekday} ${Number(day)} ${MONTHS[Number(month) - 1]}${sameYear ? "" : ` ${year}`}${hour ? `, ${hour}:${minute}` : ""}`;
 }
+// Calendar days from today to the item on the site's clock, taken from the offset its
+// ISO time carries; "tomorrow" means the next date, not the next 24 hours.
+function daysUntil(value: unknown, at: number, now: number): number {
+  const parts = /^(\d{4})-(\d{2})-(\d{2})T[\d:.]+(Z|[+-]\d{2}:\d{2})$/u.exec(String(value ?? ""));
+  const offset = !parts || parts[4] === "Z" ? 0 : (parts[4][0] === "-" ? -1 : 1) * (Number(parts[4].slice(1, 3)) * 60 + Number(parts[4].slice(4))) * 60000;
+  const date = (ms: number) => { const d = new Date(ms + offset); return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()); };
+  return Math.round((date(parts ? Date.UTC(Number(parts[1]), Number(parts[2]) - 1, Number(parts[3])) - offset : at) - date(now)) / 86400000);
+}
 /** The commands worth typing next, one per line under a "Try" label, the way help pages list them. */
 export function tryLines(commands: readonly string[]): string {
   return commands.map((command, index) => `${index ? "     " : "Try  "}${command}`).join("\n");
 }
 
-export function renderScreen(data: Record<string, unknown>, options: { width?: number; color?: boolean; now?: number } = {}): string {
+// intent names the command, because an empty list is dropped from the result and would
+// otherwise leave nothing to say what came back empty.
+export function renderScreen(data: Record<string, unknown>, options: { width?: number; color?: boolean; now?: number; intent?: string } = {}): string {
   const lines: string[] = [];
   const now = options.now ?? Date.now();
   // Three levels on every row: the code a person types next, the name they read, the facts they glance at.
   const theme = createTheme(Boolean(options.color));
   // Text and tone stay apart until the last moment: a line paints them itself, a table cell hands both over.
   const due = (row: Record<string, unknown>): { text: string; tone: Tone } => {
-    const days = Math.ceil((Number(row.due_at) * 1000 - now) / 86400000);
-    const value = `${days < 0 ? `${-days} days overdue` : days === 0 ? "today" : days === 1 ? "tomorrow" : `in ${days} days`} · ${moment(row.due, now)}`;
-    return { text: value, tone: days < 0 ? "danger" : days <= 2 ? "warning" : "muted" };
+    const at = Number(row.due_at) * 1000;
+    const days = daysUntil(row.due, at, now);
+    // A quiz opening is listed with deadlines but is not one, so it says so and never alarms.
+    const opens = row.event === "open";
+    const when = at < now
+      ? opens ? "opened" : days < 0 ? `${-days} ${days === -1 ? "day" : "days"} overdue` : "overdue"
+      : `${opens ? "opens " : ""}${days === 0 ? "today" : days === 1 ? "tomorrow" : `in ${days} days`}`;
+    return { text: `${when} · ${moment(row.due, now)}`, tone: opens ? "muted" : at < now ? "danger" : days <= 2 ? "warning" : "muted" };
   };
   const dueText = (row: Record<string, unknown>) => {
     if (!row.due_at) return theme.status(text(row.status || row.submission_status));
@@ -96,8 +111,8 @@ export function renderScreen(data: Record<string, unknown>, options: { width?: n
     lines.push(renderTerminalTable([{ label: "ID" }, { label: "Code" }, { label: "Name", flex: true }], array(data.units).map(u => [text(u.id), text(u.code), text(u.name)]), { width: options.width }));
     next = ["moodle UNIT", "moodle find QUERY"];
   } else {
-    const key = ["due", "results", "activities", "forums"].find(k => k in data);
-    rows(array(key ? data[key] : []), key === "due" ? "Due" : "Matches");
+    const key = ["due", "results", "activities", "forums"].find(k => k in data) ?? options.intent;
+    rows(array(key ? data[key] : []), key === "due" ? "Due" : key === "news" ? "News" : "Matches");
     if (data.total !== undefined) lines.push(`${data.total} total`);
   }
   lines.push("", ...tryLines(next).split("\n").map(line => theme.dim(line)));

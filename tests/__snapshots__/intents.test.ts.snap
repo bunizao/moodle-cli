@@ -5,7 +5,7 @@ exports[`shared intent contract > pins the home, section, item and grades screen
 ┌───────────┬───────┬───────┬───────────────────────────────┐
 │ Name      │ Grade │ Range │ Feedback                      │
 ├───────────┼───────┼───────┼───────────────────────────────┤
-│ Mini Test │ -     │ 0–10  │ in 5 days · Sat 19 Sep, 15:55 │
+│ Mini Test │ -     │ 0–10  │ in 4 days · Sat 19 Sep, 15:55 │
 │ Quiz      │ 8     │ 0–10  │ Well done                     │
 └───────────┴───────┴───────┴───────────────────────────────┘
 
@@ -18,10 +18,10 @@ exports[`shared intent contract > pins the home, section, item and grades screen
 https://moodle.example.edu
 
 Due soon
-  DB240  Mini Test  in 5 days · Sat 19 Sep, 15:55  #1
-  algo-2  Mini Test  in 5 days · Sat 19 Sep, 15:55  #2
-  STATS  Mini Test  in 5 days · Sat 19 Sep, 15:55  #3
-  assign  Mini Test  in 5 days · Sat 19 Sep, 15:55  #4
+  DB240  Mini Test  in 4 days · Sat 19 Sep, 15:55  #1
+  algo-2  Mini Test  in 4 days · Sat 19 Sep, 15:55  #2
+  STATS  Mini Test  in 4 days · Sat 19 Sep, 15:55  #3
+  assign  Mini Test  in 4 days · Sat 19 Sep, 15:55  #4
 
 Unread  nothing
 

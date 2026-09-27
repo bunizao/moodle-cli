@@ -164,7 +164,8 @@ export function buildProgram(io: CliIO = {}): Command {
 
   // Screens are the only place the terminal's real width matters; one helper keeps
   // every call site honest about it.
-  const screen = (data: Record<string, unknown>, options: OutputCommandOptions = {}) => renderScreen(data, {
+  const screen = (data: Record<string, unknown>, options: OutputCommandOptions = {}, intent?: Intent) => renderScreen(data, {
+    intent,
     // Terminals without a size report 0 columns; the default is better than 40.
     width: (stdout as Partial<NodeJS.WriteStream>).columns || undefined,
     color: !process.env.NO_COLOR && program.opts().color !== false && outputFormat({ ...program.opts(), ...options }, stdout) === "table",
@@ -259,7 +260,7 @@ export function buildProgram(io: CliIO = {}): Command {
   const execute = async (name: Intent, args: Record<string, unknown>, options: OutputCommandOptions = {}, service?: IntentService) => {
     const runner = service ?? createIntentService(createMoodleGateway(await runtime.getClient()));
     const result = await runner.run(name, args);
-    await runtime.output(result, () => screen(result, options), options);
+    await runtime.output(result, () => screen(result, options, name), options);
   };
 
   // One rule for who is on the other end: a person at a terminal reading a table. Anyone
@@ -332,11 +333,12 @@ export function buildProgram(io: CliIO = {}): Command {
     if (!query) {
       let data = await service.run("unit", { unit });
       if (outputFormat(merged, stdout) === "table") {
-        const current = (data.unit as { current_section?: { id: number } }).current_section;
-        if (current) {
-          const section = (await service.sections(unit)).find(s => s.id === current.id);
-          if (section) data = await service.run("unit", { unit, section: section.name });
-        }
+        // The label, not the bare name: a nested child's own name ("Own time") repeats.
+        const current = (data.unit as { current_section?: { name: string } }).current_section;
+        if (current) data = await service.run("unit", { unit, section: current.name }).catch((error: unknown) => {
+          if (error instanceof ReferenceError) return data;
+          throw error;
+        });
         data = { ...data, ...await service.run("due", { unit }), ...await service.run("news", { unit, limit: 1 }) };
       }
       return runtime.output(data, () => screen(data), merged);
