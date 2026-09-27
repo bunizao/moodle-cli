@@ -423,6 +423,25 @@ describe("Moodle file downloads", () => {
     expect(result.skipped.map(s => `${s.reason} ${s.name}`)).toEqual(["unavailable a5", "unavailable gone.pdf"]);
   });
 
+  it("skips a file Moodle gives no name for, and saves one to --dest anyway", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "moodle-download-"));
+    const nameless = `${BASE_URL}/pluginfile.php/7/mod_folder/content/0/`;
+    const folder = client({
+      getActivity: async () => ({ id: 5, type: "folder", url: `${BASE_URL}/mod/folder/view.php?id=5`, file_entries: [
+        { name: "a.pdf", url: `${BASE_URL}/pluginfile.php/7/mod_folder/content/0/a.pdf`, requires_authentication: true },
+        { name: "", url: nameless, requires_authentication: true },
+      ] }) as never,
+      requestAbsolute: async (url: string) => responseAt(url, "%PDF", { "content-type": "application/pdf" }),
+    });
+    const result = await downloadMoodleFiles(folder, { source: `${BASE_URL}/mod/folder/view.php?id=5`, directory });
+    expect(result.files.map(f => f.filename)).toEqual(["a.pdf"]);
+    expect(result.skipped).toMatchObject([{ reason: "unavailable", detail: "Moodle did not provide a safe filename." }]);
+
+    const destination = join(directory, "named-here.pdf");
+    const single = client({ requestAbsolute: async (url: string) => responseAt(url, "%PDF", { "content-type": "application/pdf" }) });
+    await expect(downloadMoodleFile(single, { source: nameless, destination })).resolves.toMatchObject({ filename: "named-here.pdf" });
+  });
+
   it("reads a section linked by its id", async () => {
     const directory = await mkdtemp(join(tmpdir(), "moodle-download-"));
     const sectionUrl = `${BASE_URL}/course/section.php?id=44`;

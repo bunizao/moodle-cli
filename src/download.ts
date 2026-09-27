@@ -129,10 +129,14 @@ async function downloadAll(client: MoodleClient, request: DownloadRequest, signa
   for (const [index, target] of targets.entries()) {
     throwIfCancelled(signal);
     request.onFile?.(index + 1, targets.length, target.name ?? "");
-    let resolved: ResolvedDownload;
+    let resolved: ResolvedDownload | undefined;
+    let upstream: string;
     try {
       resolved = await responseOrWrapper(client, target.url, target.sourceUrl, target.name, signal);
+      // --dest already names the file, so a response without a usable name is fine then.
+      upstream = explicitDestination ? path.basename(explicitDestination) : chooseUpstreamFilename(resolved);
     } catch (error) {
+      await resolved?.response.body?.cancel().catch(() => undefined);
       // One broken link in a folder should not cost the rest of the section.
       if (targets.length > 1 && error instanceof CliError && error.code === "not_found") {
         skipped.push({ name: target.name ?? publicUrl(target.url), reason: "unavailable", source_url: publicUrl(target.sourceUrl), detail: error.message });
@@ -141,7 +145,6 @@ async function downloadAll(client: MoodleClient, request: DownloadRequest, signa
       throw error;
     }
     throwIfCancelled(signal);
-    const upstream = chooseUpstreamFilename(resolved);
     const first = firstByName.get(upstream.toLowerCase());
     const filename = explicitDestination ? path.basename(explicitDestination) : uniqueFilename(upstream, used);
     const destination = explicitDestination ?? path.join(directory, filename);
