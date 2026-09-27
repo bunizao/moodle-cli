@@ -5,7 +5,7 @@ import { DOWNLOADABLE_TYPES, downloadableActivities, sectionPage } from "./downl
 import { CliError, UsageError } from "./errors.js";
 import type { IntentService } from "./intents.js";
 import type { Course, Section } from "./models.js";
-import { ReferenceError, resolveUnit, sectionLabels } from "./resolve.js";
+import { ReferenceError, resolveUnit, sectionLabels, sectionTree } from "./resolve.js";
 
 const KINDS: Record<string, string> = { resource: "file", folder: "folder", assign: "assignment" };
 
@@ -77,7 +77,7 @@ async function browse(client: MoodleClient, service: IntentService, courses: rea
     course ??= await pickUnit(ui, courses, "Unit");
     const sections = await service.sections(course.id);
     const labels = sectionLabels(sections);
-    const counts = itemCounts(sections, labels);
+    const counts = itemCounts(sections);
     const listed = sections.filter(s => counts.get(s.id));
     if (!listed.length) {
       if (courses.length < 2) throw new ReferenceError("not_found", `${unitName(course)} has nothing to download.`, []);
@@ -117,18 +117,11 @@ async function browse(client: MoodleClient, service: IntentService, courses: rea
   }
 }
 
-// What the flat list puts under each section, counting the child sections a nested
-// format renders inside its parent's page. The page itself is only read once chosen.
-function itemCounts(sections: readonly Section[], labels: Map<number, string>): Map<number, number> {
-  const counts = new Map<number, number>();
-  let parent: Section | undefined;
-  for (const s of sections) {
-    const own = downloadableActivities(s).length;
-    counts.set(s.id, own);
-    if (parent && labels.get(s.id) !== (s.name || `Section ${s.section}`)) counts.set(parent.id, counts.get(parent.id)! + own);
-    else parent = s;
-  }
-  return counts;
+// What the flat list puts under each top-level section, counting the child sections a
+// nested format renders inside it. The page itself is only read once chosen.
+function itemCounts(sections: readonly Section[]): Map<number, number> {
+  return new Map(sectionTree(sections).map(({ section, children }) =>
+    [section.id, [section, ...children].reduce((n, s) => n + downloadableActivities(s).length, 0)]));
 }
 
 function plural(count: number, noun: string): string {

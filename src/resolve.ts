@@ -46,12 +46,21 @@ function unitError(code: "ambiguous" | "not_found", ref: string | number, course
 
 export function resolveSection(ref: string | number, sections: readonly Section[]): { section: Section; positional?: boolean } {
   const raw = normalize(String(ref));
+  const labels = sectionLabels(sections);
+  const label = (s: Section) => labels.get(s.id) ?? s.name;
   const numbers = raw.match(/\b\d+\b/gu) ?? [];
-  const matches = sections.filter(s => numbers.length === 1
-    ? (s.name.match(/\b\d+\b/gu) ?? []).some(n => Number(n) === Number(numbers[0]))
-    : normalize(s.name).includes(raw));
+  let matches = sections.filter(s => numbers.length === 1
+    ? (label(s).match(/\b\d+\b/gu) ?? []).some(n => Number(n) === Number(numbers[0]))
+    : normalize(label(s)).includes(raw));
+  // Narrow by every word against the label, which carries the parent, then by the
+  // section's own name: "week 5" is the week rather than "5. Written" or the week's
+  // children, and "week 5 real-time" is that week's child.
+  for (const keep of [(s: Section) => tokensMatch(label(s), raw), (s: Section) => tokensMatch(s.name, raw)]) {
+    const narrowed = matches.filter(keep);
+    if (matches.length > 1 && narrowed.length) matches = narrowed;
+  }
   if (matches.length === 1) return { section: matches[0] };
-  if (matches.length > 1) throw new ReferenceError("ambiguous", `Several sections match '${ref}'.`, matches.map(s => ({ id: s.id, name: s.name })));
+  if (matches.length > 1) throw new ReferenceError("ambiguous", `Several sections match '${ref}'.`, matches.map(s => ({ id: s.id, name: label(s) })));
   if (/^\d+$/u.test(raw)) {
     const positional = sections.filter(s => s.section === Number(raw));
     if (positional.length === 1) return { section: positional[0], positional: true };
@@ -108,6 +117,26 @@ export function sectionLabels(sections: readonly Section[]): Map<number, string>
     }
   }
   return labels;
+}
+
+// A nested course format renders child sections inside their parent's page, and the
+// flat list puts them right after it. The tree is what the course page shows at the top
+// level, each entry with the children it holds.
+export function sectionTree(sections: readonly Section[]): Array<{ section: Section; children: Section[] }> {
+  const labels = sectionLabels(sections);
+  const tree: Array<{ section: Section; children: Section[] }> = [];
+  for (const s of sections) {
+    const parent = tree.at(-1);
+    if (parent && labels.get(s.id)!.startsWith(`${labels.get(parent.section.id)} › `)) parent.children.push(s);
+    else tree.push({ section: s, children: [] });
+  }
+  return tree;
+}
+
+// Choosing a parent means its children too, as on the page.
+export function withChildSections(section: Section, sections: readonly Section[]): Section[] {
+  const node = sectionTree(sections).find(n => n.section.id === section.id);
+  return node ? [node.section, ...node.children] : [section];
 }
 
 export function splitUnitPhrase(phrase: string, courses: readonly Course[]): { course: Course; query: string } | undefined {

@@ -3,7 +3,8 @@ import { z } from "zod";
 import { createIntentService } from "../src/intents.js";
 import { intentContracts, intentDescription, type Intent } from "../src/intent-contract.js";
 import { createMoodleMcpServer, TOOL_CATALOG, TOOL_OUTPUT_SCHEMAS } from "../src/mcp/server.js";
-import { fixtureGateway, intentCalls } from "./fixtures/intent-site.js";
+import { fixtureGateway, intentCalls, sections, units } from "./fixtures/intent-site.js";
+import type { Section } from "../src/models.js";
 import { renderScreen } from "../src/screens.js";
 
 function walk(value: unknown, visit: (v: unknown) => void) { visit(value); if (value && typeof value === "object") for (const child of Object.values(value)) walk(child, visit); }
@@ -38,6 +39,25 @@ describe("shared intent contract", () => {
     expect(await call("item", { ref: "algo-2 mini test" })).toMatchObject({ isError: true, structuredContent: { error: { code: "ambiguous", candidates: [{ id: 201 }, { id: 211 }] } } });
     expect(await call("item", { ref: "algo-2 week 7 mini test" })).toMatchObject({ structuredContent: { item: { id: 201 } } });
     expect(await call("unit", { unit: "Ethics", section: 7 })).toMatchObject({ structuredContent: { unit: { id: 4 }, sections: [{ name: "Week 7" }] } });
+  });
+  it("returns a week with the child sections a nested format renders inside it", async () => {
+    const child = (id: number, name: string, current = false): Section => ({ id, section: id, name, visible: true, summary: "", current, activities: [
+      { id: id * 10, name: `${name} slides`, modname: "resource", description: "", url: "", visible: true },
+    ] });
+    const [week7, week17] = sections();
+    const nested = [{ ...week7, current: false, activities: [] }, child(11, "Own time"), { ...week17, current: false, activities: [] }, child(12, "Own time", true)];
+    const gateway = { ...fixtureGateway(), getCourse: async ({ courseId }: { courseId: number }) => ({ course: units.find(c => c.id === courseId)!, sections: nested }) };
+    const result = await call("unit", { unit: "algo-2", section: "week 7" }, gateway);
+    expect(result.structuredContent).toMatchObject({
+      unit: { current_section: { id: 12, name: "Week 17 › Own time" } },
+      sections: [{ id: week7.id, name: "Week 7" }, { id: 11, name: "Week 7 › Own time", activities: [{ id: 110 }] }],
+      total: 2,
+    });
+    // The index shows the weeks as the course page does, counting what they hold.
+    expect((await call("unit", { unit: "algo-2" }, gateway)).structuredContent).toMatchObject({
+      sections: [{ id: week7.id, name: "Week 7", activity_count: 1 }, { id: week17.id, name: "Week 17", activity_count: 1 }],
+      total: 2,
+    });
   });
   it("filters before counting and paginates posts without repeating the subject", async () => {
     expect(await call("due", { unit: "algo-2", limit: 1 })).toMatchObject({ structuredContent: { total: 1, due: [{ unit_id: 2 }] } });

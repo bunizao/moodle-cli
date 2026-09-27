@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { currentSection, resolveSection, resolveUnit, searchSections, splitUnitPhrase, tokensMatch } from "../src/resolve.js";
+import { currentSection, resolveSection, resolveUnit, searchSections, splitUnitPhrase, tokensMatch, withChildSections } from "../src/resolve.js";
 import type { Course, Section } from "../src/models.js";
 
 export const fixtureUnits: Course[] = [
@@ -49,6 +49,18 @@ describe("site vocabulary resolution", () => {
     const rows = searchSections(fixtureUnits[1], nested, "week 7 slides");
     expect(rows.map(r => [r.id, r.section])).toEqual([[20, "Week 7 › Own time"]]);
     expect(searchSections(fixtureUnits[1], nested, "week 7").filter(r => r.type === "section").map(r => r.id)).toEqual([70]);
+  });
+  it("prefers the week over a numbered assessment and reaches nested children through the parent", () => {
+    const child = (id: number, name: string): Section => ({ id, section: id, name, visible: true, summary: "", activities: [] });
+    const [week7, week17] = fixtureSections();
+    const nested = [week7, child(2, "Own time"), child(3, "Real time"), week17, child(5, "Own time"), child(6, "Real time"), child(8, "7. Written")];
+    expect(resolveSection("week 7", nested).section.id).toBe(70);
+    expect(resolveSection("week 7 real time", nested).section.id).toBe(3);
+    // A bare number is honestly ambiguous; a repeated child name lists its parents.
+    expect(() => resolveSection(7, nested)).toThrow(expect.objectContaining({ candidates: [{ id: 70, name: "Week 7" }, { id: 8, name: "7. Written" }] }));
+    expect(() => resolveSection("own time", nested)).toThrow(expect.objectContaining({ candidates: [{ id: 2, name: "Week 7 › Own time" }, { id: 5, name: "Week 17 › Own time" }] }));
+    expect(withChildSections(week7, nested).map(s => s.id)).toEqual([70, 2, 3]);
+    expect(withChildSections(week17, nested).map(s => s.id)).toEqual([71, 5, 6]);
   });
   it("uses the site marker, never week arithmetic, and tags an unfinished guess", () => {
     expect(currentSection(fixtureSections())?.section.id).toBe(70);

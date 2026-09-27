@@ -9,7 +9,7 @@ import { runtimeSupportsCookies } from "./mcp/self-command.js";
 import { createMoodleGateway } from "./mcp/gateway.js";
 import { createIntentService, type IntentService } from "./intents.js";
 import { humanDescription, type Intent } from "./intent-contract.js";
-import { ReferenceError, normalize, resolveSection, splitUnitPhrase, type Candidate } from "./resolve.js";
+import { ReferenceError, normalize, resolveSection, splitUnitPhrase, withChildSections, type Candidate } from "./resolve.js";
 import { renderScreen, tryLines } from "./screens.js";
 import type { Writable } from "node:stream";
 import { spawn } from "node:child_process";
@@ -583,7 +583,7 @@ export function buildProgram(io: CliIO = {}): Command {
       const client = await runtime.getClient();
       const courseId = await client.resolveCourseReference(unit);
       const sections = await client.getCourseContents(courseId);
-      const chosen = options.section ? [resolveSection(options.section, sections).section] : sections;
+      const chosen = options.section ? withChildSections(resolveSection(options.section, sections).section, sections) : sections;
       const rows = chosen.flatMap(section => section.activities.filter(a => options.includeLabels || a.modname !== "label").map(a => activitySchema.parse(stripEmpty(activityRow(a, section)))));
       const result = stripEmpty({ activities: rows.slice(0, count("limit", options.limit)), total: rows.length }) as Record<string, unknown>;
       await runtime.output(result, () => runtime.screen(result, options), options);
