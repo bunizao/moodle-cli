@@ -41,6 +41,15 @@ describe("site vocabulary resolution", () => {
     expect(searchSections(fixtureUnits[1], fixtureSections(), "mini test").map(r => r.id)).toEqual([101, 111]);
     expect(splitUnitPhrase("Ethics in Computing week 7 slides", fixtureUnits)).toMatchObject({ course: { id: 4 }, query: "week 7 slides" });
   });
+  it("finds items in a nested child section through its parent's name", () => {
+    const child = (id: number, parent: number): Section => ({ id, section: id, name: "Own time", visible: true, summary: "", activities: [
+      { id: id * 10, name: "Lecture slides", modname: "resource", description: "", url: "", visible: true },
+    ] });
+    const nested = [{ ...fixtureSections()[0], activities: [] }, child(2, 7), { ...fixtureSections()[1], activities: [] }, child(4, 17)];
+    const rows = searchSections(fixtureUnits[1], nested, "week 7 slides");
+    expect(rows.map(r => [r.id, r.section])).toEqual([[20, "Week 7 › Own time"]]);
+    expect(searchSections(fixtureUnits[1], nested, "week 7").filter(r => r.type === "section").map(r => r.id)).toEqual([70]);
+  });
   it("uses the site marker, never week arithmetic, and tags an unfinished guess", () => {
     expect(currentSection(fixtureSections())?.section.id).toBe(70);
     const unmarked = fixtureSections().map(s => ({ ...s, current: false }));

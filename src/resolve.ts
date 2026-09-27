@@ -73,11 +73,15 @@ export function currentSection(sections: readonly Section[]): { section: Section
 export interface SearchMatch extends Candidate { unit_id: number; unit_code: string; section_id: number; section: string; score: number; activity?: Activity }
 export function searchSections(course: Course, sections: readonly Section[], query: string): SearchMatch[] {
   const rows: SearchMatch[] = [];
+  const labels = sectionLabels(sections);
   for (const s of sections) {
-    const context = { unit_id: course.id, unit_code: course.shortname || course.fullname, section_id: s.id, section: s.name };
+    const label = labels.get(s.id) ?? s.name;
+    const context = { unit_id: course.id, unit_code: course.shortname || course.fullname, section_id: s.id, section: label };
+    // A section matches on its own name; its items also match on the parent in the label,
+    // so "week 5 slides" finds slides in a nested "Week 5 › Own-time".
     if (tokensMatch(s.name, query)) rows.push({ ...context, id: s.id, name: s.name, type: "section", score: normalize(s.name) === normalize(query) ? 100 : 70 });
     for (const a of s.activities) {
-      if (!tokensMatch(`${a.name} ${s.name}`, query)) continue;
+      if (!tokensMatch(`${a.name} ${label}`, query)) continue;
       const chrome = ["label", "cms"].includes(a.modname);
       const score = chrome ? 1 : normalize(a.name) === normalize(query) ? 100 : tokensMatch(a.name, query) ? 80 : 60;
       rows.push({ ...context, id: a.id, name: a.name, type: a.modname, score, activity: a });
@@ -85,6 +89,25 @@ export function searchSections(course: Course, sections: readonly Section[], que
   }
   const useful = rows.filter(r => r.score > 1);
   return (useful.length ? useful : rows).sort((a, b) => b.score - a.score || a.id - b.id);
+}
+
+// Formats that nest sections ("Week 5" holding "Own-time", "Real-time") flatten into a
+// list where the child names repeat; the nearest uniquely named section before a
+// repeated one is the only context left, so the label carries it.
+export function sectionLabels(sections: readonly Section[]): Map<number, string> {
+  const counts = new Map<string, number>();
+  for (const s of sections) counts.set(s.name, (counts.get(s.name) ?? 0) + 1);
+  const labels = new Map<number, string>();
+  let parent = "";
+  for (const s of sections) {
+    const name = s.name || `Section ${s.section}`;
+    if ((counts.get(s.name) ?? 0) > 1 && parent) labels.set(s.id, `${parent} › ${name}`);
+    else {
+      labels.set(s.id, name);
+      parent = name;
+    }
+  }
+  return labels;
 }
 
 export function splitUnitPhrase(phrase: string, courses: readonly Course[]): { course: Course; query: string } | undefined {
