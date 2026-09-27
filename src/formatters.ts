@@ -165,6 +165,7 @@ export function formatSubmissionReceipt(receipt: SubmissionReceipt): string {
     ["Unit id", receipt.unit_id ? String(receipt.unit_id) : ""],
     ["URL", receipt.url],
     ["Action", receipt.action],
+    ["Draft stage", receipt.draft_stage === undefined ? "" : receipt.draft_stage ? "yes" : "no; saving submits for grading"],
     ["Status", receipt.submission_status],
     ["Grading", receipt.grading_status],
     ["Due", receipt.due],

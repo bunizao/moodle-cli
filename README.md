@@ -131,15 +131,17 @@ time it was checked. It is the only command that writes to Moodle.
 
 ```bash
 moodle submit "UNIT TASK" essay.pdf --dry-run          # plan only: limits, statement, existing files
-moodle submit "UNIT TASK" essay.pdf                    # upload; Moodle keeps a draft where drafts are allowed
+moodle submit "UNIT TASK" essay.pdf                    # upload as a draft; refused if the assignment has no draft stage
 moodle submit "UNIT TASK" --final --accept-statement   # submit the draft for grading (cannot be undone)
 ```
 
 Every run plans first and asks for confirmation; `--yes` skips the prompt for scripts.
 `--replace` removes the files already in the submission, `--accept-statement` agrees to
 the site's submission statement when one is required, and a file that is too large or of
-the wrong type is refused before anything is uploaded. Assignments without drafts submit
-on save; the receipt reports what the site did.
+the wrong type is refused before anything is uploaded. Some assignments have no draft
+stage, so saving the files is the submission for grading; without `--final`, `submit`
+refuses those (and any assignment whose pages do not show which kind it is) before
+uploading anything. The plan reports `draft_stage`.
 
 ### Take a quiz (beta)
 

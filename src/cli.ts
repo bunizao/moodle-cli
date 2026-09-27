@@ -1110,9 +1110,12 @@ function submissionSummary(plan: SubmissionReceipt, final: boolean, theme: Theme
     : [`${theme.dim("Submit")}  ${destination}`, `${theme.dim("      ")}  ${theme.subject("the files already there")} for grading`];
   if (plan.removed.length) lines.push(`${theme.dim("Remove")}  ${theme.tone("danger", plan.removed.join(", "))} ${theme.dim("first")}`);
   if (plan.statement) lines.push(`${theme.dim(" Agree")}  "${plan.statement}"`);
-  lines.push(final
-    ? theme.tone("warning", "Then submit for grading. Moodle does not allow undoing this.")
-    : theme.dim("Moodle keeps a draft where the assignment allows drafts; otherwise it submits at once."));
+  // The plan refuses a non-final save unless Moodle showed a draft stage, so each line states a fact.
+  lines.push(!final
+    ? theme.dim("Saved as a draft; nothing is submitted for grading.")
+    : plan.draft_stage === false
+      ? theme.tone("warning", "This assignment has no draft stage: saving submits it for grading. Moodle does not allow undoing this.")
+      : theme.tone("warning", "Then submit for grading. Moodle does not allow undoing this."));
   return lines.join("\n");
 }
 
