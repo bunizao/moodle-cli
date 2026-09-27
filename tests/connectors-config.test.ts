@@ -1,4 +1,9 @@
+import { lstat, mkdtemp, readdir, readFile, readlink, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
+import { writeFileAtomic } from "../src/atomic-write.js";
+import { DefaultClientIntegration } from "../src/mcp/connectors/node-connectors.js";
 import {
   ClientConnectionError,
   connectClient,
@@ -156,6 +161,19 @@ describe("MCP config-file connectors", () => {
     expect(files.files.get("/client.json")).toBe('{"existing":true}\n');
   });
 
+  it("leaves the file alone when the client rewrote it after our write", async () => {
+    const files = new MemoryFiles();
+    files.files.set("/client.json", '{"existing":true}\n');
+    const connector = createClaudeDesktopConnector({ profile: "school", configPath: "/client.json" }, files);
+    vi.spyOn(connector, "verify").mockImplementation(async () => {
+      files.files.set("/client.json", '{"rewrittenByClient":true}\n');
+      return { client: "claude-desktop", configured: false };
+    });
+
+    await expect(connectClient(connector)).rejects.toBeInstanceOf(ClientConnectionError);
+    expect(files.files.get("/client.json")).toBe('{"rewrittenByClient":true}\n');
+  });
+
   it("restores the original when the config write itself fails", async () => {
     const files = new MemoryFiles();
     files.files.set("/client.json", '{"existing":true}\n');
@@ -199,5 +217,67 @@ describe("MCP config-file connectors", () => {
       detectionPath: "/Applications/Cursor.app",
     }, files);
     await expect(connector.detect()).resolves.toMatchObject({ detected: true, configPath: "/home/.cursor/mcp.json" });
+  });
+});
+
+describe("DefaultClientIntegration", () => {
+  const options = (files: MemoryFiles) => ({ homeDirectory: "/home", platform: "linux" as const, command: "moodle", commandArgs: [], fileSystem: files });
+
+  it("configures every other client when one config cannot be parsed, then names the broken one", async () => {
+    const files = new MemoryFiles();
+    files.files.set("/home/.codex", "");
+    files.files.set("/home/.claude", "");
+    files.files.set("/home/.claude.json", "{ not json");
+    files.files.set("/home/.cursor", "");
+
+    const error = await new DefaultClientIntegration(options(files)).install("school").catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(ClientConnectionError);
+    expect((error as ClientConnectionError).clients).toEqual(["claude-code"]);
+    expect(files.files.get("/home/.claude.json")).toBe("{ not json");
+    expect(files.files.get("/home/.codex/config.toml")).toContain('[mcp_servers."moodle-school"]');
+    expect(files.files.get("/home/.cursor/mcp.json")).toContain("moodle-school");
+  });
+
+  it("removes the registration from every other client when one config cannot be parsed", async () => {
+    const files = new MemoryFiles();
+    files.files.set("/home/.claude.json", "{ not json");
+    files.files.set("/home/.cursor/mcp.json", JSON.stringify({ mcpServers: { "moodle-school": { command: "moodle" }, github: { command: "gh" } } }));
+
+    await expect(new DefaultClientIntegration(options(files)).remove("school")).rejects.toThrow("claude-code");
+    expect(JSON.parse(files.files.get("/home/.cursor/mcp.json") ?? "{}")).toEqual({ mcpServers: { github: { command: "gh" } } });
+  });
+});
+
+describe("writeFileAtomic", () => {
+  it("replaces the file without leaving a temporary behind, keeping its mode", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "moodle-atomic-"));
+    try {
+      const path = join(dir, "config.yaml");
+      await writeFile(path, "old\n", { mode: 0o640 });
+      await writeFileAtomic(path, "new\n");
+      expect(await readFile(path, "utf8")).toBe("new\n");
+      expect((await stat(path)).mode & 0o777).toBe(0o640);
+      expect(await readdir(dir)).toEqual(["config.yaml"]);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("writes through a symlink instead of replacing it", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "moodle-atomic-"));
+    try {
+      const real = join(dir, "dotfiles.json");
+      const link = join(dir, "client.json");
+      await writeFile(real, "{}");
+      await symlink(real, link);
+      await writeFileAtomic(link, '{"a":1}', { mode: 0o600 });
+      expect((await lstat(link)).isSymbolicLink()).toBe(true);
+      expect(await readlink(link)).toBe(real);
+      expect(await readFile(real, "utf8")).toBe('{"a":1}');
+      expect((await stat(real)).mode & 0o777).toBe(0o600);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 });

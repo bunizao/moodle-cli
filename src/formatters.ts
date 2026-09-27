@@ -194,6 +194,9 @@ export function formatSubmissionReceipt(receipt: SubmissionReceipt): string {
     ["Unit id", receipt.unit_id ? String(receipt.unit_id) : ""],
     ["URL", receipt.url],
     ["Action", receipt.action],
+    ["Draft stage", receipt.draft_stage === undefined ? "" : receipt.draft_stage ? "yes" : "no; saving submits for grading"],
+    ["Group", receipt.group ?? ""],
+    ["Waiting for", receipt.awaiting?.join(", ") ?? ""],
     ["Status", receipt.submission_status],
     ["Grading", receipt.grading_status],
     ["Due", receipt.due],
@@ -208,10 +211,14 @@ export function formatSubmissionReceipt(receipt: SubmissionReceipt): string {
   ], { title: receipt.action === "planned" ? "Submission plan" : "Submission" });
   const note = receipt.action === "planned"
     ? "Plan only; nothing was uploaded. Re-run without --dry-run to upload."
-    : receipt.action === "saved" && /draft|not submitted/iu.test(receipt.submission_status)
-      ? "Saved as a draft. Re-run with --final to submit it for grading."
-      : "";
-  return note ? `${table}\n${note}` : table;
+    : receipt.action === "submitted" && receipt.awaiting?.length
+      ? "Your part is submitted. The group's submission goes for grading once everyone listed under Waiting for has submitted too."
+      : receipt.action === "saved" && /draft|not submitted/iu.test(receipt.submission_status)
+        ? "Saved as a draft. Re-run with --final to submit it for grading."
+        : "";
+  // Table cells truncate, so the warning that the files are shared goes below the table.
+  const shared = receipt.group ? `Group submission: the files are shared, so this changes the submission for everyone in ${receipt.group}.` : "";
+  return [table, shared, note].filter(Boolean).join("\n");
 }
 
 export function formatForumDiscussion(
@@ -397,6 +404,7 @@ export function formatAttemptPage(page: AttemptPage): string {
   for (const question of page.questions) lines.push(...attemptQuestionLines(question), "");
   const elsewhere = page.navigation.filter(entry => entry.page !== page.page && entry.number !== "i");
   if (elsewhere.length) lines.push(`Other pages: ${elsewhere.map(entry => `Q${entry.number} p${entry.page + 1} (${entry.state.toLowerCase()})`).join(", ")}`);
+  if (page.navigation_method === "sequential") lines.push("This quiz moves forward only: earlier pages are locked, and opening the next page locks this one.");
   return lines.join("\n").trimEnd();
 }
 

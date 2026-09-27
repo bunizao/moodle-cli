@@ -1,8 +1,10 @@
+import { writeFileAtomic } from "../../atomic-write.js";
 import { runtimeCommand } from "../self-command.js";
-import { chmod, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { readFile, rm, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import {
+  ClientConnectionError,
   connectClient,
   createClaudeCodeConnector,
   createClaudeDesktopConnector,
@@ -11,6 +13,7 @@ import {
   createVsCodeConnector,
   type ConfigFileClientConnector,
   type ConnectorFileSystem,
+  type SupportedMcpClient,
 } from "./connectors.js";
 
 export class NodeConnectorFileSystem implements ConnectorFileSystem {
@@ -31,9 +34,7 @@ export class NodeConnectorFileSystem implements ConnectorFileSystem {
   }
 
   async writePrivate(path: string, content: string): Promise<void> {
-    await mkdir(dirname(path), { recursive: true, mode: 0o700 });
-    await writeFile(path, content, { encoding: "utf8", mode: 0o600 });
-    await chmod(path, 0o600);
+    await writeFileAtomic(path, content, { mode: 0o600, directoryMode: 0o700 });
   }
 
   async remove(path: string): Promise<void> {
@@ -90,11 +91,21 @@ export function createDefaultClientConnectors(
 export class DefaultClientIntegration {
   constructor(private readonly options: DefaultConnectorOptions = {}) {}
 
+  // One unreadable client config must not leave the clients after it unconfigured, so every
+  // client is tried and the failures are reported together.
   async install(profile: string): Promise<void> {
+    const failed: SupportedMcpClient[] = [];
     for (const connector of createDefaultClientConnectors(profile, this.options)) {
-      if ((await connector.detect()).detected) {
-        await connectClient(connector);
+      try {
+        if ((await connector.detect()).detected) {
+          await connectClient(connector);
+        }
+      } catch {
+        failed.push(connector.client);
       }
+    }
+    if (failed.length) {
+      throw new ClientConnectionError(failed);
     }
   }
 
@@ -114,8 +125,14 @@ export class DefaultClientIntegration {
   }
 
   async remove(profile: string): Promise<void> {
+    const failed: SupportedMcpClient[] = [];
     for (const connector of createDefaultClientConnectors(profile, this.options)) {
-      await connector.removeRegistration();
+      await connector.removeRegistration().catch(() => failed.push(connector.client));
+    }
+    if (failed.length) {
+      throw new Error(
+        `Could not remove moodle-${profile} from the ${failed.join(", ")} configuration. Delete that entry from the file by hand.`,
+      );
     }
   }
 }

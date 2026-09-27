@@ -8,8 +8,6 @@ export interface DeploymentCredentials {
   previousTokensExpireAt?: number;
 }
 
-export const TOKEN_OVERLAP_MS = 10 * 60 * 1000;
-
 export interface CredentialBackend {
   readonly name: string;
   read(profile: string): Promise<DeploymentCredentials | null>;
@@ -97,7 +95,6 @@ export class SafeCredentialStore {
 export function rotateCredentials(
   current: DeploymentCredentials,
   createToken: () => string,
-  now: () => number = Date.now,
 ): DeploymentCredentials {
   return {
     mcpAccessToken: createToken(),
