@@ -92,6 +92,14 @@ describe("porcelain through the real Commander and HTTP boundary", () => {
     expect(JSON.parse((await command(["--limit", "1", "find", "week"])).stdout).results).toHaveLength(1);
     expect(calls.filter(name => name === "core_enrol_get_users_courses")).toHaveLength(1);
   });
+  it("opens a bare activity id, and reads 'word N' as an item when no section has that word", async () => {
+    const byId = await command(["201"]);
+    expect(byId.code, byId.stderr).toBe(0);
+    expect(JSON.parse(byId.stdout)).toHaveProperty("item.id", 201);
+    const phrase = await command(["algo-2", "slides 7"]);
+    expect(phrase.code, phrase.stderr).toBe(0);
+    expect(JSON.parse(phrase.stdout)).not.toHaveProperty("sections");
+  });
   it("reports an unmatched target instead of an empty search", async () => {
     const result = await command(["zzz-no-such-unit"]);
     expect(result.code).toBe(4);

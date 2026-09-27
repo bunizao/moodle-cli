@@ -59,6 +59,9 @@ describe("site vocabulary resolution", () => {
     // A bare number is honestly ambiguous; a repeated child name lists its parents.
     expect(() => resolveSection(7, nested)).toThrow(expect.objectContaining({ candidates: [{ id: 70, name: "Week 7" }, { id: 8, name: "7. Written" }] }));
     expect(() => resolveSection("own time", nested)).toThrow(expect.objectContaining({ candidates: [{ id: 2, name: "Week 7 › Own time" }, { id: 5, name: "Week 17 › Own time" }] }));
+    // Words beside the number must name the section, so an item phrase falls through to items.
+    expect(() => resolveSection("assignment 7", nested)).toThrow(expect.objectContaining({ code: "not_found" }));
+    expect(resolveSection("7 written", nested).section.id).toBe(8);
     expect(withChildSections(week7, nested).map(s => s.id)).toEqual([70, 2, 3]);
     expect(withChildSections(week17, nested).map(s => s.id)).toEqual([71, 5, 6]);
   });

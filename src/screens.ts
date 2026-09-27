@@ -57,7 +57,8 @@ export function renderScreen(data: Record<string, unknown>, options: { width?: n
   const rows = (items: Record<string, unknown>[], title: string) => {
     lines.push(theme.subject(title));
     if (!items.length) lines.push(theme.dim("  None"));
-    for (const r of items) lines.push(`  ${theme.key(text(r.unit_code || r.type))}  ${text(r.name)}${r.due_at ? `  ${dueText(r)}` : ""}${r.id ? `  ${theme.dim(`#${r.id}`)}` : ""}`);
+    // A due row's own id is the calendar event's; the activity id is the one commands take.
+    for (const r of items) { const id = r.activity_id ?? r.id; lines.push(`  ${theme.key(text(r.unit_code || r.type))}  ${text(r.name)}${r.due_at ? `  ${dueText(r)}` : ""}${id ? `  ${theme.dim(`#${id}`)}` : ""}`); }
   };
   let next = ["moodle due --days 30", "moodle grades"];
   if (data.home) {

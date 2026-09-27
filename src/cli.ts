@@ -316,6 +316,8 @@ export function buildProgram(io: CliIO = {}): Command {
     const courses = await client.getCourses();
     const service = createIntentService(createMoodleGateway(client));
     const parsed = await choose(async () => splitUnitPhrase(targets.join(" "), courses), async id => ({ course: courses.find(c => c.id === id)!, query: targets.slice(1).join(" ") }));
+    // A bare number that is not a unit id is an activity id, as every screen prints them.
+    if (!parsed && targets.length === 1 && /^\d+$/u.test(targets[0])) return execute("item", { ref: Number(targets[0]) }, merged, service);
     if (!parsed) {
       // A bare target is a place to go, not a forum search: an unmatched one is an
       // error with the site's own unit list, not an empty result and exit 0.

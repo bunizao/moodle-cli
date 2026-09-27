@@ -51,14 +51,13 @@ export function resolveSection(ref: string | number, sections: readonly Section[
   const numbers = raw.match(/\b\d+\b/gu) ?? [];
   let matches = sections.filter(s => numbers.length === 1
     ? (label(s).match(/\b\d+\b/gu) ?? []).some(n => Number(n) === Number(numbers[0]))
+      // Words beside the number must name the section too: "assignment 2" is not week 2.
+      && (raw === numbers[0] || tokensMatch(label(s), raw))
     : normalize(label(s)).includes(raw));
-  // Narrow by every word against the label, which carries the parent, then by the
-  // section's own name: "week 5" is the week rather than "5. Written" or the week's
-  // children, and "week 5 real-time" is that week's child.
-  for (const keep of [(s: Section) => tokensMatch(label(s), raw), (s: Section) => tokensMatch(s.name, raw)]) {
-    const narrowed = matches.filter(keep);
-    if (matches.length > 1 && narrowed.length) matches = narrowed;
-  }
+  // Narrow by the section's own name: "week 5" is the week rather than the week's
+  // children, whose labels carry it too, and "week 5 real-time" is that week's child.
+  const named = matches.filter(s => tokensMatch(s.name, raw));
+  if (matches.length > 1 && named.length) matches = named;
   if (matches.length === 1) return { section: matches[0] };
   if (matches.length > 1) throw new ReferenceError("ambiguous", `Several sections match '${ref}'.`, matches.map(s => ({ id: s.id, name: label(s) })));
   if (/^\d+$/u.test(raw)) {
