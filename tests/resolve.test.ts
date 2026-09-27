@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { currentSection, resolveSection, resolveUnit, searchSections, splitUnitPhrase } from "../src/resolve.js";
+import { currentSection, resolveSection, resolveUnit, searchSections, splitUnitPhrase, tokensMatch } from "../src/resolve.js";
 import type { Course, Section } from "../src/models.js";
 
 export const fixtureUnits: Course[] = [
@@ -48,5 +48,12 @@ describe("site vocabulary resolution", () => {
     expect(currentSection(unmarked)).toBeUndefined();
     const unfinished = unmarked.map((s, index) => index === 1 ? { ...s, activities: s.activities.map(a => ({ ...a, completion: 0 })) } : s);
     expect(currentSection(unfinished)).toMatchObject({ section: { id: unfinished[1].id }, estimated: true });
+  });
+  it("matches letter-and-number shorthand against numbered names", () => {
+    expect(tokensMatch("Assignment 2 (Weight: 20%)", "a2")).toBe(true);
+    expect(tokensMatch("Week 07: Regression", "w7")).toBe(true);
+    expect(tokensMatch("Assignment 12", "a2")).toBe(false);
+    expect(tokensMatch("Lab 2", "a2")).toBe(false);
+    expect(tokensMatch("Week 7", "07")).toBe(true);
   });
 });

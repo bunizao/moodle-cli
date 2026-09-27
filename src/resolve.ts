@@ -11,7 +11,15 @@ export class ReferenceError extends Error {
 }
 
 export const normalize = (value: string): string => value.normalize("NFKC").toLocaleLowerCase().trim().replace(/\s+/gu, " ");
-export const tokensMatch = (text: string, query: string): boolean => normalize(query).split(" ").every(token => (/^\d+$/u.test(token) ? (normalize(text).match(/\b\d+\b/gu) ?? []).some(n => n === token) : normalize(text).includes(token)));
+export const tokensMatch = (text: string, query: string): boolean => normalize(query).split(" ").every(token => tokenMatches(normalize(text), token));
+
+function tokenMatches(text: string, token: string): boolean {
+  if (/^\d+$/u.test(token)) return (text.match(/\b\d+\b/gu) ?? []).some(n => Number(n) === Number(token));
+  if (text.includes(token)) return true;
+  // Shorthand people type for numbered items: "a2" for "Assignment 2", "w7" for "Week 7".
+  const short = /^(\p{L}+)(\d+)$/u.exec(token);
+  return short !== null && new RegExp(`(?:^|[^\\p{L}])${short[1]}\\p{L}*[\\s:.#-]*0*${Number(short[2])}(?!\\d)`, "u").test(text);
+}
 
 export function resolveUnit(value: string | number, courses: readonly Course[]): Course {
   if (typeof value === "number") { const byId = courses.find(c => c.id === value); if (byId) return byId; throw unitError("not_found", value, courses); }
