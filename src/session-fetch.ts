@@ -16,7 +16,7 @@ export async function fetchWithSession(
   let body = init.body;
   const headers = new Headers(init.headers);
   // An idle limit, not a total one: a 200 MB lecture recording streams for minutes, and only
-  // a connection that stops sending is dead. It covers the headers, then each body chunk.
+  // a connection that stops sending is dead. It covers each hop's headers, then each body chunk.
   const deadline = new AbortController();
   let timer: ReturnType<typeof setTimeout> | undefined;
   const arm = () => {
@@ -24,11 +24,11 @@ export async function fetchWithSession(
     timer = setTimeout(() => deadline.abort(), REQUEST_TIMEOUT_MS);
     (timer as { unref?: () => void }).unref?.();
   };
-  arm();
   const signal = init.signal ? AbortSignal.any([init.signal, deadline.signal]) : deadline.signal;
 
   for (let hop = 0; ; hop += 1) {
     signal.throwIfAborted();
+    arm();
     if (!["https:", "http:"].includes(url.protocol) || url.username || url.password) {
       throw new Error("The request destination is not allowed.");
     }

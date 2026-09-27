@@ -49,6 +49,29 @@ describe("session-aware redirect handling", () => {
     await expect(fetchWithSession(`${origin}/my`, { signal: abort.signal }, origin, cookie, fetcher)).rejects.toThrow();
   });
 
+  it("gives each redirect hop its own idle limit", async () => {
+    vi.useFakeTimers();
+    try {
+      // Three hops of 20 s each: 60 s in total, but no single hop goes quiet for 30 s.
+      const fetcher = vi.fn<typeof fetch>(async (input, init) => {
+        await new Promise((resolve, reject) => {
+          setTimeout(resolve, 20_000);
+          init?.signal?.addEventListener("abort", () => reject(new Error("aborted")));
+        });
+        const url = String(input);
+        if (url.endsWith("/start")) return Response.redirect(`${origin}/sso`, 302);
+        if (url.endsWith("/sso")) return Response.redirect(`${origin}/file`, 302);
+        return new Response("file");
+      });
+      const response = fetchWithSession(`${origin}/start`, {}, origin, cookie, fetcher);
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(await (await response).text()).toBe("file");
+      expect(fetcher).toHaveBeenCalledTimes(3);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("lets a slow body run past the limit while chunks keep arriving, and stops a stalled one", async () => {
     vi.useFakeTimers();
     try {
