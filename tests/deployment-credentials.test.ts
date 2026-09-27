@@ -244,11 +244,10 @@ it.runIf(process.platform === "darwin")("recovers an empty macOS Keychain entry 
 describe("rotateCredentials", () => {
   it("invalidates previous transport credentials on rotation", () => {
     const tokens = ["mcp-next", "sync-next"];
-    expect(rotateCredentials(CREDENTIALS, () => tokens.shift() ?? "missing", () => 1_000)).toEqual({
+    expect(rotateCredentials(CREDENTIALS, () => tokens.shift() ?? "missing")).toEqual({
       mcpAccessToken: "mcp-next",
       sessionSyncToken: "sync-next",
       sessionEncryptionKey: "encryption-current",
-
     });
   });
 });

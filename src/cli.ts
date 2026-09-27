@@ -821,7 +821,7 @@ export function buildProgram(io: CliIO = {}): Command {
     .option("--dry-run", "Preview deployment changes without applying them.")
     .option("--repair", "Repair authentication and managed deployment state.")
     .option("--rotate-key", "Rotate the session encryption key and migrate the active session.")
-    .option("--rotate-token", "Rotate the MCP access token with an overlap window.")
+    .option("--rotate-token", "Rotate the MCP access token. The old token and every connected OAuth client stop working at once; reconnect them after.")
     .option("--rollback", "Restore the previous healthy Worker release.")
     .action(async (options: OutputCommandOptions & { dryRun?: boolean; repair?: boolean; rotateToken?: boolean; rotateKey?: boolean; rollback?: boolean }) => {
       const dryRun = Boolean(options.dryRun || program.opts().dryRun);
