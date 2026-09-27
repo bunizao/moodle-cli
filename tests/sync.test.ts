@@ -18,10 +18,10 @@ const NOW = () => new Date(2026, 8, 27);
 // Files live in `files` keyed by URL; the resource page names its file the way
 // forceview renders it. Every request is logged so tests can see what a rerun asks.
 function site() {
-  const files = new Map<string, { body: string; etag: string }>();
-  const put = (url: string, body: string) => files.set(url, { body, etag: `"${createHash("sha1").update(body).digest("hex")}"` });
+  const files = new Map<string, { body: string; etag: string; type: string }>();
+  const put = (url: string, body: string, type = "application/octet-stream") => files.set(url, { body, type, etag: `"${createHash("sha1").update(body).digest("hex")}"` });
   const slides = (revision: number, name = "slides.pdf") => `${BASE_URL}/pluginfile.php/11/mod_resource/content/${revision}/${name}`;
-  const state = { resourceFile: slides(1), folderFiles: [] as string[], assignFiles: [] as string[], activities: [] as Activity[] };
+  const state = { resourceFile: slides(1), folderFiles: [] as string[], assignFiles: [] as string[], activities: [] as Activity[], pages: new Map<string, () => string>() };
   const requests: Array<{ url: string; headers: Record<string, string> }> = [];
 
   put(state.resourceFile, "slides v1");
@@ -42,13 +42,15 @@ function site() {
     requestAbsolute: async (url: string, init: RequestInit = {}) => {
       const headers = (init.headers ?? {}) as Record<string, string>;
       requests.push({ url, headers });
+      const page = state.pages.get(url);
+      if (page) return at(url, page(), { "content-type": "text/html; charset=utf-8" });
       if (url.includes("/mod/resource/view.php")) {
         return at(url, `<div class="resourceworkaround"><a href="${state.resourceFile}">slides.pdf</a></div>`, { "content-type": "text/html" });
       }
       const file = files.get(url);
       if (!file) return new Response("missing", { status: 404 });
       if (headers["if-none-match"] === file.etag) return new Response(null, { status: 304 });
-      return at(url, file.body, { "content-type": "application/octet-stream", etag: file.etag });
+      return at(url, file.body, { "content-type": file.type, etag: file.etag });
     },
   } as unknown as MoodleClient;
   return { client, files, put, slides, state, requests };
@@ -162,6 +164,50 @@ describe("moodle sync", () => {
 
     expect(result.units[0].changes).toEqual([{ status: "updated", path: renamed, bytes: 12 }]);
     await expect(readdir(join(unitDir(base), "Week 1", "Real-time"))).resolves.not.toContain("slides.pdf");
+  });
+
+  it("saves a page and a book as HTML, and rewrites them only when what they show changes", async () => {
+    const moodle = site();
+    const base = await root();
+    const pageFile = join(unitDir(base), "Week 1", "Real-time", "Reading list.html");
+    const bookFile = join(unitDir(base), "Week 1", "Real-time", "Study guide.html");
+    const bookUrl = `${BASE_URL}/mod/book/tool/print/index.php?id=6`;
+    let printed = 0;
+    // The print view stamps the reader and the time on every request.
+    const book = (chapter: string) => () => `<html><body><div role="main"><div class="book">
+      <div class="text-end"><a class="hidden-print" href="#" onclick="window.print()">Print book</a></div>
+      <div class="book_info">Printed by: Someone · Date: ${++printed}</div>
+      <div class="book_chapter"><h2>One</h2><p>${chapter}</p><img src="/pluginfile.php/15/mod_book/chapter/1/diagram.png" alt="diagram"></div>
+    </div></div></body></html>`;
+    moodle.put(`${BASE_URL}/pluginfile.php/15/mod_book/chapter/1/diagram.png`, "PNG", "image/png");
+    moodle.state.activities.push(activity(5, "page", "Reading list"), activity(6, "book", "Study guide"));
+    moodle.state.pages.set(`${BASE_URL}/mod/page/view.php?id=5`, () => `<html><body><div role="main"><div class="box generalbox">
+      <p>Read <a href="/mod/url/view.php?id=9">this</a> first.</p><script>window.location = "https://elsewhere.example";</script>
+    </div></div></body></html>`);
+    moodle.state.pages.set(bookUrl, book("First draft"));
+
+    const first = await syncUnits(moodle.client, [COURSE], { root: base, now: NOW });
+
+    expect(first.units[0].changes.filter((change) => change.path.endsWith(".html")).map((change) => [change.status, change.path])).toEqual([
+      ["new", pageFile],
+      ["new", bookFile],
+    ]);
+    const savedPage = await readFile(pageFile, "utf8");
+    expect(savedPage).toContain("<title>Reading list</title>");
+    expect(savedPage).toContain(`href="${BASE_URL}/mod/url/view.php?id=9"`);
+    expect(savedPage).not.toContain("<script");
+    const savedBook = await readFile(bookFile, "utf8");
+    expect(savedBook).toContain(`src="data:image/png;base64,${Buffer.from("PNG").toString("base64")}"`);
+    expect(savedBook).not.toContain("Printed by");
+    expect(savedBook).not.toContain("onclick");
+
+    const second = await syncUnits(moodle.client, [COURSE], { root: base, now: NOW });
+    expect(second.units[0]).toMatchObject({ changes: [], unchanged: 5, problems: [] });
+
+    moodle.state.pages.set(bookUrl, book("Second draft"));
+    const third = await syncUnits(moodle.client, [COURSE], { root: base, now: NOW });
+    expect(third.units[0].changes).toEqual([{ status: "updated", path: bookFile, bytes: expect.any(Number) }]);
+    await expect(readFile(bookFile, "utf8")).resolves.toContain("Second draft");
   });
 
   it("reports a file gone from Moodle once and keeps the local copy", async () => {

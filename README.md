@@ -131,7 +131,7 @@ With no argument at a terminal, it walks unit → section → item the way the c
 
 #### Keep units in sync
 
-`moodle sync` keeps one folder per unit in step with Moodle: resources, folder contents and assignment attachments, laid out by section.
+`moodle sync` keeps one folder per unit in step with Moodle: resources, folder contents and assignment attachments, laid out by section. Pages and books are saved as single HTML files with their images embedded, so they read the same offline.
 
 ```bash
 moodle sync --to ~/Units              # every unit, one subfolder each
@@ -139,7 +139,7 @@ moodle sync UNIT --to ~/Units         # just one
 moodle sync --dry-run                 # what would change, nothing written
 ```
 
-Each unit folder holds a `.moodle-sync.json` manifest, so a rerun asks Moodle only whether each file changed and usually downloads nothing. A changed file replaces your copy only when you have not edited it; an edited copy stays put and the new version lands beside it as `name (updated YYYY-MM-DD).ext`. Files removed from Moodle are reported and kept locally. Rename or move a unit folder freely: the manifest, not the folder name, says which unit it holds.
+Each unit folder holds a `.moodle-sync.json` manifest, so a rerun asks Moodle only whether each file changed and usually downloads nothing. A changed file replaces your copy only when you have not edited it; an edited copy stays put and the new version lands beside it as `name (updated YYYY-MM-DD).ext`. Files removed from Moodle are reported and kept locally, and a file you delete stays deleted until Moodle changes it. Rename or move a unit folder freely: the manifest, not the folder name, says which unit it holds.
 
 #### Submit assignment files
 

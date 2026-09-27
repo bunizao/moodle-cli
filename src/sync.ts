@@ -5,11 +5,13 @@ import path from "node:path";
 import { Readable, Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
 
+import type { HTMLElement } from "node-html-parser";
+
 import type { MoodleClient } from "./client.js";
 import { chooseUpstreamFilename, isHtmlWrapper, looksLikeLoginPage, publicUrl, resourceLinks } from "./download.js";
 import { CliError, ConfigError, NotFoundError } from "./errors.js";
 import type { Activity, Course, FileEntry, Section } from "./models.js";
-import { parseResourceHtml } from "./scraper.js";
+import { parseResourceHtml, parseSavedDocumentHtml } from "./scraper.js";
 import { RequestFailed } from "./session-fetch.js";
 
 // `moodle sync` keeps one local folder per unit in step with Moodle. Each unit folder holds
@@ -18,10 +20,12 @@ import { RequestFailed } from "./session-fetch.js";
 // file you edited apart from one you only read.
 
 export const MANIFEST_NAME = ".moodle-sync.json";
-const SYNC_TYPES = new Set(["resource", "folder", "assign"]);
+const SYNC_TYPES = new Set(["resource", "folder", "assign", "page", "book"]);
 const WORKERS = 4;
 const ATTEMPTS = 3;
 const RETRY_STATUSES = new Set([429, 502, 503, 504]);
+// A saved page carries its images inline; one larger than this stays a link to Moodle.
+const INLINE_IMAGE_LIMIT = 5 * 1024 * 1024;
 
 export interface SyncChange {
   /** "conflict": Moodle changed a file you had edited; yours is untouched and the new one sits beside it. */
@@ -65,12 +69,14 @@ interface ManifestFile {
   path: string;
   /** Where Moodle's name would put it; differs from path after a "(2)" or a conflict sidestep. */
   name?: string;
-  /** The file URL asked again next time; never an activity page, so a rerun logs no views. */
+  /** The URL asked again next time. For a file it is the file itself, so a rerun logs no views. */
   url: string;
   sha1: string;
   size: number;
   etag?: string;
   last_modified?: string;
+  /** A page or book has no validators; the hash of what it shows stands in for them. */
+  content_sha1?: string;
 }
 
 interface Manifest {
@@ -89,6 +95,8 @@ interface SyncItem {
   name?: string;
   /** A resource whose file may have been replaced under a new name, found again through its page. */
   resourceId?: number;
+  /** A page or book, saved as one HTML file rather than downloaded. */
+  document?: boolean;
 }
 
 interface UnitRun {
@@ -206,6 +214,12 @@ export function sectionDirectories(sections: readonly Section[]): Map<number, st
 
 async function listActivity(run: UnitRun, activity: Activity, sectionDir: string): Promise<SyncItem[]> {
   const source = `cm:${activity.id}`;
+  const base = run.client.baseUrl.replace(/\/$/u, "");
+  if (activity.modname === "page" || activity.modname === "book") {
+    // The print view holds every chapter of a book on one page.
+    const url = activity.modname === "page" ? `${base}/mod/page/view.php?id=${activity.id}` : `${base}/mod/book/tool/print/index.php?id=${activity.id}`;
+    return [{ key: source, label: activity.name, url, dir: sectionDir, name: `${activity.name}.html`, document: true }];
+  }
   if (activity.modname === "resource") {
     const known = run.manifest.files[source];
     const url = known?.url ?? await resourceFileUrl(run.client, activity.id);
@@ -245,6 +259,7 @@ async function resourceFileUrl(client: MoodleClient, id: number): Promise<string
 
 async function syncItem(run: UnitRun, item: SyncItem): Promise<void> {
   run.seen.add(item.key);
+  if (item.document) return syncDocument(run, item);
   const known = run.manifest.files[item.key];
   let url = item.url;
   let response = await fetchFile(run, url, known);
@@ -262,51 +277,80 @@ async function syncItem(run: UnitRun, item: SyncItem): Promise<void> {
     await response.body?.cancel().catch(() => undefined);
     throw new CliError(response.status === 404 ? "not_found" : "upstream", `Moodle answered HTTP ${response.status}.`);
   }
-  const name = safeFileName(chooseUpstreamFilename({ response, sourceUrl: url, requestUrl: url, targetName: item.name }));
-  const relative = joinRelative(item.dir, name);
-  const local = known ? await localState(run.directory, known) : "none";
-
+  const relative = joinRelative(item.dir, safeFileName(chooseUpstreamFilename({ response, sourceUrl: url, requestUrl: url, targetName: item.name })));
   if (run.dryRun) {
     await response.body?.cancel().catch(() => undefined);
-    const status = !known ? "new" : local === "edited" ? "conflict" : "updated";
-    run.result.changes.push({ status, path: path.join(run.directory, relative), ...(status === "conflict" ? { edited: path.join(run.directory, known!.path) } : {}) });
+    return reportDryRun(run, item.key, relative);
+  }
+  const target = await prepareTarget(run, relative);
+  const temporary = await streamToTemporary(response, target, run.signal);
+  await settle(run, item.key, relative, temporary, {
+    url,
+    ...optional("etag", response.headers.get("etag")),
+    ...optional("last_modified", response.headers.get("last-modified")),
+  });
+}
+
+// A page or book is saved as one self-contained HTML file. Moodle sends no validators for
+// either, so each run reads it again and compares what it shows with the last copy.
+async function syncDocument(run: UnitRun, item: SyncItem): Promise<void> {
+  const response = await requestWithRetry(run, item.url, {});
+  if (!response.ok || !isHtmlWrapper(response)) {
+    await response.body?.cancel().catch(() => undefined);
+    if (response.ok) throw new CliError("upstream", "Moodle answered with a file where a page was expected.");
+    throw new CliError(response.status === 404 ? "not_found" : "upstream", `Moodle answered HTTP ${response.status}.`);
+  }
+  const html = await response.text();
+  if (looksLikeLoginPage(html)) throw new CliError("auth", "Moodle returned a login page instead of a page.", "Run `moodle auth login`.");
+  const content = parseSavedDocumentHtml(html, run.client.baseUrl);
+  if (!content) throw new NotFoundError("The page shows nothing to save.");
+  const contentSha1 = createHash("sha1").update(content.toString()).digest("hex");
+  if (run.manifest.files[item.key]?.content_sha1 === contentSha1) {
+    run.result.unchanged++;
     return;
   }
+  const relative = joinRelative(item.dir, safeFileName(item.name!));
+  if (run.dryRun) return reportDryRun(run, item.key, relative);
+  await inlineImages(run, content);
+  const target = await prepareTarget(run, relative);
+  const temporary = await writeTemporary(standaloneHtml(item.label, item.url, content.toString()), target);
+  await settle(run, item.key, relative, temporary, { url: item.url, content_sha1: contentSha1 });
+}
 
-  const target = path.join(run.directory, relative);
-  await mkdir(path.dirname(target), { recursive: true }).catch(() => {
-    throw new ConfigError(`Cannot create local directory '${path.dirname(target)}'.`);
-  });
-  const temporary = await streamToTemporary(response, target, run.signal);
+async function reportDryRun(run: UnitRun, key: string, relative: string): Promise<void> {
+  const known = run.manifest.files[key];
+  const local = known ? await localState(run.directory, known) : "none";
+  const status = !known ? "new" : local === "edited" ? "conflict" : "updated";
+  run.result.changes.push({ status, path: path.join(run.directory, relative), ...(status === "conflict" ? { edited: path.join(run.directory, known!.path) } : {}) });
+}
+
+// The new bytes sit in a temporary file beside their destination; this decides where they
+// go, and never over a copy you edited.
+async function settle(run: UnitRun, key: string, relative: string, temporary: TemporaryFile, fields: Omit<ManifestFile, "path" | "name" | "sha1" | "size">): Promise<void> {
+  const known = run.manifest.files[key];
+  const record = { name: relative, sha1: temporary.sha1, size: temporary.bytes, ...fields };
   try {
-    const record = {
-      name: relative,
-      url,
-      sha1: temporary.sha1,
-      size: temporary.bytes,
-      ...optional("etag", response.headers.get("etag")),
-      ...optional("last_modified", response.headers.get("last-modified")),
-    };
     if (known && known.sha1 === temporary.sha1) {
       // Same bytes at a new address: Moodle bumps a revision on any settings edit.
-      run.manifest.files[item.key] = { ...record, path: known.path };
+      run.manifest.files[key] = { ...record, path: known.path };
       run.result.unchanged++;
       return;
     }
     if (!known) {
       const placed = await place(run, temporary, relative, true);
-      run.manifest.files[item.key] = { ...record, path: placed.relative };
+      run.manifest.files[key] = { ...record, path: placed.relative };
       if (placed.adopted) run.result.unchanged++;
       else run.result.changes.push({ status: "new", path: path.join(run.directory, placed.relative), bytes: temporary.bytes });
       return;
     }
+    const local = await localState(run.directory, known);
     if (local === "edited") {
       const extension = path.extname(relative);
       const beside = `${relative.slice(0, relative.length - extension.length)} (updated ${run.today})${extension}`;
       const placed = await place(run, temporary, beside, false);
       // From here on the edited copy is yours alone; the manifest follows the new file.
       run.claimed.delete(known.path.toLowerCase());
-      run.manifest.files[item.key] = { ...record, path: placed.relative };
+      run.manifest.files[key] = { ...record, path: placed.relative };
       run.result.changes.push({ status: "conflict", path: path.join(run.directory, placed.relative), bytes: temporary.bytes, edited: path.join(run.directory, known.path) });
       return;
     }
@@ -320,11 +364,69 @@ async function syncItem(run: UnitRun, item: SyncItem): Promise<void> {
       if (local === "pristine") await unlink(path.join(run.directory, known.path)).catch(() => undefined);
       run.claimed.delete(known.path.toLowerCase());
     }
-    run.manifest.files[item.key] = { ...record, path: placedPath };
+    run.manifest.files[key] = { ...record, path: placedPath };
     run.result.changes.push({ status: "updated", path: path.join(run.directory, placedPath), bytes: temporary.bytes });
   } finally {
     await unlink(temporary.path).catch(() => undefined);
   }
+}
+
+async function prepareTarget(run: UnitRun, relative: string): Promise<string> {
+  const target = path.join(run.directory, relative);
+  await mkdir(path.dirname(target), { recursive: true }).catch(() => {
+    throw new ConfigError(`Cannot create local directory '${path.dirname(target)}'.`);
+  });
+  return target;
+}
+
+// Images Moodle serves only to a signed-in browser are embedded, so the saved page reads
+// the same offline. One that fails or is too large stays a link.
+async function inlineImages(run: UnitRun, content: HTMLElement): Promise<void> {
+  const origin = new URL(run.client.baseUrl).origin;
+  for (const image of content.querySelectorAll("img[src]")) {
+    const src = image.getAttribute("src") ?? "";
+    if (!src.startsWith(`${origin}/`) || !src.includes("/pluginfile.php/")) continue;
+    try {
+      const response = await requestWithRetry(run, src, {});
+      const type = response.headers.get("content-type")?.split(";")[0].trim() ?? "";
+      if (!response.ok || !type.startsWith("image/") || Number(response.headers.get("content-length")) > INLINE_IMAGE_LIMIT) {
+        await response.body?.cancel().catch(() => undefined);
+        continue;
+      }
+      const bytes = Buffer.from(await response.arrayBuffer());
+      if (bytes.length <= INLINE_IMAGE_LIMIT) image.setAttribute("src", `data:${type};base64,${bytes.toString("base64")}`);
+    } catch (error) {
+      rethrowFatal(error);
+    }
+  }
+}
+
+function standaloneHtml(title: string, source: string, content: string): string {
+  const url = escapeHtml(publicUrl(source));
+  return `<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>${escapeHtml(title)}</title>
+<style>
+body { font: 16px/1.6 system-ui, sans-serif; max-width: 48rem; margin: 2rem auto; padding: 0 1rem; }
+img, video { max-width: 100%; height: auto; }
+table { border-collapse: collapse; }
+td, th { border: 1px solid #ccc; padding: 0.25rem 0.5rem; }
+.moodle-source { color: #666; font-size: 0.875rem; }
+</style>
+</head>
+<body>
+<p class="moodle-source">Saved from <a href="${url}">${url}</a></p>
+${content}
+</body>
+</html>
+`;
+}
+
+function escapeHtml(value: string): string {
+  return value.replace(/[&<>"]/gu, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[char]!);
 }
 
 // Asks for a file conditionally when an earlier run saw it, so an unchanged file costs a
@@ -369,8 +471,24 @@ interface TemporaryFile {
   sha1: string;
 }
 
+function temporaryPathFor(destination: string): string {
+  return path.join(path.dirname(destination), `.${path.basename(destination)}.moodle-${randomUUID()}.tmp`);
+}
+
+async function writeTemporary(text: string, destination: string): Promise<TemporaryFile> {
+  const temporaryPath = temporaryPathFor(destination);
+  const bytes = Buffer.from(text);
+  try {
+    await writeFile(temporaryPath, bytes, { flag: "wx" });
+  } catch {
+    await unlink(temporaryPath).catch(() => undefined);
+    throw new ConfigError(`Cannot write local file '${destination}'.`);
+  }
+  return { path: temporaryPath, bytes: bytes.length, sha1: createHash("sha1").update(bytes).digest("hex") };
+}
+
 async function streamToTemporary(response: Response, destination: string, signal?: AbortSignal): Promise<TemporaryFile> {
-  const temporaryPath = path.join(path.dirname(destination), `.${path.basename(destination)}.moodle-${randomUUID()}.tmp`);
+  const temporaryPath = temporaryPathFor(destination);
   const digest = createHash("sha1");
   let bytes = 0;
   const counter = new Transform({
