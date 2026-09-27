@@ -1,6 +1,6 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import type { Writable } from "node:stream";
 import { createUi, isAgentEnvironment, type Ui } from "@bunizao/cli-kit";
 
@@ -8,6 +8,7 @@ import { showWordmark } from "./wordmark.js";
 import YAML from "yaml";
 import { CONFIG_DIR_NAME, CONFIG_FILENAME, ENV_MOODLE_BASE_URL, ENV_MOODLE_CONFIG, ENV_MOODLE_URL } from "./constants.js";
 import { ConfigError } from "./errors.js";
+import { writeFileAtomic } from "./atomic-write.js";
 
 export interface MoodleConfig extends Record<string, unknown> {
   baseUrl: string;
@@ -32,11 +33,10 @@ export interface ConfigOptions {
 
 export interface ConfigFs {
   readFile: typeof readFile;
-  writeFile: typeof writeFile;
-  mkdir: typeof mkdir;
+  write: (path: string, content: string) => Promise<void>;
 }
 
-const nodeFs: ConfigFs = { readFile, writeFile, mkdir };
+const nodeFs: ConfigFs = { readFile, write: (path, content) => writeFileAtomic(path, content) };
 
 export function cwdConfigPath(cwd = process.cwd()): string {
   return join(cwd, CONFIG_FILENAME);
@@ -218,8 +218,7 @@ async function readConfigFile(path: string, options: ConfigOptions): Promise<Rec
 
 async function saveConfigFile(path: string, config: Record<string, unknown>, options: ConfigOptions): Promise<void> {
   const fs = options.fs ?? nodeFs;
-  await fs.mkdir(dirname(path), { recursive: true });
-  await fs.writeFile(path, YAML.stringify(config, { sortMapEntries: true }), "utf8");
+  await fs.write(path, YAML.stringify(config, { sortMapEntries: true }));
 }
 
 function toMoodleConfig(config: Record<string, unknown>, baseUrl: string): MoodleConfig {

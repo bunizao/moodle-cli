@@ -1,8 +1,8 @@
+import { writeFileAtomic } from "../../atomic-write.js";
 import { runtimeCommand } from "../self-command.js";
 import { execFile as execFileCallback } from "node:child_process";
-import { chmod, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { readFile, rm } from "node:fs/promises";
 import { homedir } from "node:os";
-import { dirname } from "node:path";
 import { promisify } from "node:util";
 import { buildRenewalInstallPlan, RenewalInstaller, type RenewalInstallerIO, type RenewalPlatform } from "./installers.js";
 import { sendRenewalNotification, type RenewalNotification, type RenewalNotificationSender } from "./notifications.js";
@@ -11,9 +11,7 @@ const execFile = promisify(execFileCallback);
 
 export class NodeRenewalInstallerIO implements RenewalInstallerIO {
   async writePrivate(path: string, content: string, mode: 0o600): Promise<void> {
-    await mkdir(dirname(path), { recursive: true, mode: 0o700 });
-    await writeFile(path, content, { encoding: "utf8", mode });
-    await chmod(path, mode);
+    await writeFileAtomic(path, content, { mode, directoryMode: 0o700 });
   }
 
   async removeFile(path: string): Promise<void> {
