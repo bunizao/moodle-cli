@@ -622,6 +622,7 @@ export function buildProgram(io: CliIO = {}): Command {
         destination: options.dest ? path.resolve(cwd, options.dest) : undefined,
         directory: options.to ? path.resolve(cwd, options.to) : undefined,
         force: options.force,
+        dryRun: Boolean(program.opts().dryRun),
         onFile: (index, total, name) => spin?.message(total > 1 ? `Downloading ${index}/${total}${name ? ` · ${name}` : ""}` : `Downloading${name ? ` ${name}` : ""}`),
       }, abort.signal);
       spin?.clear();

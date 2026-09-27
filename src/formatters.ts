@@ -153,7 +153,10 @@ export function formatDownloadResult(result: DownloadResult, cwd = process.cwd()
   };
   const lines: string[] = [];
   const saved = result.files;
-  if (saved.length === 1) {
+  if (result.dry_run) {
+    if (saved.length) lines.push(`Would save ${saved.length === 1 ? saved[0].filename : `${saved.length} files`} → ${shown(saved.length === 1 ? saved[0].file_path : path.dirname(saved[0].file_path))}`);
+    if (saved.length > 1) lines.push(...saved.map((file) => `  ${file.filename}`));
+  } else if (saved.length === 1) {
     lines.push(`✓ Saved ${saved[0].filename} (${size(saved[0].bytes_written)}) → ${shown(saved[0].file_path)}`);
   } else if (saved.length > 1) {
     const total = saved.reduce((sum, file) => sum + file.bytes_written, 0);
@@ -174,7 +177,7 @@ export function formatDownloadResult(result: DownloadResult, cwd = process.cwd()
   for (const item of result.skipped.filter((entry) => entry.reason === "unavailable")) {
     lines.push(`! Skipped ${item.name}: ${item.detail ?? "Moodle did not provide it."}`);
   }
-  if (!saved.length && !present.length) lines.unshift("Saved nothing.");
+  if (!saved.length && !present.length) lines.unshift(result.dry_run ? "Would save nothing." : "Saved nothing.");
   return lines.join("\n");
 }
 

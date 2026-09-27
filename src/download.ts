@@ -17,6 +17,8 @@ export interface DownloadRequest {
   destination?: string;
   directory?: string;
   force?: boolean;
+  /** Name each file and where it would go, writing nothing. */
+  dryRun?: boolean;
   /** Called before each file, so a terminal can say which one is moving. */
   onFile?: (index: number, total: number, name: string) => void;
 }
@@ -44,6 +46,8 @@ export interface DownloadResult {
   files: DownloadReceipt[];
   skipped: SkippedDownload[];
   total: number;
+  // Set on a dry run: files lists what would be saved, and bytes_written is 0.
+  dry_run?: true;
 }
 
 interface ResolvedDownload {
@@ -110,7 +114,7 @@ async function downloadAll(client: MoodleClient, request: DownloadRequest, signa
     throw new UsageError(`This source has ${targets.length} files, and --dest names exactly one.`, "Pass --to DIR to save them all.");
   }
   const directory = path.resolve(request.directory ?? process.cwd());
-  if (!explicitDestination && request.directory) {
+  if (!explicitDestination && request.directory && !request.dryRun) {
     await mkdir(directory, { recursive: true }).catch(() => {
       throw new ConfigError(`Cannot create local directory '${directory}'.`);
     });
@@ -148,9 +152,11 @@ async function downloadAll(client: MoodleClient, request: DownloadRequest, signa
       skipped.push({ name: filename, reason: "exists", source_url: publicUrl(resolved.sourceUrl), file_path: destination });
       continue;
     }
-    const bytesWritten = await writeResponse(resolved.response, destination, Boolean(request.force), signal);
+    // Only the response headers name the file, so a dry run still asks for each one.
+    if (request.dryRun) await resolved.response.body?.cancel().catch(() => undefined);
+    const bytesWritten = request.dryRun ? 0 : await writeResponse(resolved.response, destination, Boolean(request.force), signal);
     if (!first) firstByName.set(upstream.toLowerCase(), destination);
-    else if (!explicitDestination && await sameBytes(first, destination)) {
+    else if (!explicitDestination && !request.dryRun && await sameBytes(first, destination)) {
       await unlink(destination);
       used.delete(filename.toLowerCase());
       continue;
@@ -164,7 +170,7 @@ async function downloadAll(client: MoodleClient, request: DownloadRequest, signa
       final_url: publicUrl(resolved.response.url || resolved.requestUrl),
     });
   }
-  return { files, skipped, total: files.length };
+  return { files, skipped, total: files.length, ...(request.dryRun ? { dry_run: true as const } : {}) };
 }
 
 async function resolveTargets(client: MoodleClient, rawSource: string, skipped: SkippedDownload[], signal?: AbortSignal): Promise<DownloadTarget[]> {

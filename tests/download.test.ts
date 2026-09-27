@@ -333,6 +333,22 @@ describe("Moodle file downloads", () => {
     await expect(readdir(directory)).resolves.toEqual(["slides (2).pdf", "slides.pdf"]);
   });
 
+  it("names each file on a dry run without creating the directory or writing anything", async () => {
+    const directory = join(await mkdtemp(join(tmpdir(), "moodle-download-")), "week-3");
+    const file = (n: number) => `${BASE_URL}/pluginfile.php/7/mod_folder/content/0/${n}/slides.pdf`;
+    const result = await downloadMoodleFiles(client({
+      getActivity: async () => ({ id: 5, type: "folder", url: `${BASE_URL}/mod/folder/view.php?id=5`, file_entries: [
+        { name: "slides.pdf", url: file(1), requires_authentication: true },
+        { name: "notes.pdf", url: file(2), requires_authentication: true },
+      ] }) as never,
+      requestAbsolute: async (url: string) => responseAt(url, "%PDF", { "content-type": "application/pdf" }),
+    }), { source: `${BASE_URL}/mod/folder/view.php?id=5`, directory, dryRun: true });
+
+    expect(result).toMatchObject({ dry_run: true, total: 2, files: [{ filename: "slides.pdf", bytes_written: 0 }, { filename: "notes.pdf", bytes_written: 0 }] });
+    await expect(readdir(directory)).rejects.toThrow();
+    expect(formatDownloadResult(result, directory)).toBe("Would save 2 files → .\n  slides.pdf\n  notes.pdf");
+  });
+
   it("saves one document linked twice under different URLs once, now and on a rerun", async () => {
     const directory = await mkdtemp(join(tmpdir(), "moodle-download-"));
     const file = (n: number) => `${BASE_URL}/pluginfile.php/${n}/brief.pdf`;
