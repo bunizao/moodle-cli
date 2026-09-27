@@ -28,7 +28,7 @@ import {
   URL_VIEW_PATH,
 } from "./constants.js";
 import { submitAssignmentFiles, type SubmissionReceipt, type SubmitAssignmentRequest } from "./moodle-assign-core.js";
-import { answerQuizQuestion, finishQuizAttempt, getAttemptPage, getAttemptSummary, startQuizAttempt, type AnswerRequest, type AttemptFinishReceipt, type AttemptPage, type AttemptSummary, type QuizDeps, type StartOptions } from "./moodle-quiz-core.js";
+import { answerQuizQuestion, finishQuizAttempt, getAttemptPage, getAttemptSummary, planQuizStart, startQuizAttempt, type AnswerRequest, type AttemptFinishReceipt, type AttemptPage, type AttemptSummary, type QuizDeps, type QuizStartPlan, type StartOptions } from "./moodle-quiz-core.js";
 import { ForumModule } from "./moodle-forum-core.js";
 import { searchForumContent as searchForumModule } from "./moodle-forum-search-core.js";
 import type {
@@ -611,12 +611,16 @@ export class MoodleClientCore {
   }
 
   /** Starts a new attempt, or resumes the one already in progress, and returns its first page. */
+  async planQuizStart(quizId: number): Promise<QuizStartPlan> {
+    return planQuizStart(await this.quizDeps(), quizId);
+  }
+
   async startQuizAttempt(quizId: number, options: StartOptions = {}): Promise<AttemptPage> {
     return startQuizAttempt(await this.quizDeps(), quizId, options);
   }
 
-  async getQuizAttemptPage(attemptId: number, quizId: number, page = 0): Promise<AttemptPage> {
-    return getAttemptPage(await this.quizDeps(), attemptId, quizId, page);
+  async getQuizAttemptPage(attemptId: number, quizId: number, page?: number, options: { advance?: boolean } = {}): Promise<AttemptPage> {
+    return getAttemptPage(await this.quizDeps(), attemptId, quizId, page, options);
   }
 
   async getQuizAttemptSummary(attemptId: number, quizId: number): Promise<AttemptSummary> {
