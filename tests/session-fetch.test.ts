@@ -48,4 +48,36 @@ describe("session-aware redirect handling", () => {
     });
     await expect(fetchWithSession(`${origin}/my`, { signal: abort.signal }, origin, cookie, fetcher)).rejects.toThrow();
   });
+
+  it("lets a slow body run past the limit while chunks keep arriving, and stops a stalled one", async () => {
+    vi.useFakeTimers();
+    try {
+      // Like a real socket, the body errors as soon as the request signal aborts.
+      const streamed = (chunks: number, stallAfter?: number) => vi.fn<typeof fetch>(async (_url, init) => {
+        let sent = 0;
+        const aborted = new Promise((_, reject) => init?.signal?.addEventListener("abort", () => reject(new Error("aborted"))));
+        aborted.catch(() => undefined);
+        return new Response(new ReadableStream<Uint8Array>({
+          async pull(controller) {
+            const wait = sent === stallAfter ? new Promise(() => undefined) : new Promise((resolve) => setTimeout(resolve, 20_000));
+            await Promise.race([wait, aborted]);
+            controller.enqueue(new Uint8Array([sent++]));
+            if (sent === chunks) controller.close();
+          },
+        }));
+      });
+
+      const slow = await fetchWithSession(`${origin}/pluginfile.php/1/big.pdf`, {}, origin, cookie, streamed(4));
+      const body = slow.arrayBuffer();
+      await vi.advanceTimersByTimeAsync(80_000);
+      expect(new Uint8Array(await body)).toEqual(new Uint8Array([0, 1, 2, 3]));
+
+      const stalled = await fetchWithSession(`${origin}/pluginfile.php/1/big.pdf`, {}, origin, cookie, streamed(4, 1));
+      const failing = expect(stalled.arrayBuffer()).rejects.toThrow();
+      await vi.advanceTimersByTimeAsync(60_000);
+      await failing;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
