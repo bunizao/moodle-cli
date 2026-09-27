@@ -50,13 +50,13 @@ export function renderScreen(data: Record<string, unknown>, options: { width?: n
     lines.push(`${text(h.name)} · ${moment(h.today, now)} · ${text(h.timezone)}${h.timezone_source === "site" ? "" : ` (${text(h.timezone_source)})`}`, text(h.siteurl), "");
     rows(array(h.due), "Due soon");
     lines.push("", `Unread  ${Object.entries(record(h.unread)).map(([k, v]) => `${v} ${k.replace(/_count$/u, "").replaceAll("_", " ")}${Number(v) === 1 ? "" : "s"}`).join(" · ") || "nothing"}`, "", `Units  ${array(h.units).map(u => text(u.code || u.name)).join(" · ")}`);
-    for (const u of array(h.units)) { const c = record(u.current_section); if (c.id) lines.push(`  ${text(u.code || u.name)} · ${text(c.name)}${c.estimated ? " (unfinished, not marked by the site)" : ""}`); }
+    for (const u of array(h.units)) { const c = record(u.current_section); if (c.id) lines.push(`  ${text(u.code || u.name)} · ${text(c.name)}`); }
     for (const e of Array.isArray(h.errors) ? h.errors : []) lines.push(`Unavailable: ${text(e)}`);
     if (Number(h.total) > array(h.due).length) lines.push(`${h.total} due items in this window; showing ${array(h.due).length}.`);
   } else if (data.unit) {
     const u = record(data.unit); const c = record(u.current_section);
     lines.push(`${text(u.code)} · ${text(u.name)}`);
-    if (c.id) lines.push(`Current · ${text(c.name)}${c.estimated ? " (unfinished, not marked by the site)" : ""}`);
+    if (c.id) lines.push(`Current · ${text(c.name)}`);
     for (const s of array(data.sections)) { lines.push(""); if (s.activities) rows(array(s.activities), `${text(s.name)}${s.positional ? " (positional index)" : ""}`); else lines.push(`${text(s.name)}  ${s.activity_count} activities`); }
     if (data.due) { lines.push(""); rows(array(data.due), "Due in this unit"); }
     if (data.news) { lines.push(""); rows(array(data.news), "Latest news"); }

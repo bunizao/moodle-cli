@@ -43,8 +43,8 @@ export function createIntentService(gateway: MoodleGateway, now = () => Date.now
   // One unit's deadlines: the per-course calendar when the gateway offers it, else the whole timeline filtered.
   const unitDeadlines = async (unitId: number, days: number) => gateway.getDue ? gateway.getDue(days, unitId) : (await overview(days)).todo.filter(t => t.course_id === unitId);
   const compactCurrent = (sections: CourseDetail["sections"]) => {
-    const result = currentSection(sections);
-    return result ? { id: result.section.id, name: sectionLabels(sections).get(result.section.id), estimated: result.estimated } : undefined;
+    const current = currentSection(sections);
+    return current ? { id: current.id, name: sectionLabels(sections).get(current.id) } : undefined;
   };
 
   async function find(query: string, ref?: string | number, types?: string[], threads = true): Promise<SearchMatch[]> {

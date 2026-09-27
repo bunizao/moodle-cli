@@ -62,13 +62,13 @@ describe("site vocabulary resolution", () => {
     expect(withChildSections(week7, nested).map(s => s.id)).toEqual([70, 2, 3]);
     expect(withChildSections(week17, nested).map(s => s.id)).toEqual([71, 5, 6]);
   });
-  it("uses the site marker, never week arithmetic, and tags an unfinished guess", () => {
-    expect(currentSection(fixtureSections())?.section.id).toBe(70);
+  it("uses the site marker and never guesses without one", () => {
+    expect(currentSection(fixtureSections())?.id).toBe(70);
     const unmarked = fixtureSections().map(s => ({ ...s, current: false }));
-    // A course start date is often the enrolment date, so it must not pick a section.
     expect(currentSection(unmarked)).toBeUndefined();
+    // Unfinished work used to stand in for the marker and named week 1 in week 9.
     const unfinished = unmarked.map((s, index) => index === 1 ? { ...s, activities: s.activities.map(a => ({ ...a, completion: 0 })) } : s);
-    expect(currentSection(unfinished)).toMatchObject({ section: { id: unfinished[1].id }, estimated: true });
+    expect(currentSection(unfinished)).toBeUndefined();
   });
   it("matches letter-and-number shorthand against numbered names", () => {
     expect(tokensMatch("Assignment 2 (Weight: 20%)", "a2")).toBe(true);

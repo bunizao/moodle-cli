@@ -14,7 +14,7 @@ const attemptSummary = { id, status: s, started: s, completed: s, duration: s, m
 const question = z.object({ number: id, type: s, state: s, mark: s, text: s, response: s, correct: s, feedback: s });
 export const activitySchema = z.object({ ...activityFields, ...fields(["url", "target_url", "section", "unit_code", "description", "submission_status", "grading_status", "grade", "graded_on", "graded_by", "feedback_comments", "due_pretty", "opens_pretty", "closes_pretty", "attempts_allowed", "time_limit", "availability", "time_remaining", "content_text"]), criteria: z.array(criterion).optional(), attempts: z.array(z.object({ ...attemptSummary, number: id })).optional(), files: z.array(file).optional() });
 const sectionSchema = z.object({ id, name: s, activity_count: id, hidden: z.boolean().optional(), positional: z.boolean().optional(), activities: z.array(activityListSchema).optional() });
-const current = z.object({ id, name: s, estimated: z.boolean().optional() });
+const current = z.object({ id, name: s });
 const unitSchema = z.object({ id, code: s, name: s, start: s, end: s, start_at: n, end_at: n, hidden: z.boolean().optional(), current_section: current.optional() });
 const dueSchema = z.object({ id, activity_id: n, name: s, type: s, unit_id: id, unit_code: s, event: s, due: s, due_at: id, actionable: z.boolean().optional(), status: s });
 const counts = z.object(Object.fromEntries(["notification_count", "unread_notification_count", "starred_message_count", "direct_message_count", "group_message_count", "self_message_count", "unread_starred_message_count", "unread_direct_message_count", "unread_group_message_count", "unread_self_message_count"].map(key => [key, n])));

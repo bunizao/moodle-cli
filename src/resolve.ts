@@ -68,15 +68,13 @@ export function resolveSection(ref: string | number, sections: readonly Section[
   throw new ReferenceError("not_found", `No section matches '${ref}'.`, sections.map(s => ({ id: s.id, name: s.name })));
 }
 
-// Only the site's own marker is authoritative. Course start dates are enrolment
-// open dates on many sites, so counting weeks from them names the wrong section;
-// unfinished work is the one remaining signal and is reported as a guess.
-export function currentSection(sections: readonly Section[]): { section: Section; estimated?: boolean } | undefined {
+// Only the site's own marker is authoritative, and without one there is no answer.
+// Every other signal was tried against real courses and named the wrong week: start
+// dates are enrolment dates, unfinished work points at week 1, and completions,
+// recent visits and deadlines cluster in assessment sections.
+export function currentSection(sections: readonly Section[]): Section | undefined {
   const marked = sections.filter(s => s.current);
-  if (marked.length > 1) return undefined;
-  if (marked.length === 1) return { section: marked[0] };
-  const unfinished = sections.find(s => s.activities.some(a => a.completion === 0));
-  return unfinished ? { section: unfinished, estimated: true } : undefined;
+  return marked.length === 1 ? marked[0] : undefined;
 }
 
 export interface SearchMatch extends Candidate { unit_id: number; unit_code: string; section_id: number; section: string; score: number; activity?: Activity }
