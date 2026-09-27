@@ -129,6 +129,18 @@ You can paste the same links into your agent and ask it to inspect the page, fin
 
 With no argument at a terminal, it walks unit → section → item the way the course page does, with type-to-filter. Files land in the current directory or `--to DIR` (created when missing); a repeated name gets a ` (2)` suffix. `--dest` names the file when there is exactly one, and `--force` replaces existing files. Quote URLs in zsh, whose `?` is a glob.
 
+#### Keep units in sync
+
+`moodle sync` keeps one folder per unit in step with Moodle: resources, folder contents and assignment attachments, laid out by section.
+
+```bash
+moodle sync --to ~/Units              # every unit, one subfolder each
+moodle sync UNIT --to ~/Units         # just one
+moodle sync --dry-run                 # what would change, nothing written
+```
+
+Each unit folder holds a `.moodle-sync.json` manifest, so a rerun asks Moodle only whether each file changed and usually downloads nothing. A changed file replaces your copy only when you have not edited it; an edited copy stays put and the new version lands beside it as `name (updated YYYY-MM-DD).ext`. Files removed from Moodle are reported and kept locally. Rename or move a unit folder freely: the manifest, not the folder name, says which unit it holds.
+
 #### Submit assignment files
 
 `moodle submit` uploads local files into an assignment through the same pages a browser

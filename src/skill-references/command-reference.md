@@ -6,6 +6,8 @@ Resources, folders and assignments return `files` with names and URLs.
 `moodle download REF --to DIR` saves one file, every file of an activity, or a whole
 section (`moodle download "UNIT week 3"` or a section URL). The receipt lists `files`
 with path, byte count and content type; `--dest PATH` names the file when there is one.
+`moodle sync [UNIT] --to DIR` mirrors units into one folder each and reruns incrementally;
+it never overwrites a file you edited (the new version lands beside it as a `conflict`).
 `moodle submit "UNIT TASK" FILE... --dry-run` shows the upload plan; without `--dry-run` it
 asks for confirmation (`--yes` skips it) and prints the receipt Moodle shows afterwards.
 `--final` also submits for grading, which Moodle does not let anyone undo.
