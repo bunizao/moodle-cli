@@ -620,6 +620,9 @@ export function buildProgram(io: CliIO = {}): Command {
     process.once("SIGINT", onInterrupt);
     const spin = ui?.spinner();
     spin?.start("Finding files");
+    // The spinner already says Moodle is busy; the request indicator would draw into it,
+    // and into the cancel message while lookups started before Ctrl+C wind down.
+    runtime.busy = Boolean(spin);
     try {
       const result = await downloadMoodleFiles(client, {
         source,

@@ -233,6 +233,14 @@ describe("Moodle file downloads", () => {
     await expect(readdir(directory)).resolves.toEqual([]);
   });
 
+  it("stops waiting on a slow section lookup as soon as it is cancelled", async () => {
+    const controller = new AbortController();
+    const hanging = client({ getActivity: () => new Promise(() => undefined) as never });
+    const pending = downloadMoodleFiles(hanging, { source: `${BASE_URL}/mod/folder/view.php?id=5` }, controller.signal);
+    controller.abort();
+    await expect(pending).rejects.toMatchObject({ code: "cancelled" });
+  });
+
   it("does not request Moodle when cancellation is already signalled", async () => {
     const requestAbsolute = vi.fn();
     const controller = new AbortController();

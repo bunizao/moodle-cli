@@ -109,7 +109,7 @@ async function downloadAll(client: MoodleClient, request: DownloadRequest, signa
   }
 
   const skipped: SkippedDownload[] = [];
-  const targets = await resolveTargets(client, request.source, skipped, signal);
+  const targets = await untilCancelled(resolveTargets(client, request.source, skipped, signal), signal);
   if (explicitDestination && targets.length > 1) {
     throw new UsageError(`This source has ${targets.length} files, and --dest names exactly one.`, "Pass --to DIR to save them all.");
   }
@@ -536,6 +536,19 @@ function publicUrl(value: string): string {
 
 // Finished files stay, and a rerun skips them, so starting again costs nothing.
 const CANCELLED_HINT = "Run it again to pick up where it stopped.";
+
+// Finding files makes Moodle calls that take no signal and can run for seconds. Nothing
+// is written yet, so Ctrl+C stops waiting on them rather than on the slowest one.
+function untilCancelled<T>(work: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) return work;
+  work.catch(() => undefined);
+  return new Promise<T>((resolve, reject) => {
+    const cancel = () => reject(new CliError("cancelled", "Download cancelled.", CANCELLED_HINT));
+    if (signal.aborted) return cancel();
+    signal.addEventListener("abort", cancel, { once: true });
+    work.then(resolve, reject).finally(() => signal.removeEventListener("abort", cancel));
+  });
+}
 
 function throwIfCancelled(signal?: AbortSignal): void {
   if (signal?.aborted) {
