@@ -433,3 +433,46 @@ describe("encrypted session lifecycle", () => {
     expect(objectState.storage.values.get("session")).toEqual(stored);
   });
 });
+
+describe("SessionBroker adoption from a remote sign-in", () => {
+  function adopt(broker: SessionBroker, cookieValue: string, allowNewOwner: boolean): Promise<Response> {
+    return broker.fetch(new Request("https://session-broker/session/adopt", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ cookieName: "MoodleSession", cookieValue, allowNewOwner }),
+    }));
+  }
+
+  it("needs a claim for a fresh Worker and then pins the account that claimed it", async () => {
+    const objectState = state();
+    const upstream = validUpstream();
+    const broker = new SessionBroker(objectState, env(), { upstream, now: () => 30_000 });
+
+    const unclaimed = await adopt(broker, OLD_COOKIE, false);
+    expect(unclaimed.status).toBe(403);
+    expect(await unclaimed.json()).toMatchObject({ code: "OWNER_CLAIM_REQUIRED" });
+    expect(objectState.storage.values.get("session")).toBeUndefined();
+
+    expect((await adopt(broker, OLD_COOKIE, true)).status).toBe(201);
+
+    vi.mocked(upstream.validate).mockResolvedValueOnce({ valid: true, sesskey: "other", moodleUserId: 43, remainingSeconds: 7200 });
+    const stranger = await adopt(broker, NEW_COOKIE, true);
+    expect(stranger.status).toBe(409);
+    expect(await stranger.json()).toMatchObject({ code: "SESSION_ACCOUNT_MISMATCH" });
+
+    const renewed = await adopt(broker, NEW_COOKIE, false);
+    expect(renewed.status).toBe(201);
+    expect(await renewed.json()).toMatchObject({ revision: 2 });
+  });
+
+  it("reports a cookie Moodle does not accept as not signed in", async () => {
+    const upstream = validUpstream();
+    vi.mocked(upstream.validate).mockResolvedValueOnce({ valid: false, code: "SESSION_EXPIRED" });
+    const broker = new SessionBroker(state(), env(), { upstream, now: () => 40_000 });
+
+    const response = await adopt(broker, OLD_COOKIE, true);
+
+    expect(response.status).toBe(422);
+    expect(await response.json()).toMatchObject({ code: "SESSION_CANDIDATE_INVALID" });
+  });
+});

@@ -119,6 +119,7 @@ export class SessionBroker {
     if (url.pathname === "/mcp" && request.method === "POST") return this.handleMcp(request);
     if (url.pathname === "/readyz" && request.method === "GET") return this.ready();
     if (url.pathname === "/session" && request.method === "PUT") return this.replaceSession(request);
+    if (url.pathname === "/session/adopt" && request.method === "POST") return this.adoptSession(request);
     if (url.pathname === "/session/touch" && request.method === "POST") return this.touchNow();
     return problemResponse(404, "NOT_FOUND", "Not Found", "The requested session route does not exist.");
   }
@@ -191,23 +192,36 @@ export class SessionBroker {
   }
 
   private async replaceSession(request: Request): Promise<Response> {
-    if (!request.headers.get("content-type")?.toLowerCase().startsWith("application/json")) {
-      return problemResponse(415, "UNSUPPORTED_MEDIA_TYPE", "Unsupported Media Type", "Session updates must use application/json.");
-    }
-
-    let input: unknown;
-    try {
-      input = await request.json();
-    } catch {
-      return problemResponse(400, "INVALID_JSON", "Bad Request", "The request body is not valid JSON.");
-    }
+    const input = await readJson(request);
+    if (input instanceof Response) return input;
     if (!isSessionCandidate(input)) {
       return problemResponse(400, "SESSION_CANDIDATE_INVALID", "Bad Request", "The session candidate is invalid.");
     }
     if (normalizeOrigin(input.moodleOrigin) !== normalizeOrigin(this.env.MOODLE_ORIGIN)) {
       return problemResponse(403, "MOODLE_ORIGIN_MISMATCH", "Forbidden", "The session candidate belongs to a different Moodle origin.");
     }
+    return this.storeSession(input, (current) => (current?.revision ?? null) === input.expectedRevision ? "ok" : "revision_conflict");
+  }
 
+  // A browser sign-in replaces whatever session is stored, so it skips the revision
+  // check. The account check still applies, and only a claimed sign-in may be first.
+  private async adoptSession(request: Request): Promise<Response> {
+    const input = await readJson(request);
+    if (input instanceof Response) return input;
+    const candidate = isRecord(input)
+      ? { moodleOrigin: this.env.MOODLE_ORIGIN, cookieName: input.cookieName, cookieValue: input.cookieValue, expectedRevision: null }
+      : undefined;
+    if (!isSessionCandidate(candidate) || !isRecord(input) || typeof input.allowNewOwner !== "boolean") {
+      return problemResponse(400, "SESSION_CANDIDATE_INVALID", "Bad Request", "The session candidate is invalid.");
+    }
+    const allowNewOwner = input.allowNewOwner;
+    return this.storeSession(candidate, (current) => current || allowNewOwner ? "ok" : "owner_claim_required");
+  }
+
+  private async storeSession(
+    input: SessionCandidate,
+    admit: (current: StoredSession | undefined) => "ok" | "revision_conflict" | "owner_claim_required",
+  ): Promise<Response> {
     let validation: SessionValidationSuccess | SessionValidationFailure;
     try {
       validation = await this.dependencies.upstream.validate(input);
@@ -225,13 +239,13 @@ export class SessionBroker {
     }
     const result = await this.transaction(async (storage) => {
       const current = await this.readSession(storage);
-      const currentRevision = current?.revision ?? null;
-      if (currentRevision !== input.expectedRevision) return null;
+      const admission = admit(current);
+      if (admission !== "ok") return admission;
       if (current && current.moodle_user_id !== validation.moodleUserId) return "identity_mismatch" as const;
       const session: StoredSession = {
         cookie_value: validation.rotatedCookie ?? input.cookieValue,
         cookie_name: input.cookieName,
-        revision: (currentRevision ?? 0) + 1,
+        revision: (current?.revision ?? 0) + 1,
         sesskey: validation.sesskey,
         moodle_user_id: validation.moodleUserId,
         last_verified_at: now,
@@ -248,8 +262,11 @@ export class SessionBroker {
     if (result === "identity_mismatch") {
       return problemResponse(409, "SESSION_ACCOUNT_MISMATCH", "Conflict", "This Worker belongs to another Moodle account. Create a separate deployment for that account.");
     }
-    if (!result) {
+    if (result === "revision_conflict") {
       return problemResponse(409, "SESSION_REVISION_CONFLICT", "Conflict", "The remote Moodle session has a newer revision.");
+    }
+    if (result === "owner_claim_required") {
+      return problemResponse(403, "OWNER_CLAIM_REQUIRED", "Forbidden", "This Worker has no owner yet. Sign in with the pairing code from the deployment.");
     }
     await this.state.storage.setAlarm(nextAlarmAt);
     return Response.json(
@@ -466,6 +483,17 @@ function isSessionCandidate(value: unknown): value is SessionCandidate {
     && !/[\u0000-\u001f\u007f;]/.test(value.cookieValue)
     && (value.expectedRevision === null
       || (Number.isInteger(value.expectedRevision) && (value.expectedRevision as number) >= 0));
+}
+
+async function readJson(request: Request): Promise<unknown> {
+  if (!request.headers.get("content-type")?.toLowerCase().startsWith("application/json")) {
+    return problemResponse(415, "UNSUPPORTED_MEDIA_TYPE", "Unsupported Media Type", "Session updates must use application/json.");
+  }
+  try {
+    return await request.json();
+  } catch {
+    return problemResponse(400, "INVALID_JSON", "Bad Request", "The request body is not valid JSON.");
+  }
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
