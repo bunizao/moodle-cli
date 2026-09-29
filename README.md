@@ -181,6 +181,16 @@ The MCP `get_file` tool accepts a resource activity ID, resource URL, or `plugin
 
 The remote server is read-only. The local server (`moodle mcp serve`) also offers `submit`, which needs the files on the same machine. It defaults to `dry_run: true`, so an agent has to show the plan and run it again with `dry_run: false` to upload; `final: true` submits for grading.
 
+### Check your site
+
+```bash
+moodle coverage
+```
+
+Moodle sites differ: some disable web services, and themes change the pages the CLI reads. `moodle coverage` signs in with your session and runs each read-only command once against your own units, printing one line per command as it finishes: working, working through a fallback, read but not understood, failed, or skipped for lack of a sample. Submitting is never exercised. It exits with code 3 when a check fails.
+
+`moodle coverage --json > coverage.json` gives the same report as JSON, with the Moodle release, theme and the services the site disables. It holds counts and error messages, not your units or name, so it can be attached to an issue when your school's Moodle misbehaves.
+
 ### Update
 
 ```bash

@@ -19,6 +19,8 @@ import type { DownloadResult } from "./download.js";
 import type { SubmissionReceipt } from "./moodle-assign-core.js";
 import type { AttemptFinishReceipt, AttemptPage, AttemptQuestion, AttemptSummary } from "./moodle-quiz-core.js";
 import type { AuthStatus, KeepaliveRunResult } from "./keepalive.js";
+import type { CoverageCheck, CoverageReport, CoverageSite, CoverageStatus } from "./coverage.js";
+import type { Theme, Tone } from "@bunizao/cli-kit";
 import { renderKeyValueTable, renderTerminalTable, sanitizeTerminalText } from "./terminal-table.js";
 
 export function formatUser(user: UserInfo): string {
@@ -446,4 +448,40 @@ export function formatAttemptFinish(receipt: AttemptFinishReceipt): string {
     ["Answered", `${receipt.summary.filter(row => !/not yet answered/iu.test(row.state)).length} of ${receipt.summary.length}`],
     ["URL", receipt.url],
   ], { title: "Attempt submitted" });
+}
+
+const COVERAGE_MARKS: Record<CoverageStatus, readonly [string, Tone]> = {
+  ok: ["✓", "success"],
+  fallback: ["↷", "info"],
+  partial: ["!", "warning"],
+  empty: ["?", "warning"],
+  fail: ["✗", "danger"],
+  skip: ["–", "muted"],
+  untested: ["·", "muted"],
+};
+
+export function formatCoverageSite(site: CoverageSite, theme: Theme): string {
+  const facts = [
+    site.release && `Moodle ${site.release}`,
+    site.theme && `theme ${site.theme}`,
+    site.mobile_service !== undefined && `mobile app service ${site.mobile_service ? "on" : "off"}`,
+  ].filter(Boolean).join(" · ");
+  return `Checking ${theme.target(sanitizeTerminalText(site.url))}${facts ? `\n${theme.dim(sanitizeTerminalText(facts))}` : ""}\n`;
+}
+
+/** One line per check, so a person watches the site's coverage fill in as it is measured. */
+export function formatCoverageCheck(check: CoverageCheck, theme: Theme): string {
+  const [mark, tone] = COVERAGE_MARKS[check.status];
+  const label = check.target ? `${check.name} (${check.target})` : check.name;
+  const around = check.disabled?.length ? theme.dim(` · went around ${check.disabled.join(", ")}`) : "";
+  return `  ${theme.tone(tone, mark)} ${label.padEnd(15)} ${sanitizeTerminalText(check.detail).replace(/\n/gu, " ")}${around}`;
+}
+
+export function formatCoverageSummary(report: Pick<CoverageReport, "summary" | "disabled_services">, theme: Theme): string {
+  const counts = (Object.keys(COVERAGE_MARKS) as CoverageStatus[])
+    .filter(status => report.summary[status])
+    .map(status => theme.tone(COVERAGE_MARKS[status][1], `${report.summary[status]} ${{ fail: "failed", skip: "skipped" }[status as string] ?? status}`));
+  const lines = [counts.join(" · ")];
+  if (report.disabled_services.length) lines.push(theme.dim(`Disabled on this site: ${report.disabled_services.join(", ")}. Commands that need them take a fallback.`));
+  return lines.join("\n");
 }

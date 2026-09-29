@@ -727,6 +727,11 @@ function numericQueryValue(url: URL, key: string): number | null {
   return Number(value);
 }
 
+/** The theme decides the markup every scraper reads, so a support report names it. */
+export function parseSiteTheme(html: string): string | undefined {
+  return stringValue(parseMoodleConfig(html).theme) || undefined;
+}
+
 function parseMoodleConfig(html: string): Record<string, unknown> {
   const match = html.match(/M\.cfg\s*=\s*({[\s\S]*?});/);
   if (!match) {

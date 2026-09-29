@@ -205,6 +205,7 @@ export class MoodleClientCore {
   private coursesCache?: { at: number; courses: Promise<Course[]> };
   private readonly contentsCache = new Map<number, Promise<Section[]>>();
   private readonly unavailable: Set<string>;
+  private readonly unavailableListeners = new Set<(name: string) => void>();
   private fetchImpl: typeof fetch;
   private cookie: MoodleSessionCookie;
   private sesskey: string | null;
@@ -249,7 +250,7 @@ export class MoodleClientCore {
   async getSiteInfo(): Promise<UserInfo> {
     await this.ensureSession();
     try {
-      if (this.unavailable.has(FUNC_GET_SITE_INFO) && this.userInfo?.fullname) return this.userInfo;
+      if (this.skips(FUNC_GET_SITE_INFO) && this.userInfo?.fullname) return this.userInfo;
       const data = await this.call(FUNC_GET_SITE_INFO);
       if (isRecord(data) && "userid" in data) {
         const info = parseUserInfo(data);
@@ -411,7 +412,7 @@ export class MoodleClientCore {
     const seen = new Set<number>();
     // One unit's deadlines come from the per-course calendar service when the site
     // offers it; otherwise the whole timeline is read and filtered.
-    const byCourse = courseId !== undefined && !this.unavailable.has(FUNC_GET_ACTION_EVENTS_BY_COURSE);
+    const byCourse = courseId !== undefined && !this.skips(FUNC_GET_ACTION_EVENTS_BY_COURSE);
     while (items.length < limit) {
       const batchSize = Math.min(50, limit - items.length);
       const window = { timesortfrom: now, timesortto: days ? now + days * 86400 : 0, aftereventid, limitnum: batchSize };
@@ -734,6 +735,21 @@ export class MoodleClientCore {
     return searchForumModule(this.forum, query, { ...searchOptions, baseUrl: this.baseUrl });
   }
 
+  /**
+   * Hears every call the site refuses as disabled, whether it says so now or said so
+   * earlier, so a caller can tell which fallback a command took.
+   */
+  onServiceUnavailable(listener: (name: string) => void): () => void {
+    this.unavailableListeners.add(listener);
+    return () => this.unavailableListeners.delete(listener);
+  }
+
+  /** Forgets which services earlier sessions found disabled, so the next calls ask the site again. */
+  async forgetUnavailableServices(): Promise<void> {
+    this.unavailable.clear();
+    await this.writeCache();
+  }
+
   async callBatch(requests: AjaxCall[]): Promise<OptionalAjaxBatchResult[]> {
     await this.ensureSession();
     return this.callBatchInternal(requests, true);
@@ -766,7 +782,9 @@ export class MoodleClientCore {
     if (live.length < requests.length) {
       const results = Array<OptionalAjaxBatchResult>(requests.length).fill(undefined);
       for (const [index, request] of requests.entries()) {
-        if (!live.some((entry) => entry.index === index)) results[index] = { ok: false, error: this.errors.api(`${request.methodname} is disabled on this site.`, "servicenotavailable") };
+        if (live.some((entry) => entry.index === index)) continue;
+        this.skips(request.methodname);
+        results[index] = { ok: false, error: this.errors.api(`${request.methodname} is disabled on this site.`, "servicenotavailable") };
       }
       if (live.length) {
         const sent = await this.callBatchInternal(live.map(({ request }) => request), allowRetry);
@@ -806,7 +824,9 @@ export class MoodleClientCore {
     let learned = false;
     for (const [position, item] of envelope.entries()) {
       const name = requests[item.index ?? position]?.methodname;
-      if (!name || !item.error || item.exception?.errorcode !== "servicenotavailable" || this.unavailable.has(name)) continue;
+      if (!name || !item.error || item.exception?.errorcode !== "servicenotavailable") continue;
+      for (const listener of this.unavailableListeners) listener(name);
+      if (this.unavailable.has(name)) continue;
       this.unavailable.add(name);
       learned = true;
     }
@@ -821,6 +841,12 @@ export class MoodleClientCore {
       return this.callBatchInternal(requests, false);
     }
     return results;
+  }
+
+  private skips(name: string): boolean {
+    if (!this.unavailable.has(name)) return false;
+    for (const listener of this.unavailableListeners) listener(name);
+    return true;
   }
 
   private async ensureSession(): Promise<void> {

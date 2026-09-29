@@ -27,6 +27,7 @@ asks for confirmation (`--yes` skips it) and prints the receipt Moodle shows aft
 | moodle auth status | Show cached session freshness and keepalive state. |  | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required) |
 | moodle commands | Describe the complete command tree. |  | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required) |
 | moodle completion | Print shell completion for zsh, bash or fish. | <shell> |  |
+| moodle coverage | Check each command against this Moodle site with the signed-in session, one live read at a time. Nothing is written. |  | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required) |
 | moodle doctor | Diagnose runtime, browser access, session, background jobs and MCP setup. |  | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required) |
 | moodle download | Download files: one activity, a whole section, or a file URL. With no argument, browse. | [ref...] | --to (value required)<br>--dest (value required)<br>--force<br>--pretty<br>--json<br>--yaml<br>--table<br>--fields (value required) |
 | moodle due | Items due in a date window. | [unit] | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required)<br>--days (value required)<br>--limit (value required) |
