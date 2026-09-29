@@ -30,7 +30,7 @@ describe("coverage checks", () => {
       ...base,
       getActivity: async ({ activityId }) => activityId % 10 === 0
         ? { id: activityId, name: "Lecture slides", type: "resource", course_id: 2, course_name: "", section_name: "", target_name: "slides.pdf", target_url: "", file_entries: [{ name: "slides.pdf", url: "https://moodle.example.edu/pluginfile.php/1/slides.pdf", requires_authentication: true }], url: "" }
-        : base.getActivity({ activityId }),
+        : { ...await base.getActivity({ activityId }), due_pretty: "Friday, 18 September 2026" },
       submitAssignment: async input => { submitted.push(input); return base.submitAssignment!(input); },
     };
     const checks = byName(await collect(gateway));
@@ -41,7 +41,7 @@ describe("coverage checks", () => {
       "attempt", "grades", "news", "thread", "search_forums", "file", "submit",
     ]);
     expect(checks.units).toMatchObject({ status: "ok", detail: "4 units" });
-    expect(checks["item:assign"]).toMatchObject({ status: "ok", detail: expect.stringContaining("submission status") });
+    expect(checks["item:assign"]).toMatchObject({ status: "ok", detail: expect.stringContaining("submission status"), verified: ["name", "calendar due date"] });
     expect(checks["item:resource"]).toMatchObject({ status: "ok", detail: "1 file" });
     expect(checks["item:quiz"]).toMatchObject({ status: "skip" });
     expect(checks.attempt).toMatchObject({ status: "skip" });
@@ -80,6 +80,86 @@ describe("coverage checks", () => {
     const checks = await collect(gateway);
     expect(checks.find(c => c.name === "units")).toMatchObject({ status: "empty" });
     expect(checks.filter(c => c.status === "skip").map(c => c.name)).toEqual(["unit", "find", "item", "attempt", "grades", "news", "thread", "search_forums", "file"]);
+  });
+});
+
+// Each fault must be caught by the check it belongs to, and only by that check: a coverage
+// run is a test suite running on someone else's site, so a false pass or a false alarm
+// sends the maintainer after the wrong thing.
+describe("coverage catches injected faults", () => {
+  const healthy = (): MoodleGateway => {
+    const base = fixtureGateway();
+    return {
+      ...base,
+      getActivity: async ({ activityId }) => activityId % 10 === 0
+        ? { id: activityId, name: "Lecture slides", type: "resource", course_id: 2, course_name: "", section_name: "", target_name: "slides.pdf", target_url: "", file_entries: [{ name: "slides.pdf", url: "https://moodle.example.edu/pluginfile.php/1/slides.pdf", requires_authentication: true }], url: "" }
+        : { ...await base.getActivity({ activityId }), due_pretty: "Friday, 18 September 2026" },
+    };
+  };
+  const run = async (gateway: MoodleGateway, options: { timeoutMs?: number } = {}) => {
+    const checks: CoverageCheck[] = [];
+    for await (const check of checkCoverage(createIntentService(gateway), gateway, { now: () => 0, retryDelayMs: 0, ...options })) checks.push(check);
+    return byName(checks);
+  };
+  const failing = (checks: Record<string, CoverageCheck>) => Object.entries(checks).filter(([, c]) => !["ok", "fallback", "skip", "untested"].includes(c.status)).map(([key]) => key);
+
+  it("raises no alarm on a consistent site", async () => {
+    const checks = await run(healthy());
+    expect(failing(checks)).toEqual([]);
+    expect(checks.search_forums).toMatchObject({ status: "ok", verified: ["discussion listing"] });
+    expect(checks.thread).toMatchObject({ status: "ok", ref: 60 });
+  });
+
+  it.each<[string, (base: MoodleGateway) => Partial<MoodleGateway>, string, string]>([
+    ["a page that names another activity", base => ({ getActivity: async input => input.activityId % 10 === 0 ? healthy().getActivity(input) : { ...await base.getActivity(input), name: "Unit handbook", due_pretty: "Friday" } }), "item:assign", "mismatch"],
+    ["a due date the page reader cannot read", base => ({ getActivity: async input => input.activityId % 10 === 0 ? healthy().getActivity(input) : { ...await base.getActivity(input), due_pretty: "" } }), "item:assign", "mismatch"],
+    ["a resource page with the wrong file", () => ({ getActivity: async input => ({ ...await healthy().getActivity(input), ...(input.activityId % 10 === 0 ? { file_entries: [{ name: "handout.docx", url: "", requires_authentication: true }] } : {}) }) }), "item:resource", "mismatch"],
+    ["a search that misses a known discussion", () => ({ searchForums: async () => [] }), "search_forums", "mismatch"],
+    ["a dashboard that drops a unit", base => ({ getOverview: async input => ({ ...await base.getOverview(input), courses: units.slice(1) }) }), "home", "mismatch"],
+    ["posts without text", base => ({ getThread: async input => { const thread = await base.getThread(input); return { ...thread, posts: thread.posts.map(post => ({ ...post, message_text: "" })) }; } }), "thread", "empty"],
+    ["a course format read as empty sections", () => ({ getCourse: async ({ courseId }) => ({ course: units.find(c => c.id === courseId)!, sections: sections("Week", courseId).map(section => ({ ...section, activities: [] })) }) }), "unit", "empty"],
+    ["a gradebook that fails outright", () => ({ getGrades: async () => { throw Object.assign(new Error("HTTP 500 loading https://moodle.example.edu/grade/report/user/index.php"), { code: "upstream" }); } }), "grades", "fail"],
+  ])("flags %s", async (_label, fault, key, status) => {
+    const base = healthy();
+    const checks = await run({ ...base, ...fault(base) });
+    expect(checks[key]).toMatchObject({ status });
+    // The fault stays on its own line; every other check keeps passing.
+    expect(failing(checks)).toEqual([key]);
+  });
+
+  it("retries a transient failure once before deciding", async () => {
+    const base = healthy();
+    let calls = 0;
+    const flaky = await run({ ...base, getGrades: async input => { calls += 1; if (calls === 1) throw new Error("HTTP 503 loading https://moodle.example.edu/grade/report/user/index.php"); return base.getGrades(input); } });
+    expect(flaky.grades).toMatchObject({ status: "ok", retried: true });
+    const down = await run({ ...base, getGrades: async () => { throw new Error("HTTP 503 loading https://moodle.example.edu/grade/report/user/index.php"); } });
+    expect(down.grades).toMatchObject({ status: "fail", retried: true });
+    // A real error is not retried: it would only double the time to the same answer.
+    calls = 0;
+    await run({ ...base, getGrades: async () => { calls += 1; throw new Error("Gradebook is disabled."); } });
+    expect(calls).toBe(1);
+  });
+
+  it("fails a check that hangs instead of stalling the report", async () => {
+    const checks = await run({ ...healthy(), getGrades: () => new Promise(() => undefined) }, { timeoutMs: 20 });
+    expect(checks.grades).toMatchObject({ status: "fail", error_code: "timeout" });
+    expect(checks.news.status).toBe("ok");
+  });
+
+  it("samples only activities the account can open", async () => {
+    const base = healthy();
+    const opened: number[] = [];
+    const checks = await run({
+      ...base,
+      getCourse: async input => {
+        const detail = await base.getCourse(input);
+        const [first, ...rest] = detail.sections;
+        return { ...detail, sections: [{ ...first, activities: [{ id: 999, name: "Hidden notes", modname: "page", description: "", url: "", visible: false }, ...first.activities] }, ...rest] };
+      },
+      getActivity: async input => { opened.push(input.activityId); return base.getActivity(input); },
+    });
+    expect(opened).not.toContain(999);
+    expect(checks["item:page"]).toMatchObject({ status: "skip" });
   });
 });
 
@@ -133,7 +213,8 @@ describe("moodle coverage", () => {
             case "core_enrol_get_users_courses": return { error: true, exception: { errorcode: "servicenotavailable", message: "Service disabled" } };
             case "core_course_get_enrolled_courses_by_timeline_classification": return { error: false, data: { courses: units, nextoffset: 4 } };
             case "core_webservice_get_site_info": return { error: false, data: { ...siteUser, release: "4.5.1 (Build: 20250101)" } };
-            case "core_course_get_contents": return { error: false, data: sections("Week", c.args.courseid).map(s => ({ ...s, modules: s.activities })) };
+            // Named as the assignment fixture page is, so the page and the contents agree.
+            case "core_course_get_contents": return { error: false, data: sections("Week", c.args.courseid).map(s => ({ ...s, modules: s.activities.map(a => a.modname === "assign" ? { ...a, name: "Essay 1" } : a) })) };
             case "core_calendar_get_action_events_by_timesort": case "core_calendar_get_action_events_by_course": return { error: false, data: { events: [] } };
             case "core_course_get_course_module": return { error: false, data: { cm: { id: c.args.cmid, course: 2, modname: c.args.cmid % 10 === 0 ? "resource" : "assign" } } };
             default: return { error: false, data: c.methodname.startsWith("mod_forum") ? [] : {} };
@@ -178,7 +259,7 @@ describe("moodle coverage", () => {
     expect(lines[2]).toBe("Moodle 4.5.1 (Build: 20250101) · theme boost · mobile app service off");
     expect(lines).toContain("  ↷ units           4 units · went around core_enrol_get_users_courses");
     expect(lines).toContain("  · submit          Not exercised: it writes to Moodle. moodle submit REF FILE plans without uploading.");
-    expect(result.stdout).toContain("7 skipped · 1 untested");
+    expect(result.stdout).toContain("8 skipped · 1 untested");
     expect(result.stdout).toContain("Disabled on this site: core_enrol_get_users_courses.");
   });
 

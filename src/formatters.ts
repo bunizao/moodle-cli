@@ -456,6 +456,7 @@ const COVERAGE_MARKS: Record<CoverageStatus, readonly [string, Tone]> = {
   fallback: ["↷", "info"],
   partial: ["!", "warning"],
   empty: ["?", "warning"],
+  mismatch: ["≠", "danger"],
   fail: ["✗", "danger"],
   skip: ["–", "muted"],
   untested: ["·", "muted"],
@@ -483,8 +484,10 @@ export function formatCoverageSite(site: CoverageSite, theme: Theme): string {
 export function formatCoverageCheck(check: CoverageCheck, theme: Theme): string {
   const [mark, tone] = COVERAGE_MARKS[check.status];
   const label = check.target ? `${check.name} (${check.target})` : check.name;
+  const checked = check.verified?.length ? theme.dim(` · checked against ${check.verified.join(", ")}`) : "";
   const around = check.disabled?.length ? theme.dim(` · went around ${check.disabled.join(", ")}`) : "";
-  return `  ${theme.tone(tone, mark)} ${label.padEnd(15)} ${sanitizeTerminalText(check.detail).replace(/\n/gu, " ")}${around}`;
+  const retried = check.retried ? theme.dim(" · after one retry") : "";
+  return `  ${theme.tone(tone, mark)} ${label.padEnd(15)} ${sanitizeTerminalText(check.detail).replace(/\n/gu, " ")}${checked}${around}${retried}`;
 }
 
 export function formatCoverageSummary(report: Pick<CoverageReport, "summary" | "disabled_services">, theme: Theme): string {

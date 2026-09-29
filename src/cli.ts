@@ -1,7 +1,7 @@
 import { activitySchema } from "./intent-contract.js";
 import { activityRow, itemRow, postRow, stripEmpty } from "./results.js";
 import { doctor, ownedJobs } from "./doctor.js";
-import { coverageReport } from "./coverage.js";
+import { COVERAGE_FAILURES, coverageReport } from "./coverage.js";
 import { createProgressReporter } from "./mcp/deployment/progress.js";
 import { readFile, rm, readdir } from "node:fs/promises";
 import { homedir } from "node:os";
@@ -737,7 +737,7 @@ export function buildProgram(io: CliIO = {}): Command {
       });
       const summary = `${formatCoverageSummary(report, paint)}\n\n${tryLines(["moodle coverage --json > coverage.json"])}`;
       await runtime.output(report, () => live ? `\n${summary}` : [...lines, "", summary].join("\n"), options);
-      if (report.checks.some(check => check.status === "fail")) process.exitCode = 3;
+      if (report.checks.some(check => COVERAGE_FAILURES.includes(check.status))) process.exitCode = 3;
     } finally {
       progress.clear();
       runtime.busy = false;
