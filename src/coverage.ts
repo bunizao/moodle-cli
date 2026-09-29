@@ -73,6 +73,16 @@ const ITEM_TYPES = ["assign", "quiz", "resource", "url", "page", "folder", "foru
 // A few units usually hold one of each kind; reading every unit would turn a check into a crawl.
 const SAMPLE_UNITS = 4;
 const CHECK_TIMEOUT_MS = 120_000;
+// Functions the CLI tries first that stock Moodle does not let the AJAX endpoint call (none
+// sets 'ajax' => true in Moodle 5.0's db/services.php). Going around them is the normal path
+// on every site, so it is not reported as a fallback; a site that allows them is faster.
+export const STOCK_AJAX_UNAVAILABLE: ReadonlySet<string> = new Set([
+  "core_course_get_contents",
+  "core_course_get_course_module",
+  "core_enrol_get_users_courses",
+  "core_webservice_get_site_info",
+  "mod_forum_get_forums_by_courses",
+]);
 const PAGE_READERS = new Set(["assign", "quiz", "resource", "url", "page", "folder"]);
 // The field each reader exists to find. A page read without it was fetched but not understood,
 // which on another school's theme or language is the usual way a scraper breaks.
@@ -82,6 +92,8 @@ const ITEM_CORE: Partial<Record<string, (item: Row) => unknown>> = {
   folder: item => rows(item, "files").length,
   url: item => item.target_url,
   page: item => item.content_text,
+  // Moodle prints a state for every attempt it lists; one without is a label the reader missed.
+  quiz: item => rows(item, "attempts").every(attempt => attempt.status),
 };
 // Proxies, load balancers and a busy site fail a request now and then; one retry keeps that
 // from being reported as the site not supporting the command.
@@ -113,7 +125,7 @@ export async function* checkCoverage(service: IntentService, gateway: MoodleGate
       return {
         name,
         ...(extra.target ? { target: extra.target } : {}),
-        status: status === "ok" && disabled.length ? "fallback" : status,
+        status: status === "ok" && disabled.some(service => !STOCK_AJAX_UNAVAILABLE.has(service)) ? "fallback" : status,
         detail: outcome.detail,
         ...(extra.ref ? { ref: extra.ref } : {}),
         ...(outcome.verified?.length && (status === "ok" || status === "fallback") ? { verified: outcome.verified } : {}),
@@ -190,12 +202,14 @@ export async function* checkCoverage(service: IntentService, gateway: MoodleGate
   }, { ref: primary })).check;
 
   const picks = new Map<string, Pick>();
+  const forums: Pick[] = [];
   for (const unit of sample) {
     const sections = await gateway.getCourse({ courseId: unit }).then(detail => detail.sections, () => []);
     for (const activity of sections.flatMap(section => section.activities)) {
       // Only what the account can open: a restricted or hidden activity would fail for
       // reasons that say nothing about the command.
       if (activity.visible === false || !(ITEM_TYPES as readonly string[]).includes(activity.modname)) continue;
+      if (activity.modname === "forum") forums.push({ activity, unit });
       const known = picks.get(activity.modname);
       // The file tool returns one file whole, so a single-file resource is the fair test,
       // and an assignment with a calendar deadline lets the page's due date be checked.
@@ -217,45 +231,86 @@ export async function* checkCoverage(service: IntentService, gateway: MoodleGate
     }, { ref: first.activity.id })).check
     : skip("find", "No activity in the sampled units to search for.");
 
-  const items = new Map<string, Row>();
+  const items = new Map<string, { pick: Pick; result: Row }>();
   for (const type of ITEM_TYPES) {
-    const pick = picks.get(type);
-    if (!pick) { yield skip("item", `No ${type} the account can open in the sampled units.`, type); continue; }
-    const item = await run("item", { ref: pick.activity.id }, r => describeItem(type, r, pick.activity, deadlines.get(pick.activity.id)), { target: type, ref: pick.activity.id });
-    if (item.result) items.set(type, item.result);
-    yield item.check;
+    // An empty forum proves the reader but leaves no discussion to open, so a few more are tried.
+    const candidates = type === "forum" ? forums.slice(0, 3) : picks.has(type) ? [picks.get(type)!] : [];
+    if (!candidates.length) { yield skip("item", `No ${type} the account can open in the sampled units.`, type); continue; }
+    let chosen: { pick: Pick; check: CoverageCheck; result?: Row } | undefined;
+    for (const pick of candidates) {
+      chosen = { pick, ...await run("item", { ref: pick.activity.id }, r => describeItem(type, r, pick, deadlines.get(pick.activity.id)), { target: type, ref: pick.activity.id }) };
+      if (!passed(chosen.check) || rows(chosen.result, "threads").length || type !== "forum") break;
+    }
+    if (chosen!.result) items.set(type, { pick: chosen!.pick, result: chosen!.result });
+    yield chosen!.check;
   }
 
   const quiz = items.get("quiz");
-  const attemptId = rows(record(quiz?.item), "attempts").map(a => num(a.id)).find(Boolean);
-  yield attemptId
-    ? (await run("attempt", { attempt: attemptId }, r => {
-      const questions = rows(record(r.attempt), "questions");
+  const quizAttempt = rows(record(quiz?.result.item), "attempts").find(a => num(a.id));
+  yield quiz && quizAttempt
+    ? (await run("attempt", { attempt: num(quizAttempt.id) }, r => {
+      const attempt = record(r.attempt);
+      const questions = rows(attempt, "questions");
       if (!questions.length) return { status: "empty", detail: "The review page showed no questions; the quiz may hide them." };
       const unread = questions.filter(question => !question.text).length;
       if (unread) return { status: "empty", detail: `${count(unread, "question")} of ${questions.length} came back without text.` };
-      return { detail: count(questions.length, "question") };
-    }, { ref: attemptId })).check
+      // The review summary always states the attempt's state.
+      if (!attempt.status) return { status: "empty", detail: "The review page's summary was read without the attempt's state." };
+      // Question marks are read by their markup, in any language. When the quiz shows them,
+      // its review options show marks, so the summary and the quiz page's attempt list carry
+      // them too; missing there, their labels were not recognised.
+      if (questions.some(question => firstNumber(question.mark) !== undefined)) {
+        if (!attempt.marks && !attempt.grade) return { status: "empty", detail: "The questions show marks, but the review summary's marks and grade were not read." };
+        if (!quizAttempt.marks && !quizAttempt.grade) return { status: "empty", detail: "The questions show marks, but the quiz page lists the attempt without them." };
+      }
+      // The quiz page and the review page are read separately and must describe the same attempt.
+      const verified: string[] = [];
+      if (num(attempt.quiz_id)) {
+        if (num(attempt.quiz_id) !== quiz.pick.activity.id) return { status: "mismatch", detail: "The review page belongs to a different quiz than the one it was opened from." };
+        verified.push("quiz");
+      }
+      const agrees = gradesAgree(attempt.grade, quizAttempt.grade);
+      if (agrees === false) return { status: "mismatch", detail: "The review page and the quiz page show different grades for the attempt." };
+      if (agrees) verified.push("quiz page grade");
+      return { detail: count(questions.length, "question"), verified };
+    }, { ref: num(quizAttempt.id) })).check
     : skip("attempt", quiz ? "The sampled quiz has no attempt the account can review." : "No quiz attempt in the sampled units.");
 
-  yield (await run("grades", { unit: primary }, r => {
+  // The unit holding the quiz lets the gradebook be checked against the quiz page's grade.
+  const gradeUnit = quiz?.pick.unit ?? items.get("assign")?.pick.unit ?? primary;
+  yield (await run("grades", { unit: gradeUnit }, r => {
     const row = rows(r, "grades")[0] ?? {};
     const total = num(row.total);
     if (!total) return { status: "empty", detail: "No gradebook items for the checked unit; it may have none yet." };
-    if (rows(row, "items").some(item => !item.name)) return { status: "empty", detail: "Some gradebook rows came back without a name." };
-    return { detail: `${count(total, "item")}, ${num(row.graded)} graded` };
-  }, { ref: primary })).check;
+    const gradebook = rows(row, "items");
+    if (gradebook.some(item => !item.name)) return { status: "empty", detail: "Some gradebook rows came back without a name." };
+    const verified: string[] = [];
+    const quizGrade = quiz && quiz.pick.unit === gradeUnit ? record(quiz.result.item).grade : undefined;
+    if (quizGrade && firstNumber(quizGrade) !== undefined) {
+      const listed = findByName(gradebook, quiz!.pick.activity.name);
+      if (listed === null) return { status: "mismatch", detail: "The quiz page shows a grade for a quiz the gradebook does not list." };
+      const agrees = listed ? gradesAgree(listed.grade, quizGrade) : undefined;
+      if (agrees === false) return { status: "mismatch", detail: "The gradebook and the quiz page show different grades for the same quiz." };
+      if (agrees) verified.push("quiz page grade");
+    }
+    return { detail: `${count(total, "item")}, ${num(row.graded)} graded`, verified };
+  }, { ref: gradeUnit })).check;
 
-  const news = await run("news", { unit: primary, limit: 1 }, r => ({ detail: count(num(r.total), "announcement") }), { ref: primary });
-  yield news.check;
+  // A unit without announcements proves the reader but leaves nothing to open.
+  let news: Awaited<ReturnType<typeof run>> | undefined;
+  for (const unit of sample) {
+    news = await run("news", { unit, limit: 1 }, r => ({ detail: count(num(r.total), "announcement") }), { ref: unit });
+    if (!passed(news.check) || num(news.result?.total)) break;
+  }
+  yield news!.check;
 
-  const forum = picks.get("forum");
-  const headline = rows(news.result, "news")[0];
-  const topic = rows(items.get("forum"), "threads")[0];
+  const forum = items.get("forum");
+  const headline = rows(news!.result, "news")[0];
+  const topic = rows(forum?.result, "threads")[0];
   const discussion = headline && num(headline.id) && num(headline.forum_id)
     ? { id: num(headline.id), subject: String(headline.name ?? ""), forum: num(headline.forum_id), unit: num(headline.unit_id) || primary }
     : topic && num(topic.id) && forum
-      ? { id: num(topic.id), subject: String(topic.name ?? ""), forum: forum.activity.id, unit: forum.unit }
+      ? { id: num(topic.id), subject: String(topic.name ?? ""), forum: forum.pick.activity.id, unit: forum.pick.unit }
       : undefined;
   yield discussion
     ? (await run("thread", { discussion_id: discussion.id, limit: 1 }, r => {
@@ -264,7 +319,9 @@ export async function* checkCoverage(service: IntentService, gateway: MoodleGate
       if (!total) return { status: "empty", detail: "The discussion showed no posts." };
       const post = rows(thread, "posts")[0] ?? {};
       if (!post.message_text || !record(post.author).name) return { status: "empty", detail: "The first post came back without its text or author." };
-      return { detail: count(total, "post"), verified: ["discussion listing"] };
+      // The forum listing and the discussion are read separately and must agree on the subject.
+      if (discussion.subject && !sameName(thread.name, discussion.subject)) return { status: "mismatch", detail: "The discussion's subject differs from the one the forum lists." };
+      return { detail: count(total, "post"), verified: discussion.subject ? ["forum listing"] : [] };
     }, { ref: discussion.id })).check
     : skip("thread", "No discussion in the sampled units to open.");
 
@@ -272,18 +329,21 @@ export async function* checkCoverage(service: IntentService, gateway: MoodleGate
   const word = longestWord(discussion?.subject ?? "");
   yield discussion && word
     ? (await run("search_forums", { query: word, unit: discussion.unit, forumId: discussion.forum, maxForums: 1, maxDiscussionsPerForum: 50, limit: 50 }, r => rows(r, "results").some(row => num(row.discussion_id) === discussion.id)
-      ? { detail: `${count(num(r.total), "match")}, including the discussion searched for`, verified: ["discussion listing"] }
+      ? { detail: `${count(num(r.total), "match")}, including the discussion searched for`, verified: ["forum listing"] }
       : { status: "mismatch", detail: "Searching a forum for a word from a discussion title did not find that discussion." }, { ref: discussion.forum })).check
     : skip("search_forums", "No discussion in the sampled units to search for.");
 
   const resource = picks.get("resource");
+  const listedFile = resource && singleFile(resource.activity) ? resource.activity.file_entries![0].name : undefined;
+  // The item reader and the file tool read the resource separately; they must name the same file.
+  const itemFiles = rows(record(items.get("resource")?.result.item), "files").map(file => String(file.name ?? ""));
+  const expectedFile = listedFile ?? (itemFiles.length === 1 ? itemFiles[0] : undefined);
   yield resource
     ? (await run("file", { ref: resource.activity.id }, r => {
       const file = record(r.file);
       if (!num(file.bytes)) return { status: "empty", detail: "The file came back empty." };
-      const listed = singleFile(resource.activity) ? resource.activity.file_entries![0].name : undefined;
-      if (listed && !sameName(file.name, listed)) return { status: "mismatch", detail: "The downloaded file is not the one the unit lists." };
-      return { detail: `${String(file.mime_type || "file")}, ${formatBytes(num(file.bytes))}`, verified: listed ? ["unit contents"] : [] };
+      if (expectedFile && !sameName(file.name, expectedFile)) return { status: "mismatch", detail: "The downloaded file is not the one the resource lists." };
+      return { detail: `${String(file.mime_type || "file")}, ${formatBytes(num(file.bytes))}`, verified: expectedFile ? [listedFile ? "unit contents" : "resource page"] : [] };
     }, { ref: resource.activity.id, accept: error => errorCode(error) === "MOODLE_FILE_TOO_LARGE" ? { detail: `Reachable, but larger than the ${MAX_MCP_FILE_BYTES / 1024 / 1024} MiB the file tool returns.` } : undefined })).check
     : skip("file", "No file resource in the sampled units.");
 
@@ -343,7 +403,8 @@ function sampleUnits(units: readonly Row[], nowSeconds: number): number[] {
   return [...units].sort((a, b) => Number(current(b)) - Number(current(a))).map(unit => num(unit.id)).filter(Boolean).slice(0, SAMPLE_UNITS);
 }
 
-function describeItem(type: string, result: Row, listed: Activity, deadline?: number): Outcome {
+function describeItem(type: string, result: Row, pick: Pick, deadline?: number): Outcome {
+  const listed = pick.activity;
   const item = record(result.item);
   const files = rows(item, "files");
   if (!item.name) return { status: "empty", detail: `The ${type} page was read, but no activity name was found on it.` };
@@ -354,8 +415,14 @@ function describeItem(type: string, result: Row, listed: Activity, deadline?: nu
   // described from the contents themselves. A resource that downloads at once is named
   // after its file, so only its files are compared.
   if (PAGE_READERS.has(type) && type !== "resource") {
-    if (!sameName(item.name, listed.name)) return { status: "mismatch", detail: `The ${type} page names a different activity than the unit lists.` };
+    if (!sameName(item.name, listed.name)) return { status: "mismatch", detail: `The ${type} reader found a different name than the unit lists.` };
     verified.push("name");
+  }
+  // Breadcrumbs also link sections and categories; an id taken from the wrong link puts
+  // the activity in a unit it is not in.
+  if (PAGE_READERS.has(type) && num(item.unit_id)) {
+    if (num(item.unit_id) !== pick.unit) return { status: "mismatch", detail: `The ${type} reader placed the activity in a different unit.` };
+    verified.push("unit");
   }
   const expected = (type === "resource" || type === "folder") ? (listed.file_entries ?? []).map(file => file.name) : [];
   if (expected.length) {
@@ -418,6 +485,51 @@ function rows(value: unknown, key: string): Row[] {
 
 function num(value: unknown): number {
   return typeof value === "number" && Number.isFinite(value) ? value : 0;
+}
+
+function passed(check: CoverageCheck): boolean {
+  return check.status === "ok" || check.status === "fallback";
+}
+
+/**
+ * Grades are shown as points ("5.00 out of 10.00 (50%)"), a percentage or a letter
+ * depending on the site. Two readers agree when the grade achieved (the first number)
+ * matches, or one's percentage matches the other's grade; the maximum is not compared,
+ * because every attempt on the same quiz shares it. A letter cannot be compared.
+ */
+function gradesAgree(a: unknown, b: unknown): boolean | undefined {
+  const left = gradeOf(a);
+  const right = gradeOf(b);
+  if (left.first === undefined || right.first === undefined) return undefined;
+  return left.first === right.first
+    || (left.percent !== undefined && (left.percent === right.first || left.percent === right.percent))
+    || (right.percent !== undefined && right.percent === left.first);
+}
+
+function gradeOf(value: unknown): { first?: number; percent?: number } {
+  const text = String(value ?? "");
+  const percent = /(\d+(?:[.,]\d+)?)\s*%/u.exec(text)?.[1];
+  return { first: firstNumber(text), percent: percent === undefined ? undefined : Number(percent.replace(",", ".")) };
+}
+
+function numbers(value: unknown): number[] {
+  return [...String(value ?? "").matchAll(/\d+(?:[.,]\d+)?/gu)].map(match => Number(match[0].replace(",", ".")));
+}
+
+function firstNumber(value: unknown): number | undefined {
+  return numbers(value)[0];
+}
+
+/**
+ * The row named `name`: an exact match, else the only row whose name contains it or is
+ * contained in it. Undefined when several rows could be meant, so nothing is claimed;
+ * null when no row comes close.
+ */
+function findByName(list: readonly Row[], name: string): Row | null | undefined {
+  const exact = list.filter(row => normalizeName(row.name) === normalizeName(name));
+  if (exact.length) return exact.length === 1 ? exact[0] : undefined;
+  const close = list.filter(row => sameName(row.name, name));
+  return close.length === 1 ? close[0] : close.length ? undefined : null;
 }
 
 function sameName(found: unknown, listed: unknown): boolean {

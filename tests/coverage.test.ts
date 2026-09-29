@@ -29,7 +29,7 @@ describe("coverage checks", () => {
     const gateway: MoodleGateway = {
       ...base,
       getActivity: async ({ activityId }) => activityId % 10 === 0
-        ? { id: activityId, name: "Lecture slides", type: "resource", course_id: 2, course_name: "", section_name: "", target_name: "slides.pdf", target_url: "", file_entries: [{ name: "slides.pdf", url: "https://moodle.example.edu/pluginfile.php/1/slides.pdf", requires_authentication: true }], url: "" }
+        ? { id: activityId, name: "Lecture slides", type: "resource", course_id: Math.floor(activityId / 100), course_name: "", section_name: "", target_name: "slides.pdf", target_url: "", file_entries: [{ name: "slides.pdf", url: "https://moodle.example.edu/pluginfile.php/1/slides.pdf", requires_authentication: true }], url: "" }
         : { ...await base.getActivity({ activityId }), due_pretty: "Friday, 18 September 2026" },
       submitAssignment: async input => { submitted.push(input); return base.submitAssignment!(input); },
     };
@@ -41,7 +41,7 @@ describe("coverage checks", () => {
       "attempt", "grades", "news", "thread", "search_forums", "file", "submit",
     ]);
     expect(checks.units).toMatchObject({ status: "ok", detail: "4 units" });
-    expect(checks["item:assign"]).toMatchObject({ status: "ok", detail: expect.stringContaining("submission status"), verified: ["name", "calendar due date"] });
+    expect(checks["item:assign"]).toMatchObject({ status: "ok", detail: expect.stringContaining("submission status"), verified: ["name", "unit", "calendar due date"] });
     expect(checks["item:resource"]).toMatchObject({ status: "ok", detail: "1 file" });
     expect(checks["item:quiz"]).toMatchObject({ status: "skip" });
     expect(checks.attempt).toMatchObject({ status: "skip" });
@@ -57,13 +57,17 @@ describe("coverage checks", () => {
     let refused: string[] = [];
     const gateway: MoodleGateway = {
       ...base,
+      // Stock Moodle refuses the enrolment service to AJAX everywhere; the format state is a site's choice.
       listCourses: async () => { refused.push("core_enrol_get_users_courses"); return base.listCourses(); },
+      getCourse: async input => { refused.push("core_courseformat_get_state"); return base.getCourse(input); },
       getGrades: async () => { throw Object.assign(new Error("HTTP 500 loading https://moodle.example.edu/grade/report/user/index.php?id=1"), { code: "upstream" }); },
       getActivity: async input => ({ ...await base.getActivity(input), submission_status: "" }),
     };
     const checks = byName(await collect(gateway, () => { const names = refused; refused = []; return names; }));
 
-    expect(checks.units).toMatchObject({ status: "fallback", disabled: ["core_enrol_get_users_courses"] });
+    expect(checks.units).toMatchObject({ status: "ok", disabled: ["core_enrol_get_users_courses"] });
+    // The dashboard reads every unit's contents first, so that is where the refusal is met.
+    expect(checks.home).toMatchObject({ status: "fallback", disabled: expect.arrayContaining(["core_courseformat_get_state"]) });
     expect(checks.grades).toMatchObject({ status: "fail", error_code: "upstream", detail: expect.stringContaining("HTTP 500") });
     // A page read without the field its parser exists for is a theme mismatch, not success.
     expect(checks["item:assign"]).toMatchObject({ status: "empty" });
@@ -87,13 +91,28 @@ describe("coverage checks", () => {
 // run is a test suite running on someone else's site, so a false pass or a false alarm
 // sends the maintainer after the wrong thing.
 describe("coverage catches injected faults", () => {
+  // Unit 1 also holds a quiz (id 105) with one reviewed attempt the gradebook agrees with.
+  const QUIZ = 105;
   const healthy = (): MoodleGateway => {
     const base = fixtureGateway();
     return {
       ...base,
-      getActivity: async ({ activityId }) => activityId % 10 === 0
-        ? { id: activityId, name: "Lecture slides", type: "resource", course_id: 2, course_name: "", section_name: "", target_name: "slides.pdf", target_url: "", file_entries: [{ name: "slides.pdf", url: "https://moodle.example.edu/pluginfile.php/1/slides.pdf", requires_authentication: true }], url: "" }
-        : { ...await base.getActivity({ activityId }), due_pretty: "Friday, 18 September 2026" },
+      getCourse: async input => {
+        const detail = await base.getCourse(input);
+        if (input.courseId !== 1) return detail;
+        const [first, ...rest] = detail.sections;
+        return { ...detail, sections: [{ ...first, activities: [...first.activities, { id: QUIZ, name: "Quiz One", modname: "quiz", description: "", url: "", visible: true }] }, ...rest] };
+      },
+      getActivity: async ({ activityId }) => activityId === QUIZ
+        ? { id: QUIZ, name: "Quiz One", type: "quiz", course_id: 1, course_name: "", section_name: "", opens_pretty: "", closes_pretty: "", attempts_allowed: "2", time_limit: "", availability: "", grade: "5.00 out of 10.00 (50%)", attempts: [{ id: 6, number: 1, status: "Finished", started: "", completed: "", duration: "", marks: "1.00/2.00", grade: "5.00 out of 10.00 (50%)", review_url: "" }], url: "" }
+        : activityId % 10 === 0
+          ? { id: activityId, name: "Lecture slides", type: "resource", course_id: Math.floor(activityId / 100), course_name: "", section_name: "", target_name: "slides.pdf", target_url: "", file_entries: [{ name: "slides.pdf", url: "https://moodle.example.edu/pluginfile.php/1/slides.pdf", requires_authentication: true }], url: "" }
+          : { ...await base.getActivity({ activityId }), due_pretty: "Friday, 18 September 2026" },
+      getQuizAttempt: async attemptId => ({ ...await base.getQuizAttempt!(attemptId), quiz_id: QUIZ, course_id: 1, grade: "5.00 out of 10.00 (50%)" }),
+      getGrades: async input => {
+        const grades = await base.getGrades(input);
+        return { ...grades, items: [...grades.items, { name: "Quiz One", item_type: "quiz", grade: "5.00", range: "0–10", percentage: "50.00 %", weight: "", contribution: "", feedback: "", url: "", status: "" }] };
+      },
     };
   };
   const run = async (gateway: MoodleGateway, options: { timeoutMs?: number } = {}) => {
@@ -106,18 +125,31 @@ describe("coverage catches injected faults", () => {
   it("raises no alarm on a consistent site", async () => {
     const checks = await run(healthy());
     expect(failing(checks)).toEqual([]);
-    expect(checks.search_forums).toMatchObject({ status: "ok", verified: ["discussion listing"] });
-    expect(checks.thread).toMatchObject({ status: "ok", ref: 60 });
+    expect(checks.search_forums).toMatchObject({ status: "ok", verified: ["forum listing"] });
+    expect(checks.thread).toMatchObject({ status: "ok", ref: 60, verified: ["forum listing"] });
+    expect(checks.attempt).toMatchObject({ status: "ok", verified: ["quiz", "quiz page grade"] });
+    expect(checks.grades).toMatchObject({ status: "ok", ref: 1, verified: ["quiz page grade"] });
+    expect(checks["item:assign"].verified).toContain("unit");
   });
 
   it.each<[string, (base: MoodleGateway) => Partial<MoodleGateway>, string, string]>([
-    ["a page that names another activity", base => ({ getActivity: async input => input.activityId % 10 === 0 ? healthy().getActivity(input) : { ...await base.getActivity(input), name: "Unit handbook", due_pretty: "Friday" } }), "item:assign", "mismatch"],
+    ["a page that names another activity", () => ({ getActivity: async input => ({ ...await healthy().getActivity(input), ...(input.activityId % 10 === 1 ? { name: "Unit handbook" } : {}) }) }), "item:assign", "mismatch"],
     ["a due date the page reader cannot read", base => ({ getActivity: async input => input.activityId % 10 === 0 ? healthy().getActivity(input) : { ...await base.getActivity(input), due_pretty: "" } }), "item:assign", "mismatch"],
     ["a resource page with the wrong file", () => ({ getActivity: async input => ({ ...await healthy().getActivity(input), ...(input.activityId % 10 === 0 ? { file_entries: [{ name: "handout.docx", url: "", requires_authentication: true }] } : {}) }) }), "item:resource", "mismatch"],
     ["a search that misses a known discussion", () => ({ searchForums: async () => [] }), "search_forums", "mismatch"],
     ["a dashboard that drops a unit", base => ({ getOverview: async input => ({ ...await base.getOverview(input), courses: units.slice(1) }) }), "home", "mismatch"],
     ["posts without text", base => ({ getThread: async input => { const thread = await base.getThread(input); return { ...thread, posts: thread.posts.map(post => ({ ...post, message_text: "" })) }; } }), "thread", "empty"],
     ["a course format read as empty sections", () => ({ getCourse: async ({ courseId }) => ({ course: units.find(c => c.id === courseId)!, sections: sections("Week", courseId).map(section => ({ ...section, activities: [] })) }) }), "unit", "empty"],
+    ["a page that places the activity in another unit", base => ({ getActivity: async input => ({ ...await healthy().getActivity(input), ...(input.activityId === 101 ? { course_id: 93 } : {}) }) }), "item:assign", "mismatch"],
+    ["a discussion whose subject differs from the listing", base => ({ getThread: async input => ({ ...await base.getThread(input), subject: "Exam timetable" }) }), "thread", "mismatch"],
+    ["a review page for another quiz", () => ({ getQuizAttempt: async attemptId => ({ ...await healthy().getQuizAttempt!(attemptId), quiz_id: 999 }) }), "attempt", "mismatch"],
+    ["a review page with another grade", () => ({ getQuizAttempt: async attemptId => ({ ...await healthy().getQuizAttempt!(attemptId), grade: "9.00 out of 10.00 (90%)" }) }), "attempt", "mismatch"],
+    ["a gradebook that disagrees with the quiz page", () => ({ getGrades: async input => { const grades = await healthy().getGrades(input); return { ...grades, items: grades.items.map(item => item.name === "Quiz One" ? { ...item, grade: "7.00", percentage: "70.00 %" } : item) }; } }), "grades", "mismatch"],
+    ["a gradebook that leaves out a graded quiz", () => ({ getGrades: async input => { const grades = await healthy().getGrades(input); return { ...grades, items: grades.items.filter(item => !item.name.startsWith("Quiz")) }; } }), "grades", "mismatch"],
+    ["quiz attempts listed without their state", () => ({ getActivity: async input => { const item = await healthy().getActivity(input); return input.activityId === QUIZ ? { ...item, attempts: (item as unknown as { attempts: Array<Record<string, unknown>> }).attempts.map(a => ({ ...a, status: "" })) } as typeof item : item; } }), "item:quiz", "empty"],
+    ["a review summary without the attempt's state", () => ({ getQuizAttempt: async attemptId => ({ ...await healthy().getQuizAttempt!(attemptId), status: "" }) }), "attempt", "empty"],
+    ["a review summary whose marks were not read", () => ({ getQuizAttempt: async attemptId => ({ ...await healthy().getQuizAttempt!(attemptId), marks: "", grade: "" }) }), "attempt", "empty"],
+    ["a quiz page whose attempt list lost the marks", () => ({ getActivity: async input => { const item = await healthy().getActivity(input); return input.activityId === QUIZ ? { ...item, attempts: (item as unknown as { attempts: Array<Record<string, unknown>> }).attempts.map(a => ({ ...a, marks: "", grade: "" })) } as typeof item : item; } }), "attempt", "empty"],
     ["a gradebook that fails outright", () => ({ getGrades: async () => { throw Object.assign(new Error("HTTP 500 loading https://moodle.example.edu/grade/report/user/index.php"), { code: "upstream" }); } }), "grades", "fail"],
   ])("flags %s", async (_label, fault, key, status) => {
     const base = healthy();
@@ -125,6 +157,32 @@ describe("coverage catches injected faults", () => {
     expect(checks[key]).toMatchObject({ status });
     // The fault stays on its own line; every other check keeps passing.
     expect(failing(checks)).toEqual([key]);
+  });
+
+  it("accepts a gradebook that shows the same grade as a percentage or a letter", async () => {
+    for (const shown of [{ grade: "50.00 %", percentage: "" }, { grade: "C", percentage: "" }]) {
+      const base = healthy();
+      const checks = await run({ ...base, getGrades: async input => { const grades = await base.getGrades(input); return { ...grades, items: grades.items.map(item => item.name === "Quiz One" ? { ...item, ...shown } : item) }; } });
+      expect(checks.grades.status).toBe("ok");
+    }
+  });
+
+  it("looks past an empty forum and a unit without announcements for a discussion to open", async () => {
+    const base = healthy();
+    const checks = await run({
+      ...base,
+      getCourse: async input => {
+        const detail = await base.getCourse(input);
+        const [first, ...rest] = detail.sections;
+        return { ...detail, sections: [{ ...first, activities: [...first.activities, { id: 70 + input.courseId, name: "Q&A", modname: "forum", description: "", url: "", visible: true }] }, ...rest] };
+      },
+      getActivity: async input => input.activityId > 70 && input.activityId < 80 ? { id: input.activityId, name: "Q&A", modname: "forum", type: "forum", description: "", url: "", visible: true } : base.getActivity(input),
+      listNewsForums: async courseId => courseId === 1 ? [] : base.listNewsForums!(courseId),
+      listThreads: async forumId => forumId === 71 ? [] : base.listThreads!(forumId),
+    });
+    expect(checks["item:forum"]).toMatchObject({ status: "ok", ref: 72, detail: "1 thread" });
+    expect(checks.news).toMatchObject({ status: "ok", ref: 2 });
+    expect(checks.thread).toMatchObject({ status: "ok", ref: 60 });
   });
 
   it("retries a transient failure once before deciding", async () => {
@@ -210,7 +268,8 @@ describe("moodle coverage", () => {
         const batch = JSON.parse(String(init?.body)) as { methodname: string; args: Record<string, number> }[];
         return Response.json(batch.map(c => {
           switch (c.methodname) {
-            case "core_enrol_get_users_courses": return { error: true, exception: { errorcode: "servicenotavailable", message: "Service disabled" } };
+            // Stock Moodle refuses the first to AJAX callers; the second is a site switching notifications off.
+            case "core_enrol_get_users_courses": case "message_popup_get_popup_notifications": return { error: true, exception: { errorcode: "servicenotavailable", message: "Service disabled" } };
             case "core_course_get_enrolled_courses_by_timeline_classification": return { error: false, data: { courses: units, nextoffset: 4 } };
             case "core_webservice_get_site_info": return { error: false, data: { ...siteUser, release: "4.5.1 (Build: 20250101)" } };
             // Named as the assignment fixture page is, so the page and the contents agree.
@@ -244,8 +303,9 @@ describe("moodle coverage", () => {
     const report = JSON.parse(result.stdout);
     expect(report.cli).toEqual({ version: VERSION, latest: VERSION, runtime: expect.stringMatching(/^(node|bun) \d/u) });
     expect(report.site).toEqual({ url: siteUser.siteurl, release: "4.5.1 (Build: 20250101)", theme: "boost", mobile_service: false });
-    expect(report.disabled_services).toEqual(["core_enrol_get_users_courses"]);
-    expect(report.checks[0]).toMatchObject({ name: "units", status: "fallback", disabled: ["core_enrol_get_users_courses"] });
+    expect(report.disabled_services).toEqual(["core_enrol_get_users_courses", "message_popup_get_popup_notifications"]);
+    expect(report.checks[0]).toMatchObject({ name: "units", status: "ok", disabled: ["core_enrol_get_users_courses"] });
+    expect(report.checks[1]).toMatchObject({ name: "home", status: "partial", disabled: expect.arrayContaining(["message_popup_get_popup_notifications"]) });
     expect(report.checks.find((c: CoverageCheck) => c.name === "file")).toMatchObject({ status: "ok" });
     expect(report.summary.ok).toBeGreaterThan(5);
     for (const secret of ["fixture", "Alex", "Databases", "Algorithms"]) expect(result.stdout).not.toContain(secret);
@@ -257,10 +317,12 @@ describe("moodle coverage", () => {
     expect(lines[0]).toMatch(new RegExp(`^moodle-cli ${VERSION.replace(/\./gu, "\\.")} · latest · (node|bun) `, "u"));
     expect(lines[1]).toBe(`Checking ${siteUser.siteurl}`);
     expect(lines[2]).toBe("Moodle 4.5.1 (Build: 20250101) · theme boost · mobile app service off");
-    expect(lines).toContain("  ↷ units           4 units · went around core_enrol_get_users_courses");
+    expect(lines).toContain("  ✓ units           4 units");
+    expect(lines).toContain("  ! home            notifications: Service disabled · went around message_popup_get_popup_notifications");
     expect(lines).toContain("  · submit          Not exercised: it writes to Moodle. moodle submit REF FILE plans without uploading.");
     expect(result.stdout).toContain("8 skipped · 1 untested");
-    expect(result.stdout).toContain("Disabled on this site: core_enrol_get_users_courses.");
+    // Only what this site switched off; stock Moodle's own refusals are the normal path.
+    expect(result.stdout).toContain("Disabled on this site: message_popup_get_popup_notifications.");
   });
 
   it("warns that an outdated or unverified build may report failures already fixed", async () => {

@@ -19,7 +19,7 @@ import type { DownloadResult } from "./download.js";
 import type { SubmissionReceipt } from "./moodle-assign-core.js";
 import type { AttemptFinishReceipt, AttemptPage, AttemptQuestion, AttemptSummary } from "./moodle-quiz-core.js";
 import type { AuthStatus, KeepaliveRunResult } from "./keepalive.js";
-import type { CoverageCheck, CoverageCli, CoverageReport, CoverageSite, CoverageStatus } from "./coverage.js";
+import { STOCK_AJAX_UNAVAILABLE, type CoverageCheck, type CoverageCli, type CoverageReport, type CoverageSite, type CoverageStatus } from "./coverage.js";
 import { isNewerVersion } from "./update-core.js";
 import type { Theme, Tone } from "@bunizao/cli-kit";
 import { renderKeyValueTable, renderTerminalTable, sanitizeTerminalText } from "./terminal-table.js";
@@ -485,7 +485,9 @@ export function formatCoverageCheck(check: CoverageCheck, theme: Theme): string 
   const [mark, tone] = COVERAGE_MARKS[check.status];
   const label = check.target ? `${check.name} (${check.target})` : check.name;
   const checked = check.verified?.length ? theme.dim(` · checked against ${check.verified.join(", ")}`) : "";
-  const around = check.disabled?.length ? theme.dim(` · went around ${check.disabled.join(", ")}`) : "";
+  // Stock Moodle refuses these to every AJAX caller; naming them on each line is noise.
+  const unusual = check.disabled?.filter(service => !STOCK_AJAX_UNAVAILABLE.has(service)) ?? [];
+  const around = unusual.length ? theme.dim(` · went around ${unusual.join(", ")}`) : "";
   const retried = check.retried ? theme.dim(" · after one retry") : "";
   return `  ${theme.tone(tone, mark)} ${label.padEnd(15)} ${sanitizeTerminalText(check.detail).replace(/\n/gu, " ")}${checked}${around}${retried}`;
 }
@@ -495,6 +497,7 @@ export function formatCoverageSummary(report: Pick<CoverageReport, "summary" | "
     .filter(status => report.summary[status])
     .map(status => theme.tone(COVERAGE_MARKS[status][1], `${report.summary[status]} ${{ fail: "failed", skip: "skipped" }[status as string] ?? status}`));
   const lines = [counts.join(" · ")];
-  if (report.disabled_services.length) lines.push(theme.dim(`Disabled on this site: ${report.disabled_services.join(", ")}. Commands that need them take a fallback.`));
+  const unusual = report.disabled_services.filter(service => !STOCK_AJAX_UNAVAILABLE.has(service));
+  if (unusual.length) lines.push(theme.dim(`Disabled on this site: ${unusual.join(", ")}. Commands that need them take a fallback.`));
   return lines.join("\n");
 }
