@@ -22,6 +22,14 @@ export interface CoverageCheck {
   ms?: number;
 }
 
+/** Which build produced the report: a failure from an old release may already be fixed. */
+export interface CoverageCli {
+  version: string;
+  /** The published release, or null when the registry could not be reached. */
+  latest: string | null;
+  runtime: string;
+}
+
 export interface CoverageSite {
   url: string;
   release?: string;
@@ -30,6 +38,7 @@ export interface CoverageSite {
 }
 
 export interface CoverageReport {
+  cli: CoverageCli;
   site: CoverageSite;
   checks: CoverageCheck[];
   disabled_services: string[];
@@ -177,7 +186,7 @@ export async function* checkCoverage(service: IntentService, gateway: MoodleGate
  * found disabled, so the report says what the site does today; the calls then relearn
  * that list, which later commands use to skip dead requests.
  */
-export async function coverageReport(client: MoodleClientCore, options: Omit<CoverageOptions, "takeDisabled"> & { fetchImpl?: typeof fetch; onSite?: (site: CoverageSite) => void; onCheck?: (check: CoverageCheck) => void } = {}): Promise<CoverageReport> {
+export async function coverageReport(client: MoodleClientCore, cli: CoverageCli, options: Omit<CoverageOptions, "takeDisabled"> & { fetchImpl?: typeof fetch; onSite?: (site: CoverageSite) => void; onCheck?: (check: CoverageCheck) => void } = {}): Promise<CoverageReport> {
   await client.forgetUnavailableServices();
   const seen = new Set<string>();
   let pending: string[] = [];
@@ -192,7 +201,7 @@ export async function coverageReport(client: MoodleClientCore, options: Omit<Cov
       checks.push(check);
       options.onCheck?.(check);
     }
-    return { site, checks, disabled_services: [...seen].sort(), summary: summarizeCoverage(checks) };
+    return { cli, site, checks, disabled_services: [...seen].sort(), summary: summarizeCoverage(checks) };
   } finally {
     stop();
   }

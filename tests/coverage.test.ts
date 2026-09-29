@@ -9,6 +9,7 @@ import { checkCoverage, type CoverageCheck } from "../src/coverage.js";
 import { createIntentService } from "../src/intents.js";
 import type { MoodleGateway } from "../src/mcp/gateway.js";
 import { createMoodleClientCore } from "../src/moodle-client-core.js";
+import { VERSION } from "../src/version.js";
 import { fixtureGateway, sections, siteUser, units } from "./fixtures/intent-site.js";
 
 const fixture = (name: string) => readFileSync(join(import.meta.dirname, "fixtures", name), "utf8");
@@ -113,9 +114,10 @@ describe("client service refusals", () => {
 });
 
 describe("moodle coverage", () => {
-  function site(): typeof fetch {
+  function site(latest: string | null = VERSION): typeof fetch {
     return async (input, init) => {
       const url = new URL(String(input));
+      if (url.hostname === "registry.npmjs.org") return latest ? Response.json({ latest }) : new Response("", { status: 503 });
       const html = (body: string) => new Response(body, { headers: { "content-type": "text/html" } });
       if (url.pathname === "/my/") return html('<html><script>M.cfg = {"sesskey":"fixture","userId":7,"theme":"boost"};</script><span class="userfullname">Alex</span></html>');
       if (url.pathname === "/lib/ajax/service-nologin.php") return Response.json([{ error: false, data: { enablewebservices: 1, enablemobilewebservice: 0 } }]);
@@ -141,12 +143,12 @@ describe("moodle coverage", () => {
       throw new Error(`Unexpected fixture path ${url.pathname}`);
     };
   }
-  async function command(args: string[]) {
+  async function command(args: string[], latest?: string | null) {
     const home = await mkdtemp(join(tmpdir(), "moodle-coverage-"));
     let stdout = "", stderr = "";
     try {
       const code = await runCli(["node", "moodle", "coverage", ...args, "--no-cache"], {
-        env: { MOODLE_BASE_URL: siteUser.siteurl, MOODLE_SESSION: "fixture" }, homeDir: home, cwd: home, fetchImpl: site(),
+        env: { MOODLE_BASE_URL: siteUser.siteurl, MOODLE_SESSION: "fixture" }, homeDir: home, cwd: home, fetchImpl: site(latest),
         stdin: { isTTY: false } as NodeJS.ReadStream,
         stdout: { isTTY: false, write: (value: string) => { stdout += value; return true; } } as NodeJS.WriteStream,
         stderr: { write: (value: string) => { stderr += value; return true; } },
@@ -159,6 +161,7 @@ describe("moodle coverage", () => {
     const result = await command(["--json"]);
     expect(result.stderr).toBe("");
     const report = JSON.parse(result.stdout);
+    expect(report.cli).toEqual({ version: VERSION, latest: VERSION, runtime: expect.stringMatching(/^(node|bun) \d/u) });
     expect(report.site).toEqual({ url: siteUser.siteurl, release: "4.5.1 (Build: 20250101)", theme: "boost", mobile_service: false });
     expect(report.disabled_services).toEqual(["core_enrol_get_users_courses"]);
     expect(report.checks[0]).toMatchObject({ name: "units", status: "fallback", disabled: ["core_enrol_get_users_courses"] });
@@ -170,11 +173,19 @@ describe("moodle coverage", () => {
   it("prints one line per check for a person", async () => {
     const result = await command(["--table"]);
     const lines = result.stdout.split("\n");
-    expect(lines[0]).toBe(`Checking ${siteUser.siteurl}`);
-    expect(lines[1]).toBe("Moodle 4.5.1 (Build: 20250101) · theme boost · mobile app service off");
+    expect(lines[0]).toMatch(new RegExp(`^moodle-cli ${VERSION.replace(/\./gu, "\\.")} · latest · (node|bun) `, "u"));
+    expect(lines[1]).toBe(`Checking ${siteUser.siteurl}`);
+    expect(lines[2]).toBe("Moodle 4.5.1 (Build: 20250101) · theme boost · mobile app service off");
     expect(lines).toContain("  ↷ units           4 units · went around core_enrol_get_users_courses");
     expect(lines).toContain("  · submit          Not exercised: it writes to Moodle. moodle submit REF FILE plans without uploading.");
     expect(result.stdout).toContain("7 skipped · 1 untested");
     expect(result.stdout).toContain("Disabled on this site: core_enrol_get_users_courses.");
+  });
+
+  it("warns that an outdated or unverified build may report failures already fixed", async () => {
+    expect((await command(["--table"], "99.0.0")).stdout.split("\n")[0]).toContain("99.0.0 is out; run moodle update before reporting a failure");
+    const offline = await command(["--json"], null);
+    expect(JSON.parse(offline.stdout).cli.latest).toBeNull();
+    expect((await command(["--table"], null)).stdout.split("\n")[0]).toContain("latest release unknown");
   });
 });

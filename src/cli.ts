@@ -55,6 +55,7 @@ import {
   formatAlerts,
   formatAuthStatus,
   formatCoverageCheck,
+  formatCoverageCli,
   formatCoverageSite,
   formatCoverageSummary,
   formatCourseSections,
@@ -715,7 +716,9 @@ export function buildProgram(io: CliIO = {}): Command {
     if (result.checks.some(c => c.status === "fail")) process.exitCode = 3;
   });
   addOutputOptions(program.command("coverage").description("Check each command against this Moodle site with the signed-in session, one live read at a time. Nothing is written.").summary("Check which commands work on this site")).action(async (options: OutputCommandOptions) => {
-    const client = await runtime.getClient();
+    // Asked live rather than from the daily cache: a report is only useful with the release that produced it.
+    const [client, latest] = await Promise.all([runtime.getClient(), refreshLatestVersion({ homeDir: io.homeDir, env: io.env, fetchImpl: io.fetchImpl })]);
+    const cli = { version: VERSION, latest, runtime: `${process.versions.bun ? "bun" : "node"} ${process.versions.bun ?? process.versions.node}` };
     const merged = { ...program.opts(), ...options } as OutputCommandOptions;
     // A person watches the lines arrive; anything else reads the finished report.
     const live = outputFormat(merged, stdout) === "table" && !merged.output;
@@ -725,7 +728,8 @@ export function buildProgram(io: CliIO = {}): Command {
     const emit = (line: string) => { lines.push(line); if (live) { progress.clear(); stdout.write(`${line}\n`); } };
     runtime.busy = true;
     try {
-      const report = await coverageReport(client, {
+      emit(formatCoverageCli(cli, paint));
+      const report = await coverageReport(client, cli, {
         fetchImpl: io.fetchImpl,
         onSite: site => emit(formatCoverageSite(site, paint)),
         onStart: (name, target) => progress.begin(`Checking ${target ? `${name} (${target})` : name}`),

@@ -189,7 +189,7 @@ moodle coverage
 
 Moodle sites differ: some disable web services, and themes change the pages the CLI reads. `moodle coverage` signs in with your session and runs each read-only command once against your own units, printing one line per command as it finishes: working, working through a fallback, read but not understood, failed, or skipped for lack of a sample. Submitting is never exercised. It exits with code 3 when a check fails.
 
-`moodle coverage --json > coverage.json` gives the same report as JSON, with the Moodle release, theme and the services the site disables. It holds counts and error messages, not your units or name, so it can be attached to an issue when your school's Moodle misbehaves.
+The first line names the moodle-cli release and whether it is the latest, checked live; a failure from an old release may already be fixed, so run `moodle update` before reporting one. `moodle coverage --json > coverage.json` gives the same report as JSON, with the CLI version and runtime, the Moodle release, theme and the services the site disables. It holds counts and error messages, not your units or name, so it can be attached to an issue when your school's Moodle misbehaves.
 
 ### Update
 
@@ -198,6 +198,8 @@ moodle update
 ```
 
 `moodle update` upgrades the package with whichever installer put it there (npm, bun, or the standalone binary replacing itself), then runs `moodle mcp deploy` when a managed Worker exists and is behind the new release. `moodle update --check` only reports versions.
+
+It installs the exact release it just checked rather than `latest`, so a lagging registry mirror fails loudly instead of installing an older build, and an npm install goes into the prefix that holds the running copy, whichever `npm` is first on `PATH`. A standalone download has to run and report the new version before it replaces the current binary; otherwise the old one stays. After installing, the update asks the replaced install for its version and only then redeploys the Worker.
 
 The CLI checks npm once a day in the background and prints a one-line notice on stderr when a newer release exists. A deployed Worker performs the same daily check and tells connected MCP clients through the server instructions, because the Worker ships inside the package and only redeploys from your machine. Set `MOODLE_NO_UPDATE_CHECK=1` to disable the check; it is already off under `CI`.
 

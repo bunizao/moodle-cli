@@ -19,7 +19,8 @@ import type { DownloadResult } from "./download.js";
 import type { SubmissionReceipt } from "./moodle-assign-core.js";
 import type { AttemptFinishReceipt, AttemptPage, AttemptQuestion, AttemptSummary } from "./moodle-quiz-core.js";
 import type { AuthStatus, KeepaliveRunResult } from "./keepalive.js";
-import type { CoverageCheck, CoverageReport, CoverageSite, CoverageStatus } from "./coverage.js";
+import type { CoverageCheck, CoverageCli, CoverageReport, CoverageSite, CoverageStatus } from "./coverage.js";
+import { isNewerVersion } from "./update-core.js";
 import type { Theme, Tone } from "@bunizao/cli-kit";
 import { renderKeyValueTable, renderTerminalTable, sanitizeTerminalText } from "./terminal-table.js";
 
@@ -459,6 +460,15 @@ const COVERAGE_MARKS: Record<CoverageStatus, readonly [string, Tone]> = {
   skip: ["–", "muted"],
   untested: ["·", "muted"],
 };
+
+export function formatCoverageCli(cli: CoverageCli, theme: Theme): string {
+  const release = cli.latest === null
+    ? theme.tone("warning", "latest release unknown")
+    : isNewerVersion(cli.latest, cli.version)
+      ? theme.tone("warning", `${cli.latest} is out; run moodle update before reporting a failure`)
+      : theme.dim("latest");
+  return `moodle-cli ${theme.key(cli.version)} ${theme.dim("·")} ${release} ${theme.dim(`· ${cli.runtime}`)}`;
+}
 
 export function formatCoverageSite(site: CoverageSite, theme: Theme): string {
   const facts = [
