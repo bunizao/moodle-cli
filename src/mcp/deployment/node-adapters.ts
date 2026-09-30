@@ -545,6 +545,7 @@ export class FetchManagedWorkerClient implements ManagedWorkerClient {
             ? session.code
             : null,
         revision: typeof session?.revision === "number" ? session.revision : null,
+        ...(session?.renewal === "mobile_token" || session?.renewal === "sign_in" ? { renewal: session.renewal } : {}),
         ...(typeof body.sessionSchemaVersion === "number" ? { sessionSchemaVersion: body.sessionSchemaVersion } : {}),
         ...(typeof body.encryptionKeyId === "string" ? { encryptionKeyId: body.encryptionKeyId } : {}),
         ...(typeof body.credentialId === "string" ? { credentialId: body.credentialId } : {}),

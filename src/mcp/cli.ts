@@ -383,6 +383,7 @@ class DefaultMcpCommandService implements McpCommandService {
       data,
       text: [
         row("Moodle MCP", managed.readiness),
+        ...(managed.sessionRenewal ? [`  ${theme.dim(managed.sessionRenewal === "mobile_token" ? "renews itself with a Moodle mobile token" : "needs a new sign-in when Moodle signs you out")}`] : []),
         row("Worker", managed.worker?.workerName ?? "not deployed"),
         row("Credentials", credentialsState),
         row("Renewal", managed.renewalInstalled ? "installed" : "missing"),

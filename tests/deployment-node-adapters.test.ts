@@ -478,14 +478,14 @@ describe("FetchManagedWorkerClient", () => {
     const structured = new FetchManagedWorkerClient(vi.fn(async () => Response.json({
       status: "warn",
       checks: {
-        "moodle:session": [{ status: "warn", code: "SESSION_EXPIRING", revision: 12 }],
+        "moodle:session": [{ status: "warn", code: "SESSION_EXPIRING", revision: 12, renewal: "mobile_token" }],
         "moodle:upstream": [{ status: "pass", code: "MOODLE_REACHABLE" }],
       },
     })) as unknown as typeof fetch);
     const legacy = new FetchManagedWorkerClient(vi.fn(async () => Response.json({ status: "pass" })) as unknown as typeof fetch);
 
     await expect(structured.getReadiness({ endpoint: "https://worker.example", sessionSyncToken: "sync-token" }))
-      .resolves.toEqual({ status: "warn", reasonCode: "SESSION_EXPIRING", revision: 12 });
+      .resolves.toEqual({ status: "warn", reasonCode: "SESSION_EXPIRING", revision: 12, renewal: "mobile_token" });
     await expect(legacy.getReadiness({ endpoint: "https://worker.example", sessionSyncToken: "sync-token" }))
       .resolves.toEqual({ status: "pass", reasonCode: null, revision: null });
   });

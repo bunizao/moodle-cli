@@ -84,6 +84,8 @@ export interface WorkerReadiness {
   status: "pass" | "warn" | "fail";
   reasonCode: string | null;
   revision: number | null;
+  // How the Worker brings an expired session back: itself, or through a new sign-in.
+  renewal?: "mobile_token" | "sign_in";
   sessionSchemaVersion?: number;
   encryptionKeyId?: string;
   credentialId?: string;
@@ -243,6 +245,7 @@ export interface DeploymentStatus {
   readiness: "pass" | "warn" | "fail" | "unknown";
   readinessReasonCode: string | null;
   sessionRevision: number | null;
+  sessionRenewal?: "mobile_token" | "sign_in";
   // The recovery release serves the session bridge with OAuth switched off, so a deploy that
   // failed after promoting it leaves hosted clients unable to sign in. Say so.
   recoveryActive: boolean;
@@ -611,6 +614,7 @@ export class ManagedMcpDeployment {
     let readiness: DeploymentStatus["readiness"] = "unknown";
     let readinessReasonCode: string | null = null;
     let sessionRevision: number | null = null;
+    let sessionRenewal: DeploymentStatus["sessionRenewal"];
     if (worker && credentials.value) {
       const target = { endpoint: receipt.productionEndpoint, sessionSyncToken: credentials.value.sessionSyncToken };
       await this.dependencies.worker.touchSession(target);
@@ -618,6 +622,7 @@ export class ManagedMcpDeployment {
       readiness = remoteReadiness.status;
       readinessReasonCode = remoteReadiness.reasonCode;
       sessionRevision = remoteReadiness.revision;
+      sessionRenewal = remoteReadiness.renewal;
     }
     // Wrangler's deployments list only exposes deployment-level annotations, so a
     // release promoted without one reads back with an empty digest. The receipt is
@@ -635,6 +640,7 @@ export class ManagedMcpDeployment {
       readiness,
       readinessReasonCode,
       sessionRevision,
+      ...(sessionRenewal ? { sessionRenewal } : {}),
       recoveryActive: receipt.releaseDigest.endsWith("-recovery"),
     };
   }

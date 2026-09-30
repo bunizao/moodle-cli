@@ -5,6 +5,7 @@ import { createMoodleMcpServer } from "../mcp/server.js";
 import { fetchLatestVersion, isNewerVersion, updateHint, UPDATE_CHECK_TTL_MS, type LatestVersionRecord } from "../update-core.js";
 import { VERSION } from "../version.js";
 import type { McpRequestContext } from "../mcp/protocol.js";
+import type { MobileToken } from "../mobile-login-core.js";
 import { FetchMoodleSessionUpstream } from "./moodle-upstream.js";
 import { problemResponse } from "./problems.js";
 import { WORKER_SERVICE_ID, WORKER_SERVICE_VERSION } from "./http.js";
@@ -16,6 +17,10 @@ const MAX_BACKOFF_MS = 30 * 60 * 1000;
 const SESSION_STALE_MS = 24 * 60 * 60 * 1000;
 const LATEST_VERSION_KEY = "latest_version";
 const SESSION_EXPIRING_MS = 15 * 60 * 1000;
+// Moodle refuses a second autologin key for the same user within six minutes.
+const MINT_INTERVAL_MS = 6 * 60 * 1000;
+const MINT_RETRY_MS = 30 * 60 * 1000;
+const MAX_MINT_RETRIES = 6;
 
 export interface DurableObjectStorageLike {
   get<T>(key: string): Promise<T | undefined>;
@@ -70,6 +75,10 @@ export interface MoodleSessionUpstream {
     cookieValue: string;
     sesskey: string;
   }): Promise<SessionTouchResult>;
+  // Only where the site enables Moodle's mobile service: a live cookie buys a
+  // durable token, and the token later mints a fresh cookie with nobody present.
+  captureMobileToken?(cookie: { name: string; value: string }): Promise<MobileToken | null>;
+  mintSession?(moodleUserId: number, token: MobileToken): Promise<{ name: string; value: string } | null>;
 }
 
 export interface SessionBrokerDependencies {
@@ -90,6 +99,8 @@ interface StoredSession {
   next_alarm_at: number | null;
   expires_at: number | null;
   failure_count: number;
+  mobile_token?: MobileToken;
+  last_mint_at?: number;
 }
 
 export class SessionBroker {
@@ -139,7 +150,8 @@ export class SessionBroker {
     const session = await this.loadSession();
     // Without a usable session the connector still initializes and lists tools, so a
     // hosted client shows it as connected and every tool call says where to sign in.
-    const live = session && session.last_error_code !== "SESSION_EXPIRED" && (session.expires_at === null || session.expires_at > this.now()) ? session : null;
+    let live = session && session.last_error_code !== "SESSION_EXPIRED" && (session.expires_at === null || session.expires_at > this.now()) ? session : null;
+    if (session && !live) live = await this.renewFromMobileToken(session);
     const signedIn = live !== null;
     const gateway = live
       ? createMoodleGateway(createMoodleClientCore(this.env.MOODLE_ORIGIN, {
@@ -255,6 +267,9 @@ export class SessionBroker {
         next_alarm_at: nextAlarmAt,
         expires_at: expiresAt(now, validation.remainingSeconds),
         failure_count: 0,
+        // The account check above makes the stored token safe to keep.
+        ...(current?.mobile_token ? { mobile_token: current.mobile_token } : {}),
+        ...(current?.last_mint_at !== undefined ? { last_mint_at: current.last_mint_at } : {}),
       };
       await this.writeSession(storage, session);
       return session;
@@ -270,8 +285,9 @@ export class SessionBroker {
       return problemResponse(403, "OWNER_CLAIM_REQUIRED", "Forbidden", "This Worker has no owner yet. Sign in with the pairing code from the deployment.");
     }
     await this.state.storage.setAlarm(nextAlarmAt);
+    const renewal = result.mobile_token || await this.captureMobileToken(result) ? "mobile_token" : "sign_in";
     return Response.json(
-      { status: "accepted", revision: result.revision, lastVerifiedAt: new Date(result.last_verified_at).toISOString() },
+      { status: "accepted", revision: result.revision, lastVerifiedAt: new Date(result.last_verified_at).toISOString(), renewal },
       { status: 201, headers: { "cache-control": "no-store" } },
     );
   }
@@ -314,8 +330,23 @@ export class SessionBroker {
       return "unreachable";
     }
     if (!touched.alive) {
-      const expired = { ...current, last_error_code: "SESSION_EXPIRED", expires_at: this.now(), next_alarm_at: null };
-      if (await this.putIfCurrent(current, expired)) await this.state.storage.deleteAlarm?.();
+      const renewed = await this.renewFromMobileToken(current);
+      if (renewed) return renewed;
+      const latest = await this.loadSession() ?? current;
+      // A kept token retries on a slow schedule, in case Moodle was only briefly
+      // unwell; without one, only a new sign-in brings the session back.
+      const retryAt = latest.mobile_token && latest.failure_count < MAX_MINT_RETRIES ? this.now() + MINT_RETRY_MS : null;
+      const expired = {
+        ...latest,
+        last_error_code: "SESSION_EXPIRED",
+        expires_at: this.now(),
+        next_alarm_at: retryAt,
+        failure_count: latest.mobile_token ? latest.failure_count + 1 : latest.failure_count,
+      };
+      if (await this.putIfCurrent(latest, expired)) {
+        if (retryAt) await this.state.storage.setAlarm(retryAt);
+        else await this.state.storage.deleteAlarm?.();
+      }
       return "expired";
     }
 
@@ -340,6 +371,65 @@ export class SessionBroker {
     return await this.loadSession() ?? "missing";
   }
 
+  // Trade a live cookie for a durable token once, right after it is stored. Any
+  // failure just leaves the Worker on the sign-in path.
+  private async captureMobileToken(session: StoredSession): Promise<boolean> {
+    const { upstream } = this.dependencies;
+    if (!upstream.captureMobileToken) return false;
+    let token: MobileToken | null;
+    try {
+      token = await upstream.captureMobileToken({ name: session.cookie_name, value: session.cookie_value });
+    } catch {
+      return false;
+    }
+    // Without the private token Moodle will not issue an autologin key.
+    if (!token?.privatetoken) return false;
+    const mobileToken: MobileToken = { wstoken: token.wstoken, privatetoken: token.privatetoken };
+    return this.transaction(async (storage) => {
+      const current = await this.readSession(storage);
+      if (current?.moodle_user_id !== session.moodle_user_id) return false;
+      await this.writeSession(storage, { ...current, mobile_token: mobileToken });
+      return true;
+    });
+  }
+
+  private async renewFromMobileToken(current: StoredSession): Promise<StoredSession | null> {
+    const { upstream } = this.dependencies;
+    const token = current.mobile_token;
+    const now = this.now();
+    if (!upstream.mintSession || !token) return null;
+    if (current.last_mint_at !== undefined && now - current.last_mint_at < MINT_INTERVAL_MS) return null;
+    // Record the attempt before making it, so concurrent callers and a restarted
+    // object stay inside Moodle's rate limit.
+    const attempted: StoredSession = { ...current, last_mint_at: now };
+    if (!await this.putIfCurrent(current, attempted)) return null;
+    try {
+      const cookie = await upstream.mintSession(current.moodle_user_id, token);
+      if (!cookie) return null;
+      const validation = await upstream.validate({ moodleOrigin: this.env.MOODLE_ORIGIN, cookieName: cookie.name, cookieValue: cookie.value, expectedRevision: null });
+      if (!validation.valid || validation.moodleUserId !== current.moodle_user_id) return null;
+      const nextAlarmAt = nextTouchAt(now, validation.remainingSeconds);
+      const renewed: StoredSession = {
+        ...attempted,
+        cookie_value: validation.rotatedCookie ?? cookie.value,
+        cookie_name: cookie.name,
+        revision: attempted.revision + 1,
+        sesskey: validation.sesskey,
+        last_verified_at: now,
+        last_touch_at: null,
+        last_error_code: null,
+        next_alarm_at: nextAlarmAt,
+        expires_at: expiresAt(now, validation.remainingSeconds),
+        failure_count: 0,
+      };
+      if (!await this.putIfCurrent(attempted, renewed)) return null;
+      await this.state.storage.setAlarm(nextAlarmAt);
+      return renewed;
+    } catch {
+      return null;
+    }
+  }
+
   private async recordFailure(current: StoredSession, code: string): Promise<void> {
     const failureCount = current.failure_count + 1;
     const nextAlarmAt = this.now() + Math.min(MIN_TOUCH_DELAY_MS * (2 ** (failureCount - 1)), MAX_BACKOFF_MS);
@@ -355,7 +445,8 @@ export class SessionBroker {
   private putIfCurrent(expected: StoredSession, updated: StoredSession): Promise<boolean> {
     return this.transaction(async (storage) => {
       const current = await this.readSession(storage);
-      if (current?.revision !== expected.revision || current.cookie_value !== expected.cookie_value) return false;
+      if (current?.revision !== expected.revision || current.cookie_value !== expected.cookie_value
+        || current.last_mint_at !== expected.last_mint_at) return false;
       await this.writeSession(storage, updated);
       return true;
     });
@@ -449,6 +540,8 @@ function readiness(session: StoredSession | undefined, now: number) {
         status: sessionStatus,
         code: sessionCode,
         ...(session ? { time: new Date(session.last_verified_at).toISOString(), revision: session.revision } : {}),
+        // How the session comes back after it expires: by itself, or by a new sign-in.
+        renewal: session?.mobile_token ? "mobile_token" : "sign_in",
       }],
       "moodle:upstream": [{ status: upstreamStatus, code: upstreamCode }],
     },

@@ -51,7 +51,9 @@ export function parseLaunchToken(location: string): MobileToken | null {
   if (!match) return null;
   let decoded: string;
   try {
-    decoded = Buffer.from(decodeURIComponent(match[1]), "base64").toString("utf8");
+    // atob rather than Buffer: the Worker runs this without Node compatibility.
+    const binary = atob(decodeURIComponent(match[1]));
+    decoded = new TextDecoder().decode(Uint8Array.from(binary, (char) => char.charCodeAt(0)));
   } catch {
     return null;
   }

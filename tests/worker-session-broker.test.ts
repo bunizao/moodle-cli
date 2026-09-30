@@ -538,3 +538,120 @@ describe("SessionBroker adoption from a remote sign-in", () => {
     expect(await response.json()).toMatchObject({ code: "SESSION_CANDIDATE_INVALID" });
   });
 });
+
+describe("SessionBroker renewal from a Moodle mobile token", () => {
+  const TOKEN = { wstoken: "ws-token-secret", privatetoken: "private-token-secret" };
+  const MINTED_COOKIE = "minted-cookie-secret";
+
+  function mobileUpstream(): MoodleSessionUpstream & Required<Pick<MoodleSessionUpstream, "captureMobileToken" | "mintSession">> {
+    return {
+      ...validUpstream(),
+      captureMobileToken: vi.fn(async () => TOKEN),
+      mintSession: vi.fn(async () => ({ name: "MoodleSession", value: MINTED_COOKIE })),
+    };
+  }
+
+  async function readSession(objectState: { storage: MemoryStorage }, broker: SessionBroker) {
+    const ready = await broker.fetch(new Request("https://session-broker/readyz"));
+    return { stored: JSON.stringify(objectState.storage.values.get("session")), health: await ready.json() as { checks: Record<string, Array<Record<string, unknown>>> } };
+  }
+
+  it("keeps an encrypted token where the site allows it and reports self-renewal", async () => {
+    const objectState = state();
+    const upstream = mobileUpstream();
+    const broker = new SessionBroker(objectState, env(), { upstream, now: () => 1_000 });
+
+    const accepted = await putSession(broker, candidate(OLD_COOKIE, null));
+
+    expect(accepted.status).toBe(201);
+    expect(await accepted.json()).toMatchObject({ renewal: "mobile_token" });
+    expect(upstream.captureMobileToken).toHaveBeenCalledWith({ name: "MoodleSession", value: OLD_COOKIE });
+    const { stored, health } = await readSession(objectState, broker);
+    expect(stored).not.toContain(TOKEN.wstoken);
+    expect(stored).not.toContain(TOKEN.privatetoken);
+    expect(health.checks["moodle:session"][0]).toMatchObject({ renewal: "mobile_token" });
+
+    // A later upload for the same account keeps the token instead of asking again.
+    await putSession(broker, candidate(NEW_COOKIE, 1));
+    expect(upstream.captureMobileToken).toHaveBeenCalledTimes(1);
+  });
+
+  it("stays on the sign-in path where the site offers no token", async () => {
+    const objectState = state();
+    const upstream = mobileUpstream();
+    vi.mocked(upstream.captureMobileToken).mockResolvedValue(null);
+    vi.mocked(upstream.touch).mockResolvedValue({ alive: false, remainingSeconds: null });
+    const broker = new SessionBroker(objectState, env(), { upstream, now: () => 1_000 });
+
+    expect(await (await putSession(broker, candidate(OLD_COOKIE, null))).json()).toMatchObject({ renewal: "sign_in" });
+    await broker.alarm();
+
+    expect(upstream.mintSession).not.toHaveBeenCalled();
+    expect(objectState.storage.alarm).toBeNull();
+    expect((await readSession(objectState, broker)).health.checks["moodle:session"][0]).toMatchObject({ code: "SESSION_EXPIRED", renewal: "sign_in" });
+  });
+
+  it("mints a new cookie for the same account when the session dies, at most once per six minutes", async () => {
+    let now = 1_000;
+    const objectState = state();
+    const upstream = mobileUpstream();
+    const broker = new SessionBroker(objectState, env(), { upstream, now: () => now });
+    await putSession(broker, candidate(OLD_COOKIE, null));
+    vi.mocked(upstream.touch).mockResolvedValueOnce({ alive: false, remainingSeconds: null });
+
+    const renewed = await broker.fetch(new Request("https://session-broker/session/touch", { method: "POST" }));
+
+    expect(await renewed.json()).toMatchObject({ status: "kept_alive", revision: 2 });
+    expect(upstream.mintSession).toHaveBeenCalledWith(42, TOKEN);
+    expect(upstream.validate).toHaveBeenLastCalledWith(expect.objectContaining({ cookieValue: MINTED_COOKIE }));
+    expect((await readSession(objectState, broker)).health.checks["moodle:session"][0]).toMatchObject({ code: "SESSION_VALID", revision: 2 });
+
+    // Dying again inside Moodle's rate limit waits for the retry alarm.
+    now += 60_000;
+    vi.mocked(upstream.touch).mockResolvedValueOnce({ alive: false, remainingSeconds: null });
+    await broker.alarm();
+    expect(upstream.mintSession).toHaveBeenCalledTimes(1);
+    expect(objectState.storage.alarm).toBe(now + 30 * 60 * 1000);
+
+    now = objectState.storage.alarm!;
+    vi.mocked(upstream.touch).mockResolvedValueOnce({ alive: false, remainingSeconds: null });
+    await broker.alarm();
+    expect(upstream.mintSession).toHaveBeenCalledTimes(2);
+    expect((await readSession(objectState, broker)).health.checks["moodle:session"][0]).toMatchObject({ code: "SESSION_VALID", revision: 3 });
+  });
+
+  it("refuses a minted cookie that belongs to another account", async () => {
+    const objectState = state();
+    const upstream = mobileUpstream();
+    const broker = new SessionBroker(objectState, env(), { upstream, now: () => 1_000 });
+    await putSession(broker, candidate(OLD_COOKIE, null));
+    vi.mocked(upstream.touch).mockResolvedValueOnce({ alive: false, remainingSeconds: null });
+    vi.mocked(upstream.validate).mockResolvedValueOnce({ valid: true, sesskey: "other", moodleUserId: 99, remainingSeconds: 7200 });
+
+    const response = await broker.fetch(new Request("https://session-broker/session/touch", { method: "POST" }));
+
+    expect(await response.json()).toMatchObject({ code: "SESSION_EXPIRED" });
+    expect((await readSession(objectState, broker)).health.checks["moodle:session"][0]).toMatchObject({ code: "SESSION_EXPIRED", revision: 1 });
+  });
+
+  it("renews an expired session before answering MCP, so the client never sees it signed out", async () => {
+    let now = 1_000;
+    const upstream = mobileUpstream();
+    const fetchImpl = vi.fn<typeof fetch>(async () => Response.json({ latest: VERSION }));
+    const broker = new SessionBroker(state(), env(), { upstream, fetchImpl, now: () => now });
+    await putSession(broker, candidate(OLD_COOKIE, null));
+    now += 7200 * 1000 + 1;
+
+    const response = await broker.fetch(new Request("https://session-broker/mcp", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        request: { jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "claude-ai", version: "1" } } },
+        context: { protocolVersion: "2025-06-18", method: "initialize", signInUrl: "https://moodle-mcp.example.workers.dev/oauth/login" },
+      }),
+    }));
+
+    expect(upstream.mintSession).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(await response.json())).not.toContain("not signed in");
+  });
+});

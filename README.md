@@ -276,6 +276,8 @@ Without a terminal, Cloudflare sign-in uses the OAuth device grant: the command 
 
 Until Moodle is signed in, and whenever the session expires, the connector stays connected and its tools answer with the sign-in link instead of data. Each sign-in uses about two minutes of Browser Run time; the Cloudflare free plan allows ten minutes a day.
 
+Where the Moodle site enables its mobile app service, the Worker needs one sign-in only: whenever it receives a session, from the CLI or from a remote sign-in, it also asks Moodle for a mobile app token, keeps it encrypted next to the session, and uses it to open a fresh session whenever the old one expires. `moodle mcp status` and `/readyz` show which path the Worker is on (`renewal: mobile_token` or `sign_in`). Sites with the mobile service off, and site administrators, stay on the sign-in link. You can revoke the token at any time under **Preferences → Security keys** in Moodle.
+
 Version `0.7.0` supports MCP `2026-07-28`, a stateless compatibility lane for `2025-11-25`, and the `2025-06-18` and `2025-03-26` revisions that current hosted clients negotiate.
 
 ### Configuration

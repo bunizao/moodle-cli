@@ -5,6 +5,7 @@ import type {
   SessionValidationFailure,
   SessionValidationSuccess,
 } from "./session-broker.js";
+import { fetchMobileToken, mintSessionFromMobileToken, readMobilePublicConfig, type MobileToken } from "../mobile-login-core.js";
 
 const DASHBOARD_PATH = "/my/";
 const AJAX_PATH = "/lib/ajax/service.php";
@@ -53,6 +54,19 @@ export class FetchMoodleSessionUpstream implements MoodleSessionUpstream {
       remainingSeconds: null,
       ...(rotatedCookie ? { rotatedCookie } : {}),
     };
+  }
+
+  // Mirrors the CLI: a site that says no is not asked, and one whose public config
+  // cannot be read still gets one launch attempt.
+  async captureMobileToken(cookie: { name: string; value: string }): Promise<MobileToken | null> {
+    const config = await readMobilePublicConfig(this.origin, this.fetchImpl);
+    if (config && !config.mobileServiceEnabled) return null;
+    return fetchMobileToken(this.origin, cookie, this.fetchImpl);
+  }
+
+  async mintSession(moodleUserId: number, token: MobileToken): Promise<{ name: string; value: string } | null> {
+    const minted = await mintSessionFromMobileToken(this.origin, moodleUserId, token, this.fetchImpl);
+    return minted ? { name: minted.cookie.name, value: minted.cookie.value } : null;
   }
 
   async touch(session: {
