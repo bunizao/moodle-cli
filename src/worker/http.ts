@@ -25,6 +25,8 @@ export interface WorkerEnv {
   OAUTH_ALLOWED_REDIRECT_HOSTS?: string;
   SESSION_BROKER?: DurableObjectNamespaceLike;
   AUTH_BROKER?: DurableObjectNamespaceLike;
+  // Only its presence matters here: it means /oauth/login can sign the owner in.
+  BROWSER?: unknown;
 }
 
 export interface DurableObjectNamespaceLike {
@@ -33,11 +35,18 @@ export interface DurableObjectNamespaceLike {
 }
 
 export interface MoodleMcpServerLike {
-  handle(body: unknown, context: { protocolVersion?: string; method?: string; toolName?: string }): Promise<unknown | null>;
+  handle(body: unknown, context: WorkerMcpContext): Promise<unknown | null>;
+}
+
+export interface WorkerMcpContext {
+  protocolVersion?: string;
+  method?: string;
+  toolName?: string;
+  signInUrl?: string;
 }
 
 export interface SessionBrokerApi {
-  handleMcp(body: unknown, context: { protocolVersion?: string; method?: string; toolName?: string }): Promise<unknown | null>;
+  handleMcp(body: unknown, context: WorkerMcpContext): Promise<unknown | null>;
   ready(): Promise<Response>;
   replaceSession(request: Request): Promise<Response>;
   touch(): Promise<Response>;
@@ -127,7 +136,7 @@ export function createWorkerHandler(dependencies: WorkerDependencies): WorkerHan
           const server = typeof dependencies.mcpServer === "function"
             ? dependencies.mcpServer(env)
             : dependencies.mcpServer;
-          return handleMcpRequest(request, server);
+          return handleMcpRequest(request, server, env.BROWSER ? `${issuerOrigin(url, env)}${LOGIN_PATH}` : undefined);
         }
 
         if (url.pathname === READY_PATH && request.method === "GET") {
@@ -175,10 +184,7 @@ export function createDurableObjectBrokerApi(namespace: DurableObjectNamespaceLi
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ request: body, context }),
       }));
-      if (!response.ok) {
-        const problem = await safeProblem(response);
-        throw new SessionBrokerMcpError(response.status, problem?.code);
-      }
+      if (!response.ok) throw new SessionBrokerMcpError(response.status);
       const envelope = await response.json() as { response?: unknown | null };
       return envelope.response ?? null;
     },
@@ -195,7 +201,7 @@ export function createDurableObjectBrokerApi(namespace: DurableObjectNamespaceLi
 }
 
 class SessionBrokerMcpError extends Error {
-  constructor(readonly status: number, readonly code?: string) {
+  constructor(readonly status: number) {
     super("The session broker could not complete the MCP request.");
     this.name = "SessionBrokerMcpError";
   }
@@ -299,7 +305,7 @@ interface JsonRpcRequest {
   params?: unknown;
 }
 
-async function handleMcpRequest(request: Request, server: MoodleMcpServerLike): Promise<Response> {
+async function handleMcpRequest(request: Request, server: MoodleMcpServerLike, signInUrl: string | undefined): Promise<Response> {
   if (!request.headers.get("content-type")?.toLowerCase().startsWith("application/json")) {
     return problemResponse(415, "UNSUPPORTED_MEDIA_TYPE", "Unsupported Media Type", "MCP requests must use application/json.");
   }
@@ -324,6 +330,7 @@ async function handleMcpRequest(request: Request, server: MoodleMcpServerLike): 
       ...(protocolVersion ? { protocolVersion } : {}),
       method: request.headers.get("mcp-method") ?? undefined,
       toolName: request.headers.get("mcp-name") ?? undefined,
+      ...(signInUrl ? { signInUrl } : {}),
     });
     if (response === null) return new Response(null, { status: 202 });
     if (isUnsupportedProtocolVersionResponse(response)) {
@@ -343,11 +350,8 @@ async function handleMcpRequest(request: Request, server: MoodleMcpServerLike): 
     return Response.json(response, { headers: { "cache-control": "private, no-store" } });
   } catch (error) {
     if (error instanceof SessionBrokerMcpError) {
-      const status = error.status === 503 ? 503 : 500;
-      const code = error.code === "SESSION_MISSING" || error.code === "SESSION_EXPIRED"
-        ? error.code
-        : "SESSION_UNAVAILABLE";
-      return problemResponse(status, code, "Service Unavailable", "The Moodle session is not ready.");
+      // A missing or expired session is answered inside MCP; reaching here means the broker itself failed.
+      return problemResponse(error.status === 503 ? 503 : 500, "SESSION_UNAVAILABLE", "Service Unavailable", "The Moodle session could not be read.");
     }
     if (error instanceof Error && error.name === "UnsupportedProtocolVersionError") {
       const requested = "protocolVersion" in error && typeof error.protocolVersion === "string"
@@ -370,14 +374,6 @@ async function handleMcpRequest(request: Request, server: MoodleMcpServerLike): 
   }
 }
 
-async function safeProblem(response: Response): Promise<{ code?: string } | null> {
-  try {
-    const value = await response.json();
-    return isRecord(value) && (value.code === undefined || typeof value.code === "string") ? value : null;
-  } catch {
-    return null;
-  }
-}
 
 function validateProtocolMetadata(headers: Headers, body: JsonRpcRequest, protocolVersion: string | null): Response | null {
   if (!protocolVersion && body.method !== "initialize") {

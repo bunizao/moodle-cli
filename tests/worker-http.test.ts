@@ -378,6 +378,22 @@ describe("Cloudflare Worker HTTP transport", () => {
     });
   });
 
+  it("tells the MCP server where the owner signs in only when the Worker can run a browser", async () => {
+    const mcpServer = { handle: vi.fn(async () => ({ jsonrpc: "2.0", id: 1, result: { tools: [] } })) };
+    const worker = createWorkerHandler({ mcpServer, broker: () => createBroker() });
+    const list = () => request("/mcp", {
+      method: "POST",
+      headers: { authorization: `Bearer ${ACCESS_TOKEN}`, "content-type": "application/json", "mcp-protocol-version": "2025-06-18" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list", params: {} }),
+    });
+
+    await worker.fetch(list(), await workerEnv());
+    expect(mcpServer.handle).toHaveBeenLastCalledWith(expect.anything(), expect.not.objectContaining({ signInUrl: expect.anything() }));
+
+    await worker.fetch(list(), { ...await workerEnv(), BROWSER: {} });
+    expect(mcpServer.handle).toHaveBeenLastCalledWith(expect.anything(), expect.objectContaining({ signInUrl: `${ORIGIN}/oauth/login` }));
+  });
+
   it("accepts the compatibility versions hosted clients negotiate", async () => {
     const mcpServer = { handle: vi.fn(async () => ({ jsonrpc: "2.0", id: 1, result: { tools: [] } })) };
     const worker = createWorkerHandler({ mcpServer, broker: () => createBroker() });
@@ -453,12 +469,12 @@ describe("Cloudflare Worker HTTP transport", () => {
     expect(await response.text()).toBe('event: message\ndata: {"jsonrpc":"2.0","id":1,"result":{"ok":true}}\n\n');
   });
 
-  it("returns a safe RFC 9457 error when the Durable Object has no session", async () => {
+  it("returns a safe RFC 9457 error when the Durable Object cannot read the session", async () => {
     const env = await workerEnv();
     env.SESSION_BROKER = {
       idFromName: vi.fn(() => "primary"),
       get: vi.fn(() => ({
-        fetch: vi.fn(async () => Response.json({ code: "SESSION_MISSING" }, { status: 503 })),
+        fetch: vi.fn(async () => Response.json({ code: "SESSION_UNAVAILABLE", detail: "secret-detail" }, { status: 503 })),
       })),
     };
 
@@ -474,6 +490,8 @@ describe("Cloudflare Worker HTTP transport", () => {
     }), env);
 
     expect(response.status).toBe(503);
-    expect(await response.json()).toMatchObject({ status: 503, code: "SESSION_MISSING" });
+    const body = await response.text();
+    expect(JSON.parse(body)).toMatchObject({ status: 503, code: "SESSION_UNAVAILABLE" });
+    expect(body).not.toContain("secret-detail");
   });
 });

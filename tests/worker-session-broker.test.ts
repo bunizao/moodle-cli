@@ -280,6 +280,68 @@ describe("SessionBroker Durable Object", () => {
     expect(JSON.stringify(body)).not.toContain(OLD_COOKIE);
   });
 
+  function mcp(broker: SessionBroker, request: Record<string, unknown>, context: Record<string, unknown>): Promise<Response> {
+    return broker.fetch(new Request("https://session-broker/mcp", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ request: { jsonrpc: "2.0", id: 1, ...request }, context }),
+    }));
+  }
+
+  it("answers MCP without a Moodle session and points every tool call to the sign-in page", async () => {
+    const signInUrl = "https://moodle-mcp.example.workers.dev/oauth/login";
+    const fetchImpl = vi.fn<typeof fetch>(async (input) => {
+      if (String(input) === LATEST_VERSION_URL) return Response.json({ latest: VERSION });
+      throw new Error("Moodle must not be called without a session.");
+    });
+    const broker = new SessionBroker(state(), env(), { upstream: validUpstream(), fetchImpl, now: () => 1_000 });
+
+    const initialize = await mcp(broker, { method: "initialize", params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "claude-ai", version: "1" } } }, { protocolVersion: "2025-06-18", method: "initialize", signInUrl });
+    expect(initialize.status).toBe(200);
+    expect((await initialize.json() as { response: { result: { instructions: string } } }).response.result.instructions).toContain(`open ${signInUrl} and sign in`);
+
+    const list = await mcp(broker, { method: "tools/list", params: {} }, { protocolVersion: "2025-06-18", method: "tools/list", signInUrl });
+    const tools = (await list.json() as { response: { result: { tools: Array<{ name: string }> } } }).response.result.tools.map(tool => tool.name);
+    expect(tools).toContain("units");
+    expect(tools).not.toContain("submit");
+
+    const call = await mcp(broker, { method: "tools/call", params: { name: "units", arguments: {} } }, { protocolVersion: "2025-06-18", method: "tools/call", toolName: "units", signInUrl });
+    expect(call.status).toBe(200);
+    expect(await call.json()).toMatchObject({
+      response: {
+        result: {
+          isError: true,
+          structuredContent: { error: { type: "MOODLE_AUTH_REQUIRED", recovery: { action: "open_url", url: signInUrl } } },
+        },
+      },
+    });
+    expect(fetchImpl.mock.calls.every(([input]) => String(input) === LATEST_VERSION_URL)).toBe(true);
+  });
+
+  it("stops using an expired session and falls back to the CLI hint without a sign-in page", async () => {
+    let now = 1_000;
+    const fetchImpl = vi.fn<typeof fetch>(async () => {
+      throw new Error("Moodle must not be called with an expired session.");
+    });
+    const broker = new SessionBroker(state(), env(), { upstream: validUpstream(), fetchImpl, now: () => now });
+    expect((await putSession(broker, candidate(OLD_COOKIE, null))).status).toBe(201);
+    now += 7200 * 1000 + 1;
+
+    const call = await mcp(broker, { method: "tools/call", params: { name: "units", arguments: {} } }, { protocolVersion: "2025-06-18", method: "tools/call", toolName: "units" });
+    const body = await call.json();
+    expect(body).toMatchObject({
+      response: { result: { isError: true, structuredContent: { error: { type: "MOODLE_AUTH_REQUIRED", recovery: { action: "moodle mcp login" } } } } },
+    });
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(JSON.stringify(body)).not.toContain(OLD_COOKIE);
+  });
+
+  it("refuses a sign-in link that is not https", async () => {
+    const broker = new SessionBroker(state(), env(), { upstream: validUpstream(), now: () => 1_000 });
+    const response = await mcp(broker, { method: "tools/list", params: {} }, { method: "tools/list", signInUrl: "javascript:alert(1)" });
+    expect(response.status).toBe(400);
+  });
+
   it("tells the client about a newer release on initialize and remembers the check for a day", async () => {
     const objectState = state();
     const registry = vi.fn(async () => Response.json({ latest: "99.0.0" }));

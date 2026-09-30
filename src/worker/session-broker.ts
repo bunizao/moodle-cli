@@ -1,6 +1,6 @@
 import { createEncryptionKeyring, decryptValue, encryptValue, type EncryptionKeyring } from "./crypto.js";
 import { createMoodleClientCore } from "../moodle-client-core.js";
-import { createMoodleGateway } from "../mcp/gateway.js";
+import { createMoodleGateway, MoodleGatewayError, type MoodleGateway } from "../mcp/gateway.js";
 import { createMoodleMcpServer } from "../mcp/server.js";
 import { fetchLatestVersion, isNewerVersion, updateHint, UPDATE_CHECK_TTL_MS, type LatestVersionRecord } from "../update-core.js";
 import { VERSION } from "../version.js";
@@ -135,29 +135,30 @@ export class SessionBroker {
       return problemResponse(400, "MCP_PROTOCOL_METADATA_INVALID", "Bad Request", "The internal MCP request is invalid.");
     }
 
+    const { signInUrl, ...context } = envelope.context;
     const session = await this.loadSession();
-    if (!session) {
-      return problemResponse(503, "SESSION_MISSING", "Service Unavailable", "No Moodle session is available.");
-    }
-    if (session.last_error_code === "SESSION_EXPIRED" || (session.expires_at !== null && session.expires_at <= this.now())) {
-      return problemResponse(503, "SESSION_EXPIRED", "Service Unavailable", "The Moodle session has expired.");
-    }
-
-    const cookieValue = session.cookie_value;
-
-    const client = createMoodleClientCore(this.env.MOODLE_ORIGIN, {
-      cookie: { name: session.cookie_name, value: cookieValue },
-      sesskey: session.sesskey,
-      userid: session.moodle_user_id,
-      fetchImpl: this.dependencies.fetchImpl,
-    });
+    // Without a usable session the connector still initializes and lists tools, so a
+    // hosted client shows it as connected and every tool call says where to sign in.
+    const live = session && session.last_error_code !== "SESSION_EXPIRED" && (session.expires_at === null || session.expires_at > this.now()) ? session : null;
+    const signedIn = live !== null;
+    const gateway = live
+      ? createMoodleGateway(createMoodleClientCore(this.env.MOODLE_ORIGIN, {
+        cookie: { name: live.cookie_name, value: live.cookie_value },
+        sesskey: live.sesskey,
+        userid: live.moodle_user_id,
+        fetchImpl: this.dependencies.fetchImpl,
+      }))
+      : signedOutGateway();
     // Only initialize pays for the registry lookup, and only once a day; every
     // session then starts with the notice until the Worker is redeployed.
     const initializing = isRecord(envelope.request) && envelope.request.method === "initialize";
     const latest = initializing ? await this.latestVersion(true) : undefined;
-    const instructions = latest && isNewerVersion(latest, VERSION) ? [`${updateHint(VERSION, latest)} to redeploy this server.`] : undefined;
-    const server = createMoodleMcpServer(createMoodleGateway(client), { instructions });
-    const response = await server.handle(envelope.request, envelope.context);
+    const instructions = [
+      ...(signedIn ? [] : [signInUrl ? `Moodle is not signed in yet; ask the user to open ${signInUrl} and sign in.` : "Moodle is not signed in yet; ask the user to run moodle mcp login."]),
+      ...(latest && isNewerVersion(latest, VERSION) ? [`${updateHint(VERSION, latest)} to redeploy this server.`] : []),
+    ];
+    const server = createMoodleMcpServer(gateway, { instructions, ...(signInUrl ? { signInUrl } : {}) });
+    const response = await server.handle(envelope.request, context);
     return Response.json({ response }, { headers: { "cache-control": "private, no-store" } });
   }
 
@@ -500,9 +501,35 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function isMcpEnvelope(value: unknown): value is { request: unknown; context: McpRequestContext } {
+function isMcpEnvelope(value: unknown): value is { request: unknown; context: McpRequestContext & { signInUrl?: string } } {
   if (!isRecord(value) || !("request" in value) || !isRecord(value.context)) return false;
-  return (value.context.protocolVersion === undefined || typeof value.context.protocolVersion === "string")
+  return (value.context.signInUrl === undefined || (typeof value.context.signInUrl === "string" && value.context.signInUrl.startsWith("https://")))
+    && (value.context.protocolVersion === undefined || typeof value.context.protocolVersion === "string")
     && (value.context.method === undefined || typeof value.context.method === "string")
     && (value.context.toolName === undefined || typeof value.context.toolName === "string");
+}
+
+// Every read fails the same way, so the MCP server maps it to one auth error that
+// names the sign-in link. The Worker never offers submit, signed in or not.
+function signedOutGateway(): MoodleGateway {
+  const fail = async (): Promise<never> => {
+    throw new MoodleGatewayError("auth", "No Moodle session is signed in.");
+  };
+  return {
+    getUser: fail,
+    getOverview: fail,
+    getDue: fail,
+    listCourses: fail,
+    getCourse: fail,
+    listActivities: fail,
+    getActivity: fail,
+    getQuizAttempt: fail,
+    getGrades: fail,
+    listForums: fail,
+    searchForums: fail,
+    getThread: fail,
+    getFile: fail,
+    listThreads: fail,
+    listNewsForums: fail,
+  };
 }
