@@ -32,6 +32,7 @@ import {
   createDefaultManagedDeployment,
   createProgressReporter,
   formatOnboardingStage,
+  cloudflareDeviceSignInCopy,
   remoteLoginDeploymentCopy,
   successfulDeploymentCopy,
   type DeploymentCredentialRepository,
@@ -774,13 +775,18 @@ class DefaultMcpCommandService implements McpCommandService {
       accounts = [];
     }
     if (!accounts.length) {
-      if (!this.isInteractive()) {
-        throw new UsageError("Cloudflare sign-in requires an interactive terminal. Without one, set CLOUDFLARE_API_TOKEN to a token made from Cloudflare's \"Edit Cloudflare Workers\" template and run this again.");
+      if (this.isInteractive()) {
+        // Wrangler opens Cloudflare's authorization page and prints nothing of its own,
+        // because its output is captured.
+        this.announceWait(ONBOARDING_COPY.cloudflareSignIn, "Waiting for Cloudflare authorization");
+        await this.wrangler().login();
+      } else {
+        // No terminal and maybe no local browser (a cloud sandbox): print the device
+        // link for whoever runs this to hand to the user, then wait for approval.
+        await this.wrangler().loginWithDevice((prompt) => {
+          this.announceWait(cloudflareDeviceSignInCopy(prompt), "Waiting for Cloudflare approval");
+        });
       }
-      // Wrangler opens Cloudflare's authorization page and prints nothing of its own,
-      // because its output is captured.
-      this.announceWait(ONBOARDING_COPY.cloudflareSignIn, "Waiting for Cloudflare authorization");
-      await this.wrangler().login();
       accounts = await this.wrangler().listAccounts();
     }
     if (!accounts.length) throw new UsageError("No Cloudflare account is available to Wrangler.");

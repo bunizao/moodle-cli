@@ -53,11 +53,13 @@ export interface CommandResult {
 }
 
 export interface DeploymentCommandRunner {
-  run(command: string, args: string[], environment?: NodeJS.ProcessEnv): Promise<CommandResult>;
+  // onOutput sees stdout and stderr as they arrive, for commands that print something
+  // the user must act on before they exit.
+  run(command: string, args: string[], environment?: NodeJS.ProcessEnv, onOutput?: (chunk: string) => void): Promise<CommandResult>;
 }
 
 export class NodeDeploymentCommandRunner implements DeploymentCommandRunner {
-  async run(command: string, args: string[], environment: NodeJS.ProcessEnv = {}): Promise<CommandResult> {
+  async run(command: string, args: string[], environment: NodeJS.ProcessEnv = {}, onOutput?: (chunk: string) => void): Promise<CommandResult> {
     return new Promise((resolve, reject) => {
       const child = spawn(command, args, {
         env: { ...process.env, ...environment },
@@ -66,8 +68,8 @@ export class NodeDeploymentCommandRunner implements DeploymentCommandRunner {
       });
       let stdout = "";
       let stderr = "";
-      child.stdout.setEncoding("utf8").on("data", (chunk: string) => { stdout += chunk; });
-      child.stderr.setEncoding("utf8").on("data", (chunk: string) => { stderr += chunk; });
+      child.stdout.setEncoding("utf8").on("data", (chunk: string) => { stdout += chunk; onOutput?.(chunk); });
+      child.stderr.setEncoding("utf8").on("data", (chunk: string) => { stderr += chunk; onOutput?.(chunk); });
       child.on("error", reject);
       child.on("close", (code) => {
         if (code === 0) {
@@ -113,6 +115,11 @@ export interface WranglerAccount {
   name: string;
 }
 
+export interface CloudflareDevicePrompt {
+  url: string;
+  code: string;
+}
+
 export class NodeWranglerDeploymentAdapter implements WranglerDeploymentAdapter {
   readonly atomicSecrets = true;
   private readonly wranglerBinPath?: string;
@@ -131,6 +138,21 @@ export class NodeWranglerDeploymentAdapter implements WranglerDeploymentAdapter 
 
   async login(): Promise<void> {
     await this.wrangler(["login"]);
+  }
+
+  // The OAuth device grant needs no callback on localhost, so it works from a cloud
+  // sandbox: the user approves in any browser while Wrangler polls for the token.
+  async loginWithDevice(onPrompt: (prompt: CloudflareDevicePrompt) => void): Promise<void> {
+    let output = "";
+    let announced = false;
+    await this.wrangler(["login", "--device", "--browser=false"], undefined, {}, (chunk) => {
+      if (announced) return;
+      output += chunk;
+      const prompt = parseDevicePrompt(output);
+      if (!prompt) return;
+      announced = true;
+      onPrompt(prompt);
+    });
   }
 
   async checkAccess(accountId: string): Promise<void> {
@@ -321,18 +343,29 @@ export class NodeWranglerDeploymentAdapter implements WranglerDeploymentAdapter 
     args: string[],
     accountId?: string,
     environmentOverrides: NodeJS.ProcessEnv = {},
+    onOutput?: (chunk: string) => void,
   ): Promise<CommandResult> {
     const environment = { ...environmentOverrides };
     if (accountId) {
       environment.CLOUDFLARE_ACCOUNT_ID = accountId;
     }
     const executable = this.wranglerBinPath ? { command: process.execPath, args: [this.wranglerBinPath] } : await resolveWrangler(this.runner);
-    return this.runner.run(
-      executable.command,
-      [...executable.args, ...args],
-      Object.keys(environment).length ? environment : undefined,
-    );
+    const command = [...executable.args, ...args];
+    const env = Object.keys(environment).length ? environment : undefined;
+    return onOutput ? this.runner.run(executable.command, command, env, onOutput) : this.runner.run(executable.command, command, env);
   }
+}
+
+export function parseDevicePrompt(text: string): CloudflareDevicePrompt | null {
+  const clean = text.replace(/\u001B\[[0-9;]*m/gu, "");
+  const url = clean.match(/https:\/\/\S+\/oauth2\/device\S*/u)?.[0];
+  const code = clean.match(/enter the code:\s*([A-Za-z0-9-]{4,32})/u)?.[1];
+  if (!url || !code) return null;
+  const link = new URL(url);
+  // Only Cloudflare's own dashboard may be handed to the user as a sign-in link.
+  if (link.hostname !== "dash.cloudflare.com") return null;
+  link.searchParams.set("user_code", code);
+  return { url: link.toString(), code };
 }
 
 export async function copyReleaseBundle(source: string, destination: string): Promise<void> {

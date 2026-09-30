@@ -125,6 +125,17 @@ export function formatOnboardingStage(
   return status === "completed" ? `${theme.tone("success", "✓")} ${line}` : line;
 }
 
+// Printed to stderr before Wrangler starts polling, so an agent running the deploy in
+// the background can read the link and pass it on while the command keeps waiting.
+export function cloudflareDeviceSignInCopy(input: { url: string; code: string }): string {
+  return [
+    "Cloudflare sign-in is required.",
+    "",
+    `Open ${input.url} and approve with code ${input.code}.`,
+    "It expires in 5 minutes. moodle-cli never sees your Cloudflare password.",
+  ].join("\n");
+}
+
 export function remoteLoginDeploymentCopy(input: {
   endpoint: string;
   setupUrl: string;

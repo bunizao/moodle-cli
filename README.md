@@ -272,7 +272,7 @@ From a cloud sandbox or any machine without a signed-in desktop browser:
 moodle mcp deploy --remote-login --yes
 ```
 
-Set `CLOUDFLARE_API_TOKEN` (the "Edit Cloudflare Workers" template) so the deploy does not need Cloudflare's login page. The command deploys the Worker without a Moodle session and prints a sign-in link valid for ten minutes. Open it, sign in to Moodle in the remote browser, and the Worker is claimed for that account. Then add the printed endpoint as a custom connector: in the same browser the approval page already knows you, and elsewhere **Sign in with Moodle** does the same. If the link expires first, run `moodle mcp pair` on the same machine for a new one.
+Without a terminal, Cloudflare sign-in uses the OAuth device grant: the command prints a `dash.cloudflare.com` link, you approve it in any browser, and no API token is needed (`CLOUDFLARE_API_TOKEN` still works when set). It then deploys the Worker without a Moodle session and prints a sign-in link valid for ten minutes. Open it, sign in to Moodle in the remote browser, and the Worker is claimed for that account. Then add the printed endpoint as a custom connector: in the same browser the approval page already knows you, and elsewhere **Sign in with Moodle** does the same. If the link expires first, run `moodle mcp pair` on the same machine for a new one.
 
 Until Moodle is signed in, and whenever the session expires, the connector stays connected and its tools answer with the sign-in link instead of data. Each sign-in uses about two minutes of Browser Run time; the Cloudflare free plan allows ten minutes a day.
 

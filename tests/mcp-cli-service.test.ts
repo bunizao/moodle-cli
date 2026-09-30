@@ -317,6 +317,52 @@ describe("managed MCP CLI service", () => {
     }
   });
 
+  it("signs in to Cloudflare with a device link when there is no terminal", async () => {
+    const root = await mkdtemp(join(tmpdir(), "moodle-cli-cf-device-"));
+    const bundle = join(root, "worker.js");
+    await writeFile(bundle, "export default {};\n");
+    const stderr: string[] = [];
+    const listAccounts = vi.fn(async () => [] as { id: string; name: string }[]);
+    listAccounts.mockResolvedValueOnce([]).mockResolvedValue([{ id: "account-1", name: "Personal" }]);
+    const url = "https://dash.cloudflare.com/oauth2/device/verify?user_code=abCD1234";
+    const wrangler = {
+      listAccounts,
+      login: vi.fn(async () => undefined),
+      loginWithDevice: vi.fn(async (onPrompt: (prompt: { url: string; code: string }) => void) => {
+        onPrompt({ url, code: "abCD1234" });
+      }),
+    } as unknown as NodeWranglerDeploymentAdapter;
+
+    const service = createMcpCommandService({
+      homeDir: root,
+      workerBundlePath: bundle,
+      stdin: { isTTY: false } as NodeJS.ReadStream,
+      stderr: { write: (chunk: string) => { stderr.push(chunk); return true; } } as unknown as NodeJS.WritableStream,
+      configLoader: async () => ({ baseUrl: "https://lms.example.edu" }),
+      receipts: { read: vi.fn(async () => null), write: vi.fn(async () => undefined), delete: vi.fn(async () => undefined) },
+      credentials: credentialStore(),
+      worker: workerClient(),
+      wrangler,
+      createDeployment: () => ({
+        plan: vi.fn(async (intent: DeploymentIntent) => ({
+          intent,
+          operation: "create" as const,
+          uploadCandidate: false,
+          existing: null,
+          receipt: null,
+        })),
+      } as unknown as ManagedMcpDeployment),
+    });
+
+    try {
+      await service.deploy(deployDryRun());
+      expect(wrangler.login).not.toHaveBeenCalled();
+      expect(stderr.join("")).toContain(`Open ${url} and approve with code abCD1234.`);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("offers update, rename, and cancel for a conflicting Worker name", async () => {
     const update = await collisionHarness(["1"]);
     const rename = await collisionHarness(["2", "moodle-school-alt-mcp"]);

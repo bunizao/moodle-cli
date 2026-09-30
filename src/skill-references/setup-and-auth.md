@@ -88,13 +88,19 @@ moodle mcp remove
 
 ### Set up from a cloud session
 
-When there is no desktop browser to read a Moodle cookie from (a hosted sandbox or cloud agent), deploy without a local session:
+When there is no desktop browser to read a Moodle cookie from (a hosted sandbox or cloud agent), install the CLI and deploy without a local session. The sandbox needs network access to the npm registry, `api.cloudflare.com`, `dash.cloudflare.com` and `*.workers.dev`.
 
 ```bash
-moodle mcp deploy --remote-login --yes --json
+npm install -g moodle-cli
+MOODLE_BASE_URL=https://moodle.example.edu moodle mcp deploy --remote-login --yes --json > deploy.json 2> deploy.log &
 ```
 
-Set `CLOUDFLARE_API_TOKEN` first (the "Edit Cloudflare Workers" template), since the sandbox cannot open Cloudflare's login page. The command skips the local session, renewal and client integrations, and returns `endpoint` and `setupUrl`. Give `setupUrl` to the user as it is: it carries a one-time pairing code valid for ten minutes, so never open it, fetch it, or paste it anywhere else. The user opens it, signs in to Moodle in the remote browser it shows (the Worker never sees what they type), and that Moodle account becomes the Worker's owner. Then they add `endpoint` as a custom connector and approve it, in one click from the same browser or through **Sign in with Moodle** from another. If the link expires first, `moodle mcp pair --json` in the same sandbox returns a new `setupUrl`.
+Run it in the background, because it waits for the user twice:
+
+1. **Cloudflare.** Without a terminal, Wrangler signs in with the OAuth device grant, and `deploy.log` soon shows `Open https://dash.cloudflare.com/oauth2/device/verify?user_code=... and approve with code ...`. Give that link to the user; they approve in their own browser within five minutes. No API token is needed. An existing `CLOUDFLARE_API_TOKEN` is used instead when set.
+2. **Moodle.** When the command exits, `deploy.json` holds `endpoint` and `setupUrl`. Give `setupUrl` to the user as it is: it carries a one-time pairing code valid for ten minutes, so never open it, fetch it, or paste it anywhere else. The user opens it, signs in to Moodle in the remote browser it shows (the Worker never sees what they type), and that Moodle account becomes the Worker's owner. Then they add `endpoint` as a custom connector and approve it, in one click from the same browser or through **Sign in with Moodle** from another. If the link expires first, `moodle mcp pair --json` in the same sandbox returns a new `setupUrl`.
+
+The deploy skips the local session, renewal and client integrations.
 
 The connector stays connected without a session. When Moodle is not signed in or the session has expired, tool calls return `MOODLE_AUTH_REQUIRED` with `recovery.url`; pass that link to the user and retry after they sign in. Only the owner's Moodle account is accepted. Each sign-in uses about two minutes of Cloudflare Browser Run time, which the free plan limits to ten minutes a day.
 
