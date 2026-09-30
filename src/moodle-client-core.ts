@@ -17,6 +17,7 @@ import {
   FUNC_GET_COURSES_BY_TIMELINE,
   FUNC_GET_POPUP_NOTIFICATIONS,
   FUNC_GET_SITE_INFO,
+  FUNC_GET_STRINGS,
   FUNC_GET_UNREAD_CONVERSATION_COUNTS,
   GRADE_REPORT_INDEX_PATH,
   GRADE_REPORT_OVERVIEW_PATH,
@@ -30,6 +31,7 @@ import {
 import { submitAssignmentFiles, type SubmissionReceipt, type SubmitAssignmentRequest } from "./moodle-assign-core.js";
 import { answerQuizQuestion, finishQuizAttempt, getAttemptPage, getAttemptSummary, planQuizStart, startQuizAttempt, type AnswerRequest, type AttemptFinishReceipt, type AttemptPage, type AttemptSummary, type QuizDeps, type QuizStartPlan, type StartOptions } from "./moodle-quiz-core.js";
 import { ForumModule } from "./moodle-forum-core.js";
+import { labelRequests, siteLabelsFrom, type SiteLabels } from "./site-labels.js";
 import { searchForumContent as searchForumModule } from "./moodle-forum-search-core.js";
 import type {
   Activity,
@@ -217,6 +219,7 @@ export class MoodleClientCore {
   private onLoginRequired?: () => Promise<{ cookie: MoodleSessionCookie; pageContext: PageContext }>;
   private retryingLogin = false;
   private readonly forum: ForumModule;
+  private labels?: Promise<SiteLabels>;
 
   constructor(baseUrl: string, options: MoodleClientCoreOptions | string) {
     this.baseUrl = baseUrl.replace(/\/$/, "");
@@ -574,17 +577,36 @@ export class MoodleClientCore {
   }
 
   async getAssignment(id: number): Promise<Assignment> {
-    return parseAssignmentHtml(await this.get(ASSIGN_VIEW_PATH, { id }), id, this.baseUrl);
+    const [html, labels] = await Promise.all([this.get(ASSIGN_VIEW_PATH, { id }), this.siteLabels()]);
+    return parseAssignmentHtml(html, id, this.baseUrl, labels);
   }
 
   async getQuiz(id: number): Promise<Quiz> {
-    return parseQuizHtml(await this.get(QUIZ_VIEW_PATH, { id }), id, this.baseUrl);
+    const [html, labels] = await Promise.all([this.get(QUIZ_VIEW_PATH, { id }), this.siteLabels()]);
+    return parseQuizHtml(html, id, this.baseUrl, labels);
+  }
+
+  /**
+   * The site's own text for the labels the page readers look for, in the session's
+   * language and with any strings the site customised. One call per client; a site that
+   * refuses it leaves the readers on the English labels.
+   */
+  private siteLabels(): Promise<SiteLabels> {
+    this.labels ??= (async () => {
+      await this.ensureSession();
+      return siteLabelsFrom(await this.call(FUNC_GET_STRINGS, { strings: labelRequests() }));
+    })().catch(error => {
+      if (this.errors.isLoginRequired(error)) { this.labels = undefined; throw error; }
+      return {};
+    });
+    return this.labels;
   }
 
   async getQuizAttempt(attemptId: number): Promise<QuizAttemptReview> {
     await this.ensureSession();
     // Without showall Moodle pages a long review and the later questions would be silently missing.
-    return parseQuizReviewHtml(await this.get(QUIZ_REVIEW_PATH, { attempt: attemptId, showall: 1 }), attemptId, this.baseUrl);
+    const [html, labels] = await Promise.all([this.get(QUIZ_REVIEW_PATH, { attempt: attemptId, showall: 1 }), this.siteLabels()]);
+    return parseQuizReviewHtml(html, attemptId, this.baseUrl, labels);
   }
 
   async getResource(id: number): Promise<Resource> {
@@ -1001,11 +1023,13 @@ export class MoodleClientCore {
         pages.push(await this.get(COURSE_PATH, { id: courseId, section }));
       }
     }
-    const seen = new Set<number>();
+    const seen = new Set<string>();
     const sections: Section[] = [];
     for (const html of pages) {
       for (const section of parseCourseContentsHtml(html, this.baseUrl)) {
-        const key = section.section || section.id;
+        // Section 0 has no number to key on; its id and another section's number are
+        // different namespaces, and on a young site they collide (id 1, section 1).
+        const key = section.id ? `id:${section.id}` : `number:${section.section}`;
         if (seen.has(key)) {
           continue;
         }

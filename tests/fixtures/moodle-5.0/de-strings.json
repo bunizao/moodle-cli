@@ -1,0 +1,146 @@
+[
+ {
+  "stringid": "submissionstatus",
+  "component": "mod_assign",
+  "lang": "de",
+  "string": "Abgabestatus"
+ },
+ {
+  "stringid": "submissionstatusheading",
+  "component": "mod_assign",
+  "lang": "de",
+  "string": "Abgabestatus"
+ },
+ {
+  "stringid": "gradingstatus",
+  "component": "mod_assign",
+  "lang": "de",
+  "string": "Bewertungsstatus"
+ },
+ {
+  "stringid": "timeremaining",
+  "component": "mod_assign",
+  "lang": "de",
+  "string": "Verbleibende Zeit"
+ },
+ {
+  "stringid": "gradenoun",
+  "component": "core",
+  "lang": "de",
+  "string": "Bewertung"
+ },
+ {
+  "stringid": "gradenoun",
+  "component": "core_grades",
+  "lang": "de",
+  "string": "[[gradenoun]]"
+ },
+ {
+  "stringid": "gradenoun",
+  "component": "mod_assign",
+  "lang": "de",
+  "string": "[[gradenoun]]"
+ },
+ {
+  "stringid": "grade",
+  "component": "mod_quiz",
+  "lang": "de",
+  "string": "[[grade]]"
+ },
+ {
+  "stringid": "gradedon",
+  "component": "mod_assign",
+  "lang": "de",
+  "string": "Bewertet am"
+ },
+ {
+  "stringid": "gradedby",
+  "component": "mod_assign",
+  "lang": "de",
+  "string": "Bewertet von"
+ },
+ {
+  "stringid": "pluginname",
+  "component": "assignfeedback_comments",
+  "lang": "de",
+  "string": "Feedback als Kommentar"
+ },
+ {
+  "stringid": "activitydate:submissionsdue",
+  "component": "mod_assign",
+  "lang": "de",
+  "string": "Fällig:"
+ },
+ {
+  "stringid": "activitydate:due",
+  "component": "core_course",
+  "lang": "de",
+  "string": "[[activitydate:due]]"
+ },
+ {
+  "stringid": "activitydate:opens",
+  "component": "core_course",
+  "lang": "de",
+  "string": "Öffnet:"
+ },
+ {
+  "stringid": "activitydate:submissionsopen",
+  "component": "mod_assign",
+  "lang": "de",
+  "string": "Öffnet:"
+ },
+ {
+  "stringid": "activitydate:closes",
+  "component": "core_course",
+  "lang": "de",
+  "string": "Schließt:"
+ },
+ {
+  "stringid": "attemptsallowed",
+  "component": "mod_quiz",
+  "lang": "de",
+  "string": "Erlaubte Versuche"
+ },
+ {
+  "stringid": "timelimit",
+  "component": "mod_quiz",
+  "lang": "de",
+  "string": "Zeitbegrenzung"
+ },
+ {
+  "stringid": "attemptstate",
+  "component": "mod_quiz",
+  "lang": "de",
+  "string": "Status"
+ },
+ {
+  "stringid": "status",
+  "component": "core",
+  "lang": "de",
+  "string": "Status"
+ },
+ {
+  "stringid": "startedon",
+  "component": "mod_quiz",
+  "lang": "de",
+  "string": "Begonnen"
+ },
+ {
+  "stringid": "completedon",
+  "component": "mod_quiz",
+  "lang": "de",
+  "string": "Abgeschlossen"
+ },
+ {
+  "stringid": "attemptduration",
+  "component": "mod_quiz",
+  "lang": "de",
+  "string": "Dauer"
+ },
+ {
+  "stringid": "marks",
+  "component": "mod_quiz",
+  "lang": "de",
+  "string": "Punkte"
+ }
+]

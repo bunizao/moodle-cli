@@ -51,3 +51,24 @@ describe.each([["Boost", ""], ["Classic", "classic-"]])("readers on stock Moodle
     expect(parsePageHtml(page("page"), 104, BASE)).toMatchObject({ name: "Welcome Page", course_id: COURSE, content_text: expect.stringContaining("Welcome to Lab Course One.") });
   });
 });
+
+// A young Moodle 5.0 site's course page, read as HTML because the contents services are
+// unavailable. Section ids start at 1 there, the same numbers as the sections themselves.
+describe("course page on a young Moodle 5.0 site", () => {
+  it("keeps every section and knows which activities can be opened", async () => {
+    const { createMoodleClientCore } = await import("../src/moodle-client-core.js");
+    const html = readFileSync(join(import.meta.dirname, "fixtures", "moodle-5.0", "course-young-site.html"), "utf8");
+    const client = createMoodleClientCore(BASE, {
+      cookie: { name: "MoodleSession", value: "cookie" }, sesskey: "key", userid: 3,
+      unavailable: ["core_course_get_contents", "core_courseformat_get_state"],
+      fetchImpl: async () => new Response(html, { headers: { "content-type": "text/html" } }),
+    });
+    const sections = await client.getCourseContents(2);
+    // Section 0's id (1) once collided with section 1's number and section 1 was dropped.
+    expect(sections.map(s => [s.section, s.activities.length])).toEqual([[0, 1], [1, 7], [2, 2], [3, 0]]);
+    const byName = new Map(sections.flatMap(s => s.activities).map(a => [a.name, a]));
+    expect(byName.get("Essay One")?.visible).toBe(true);
+    // Restricted until a date: listed without a link, so it cannot be opened yet.
+    expect(byName.get("Locked Task")?.visible).toBe(false);
+  });
+});
