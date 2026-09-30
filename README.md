@@ -262,6 +262,20 @@ moodle mcp pair
 
 The command prints the connector URL and a one-time pairing code that is valid for ten minutes and one approval. Add the URL as a custom connector in Claude, sign in when Claude opens the approval page, and enter the code. Claude then keeps a rotating OAuth token instead of your Bearer token, and `/authorize` refuses every request while no pairing window is open.
 
+The approval page also offers **Sign in with Moodle**. It opens Moodle in a remote browser in your own Cloudflare account (Browser Run); signing in there as the Worker's Moodle account approves the connector without a pairing code and renews the Worker's session at the same time. Any other Moodle account is refused.
+
+### Set up without a local browser
+
+From a cloud sandbox or any machine without a signed-in desktop browser:
+
+```bash
+moodle mcp deploy --remote-login --yes
+```
+
+Set `CLOUDFLARE_API_TOKEN` (the "Edit Cloudflare Workers" template) so the deploy does not need Cloudflare's login page. The command deploys the Worker without a Moodle session and prints a sign-in link valid for ten minutes. Open it, sign in to Moodle in the remote browser, and the Worker is claimed for that account. Then add the printed endpoint as a custom connector: in the same browser the approval page already knows you, and elsewhere **Sign in with Moodle** does the same. If the link expires first, run `moodle mcp pair` on the same machine for a new one.
+
+Until Moodle is signed in, and whenever the session expires, the connector stays connected and its tools answer with the sign-in link instead of data. Each sign-in uses about two minutes of Browser Run time; the Cloudflare free plan allows ten minutes a day.
+
 Version `0.7.0` supports MCP `2026-07-28`, a stateless compatibility lane for `2025-11-25`, and the `2025-06-18` and `2025-03-26` revisions that current hosted clients negotiate.
 
 ### Configuration
