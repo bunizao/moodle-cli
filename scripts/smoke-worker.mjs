@@ -16,8 +16,10 @@ const digest = (value) => createHash('sha256').update(value).digest('hex');
 const access = randomBytes(32).toString('base64url');
 let sync = randomBytes(32).toString('base64url');
 const encryption = randomBytes(32).toString('base64url');
-const cookies = { a: 'SYNTHETIC_ACCOUNT_A_SESSION', b: 'SYNTHETIC_ACCOUNT_B_SESSION' };
+const cookies = { a: 'SYNTHETIC_ACCOUNT_A_SESSION', b: 'SYNTHETIC_ACCOUNT_B_SESSION', recovered: 'SYNTHETIC_ACCOUNT_A_RECOVERED' };
 const received = [];
+let expired = false;
+let recoveryCalls = 0;
 const listen = (server) => new Promise((resolve) => server.listen(0, '127.0.0.1', () => resolve(server.address().port)));
 const receiver = createServer((req, res) => {
   received.push({ cookie: req.headers.cookie ?? null, url: req.url });
@@ -35,6 +37,11 @@ const moodle = createServer(async (req, res) => {
     let raw = '';
     for await (const chunk of req) raw += chunk;
     const calls = JSON.parse(raw);
+    if (expired && req.headers.cookie?.includes(cookies.a)) {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify(calls.map((_, index) => ({ index, error: true, exception: { errorcode: 'servicerequireslogin', message: 'Synthetic session expired' } }))));
+      return;
+    }
     res.writeHead(200, { 'content-type': 'application/json' });
     res.end(JSON.stringify(calls.map((call, index) => ({ index, error: false, data:
       call.methodname === 'core_enrol_get_users_courses' ? [{ id: 301, shortname: 'TEST301', fullname: 'Synthetic Course' }] :
@@ -60,6 +67,13 @@ const bindings = {
 const options = {
   name: 'moodle-review', modules: true, scriptPath: `${root}/dist/worker/worker.js`,
   compatibilityDate: '2026-08-08', bindings,
+  serviceBindings: { MOODLE_SESSION_RECOVERY: async (request) => {
+    assert.equal(request.url, 'https://session-recovery/recover');
+    assert.equal(request.method, 'POST');
+    assert.deepEqual(await request.json(), { moodleOrigin: bindings.MOODLE_ORIGIN, moodleUserId: 101, reason: 'SESSION_EXPIRED' });
+    recoveryCalls++;
+    return Response.json({ moodleOrigin: bindings.MOODLE_ORIGIN, cookieName: 'MoodleSession', cookieValue: cookies.recovered });
+  } },
   durableObjects: { SESSION_BROKER: { className: 'SessionBroker', useSQLite: true }, AUTH_BROKER: { className: 'AuthBroker', useSQLite: true } },
 };
 const mf = new Miniflare(convertV4MiniflareOptions(options));
@@ -110,7 +124,21 @@ try {
   assert.equal(activities.activities[0].id, 501);
   evidence.textOnlyClient = { courseIdAvailable: true, courseLookupMatched: true, activityIdAvailable: true };
 
-  assert.equal((await upload(cookies.b, 1)).status, 409);
+  assert.equal(recoveryCalls, 0);
+  expired = true;
+  const recoveredResponse = await mcp(tokens.access_token);
+  const recoveredBody = await recoveredResponse.json();
+  assert.equal(recoveredResponse.status, 200);
+  assert.equal(recoveredBody.result?.structuredContent?.user?.id, 101);
+  assert.equal(recoveryCalls, 1);
+  const recoveryReadiness = await (await call('/readyz', { headers: { authorization: `Bearer ${sync}` } })).json();
+  assert.equal(recoveryReadiness.checks['moodle:session'][0].revision, 2);
+  assert.equal((await mcp(tokens.access_token)).status, 200);
+  assert.equal(recoveryCalls, 1);
+  assert.equal(JSON.stringify(recoveredBody).includes(cookies.recovered), false);
+  evidence.externalSessionRecovery = { attempts: recoveryCalls, revision: 2, sameOAuthGrant: true, pinnedAccount: 101 };
+
+  assert.equal((await upload(cookies.b, 2)).status, 409);
   const switched = await mcp(tokens.access_token);
   const switchedBody = await switched.json();
   evidence.accountSwitch = { status: switched.status, accountAfter: switchedBody.result?.structuredContent?.user?.id, previousGrantCanReadNewAccount: switchedBody.result?.structuredContent?.user?.id === 202 };

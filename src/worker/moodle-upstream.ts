@@ -81,7 +81,7 @@ export class FetchMoodleSessionUpstream implements MoodleSessionUpstream {
     try {
       body = await response.json();
     } catch {
-      return { alive: false, remainingSeconds: null };
+      return { alive: null, remainingSeconds: null };
     }
     if (!Array.isArray(body) || body.length === 0) return { alive: null, remainingSeconds: null };
     const first = isRecord(body[0]) ? body[0] : undefined;

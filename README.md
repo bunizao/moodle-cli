@@ -177,6 +177,8 @@ moodle mcp status
 
 `moodle mcp deploy` validates Moodle access, deploys a Cloudflare Worker, uploads an encrypted Moodle session, verifies readiness, and installs session renewal. The guided [`ONBOARDING.md`](ONBOARDING.md) asks whether you want this after local setup and helps connect your web AI client.
 
+Custom Worker deployments with a separate authentication service can opt into [external session recovery](docs/external-session-recovery.md). The Worker validates recovered sessions against the original Moodle account; no SSO provider is required by the CLI.
+
 The MCP `get_file` tool accepts a resource activity ID, resource URL, or `pluginfile.php` URL and returns files up to 16 MiB directly as an embedded MCP resource. The Moodle session stays inside the local server or private Worker; clients do not need to fetch an authenticated Moodle URL themselves.
 
 The remote server is read-only. The local server (`moodle mcp serve`) also offers `submit`, which needs the files on the same machine. It defaults to `dry_run: true`, so an agent has to show the plan and run it again with `dry_run: false` to upload; `final: true` submits for grading.

@@ -6,3 +6,4 @@ export * from "./moodle-upstream.js";
 export * from "./oauth.js";
 export * from "./problems.js";
 export * from "./session-broker.js";
+export * from "./session-recovery.js";

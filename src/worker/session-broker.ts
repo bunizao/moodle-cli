@@ -1,5 +1,5 @@
 import { createEncryptionKeyring, decryptValue, encryptValue, type EncryptionKeyring } from "./crypto.js";
-import { createMoodleClientCore } from "../moodle-client-core.js";
+import { createMoodleClientCore, MoodleClientCoreApiError } from "../moodle-client-core.js";
 import { createMoodleGateway } from "../mcp/gateway.js";
 import { createMoodleMcpServer } from "../mcp/server.js";
 import { fetchLatestVersion, isNewerVersion, updateHint, UPDATE_CHECK_TTL_MS, type LatestVersionRecord } from "../update-core.js";
@@ -8,6 +8,7 @@ import type { McpRequestContext } from "../mcp/protocol.js";
 import { FetchMoodleSessionUpstream } from "./moodle-upstream.js";
 import { problemResponse } from "./problems.js";
 import { WORKER_SERVICE_ID, WORKER_SERVICE_VERSION } from "./http.js";
+import { isRecoveredSession, ServiceBindingSessionRecovery, type SessionRecoveryProvider, type SessionRecoveryServiceBinding } from "./session-recovery.js";
 
 const SESSION_STORAGE_KEY = "session";
 const DEFAULT_TOUCH_DELAY_MS = 30 * 60 * 1000;
@@ -16,6 +17,9 @@ const MAX_BACKOFF_MS = 30 * 60 * 1000;
 const SESSION_STALE_MS = 24 * 60 * 60 * 1000;
 const LATEST_VERSION_KEY = "latest_version";
 const SESSION_EXPIRING_MS = 15 * 60 * 1000;
+const RECOVERY_STORAGE_KEY = "session_recovery";
+const RECOVERY_COOLDOWN_MS = 5 * 60 * 1000;
+const RECOVERY_TIMEOUT_MS = 60 * 1000;
 
 export interface DurableObjectStorageLike {
   get<T>(key: string): Promise<T | undefined>;
@@ -34,6 +38,7 @@ export interface SessionBrokerEnv {
   SESSION_ENCRYPTION_KEY: string;
   SESSION_ENCRYPTION_KEY_PREVIOUS?: string;
   SESSION_CREDENTIAL_ID?: string;
+  MOODLE_SESSION_RECOVERY?: SessionRecoveryServiceBinding;
 }
 
 export interface SessionCandidate {
@@ -76,6 +81,8 @@ export interface SessionBrokerDependencies {
   upstream: MoodleSessionUpstream;
   fetchImpl?: typeof fetch;
   now?: () => number;
+  recovery?: SessionRecoveryProvider;
+  recoveryTimeoutMs?: number;
 }
 
 interface StoredSession {
@@ -96,6 +103,8 @@ export class SessionBroker {
   private readonly now: () => number;
   private readonly dependencies: SessionBrokerDependencies;
   private keyringPromise: Promise<EncryptionKeyring> | undefined;
+  private readonly recovery: SessionRecoveryProvider | undefined;
+  private recoveryInFlight: Promise<StoredSession | undefined> | undefined;
 
   constructor(
     private readonly state: DurableObjectStateLike,
@@ -104,6 +113,8 @@ export class SessionBroker {
   ) {
     this.dependencies = dependencies ?? { upstream: new FetchMoodleSessionUpstream(env.MOODLE_ORIGIN) };
     this.now = this.dependencies.now ?? Date.now;
+    this.recovery = this.dependencies.recovery
+      ?? (env.MOODLE_SESSION_RECOVERY ? new ServiceBindingSessionRecovery(env.MOODLE_SESSION_RECOVERY) : undefined);
   }
 
   async fetch(request: Request): Promise<Response> {
@@ -134,21 +145,45 @@ export class SessionBroker {
       return problemResponse(400, "MCP_PROTOCOL_METADATA_INVALID", "Bad Request", "The internal MCP request is invalid.");
     }
 
-    const session = await this.loadSession();
+    let session = await this.loadSession();
     if (!session) {
       return problemResponse(503, "SESSION_MISSING", "Service Unavailable", "No Moodle session is available.");
     }
-    if (session.last_error_code === "SESSION_EXPIRED" || (session.expires_at !== null && session.expires_at <= this.now())) {
+    const initialRevision = session.revision;
+    if (this.isExpired(session) && this.recovery) {
+      const result = await this.touchSession();
+      if (result === "unreachable") {
+        return problemResponse(503, "MOODLE_UNREACHABLE", "Service Unavailable", "Moodle could not be reached.");
+      }
+      session = typeof result === "object" ? result : await this.loadSession();
+    }
+    if (!session || this.isExpired(session)) {
       return problemResponse(503, "SESSION_EXPIRED", "Service Unavailable", "The Moodle session has expired.");
     }
 
     const cookieValue = session.cookie_value;
 
+    let recoveredDuringRequest = session.revision !== initialRevision;
     const client = createMoodleClientCore(this.env.MOODLE_ORIGIN, {
       cookie: { name: session.cookie_name, value: cookieValue },
       sesskey: session.sesskey,
       userid: session.moodle_user_id,
       fetchImpl: this.dependencies.fetchImpl,
+      ...(this.recovery ? { onLoginRequired: async () => {
+        if (recoveredDuringRequest) throw new MoodleClientCoreApiError("The recovered Moodle session was rejected.", "servicerequireslogin");
+        recoveredDuringRequest = true;
+        const result = await this.touchSession();
+        if (typeof result !== "object" || this.isExpired(result)) {
+          throw new MoodleClientCoreApiError("No usable Moodle session could be recovered.", "servicerequireslogin");
+        }
+        return {
+          cookie: { name: result.cookie_name, value: result.cookie_value },
+          pageContext: {
+            sesskey: result.sesskey,
+            user_info: { userid: result.moodle_user_id, username: "", fullname: "", sitename: "", siteurl: this.env.MOODLE_ORIGIN },
+          },
+        };
+      } } : {}),
     });
     // Only initialize pays for the registry lookup, and only once a day; every
     // session then starts with the notice until the Worker is redeployed.
@@ -218,6 +253,10 @@ export class SessionBroker {
       return problemResponse(422, "SESSION_CANDIDATE_INVALID", "Unprocessable Content", "Moodle rejected the session candidate.");
     }
 
+    return this.storeValidatedSession(input, validation);
+  }
+
+  private async storeValidatedSession(input: SessionCandidate, validation: SessionValidationSuccess): Promise<Response> {
     const now = this.now();
     const nextAlarmAt = nextTouchAt(now, validation.remainingSeconds);
     if (!Number.isSafeInteger(validation.moodleUserId) || validation.moodleUserId <= 0) {
@@ -275,6 +314,9 @@ export class SessionBroker {
   private async touchSession(): Promise<StoredSession | "missing" | "unreachable" | "expired"> {
     const current = await this.loadSession();
     if (!current) return "missing";
+    if (current.last_error_code === "SESSION_EXPIRED" && this.recovery) {
+      return await this.recoverSession(current) ?? "expired";
+    }
 
     const cookie = current.cookie_value;
 
@@ -297,8 +339,11 @@ export class SessionBroker {
     }
     if (!touched.alive) {
       const expired = { ...current, last_error_code: "SESSION_EXPIRED", expires_at: this.now(), next_alarm_at: null };
-      if (await this.putIfCurrent(current, expired)) await this.state.storage.deleteAlarm?.();
-      return "expired";
+      if (await this.putIfCurrent(current, expired)) {
+        if (!this.recovery) await this.state.storage.deleteAlarm?.();
+        return await this.recoverSession(expired) ?? "expired";
+      }
+      return await this.loadSession() ?? "missing";
     }
 
     const now = this.now();
@@ -320,6 +365,76 @@ export class SessionBroker {
       return updated;
     }
     return await this.loadSession() ?? "missing";
+  }
+
+  private isExpired(session: StoredSession): boolean {
+    return session.last_error_code === "SESSION_EXPIRED"
+      || (session.expires_at !== null && session.expires_at <= this.now());
+  }
+
+  private recoverSession(expected: StoredSession): Promise<StoredSession | undefined> {
+    if (!this.recovery) return Promise.resolve(undefined);
+    if (this.recoveryInFlight) return this.recoveryInFlight;
+    const pending = this.performRecovery(expected).finally(() => {
+      if (this.recoveryInFlight === pending) this.recoveryInFlight = undefined;
+    });
+    this.recoveryInFlight = pending;
+    return pending;
+  }
+
+  private async performRecovery(expected: StoredSession): Promise<StoredSession | undefined> {
+    const claimed = await this.transaction(async (storage) => {
+      const current = await this.readSession(storage);
+      if (!current || current.revision !== expected.revision || current.cookie_value !== expected.cookie_value) return false;
+      const previous = await storage.get<{ retryAfter: number }>(RECOVERY_STORAGE_KEY);
+      if (previous && previous.retryAfter > this.now()) {
+        await storage.setAlarm(previous.retryAfter);
+        return false;
+      }
+      // Persist before external I/O so eviction or another request cannot launch a second recovery.
+      const retryAfter = this.now() + RECOVERY_COOLDOWN_MS;
+      await storage.put(RECOVERY_STORAGE_KEY, { retryAfter });
+      await storage.setAlarm(retryAfter);
+      return true;
+    });
+    if (!claimed) {
+      const latest = await this.loadSession();
+      return latest && !this.isExpired(latest) ? latest : undefined;
+    }
+
+    const controller = new AbortController();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const timeout = new Promise<never>((_, reject) => {
+        timer = setTimeout(() => {
+          controller.abort();
+          reject(new Error("Moodle session recovery timed out."));
+        }, this.dependencies.recoveryTimeoutMs ?? RECOVERY_TIMEOUT_MS);
+      });
+      const candidateAndValidation = (async () => {
+        const recovered = await this.recovery!.recover({
+          moodleOrigin: this.env.MOODLE_ORIGIN,
+          moodleUserId: expected.moodle_user_id,
+          reason: "SESSION_EXPIRED",
+          signal: controller.signal,
+        });
+        controller.signal.throwIfAborted();
+        if (!isRecoveredSession(recovered) || normalizeOrigin(recovered.moodleOrigin) !== normalizeOrigin(this.env.MOODLE_ORIGIN)) return null;
+        const input: SessionCandidate = { ...recovered, expectedRevision: expected.revision };
+        const validation = await this.dependencies.upstream.validate(input);
+        controller.signal.throwIfAborted();
+        if (!validation.valid || (validation.remainingSeconds !== null && validation.remainingSeconds <= 0)) return null;
+        return { input, validation };
+      })();
+      const recovered = await Promise.race([candidateAndValidation, timeout]);
+      if (recovered) await this.storeValidatedSession(recovered.input, recovered.validation);
+    } catch {
+      // Provider diagnostics may contain credentials; keep failures inside the broker.
+    } finally {
+      clearTimeout(timer);
+    }
+    const latest = await this.loadSession();
+    return latest && !this.isExpired(latest) ? latest : undefined;
   }
 
   private async recordFailure(current: StoredSession, code: string): Promise<void> {

@@ -14,6 +14,7 @@
     "SKILL.md",
     "references",
     "agents",
+    "docs/external-session-recovery.md",
     "LICENSE"
   ],
   "scripts": {

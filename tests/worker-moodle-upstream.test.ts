@@ -98,3 +98,10 @@ describe("Worker Moodle session upstream", () => {
     })).rejects.toThrow("Moodle returned HTTP 503");
   });
 });
+
+
+it("does not classify malformed upstream responses as proven session expiry", async () => {
+  const upstream = new FetchMoodleSessionUpstream(ORIGIN, async () => new Response("temporary proxy error", { status: 200 }));
+  await expect(upstream.touch({ moodleOrigin: ORIGIN, cookieName: "MoodleSession", cookieValue: "candidate", sesskey: "sess" }))
+    .resolves.toEqual({ alive: null, remainingSeconds: null });
+});
