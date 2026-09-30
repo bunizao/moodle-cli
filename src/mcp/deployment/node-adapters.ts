@@ -36,6 +36,14 @@ import {
 } from "./managed-deployment.js";
 
 const MODERN_MCP_VERSION = "2026-07-28";
+
+interface ReleaseCheck {
+  endpoint: string;
+  sessionSyncToken: string;
+  expectedSessionSchemaVersion?: number;
+  expectedEncryptionKeyId?: string;
+  expectedCredentialId?: string;
+}
 const WORKER_PROPAGATION_ATTEMPTS = 10;
 const WORKER_PROPAGATION_MAX_DELAY_MS = 4_000;
 
@@ -522,32 +530,8 @@ export class FetchManagedWorkerClient implements ManagedWorkerClient {
     }, isRetryableWorkerRouting);
   }
 
-  async runSmoke(input: {
-    endpoint: string;
-    mcpAccessToken: string;
-    sessionSyncToken: string;
-    expectedSessionSchemaVersion?: number;
-    expectedEncryptionKeyId?: string;
-    expectedCredentialId?: string;
-  }): Promise<WorkerSmokeResult> {
-    const health = await this.fetchWithRetry(
-      endpointUrl(input.endpoint, "/healthz"),
-      undefined,
-      isRetryableWorkerPropagation,
-    );
-    const healthBody = await safeJson(health);
-    if (!health.ok || !isRecord(healthBody) || healthBody.status !== "pass") {
-      throw new DeploymentApplyError("HEALTH_CHECK_FAILED", "Worker liveness check failed");
-    }
-    let readiness = await this.getReadiness(input);
-    const matchesRelease = () => (input.expectedSessionSchemaVersion === undefined || readiness.sessionSchemaVersion === input.expectedSessionSchemaVersion)
-      && (input.expectedEncryptionKeyId === undefined || readiness.encryptionKeyId === input.expectedEncryptionKeyId)
-      && (input.expectedCredentialId === undefined || readiness.credentialId === input.expectedCredentialId);
-    for (let attempt = 0; !matchesRelease() && attempt < 12; attempt += 1) {
-      await this.sleep(1_000);
-      readiness = await this.getReadiness(input);
-    }
-    if (!matchesRelease()) throw new DeploymentApplyError("STATE_PROPAGATION_FAILED", "The expected encrypted session and credentials are not active yet");
+  async runSmoke(input: ReleaseCheck & { mcpAccessToken: string }): Promise<WorkerSmokeResult> {
+    const readiness = await this.checkRelease(input);
     if (readiness.status === "fail") {
       throw new DeploymentApplyError("READINESS_CHECK_FAILED", "Moodle session readiness check failed");
     }
@@ -576,6 +560,39 @@ export class FetchManagedWorkerClient implements ManagedWorkerClient {
       }
     }
     return { moodleUser };
+  }
+
+  async checkRemoteLogin(input: ReleaseCheck): Promise<void> {
+    await this.checkRelease(input);
+    const response = await this.fetchImpl(endpointUrl(input.endpoint, "/oauth/login"));
+    // The start page only carries its form when the Worker has a browser binding.
+    if (!response.ok || !(await response.text()).includes('action="/oauth/login"')) {
+      throw new DeploymentApplyError("REMOTE_LOGIN_UNAVAILABLE", "The Worker cannot start a remote Moodle sign-in");
+    }
+  }
+
+  // Liveness, then the release's own credentials and key, which take a moment to reach
+  // every edge after a deploy.
+  private async checkRelease(input: ReleaseCheck): Promise<WorkerReadiness> {
+    const health = await this.fetchWithRetry(
+      endpointUrl(input.endpoint, "/healthz"),
+      undefined,
+      isRetryableWorkerPropagation,
+    );
+    const healthBody = await safeJson(health);
+    if (!health.ok || !isRecord(healthBody) || healthBody.status !== "pass") {
+      throw new DeploymentApplyError("HEALTH_CHECK_FAILED", "Worker liveness check failed");
+    }
+    let readiness = await this.getReadiness(input);
+    const matchesRelease = () => (input.expectedSessionSchemaVersion === undefined || readiness.sessionSchemaVersion === input.expectedSessionSchemaVersion)
+      && (input.expectedEncryptionKeyId === undefined || readiness.encryptionKeyId === input.expectedEncryptionKeyId)
+      && (input.expectedCredentialId === undefined || readiness.credentialId === input.expectedCredentialId);
+    for (let attempt = 0; !matchesRelease() && attempt < 12; attempt += 1) {
+      await this.sleep(1_000);
+      readiness = await this.getReadiness(input);
+    }
+    if (!matchesRelease()) throw new DeploymentApplyError("STATE_PROPAGATION_FAILED", "The expected encrypted session and credentials are not active yet");
+    return readiness;
   }
 
   async manageClients(input: { endpoint: string; sessionSyncToken: string; revoke?: boolean; clientId?: string }): Promise<unknown> {

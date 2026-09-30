@@ -26,6 +26,12 @@ export const ONBOARDING_COPY = {
     "Installs local session renewal and connects supported MCP clients.",
     "Cloudflare's free tier costs $0 within its limits; paid usage follows your account plan.",
   ].join("\n"),
+  remoteIntroduction: [
+    "Creates a private Moodle MCP Worker in your Cloudflare account.",
+    "You then sign in to Moodle in a remote browser the Worker opens; the Worker stores the session encrypted.",
+    "Nothing is installed on this machine except the Worker's deployment credentials.",
+    "Cloudflare's free tier costs $0 within its limits; paid usage follows your account plan.",
+  ].join("\n"),
   credentials: [
     "Moodle MCP will create two private credentials:",
     "",
@@ -63,6 +69,10 @@ export const ONBOARDING_COPY = {
     "Then repeat:",
     "",
     "  moodle mcp deploy --yes",
+    "",
+    "Without a browser on this machine, sign in through the Worker instead:",
+    "",
+    "  moodle mcp deploy --remote-login --yes",
   ].join("\n"),
   cloudflareSignIn: [
     "Cloudflare sign-in is required.",
@@ -103,7 +113,7 @@ export const ONBOARDING_COPY = {
 
 export function formatOnboardingStage(
   stageId: OnboardingStageId,
-  status: "pending" | "completed",
+  status: "pending" | "completed" | "skipped",
   theme: Theme = PLAIN,
 ): string {
   const stage = ONBOARDING_STAGES.find((item) => item.id === stageId);
@@ -111,7 +121,27 @@ export function formatOnboardingStage(
     throw new Error(`Unknown onboarding stage: ${stageId}`);
   }
   const line = `[${stage.index}/8] ${stage.label}`;
+  if (status === "skipped") return theme.dim(`- ${line} (skipped)`);
   return status === "completed" ? `${theme.tone("success", "✓")} ${line}` : line;
+}
+
+export function remoteLoginDeploymentCopy(input: {
+  endpoint: string;
+  setupUrl: string;
+  expiresAt: string;
+}, theme: Theme = PLAIN): string {
+  const minutes = Math.max(1, Math.round((new Date(input.expiresAt).getTime() - Date.now()) / 60_000));
+  return [
+    theme.tone("success", "Moodle MCP is deployed. Sign in to Moodle to finish."),
+    "",
+    theme.subject("Sign-in link"),
+    `  ${theme.key(input.setupUrl)}`,
+    `  ${theme.dim(`Opens your Moodle sign-in page in a remote browser. Works once, for ${minutes} minutes; \`moodle mcp pair\` makes a new one.`)}`,
+    "",
+    theme.subject("Connector URL"),
+    `  ${theme.key(input.endpoint)}`,
+    `  ${theme.dim("After signing in, add it in Claude: Settings → Connectors → Add custom connector.")}`,
+  ].join("\n");
 }
 
 export function successfulDeploymentCopy(input: {

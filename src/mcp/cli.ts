@@ -32,6 +32,7 @@ import {
   createDefaultManagedDeployment,
   createProgressReporter,
   formatOnboardingStage,
+  remoteLoginDeploymentCopy,
   successfulDeploymentCopy,
   type DeploymentCredentialRepository,
   type DeploymentEvent,
@@ -44,6 +45,7 @@ import {
   type MoodleSessionMaterial,
   type MoodleSessionSource,
   type ProgressReporter,
+  type WorkerPairing,
   type WorkerReadiness,
   type WranglerAccount,
 } from "./deployment/index.js";
@@ -79,6 +81,7 @@ export interface McpDeployInput {
   rotateKey?: boolean;
   rollback: boolean;
   yes: boolean;
+  remoteLogin?: boolean;
 }
 
 export interface McpCommandService {
@@ -196,6 +199,7 @@ class DefaultMcpCommandService implements McpCommandService {
         rotateToken: input.rotateToken,
         rotateKey: input.rotateKey,
         dryRun: input.dryRun,
+        remoteLogin: input.remoteLogin,
       });
       if (input.dryRun) {
         return {
@@ -221,7 +225,12 @@ class DefaultMcpCommandService implements McpCommandService {
         events.push(event);
         if (event.status === "started") progress.begin(formatOnboardingStage(event.stageId, "pending", theme));
         else if (event.status === "completed") progress.end(formatOnboardingStage(event.stageId, "completed", theme));
+        else if (event.status === "skipped") progress.end(formatOnboardingStage(event.stageId, "skipped", theme));
         else progress.clear();
+      }
+      if (input.remoteLogin) {
+        progress.begin("Opening a sign-in window");
+        return await this.remoteLoginSuccess(identity.profile, events);
       }
       progress.begin("Reading deployment status");
       const status = await deployment.inspect(identity.profile);
@@ -251,6 +260,20 @@ class DefaultMcpCommandService implements McpCommandService {
         clients: await this.connectedClientNames(identity.profile),
         renewal: this.renewalJob(identity.profile),
       }, this.theme()),
+      next: ["moodle mcp status", "moodle mcp pair"],
+    };
+  }
+
+  // The Worker has no Moodle session yet, so the run ends with the link that gets one.
+  private async remoteLoginSuccess(profile: string, events: DeploymentEvent[]): Promise<McpCommandOutput> {
+    const [receipt, credentials] = await Promise.all([this.receipts.read(profile), this.credentials.read(profile)]);
+    if (!receipt || !credentials) throw new DeploymentApplyError("MISSING_RECEIPT", "The deployment did not produce a Worker receipt");
+    const pairing = await this.worker.createPairing({ endpoint: receipt.productionEndpoint, sessionSyncToken: credentials.sessionSyncToken });
+    const endpoint = `${receipt.productionEndpoint.replace(/\/$/u, "")}/mcp`;
+    const setupUrl = remoteLoginUrl(pairing);
+    return {
+      data: { events, endpoint, setupUrl, setupExpiresAt: pairing.expiresAt },
+      text: remoteLoginDeploymentCopy({ endpoint, setupUrl, expiresAt: pairing.expiresAt }, this.theme()),
       next: ["moodle mcp status", "moodle mcp pair"],
     };
   }
@@ -474,6 +497,7 @@ class DefaultMcpCommandService implements McpCommandService {
       sessionSyncToken: credentials.sessionSyncToken,
     });
     const endpoint = `${receipt.productionEndpoint.replace(/\/$/u, "")}/mcp`;
+    const setupUrl = remoteLoginUrl(pairing);
     return {
       data: {
         profile,
@@ -481,8 +505,9 @@ class DefaultMcpCommandService implements McpCommandService {
         code: pairing.code,
         expiresAt: pairing.expiresAt,
         authorizationServer: pairing.authorizationServer,
+        setupUrl,
       },
-      text: pairingCopy({ endpoint, code: pairing.code, expiresAt: pairing.expiresAt }, this.theme()),
+      text: pairingCopy({ endpoint, code: pairing.code, expiresAt: pairing.expiresAt, setupUrl }, this.theme()),
       next: ["moodle mcp clients"],
     };
   }
@@ -750,7 +775,7 @@ class DefaultMcpCommandService implements McpCommandService {
     }
     if (!accounts.length) {
       if (!this.isInteractive()) {
-        throw new UsageError("Cloudflare sign-in requires an interactive terminal. Run `moodle mcp deploy` interactively first.");
+        throw new UsageError("Cloudflare sign-in requires an interactive terminal. Without one, set CLOUDFLARE_API_TOKEN to a token made from Cloudflare's \"Edit Cloudflare Workers\" template and run this again.");
       }
       // Wrangler opens Cloudflare's authorization page and prints nothing of its own,
       // because its output is captured.
@@ -971,7 +996,13 @@ function renewalRunText(lastRun: { at: string; state: string; reasonCode: string
   return `${when} ${theme.status(lastRun.state.replaceAll("_", " "), { healthy: "success", "needs sign in": "warning", offline: "warning", conflict: "warning" })}`;
 }
 
-function pairingCopy(input: { endpoint: string; code: string; expiresAt: string | number }, theme: Theme): string {
+function remoteLoginUrl(pairing: WorkerPairing): string {
+  const url = new URL("/oauth/login", pairing.authorizationServer);
+  url.searchParams.set("pairing", pairing.code);
+  return url.toString();
+}
+
+function pairingCopy(input: { endpoint: string; code: string; expiresAt: string | number; setupUrl: string }, theme: Theme): string {
   const expires = new Date(input.expiresAt);
   const minutes = Math.max(0, Math.round((expires.getTime() - Date.now()) / 60000));
   return [
@@ -984,6 +1015,9 @@ function pairingCopy(input: { endpoint: string; code: string; expiresAt: string 
     `  ${theme.key(formatPairingCode(input.code))}`,
     "",
     theme.dim(`One approval, valid for ${minutes} minutes (until ${expires.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}).`),
+    "",
+    theme.subject("Or sign in to Moodle from any browser"),
+    `  ${theme.key(input.setupUrl)}`,
   ].join("\n");
 }
 

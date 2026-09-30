@@ -395,7 +395,55 @@ describe("managed MCP CLI service", () => {
     });
     expect(result.text).toContain(`${receipt.productionEndpoint}/mcp`);
     expect(result.text).toContain("ABCD-2345");
+    expect(result.text).toContain("https://moodle-school-mcp.demo.workers.dev/oauth/login?pairing=ABCD2345");
     expect(result.text).not.toContain("sync-private-token");
+  });
+
+  it("ends a remote-login deploy with the sign-in link instead of a local success report", async () => {
+    const root = await mkdtemp(join(tmpdir(), "moodle-cli-remote-login-"));
+    const bundle = join(root, "worker.js");
+    await writeFile(bundle, "export default {};\n");
+    const receipt = deploymentReceipt();
+    const progressChunks: string[] = [];
+    const stderr = { write: (chunk: string) => { progressChunks.push(chunk); return true; } } as unknown as NodeJS.WritableStream;
+    const plan = vi.fn(async (intent: DeploymentIntent) => ({ intent, operation: "create" as const, uploadCandidate: true, existing: null, receipt: null }));
+    const inspect = vi.fn();
+    const deployment = {
+      plan,
+      apply: async function* () {
+        yield { stageId: "validate_moodle_session" as const, stage: 1, total: 8 as const, label: "Validating Moodle session", status: "skipped" as const };
+        yield { stageId: "run_release_checks" as const, stage: 7, total: 8 as const, label: "Running MCP and Moodle checks", status: "completed" as const };
+      },
+      inspect,
+    } as unknown as ManagedMcpDeployment;
+    const worker = workerClient();
+    const service = createMcpCommandService({
+      homeDir: root,
+      workerBundlePath: bundle,
+      configLoader: async () => ({ baseUrl: receipt.moodleOrigin }),
+      receipts: receiptStore(receipt),
+      credentials: credentialStore(),
+      worker,
+      createDeployment: () => deployment,
+      stderr,
+    });
+
+    try {
+      const result = await service.deploy({ dryRun: false, repair: false, rotateToken: false, rollback: false, yes: true, remoteLogin: true });
+
+      expect(plan).toHaveBeenCalledWith(expect.objectContaining({ remoteLogin: true }));
+      expect(progressChunks.join("")).toContain("- [1/8] Validating Moodle session (skipped)");
+      expect(inspect).not.toHaveBeenCalled();
+      expect(result.data).toMatchObject({
+        endpoint: `${receipt.productionEndpoint}/mcp`,
+        setupUrl: "https://moodle-school-mcp.demo.workers.dev/oauth/login?pairing=ABCD2345",
+        setupExpiresAt: "2026-09-04T00:10:00.000Z",
+      });
+      expect(result.text).toContain("Sign in to Moodle to finish.");
+      expect(result.text).not.toContain("sync-private-token");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 
   it("rejects token reveal outside an interactive TTY at the service boundary", async () => {
@@ -722,6 +770,7 @@ function workerClient(
     getReadiness: vi.fn(async () => readiness),
     touchSession: vi.fn(async () => undefined),
     runSmoke: vi.fn(async () => ({ moodleUser: "Alice Example" })),
+    checkRemoteLogin: vi.fn(async () => undefined),
     manageClients: vi.fn(async () => ({ clients: [] })),
     createPairing: vi.fn(async () => ({
       code: "ABCD2345",
