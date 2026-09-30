@@ -5,7 +5,7 @@
 const CDP_TIMEOUT_MS = 15_000;
 // Idle limit for an abandoned attempt. The waiting page polls every few seconds and
 // Live View streams frames, so an attempt in progress never gets near it.
-const BROWSER_IDLE_MS = 120_000;
+const BROWSER_IDLE_MS = 60_000;
 
 export interface BrowserRunBinding {
   acquire(options?: { keepAlive?: number }): Promise<{ sessionId: string }>;

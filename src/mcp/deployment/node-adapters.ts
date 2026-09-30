@@ -360,6 +360,8 @@ export class NodeReleaseMaterializer implements ReleaseMaterializer {
       preview_urls: false,
       observability: { enabled: false },
       vars: { MOODLE_ORIGIN: plan.intent.moodleOrigin, ...(expectedHosts.length ? { EXPECTED_HOSTS: expectedHosts.join(",") } : {}), SESSION_SCHEMA_VERSION: "2", SESSION_KEY_ID: digest(credentials.sessionEncryptionKey).slice(0, 16), SESSION_CREDENTIAL_ID: digest(`${credentials.mcpAccessToken}:${credentials.sessionSyncToken}`).slice(0, 16) },
+      // Remote Chrome for "Sign in with Moodle" on the authorization page.
+      browser: { binding: "BROWSER" },
       durable_objects: {
         bindings: [
           { name: "SESSION_BROKER", class_name: "SessionBroker" },

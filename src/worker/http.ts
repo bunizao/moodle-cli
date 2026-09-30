@@ -1,6 +1,6 @@
 import { hasQueryCredential, readBearerToken, verifyBearerToken } from "./auth.js";
 import { createAuthBrokerApi, isOAuthRoute, parseAllowedRedirectHosts, type AuthBrokerApi } from "./auth-broker.js";
-import { AUTHORIZE_PATH, DEFAULT_CLIENT_HOSTS, matchesAllowedHost, PROTECTED_RESOURCE_METADATA_PATH } from "./oauth.js";
+import { AUTHORIZE_PATH, DEFAULT_CLIENT_HOSTS, LOGIN_PATH, matchesAllowedHost, PROTECTED_RESOURCE_METADATA_PATH } from "./oauth.js";
 import { problemResponse } from "./problems.js";
 import { MODERN_PROTOCOL_VERSION, SUPPORTED_PROTOCOL_VERSIONS } from "../mcp/protocol.js";
 import { VERSION } from "../version.js";
@@ -256,11 +256,12 @@ function validateRequestAuthority(request: Request, url: URL, env: WorkerEnv): R
   if (
     origin === "null"
     && request.method === "POST"
-    && url.pathname === AUTHORIZE_PATH
+    && (url.pathname === AUTHORIZE_PATH || url.pathname === LOGIN_PATH)
     && request.headers.get("content-type")?.toLowerCase().startsWith("application/x-www-form-urlencoded")
   ) {
-    // Chromium can serialize a top-level approval form's Origin as null. The
-    // one-use pairing code still protects this narrowly scoped POST from CSRF.
+    // Chromium can serialize a top-level form's Origin as null. Approval still needs
+    // the one-use pairing code or the owner's CSRF value, and starting a sign-in
+    // only opens a browser for whoever holds the resulting cookie.
     return null;
   }
   try {
