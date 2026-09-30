@@ -980,7 +980,8 @@ function isRevisionConflict(error: unknown): boolean {
 
 function isWranglerAuthRequired(error: unknown): boolean {
   return error instanceof WranglerCommandError
-    && /not authenticated|not logged in|wrangler login/iu.test(`${error.stdout}\n${error.stderr}`);
+    // Wrangler 4.131 answers a signed-out whoami --json with {"loggedIn":false} and exit 1.
+    && /not authenticated|not logged in|wrangler login|"loggedIn"\s*:\s*false/iu.test(`${error.stdout}\n${error.stderr}`);
 }
 
 function renewalResultText(decision: RenewalDecision, theme: Theme): string {

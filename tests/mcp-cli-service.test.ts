@@ -12,7 +12,7 @@ import type {
   NodeWranglerDeploymentAdapter,
   WorkerReadiness,
 } from "../src/mcp/deployment/index.js";
-import { DeploymentApplyError, DeploymentPlanError } from "../src/mcp/deployment/index.js";
+import { DeploymentApplyError, DeploymentPlanError, WranglerCommandError } from "../src/mcp/deployment/index.js";
 import {
   createMcpCommandService,
   deriveMcpProfile,
@@ -323,7 +323,8 @@ describe("managed MCP CLI service", () => {
     await writeFile(bundle, "export default {};\n");
     const stderr: string[] = [];
     const listAccounts = vi.fn(async () => [] as { id: string; name: string }[]);
-    listAccounts.mockResolvedValueOnce([]).mockResolvedValue([{ id: "account-1", name: "Personal" }]);
+    // What Wrangler 4.131 does on a machine that never signed in.
+    listAccounts.mockRejectedValueOnce(new WranglerCommandError(1, '{"loggedIn":false}', "")).mockResolvedValue([{ id: "account-1", name: "Personal" }]);
     const url = "https://dash.cloudflare.com/oauth2/device/verify?user_code=abCD1234";
     const wrangler = {
       listAccounts,
