@@ -57,6 +57,26 @@ export function parseMoodleErrorHtml(html: string): MoodlePageError | null {
   return { message, ...(errorCode ? { code: errorCode } : {}) };
 }
 
+/**
+ * Moodle answers an activity the user can see but not open (restricted, hidden) by
+ * redirecting to the course page with a notice, and every activity parser would read
+ * that page as the activity. The page's context and body id both name what it is.
+ * A page carrying neither (a frameset, a served HTML file) is not judged.
+ */
+export function isOtherMoodlePage(html: string, type: string, cmid: number): boolean {
+  const instance = numberValue(parseMoodleConfig(html).contextInstanceId);
+  if (instance && instance !== cmid) return true;
+  // A course id can equal the cmid, so the body id still gets a say.
+  const pageId = parse(html).querySelector("body")?.getAttribute("id") ?? "";
+  return pageId.startsWith("page-") && pageId !== `page-mod-${type}-view`;
+}
+
+/** Why Moodle refused the activity: its availability conditions, or the hidden notice. */
+export function parseUnavailableNotice(html: string): string {
+  const conditions = parse(html).querySelector(".availabilityinfo-error");
+  return conditions ? blockText(conditions) : parseMoodleErrorHtml(html)?.message ?? "";
+}
+
 export function parsePageContext(html: string, baseUrl: string): PageContext {
   const root = parse(html);
   const config = parseMoodleConfig(html);

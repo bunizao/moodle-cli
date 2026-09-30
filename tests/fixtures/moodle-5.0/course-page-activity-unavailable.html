@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<!--
+  The course page Moodle 5.0 (Boost) serves after require_login() refuses an activity the
+  student can see but not open: /mod/assign/view.php?id=42 answers 303 to /course/view.php?id=101,
+  which renders course_section_cm_unavailable_error_message() as a session notification.
+  Trimmed and reconstructed from MOODLE_500_STABLE templates, not captured from a live site.
+-->
+<html dir="ltr" lang="en" xml:lang="en">
+<head>
+  <title>Course: Sample Unit | School Moodle</title>
+  <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+  <script>
+//<![CDATA[
+var M = {}; M.yui = {};
+M.pageloadstarttime = new Date();
+M.cfg = {"wwwroot":"https:\/\/school.example.edu","apibase":"https:\/\/school.example.edu\/r.php\/api","sesskey":"fixturesesskey","sessiontimeout":"7200","sessiontimeoutwarning":"1200","themerev":"1727650000","slasharguments":1,"theme":"boost","iconsystemmodule":"core\/icon_system_fontawesome","jsrev":"1727650000","admin":"admin","svgicons":true,"usertimezone":"UTC","language":"en","courseId":101,"courseContextId":3021,"contextid":3021,"contextInstanceId":101,"langrev":1727650000,"templaterev":"1727650000","siteId":1,"userId":7};
+//]]>
+</script>
+</head>
+<body id="page-course-view-topics" class="format-topics limitedwidth path-course path-course-view chrome dir-ltr lang-en yui-skin-sam yui3-skin-sam school-example-edu pagelayout-course course-101 context-3021 category-1 theme uses-drawers drawer-open-index">
+<div id="page-wrapper" class="d-print-block">
+  <nav class="navbar fixed-top bg-body navbar-expand" aria-label="Site navigation">
+    <a href="https://school.example.edu/" class="navbar-brand d-none d-md-flex align-items-center m-0 me-4 p-0 aabtn">School Moodle</a>
+    <div class="usermenu"><span class="userbutton"><span class="usertext me-1">Sample Student</span></span></div>
+  </nav>
+  <div id="page" data-region="mainpage" data-usertour="scroller" class="drawers show-drawer-left drag-container">
+    <div class="main-inner">
+      <header id="page-header" class="header-maxwidth d-print-none">
+        <div class="w-100">
+          <div class="d-flex align-items-center">
+            <div class="me-auto d-flex flex-column">
+              <div><div class="page-context-header d-flex flex-wrap align-items-center mb-2">
+                <div class="page-header-headings"><h1 class="h2 mb-0">Sample Unit</h1></div>
+              </div></div>
+            </div>
+          </div>
+        </div>
+      </header>
+      <div id="page-content" class="pb-3 d-print-block">
+        <div id="region-main-box">
+          <section id="region-main" aria-label="Content">
+            <span class="notifications" id="user-notifications"><div class="alert alert-danger alert-block fade in  alert-dismissible" role="alert" data-aria-autofocus="true">
+    <div class="activityinstance-error"><img src="https://school.example.edu/theme/image.php/boost/assign/1727650000/monologo" class="activityicon" alt="" /><span class="instancename"> Locked Task<span class="accesshide " > Assignment</span></span></div><div class="availabilityinfo-error">Not available unless: It is on or after <strong>30 October 2026, 12:00 AM</strong></div>
+    <button type="button" class="btn-close" data-bs-dismiss="alert">
+        <span class="visually-hidden">Dismiss this notification</span>
+    </button>
+</div></span>
+            <div role="main"><span id="maincontent"></span>
+              <div class="course-content">
+                <ul class="topics" data-for="course_sectionlist">
+                  <li id="section-1" class="section course-section main clearfix" data-sectionid="1" data-sectionreturnnum="1" data-for="section" data-id="1101" data-number="1">
+                    <div class="course-section-header d-flex" data-for="section_title" data-id="1101" data-number="1">
+                      <h3 class="h4 sectionname course-content-item d-flex align-self-stretch align-items-center mb-0" id="sectionid-1101-title" data-for="section_title" data-id="1101" data-number="1">
+                        <a href="https://school.example.edu/course/section.php?id=1101">Week 1</a>
+                      </h3>
+                    </div>
+                    <div class="content course-content-item-content collapse show" id="coursecontentcollapseid1101">
+                      <ul class="section m-0 p-0 img-text  d-block " data-for="cmlist">
+                        <li class="activity activity-wrapper assign modtype_assign  hasinfo " id="module-43" data-for="cmitem" data-id="43">
+                          <div class="activity-item focus-control " data-activityname="Essay 1" data-region="activity-card">
+                            <div class="activity-grid ">
+                              <div class="activity-instance d-flex flex-column">
+                                <div class="activitytitle media modtype_assign position-relative align-self-start">
+                                  <div class="media-body align-self-center">
+                                    <div class="activityname">
+                                      <a href="https://school.example.edu/mod/assign/view.php?id=43" class=" aalink stretched-link" onclick=""><span class="instancename">Essay 1 <span class="accesshide " > Assignment</span></span></a>
+                                    </div>
+                                  </div>
+                                </div>
+                              </div>
+                              <div data-region="activity-dates" class="activity-dates">
+                                <div class="description-inner">
+                                  <div><strong>Opened:</strong> Monday, 4 May 2026, 9:00 AM</div>
+                                  <div><strong>Due:</strong> Friday, 15 May 2026, 5:00 PM</div>
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+                        </li>
+                        <li class="activity activity-wrapper assign modtype_assign  hasinfo " id="module-42" data-for="cmitem" data-id="42">
+                          <div class="activity-item focus-control dimmed" data-activityname="Locked Task" data-region="activity-card">
+                            <div class="activity-grid ">
+                              <div class="activity-instance d-flex flex-column">
+                                <div class="activitytitle media modtype_assign position-relative align-self-start">
+                                  <div class="media-body align-self-center">
+                                    <div class="activityname"><span class="instancename">Locked Task <span class="accesshide " > Assignment</span></span></div>
+                                  </div>
+                                </div>
+                              </div>
+                              <div class="activity-availability availabilityinfo  " data-region="availabilityinfo">
+                                <span class="badge rounded-pill bg-warning text-dark"><i class="icon fa fa-lock fa-fw" aria-hidden="true"></i>Restricted</span>
+                                <div class="description-inner">Available from <strong>30 October 2026, 12:00 AM</strong></div>
+                              </div>
+                            </div>
+                          </div>
+                        </li>
+                      </ul>
+                    </div>
+                  </li>
+                </ul>
+              </div>
+            </div>
+          </section>
+        </div>
+      </div>
+    </div>
+  </div>
+  <footer id="page-footer" class="footer-popover bg-white"><a href="https://school.example.edu/course/view.php?id=101">Sample Unit</a></footer>
+</div>
+</body>
+</html>
