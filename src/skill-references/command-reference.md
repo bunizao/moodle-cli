@@ -20,5 +20,15 @@ search_forums and file; a local server also lists submit, the only tool that wri
 Legacy names remain callable for one minor version and return
 compact v2 envelopes. They are deprecated and omitted from default discovery.
 Unit results contain a section index; supply section for activity details.
+Grades default to summary counts and course totals, without item rows or feedback.
+Use `--mode graded` for marked items or `--mode all` for every item; `--include-ungraded`
+also includes unmarked items in graded mode. Filter with `--types assign,quiz` (Moodle
+module names, independent of the site's language). `--include-feedback` opts into full
+feedback; `--graded-only` remains an alias for graded mode. MCP uses the corresponding
+`mode`, `types`, `include_ungraded`, `include_feedback`, `limit` and `offset` arguments.
+Detail modes return at most 20 rows across all units by default. `matched`, `returned`,
+`offset` and `has_more` describe the filtered page; increase offset to read the rest.
+Per-unit counts cover all rows matching types, before grade filtering and pagination;
+course totals remain Moodle's totals. Summary mode does not fetch deadlines or user data.
 List activity URLs follow `{siteurl}/mod/{type}/view.php?id={id}`; use item for the actual URL.
 File content is embedded in MCP resource blocks, limited to 16 MiB. CLI downloads stream to disk.
