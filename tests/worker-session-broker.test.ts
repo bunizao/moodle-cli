@@ -634,6 +634,99 @@ describe("SessionBroker renewal from a Moodle mobile token", () => {
     expect((await readSession(objectState, broker)).health.checks["moodle:session"][0]).toMatchObject({ code: "SESSION_EXPIRED", revision: 1 });
   });
 
+  function callTool(broker: SessionBroker, name: string, args: Record<string, unknown>): Promise<Response> {
+    return broker.fetch(new Request("https://session-broker/mcp", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        request: { jsonrpc: "2.0", id: 1, method: "tools/call", params: { name, arguments: args } },
+        context: { protocolVersion: "2025-06-18", method: "tools/call", toolName: name },
+      }),
+    }));
+  }
+
+  const SITE_INFO = { userid: 42, username: "ada", fullname: "Ada Lovelace", sitename: "Example Moodle", siteurl: MOODLE_ORIGIN, sesskey: "sess" };
+  const REFUSED = [{ error: true, exception: { errorcode: "servicerequireslogin", message: "Expired" } }];
+
+  it("does not expire a session uploaded while a failing touch was in flight", async () => {
+    const objectState = state();
+    const upstream = mobileUpstream();
+    vi.mocked(upstream.captureMobileToken).mockResolvedValue(null);
+    const broker = new SessionBroker(objectState, env(), { upstream, now: () => 1_000 });
+    await putSession(broker, candidate(OLD_COOKIE, null));
+
+    let finishTouch!: (result: { alive: false; remainingSeconds: null }) => void;
+    vi.mocked(upstream.touch).mockReturnValueOnce(new Promise((resolve) => { finishTouch = resolve; }));
+    const alarm = broker.alarm();
+    await vi.waitFor(() => expect(upstream.touch).toHaveBeenCalledOnce());
+    expect((await putSession(broker, candidate(NEW_COOKIE, 1))).status).toBe(201);
+    const alarmForNewSession = objectState.storage.alarm;
+    finishTouch({ alive: false, remainingSeconds: null });
+    await alarm;
+
+    expect((await readSession(objectState, broker)).health.checks["moodle:session"][0]).toMatchObject({ code: "SESSION_VALID", revision: 2 });
+    expect(objectState.storage.alarm).toBe(alarmForNewSession);
+  });
+
+  it("fetches a fresh token at the next sign-in once Moodle refuses the kept one", async () => {
+    const FRESH = { wstoken: "fresh-ws-secret", privatetoken: "fresh-private-secret" };
+    let now = 1_000;
+    const objectState = state();
+    const upstream = mobileUpstream();
+    const broker = new SessionBroker(objectState, env(), { upstream, now: () => now });
+    await putSession(broker, candidate(OLD_COOKIE, null));
+    vi.mocked(upstream.mintSession).mockResolvedValueOnce(null);
+    vi.mocked(upstream.touch).mockResolvedValueOnce({ alive: false, remainingSeconds: null });
+    await broker.alarm();
+
+    vi.mocked(upstream.captureMobileToken).mockResolvedValueOnce(FRESH);
+    const accepted = await putSession(broker, candidate(NEW_COOKIE, 1));
+    expect(await accepted.json()).toMatchObject({ renewal: "mobile_token" });
+    expect(upstream.captureMobileToken).toHaveBeenCalledTimes(2);
+
+    now += 7 * 60 * 1000;
+    vi.mocked(upstream.touch).mockResolvedValueOnce({ alive: false, remainingSeconds: null });
+    await broker.alarm();
+    expect(upstream.mintSession).toHaveBeenLastCalledWith(42, FRESH);
+  });
+
+  it("renews when Moodle refuses a session the record still calls live", async () => {
+    const upstream = mobileUpstream();
+    const fetchImpl = vi.fn<typeof fetch>(async (_input, init) => new Headers(init?.headers).get("cookie") === `MoodleSession=${MINTED_COOKIE}`
+      ? Response.json([{ error: false, data: SITE_INFO }])
+      : Response.json(REFUSED));
+    const broker = new SessionBroker(state(), env(), { upstream, fetchImpl, now: () => 1_000 });
+    await putSession(broker, candidate(OLD_COOKIE, null));
+
+    const body = await (await callTool(broker, "get_user", {})).json();
+
+    expect(body).toMatchObject({ response: { result: { structuredContent: { user: { id: 42 } } } } });
+    expect(upstream.mintSession).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(body)).not.toContain(MINTED_COOKIE);
+  });
+
+  it("shares one mint between the parallel reads of a single tool call", async () => {
+    const upstream = mobileUpstream();
+    let finishMint!: (cookie: { name: string; value: string }) => void;
+    vi.mocked(upstream.mintSession).mockReturnValueOnce(new Promise((resolve) => { finishMint = resolve; }));
+    const fetchImpl = vi.fn<typeof fetch>(async (input, init) => {
+      if (new Headers(init?.headers).get("cookie") !== `MoodleSession=${MINTED_COOKIE}`) return Response.json(REFUSED);
+      const info = new URL(String(input)).searchParams.get("info");
+      return Response.json([{ error: false, data: info === "core_enrol_get_users_courses" ? [{ id: 5, fullname: "Unit", shortname: "U" }] : [] }]);
+    });
+    const broker = new SessionBroker(state(), env(), { upstream, fetchImpl, now: () => 1_000 });
+    await putSession(broker, candidate(OLD_COOKIE, null));
+
+    const pending = callTool(broker, "list_activities", { courseId: 5 });
+    await vi.waitFor(() => expect(upstream.mintSession).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(fetchImpl).toHaveBeenCalledTimes(2));
+    finishMint({ name: "MoodleSession", value: MINTED_COOKIE });
+    const body = await (await pending).json();
+
+    expect(body).not.toMatchObject({ response: { result: { isError: true } } });
+    expect(upstream.mintSession).toHaveBeenCalledTimes(1);
+  });
+
   it("renews an expired session before answering MCP, so the client never sees it signed out", async () => {
     let now = 1_000;
     const upstream = mobileUpstream();
