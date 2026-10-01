@@ -105,6 +105,9 @@ export class SessionBroker {
   private keyringPromise: Promise<EncryptionKeyring> | undefined;
   private readonly recovery: SessionRecoveryProvider | undefined;
   private recoveryInFlight: Promise<StoredSession | undefined> | undefined;
+  // Bumped only when a recovered session is stored. Revisions also change on routine
+  // cookie rotation, so they cannot tell a request whether recovery already ran.
+  private recoveryGeneration = 0;
 
   constructor(
     private readonly state: DurableObjectStateLike,
@@ -149,7 +152,7 @@ export class SessionBroker {
     if (!session) {
       return problemResponse(503, "SESSION_MISSING", "Service Unavailable", "No Moodle session is available.");
     }
-    const initialRevision = session.revision;
+    const generationAtStart = this.recoveryGeneration;
     if (this.isExpired(session) && this.recovery) {
       const result = await this.touchSession();
       if (result === "unreachable") {
@@ -163,7 +166,7 @@ export class SessionBroker {
 
     const cookieValue = session.cookie_value;
 
-    let recoveredDuringRequest = session.revision !== initialRevision;
+    let recoveredDuringRequest = this.recoveryGeneration !== generationAtStart;
     const client = createMoodleClientCore(this.env.MOODLE_ORIGIN, {
       cookie: { name: session.cookie_name, value: cookieValue },
       sesskey: session.sesskey,
@@ -427,7 +430,10 @@ export class SessionBroker {
         return { input, validation };
       })();
       const recovered = await Promise.race([candidateAndValidation, timeout]);
-      if (recovered) await this.storeValidatedSession(recovered.input, recovered.validation);
+      if (recovered) {
+        const stored = await this.storeValidatedSession(recovered.input, recovered.validation);
+        if (stored.ok) this.recoveryGeneration += 1;
+      }
     } catch {
       // Provider diagnostics may contain credentials; keep failures inside the broker.
     } finally {

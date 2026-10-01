@@ -440,14 +440,15 @@ describe("encrypted session lifecycle", () => {
 describe("optional external session recovery", () => {
   const recovered = (): RecoveredSession => ({ moodleOrigin: MOODLE_ORIGIN, cookieName: "MoodleSession", cookieValue: NEW_COOKIE });
   const touch = (broker: SessionBroker) => broker.fetch(new Request("https://session-broker/session/touch", { method: "POST" }));
-  const getUser = (broker: SessionBroker) => broker.fetch(new Request("https://session-broker/mcp", {
+  const callTool = (broker: SessionBroker, name: string, args: Record<string, unknown>) => broker.fetch(new Request("https://session-broker/mcp", {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
-      request: { jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "get_user", arguments: {} } },
-      context: { protocolVersion: "2025-06-18", method: "tools/call", toolName: "get_user" },
+      request: { jsonrpc: "2.0", id: 1, method: "tools/call", params: { name, arguments: args } },
+      context: { protocolVersion: "2025-06-18", method: "tools/call", toolName: name },
     }),
   }));
+  const getUser = (broker: SessionBroker) => callTool(broker, "get_user", {});
   const provider = (): SessionRecoveryProvider => ({ recover: vi.fn(async () => recovered()) });
 
   it("keeps the unconfigured behavior and never bootstraps a missing account", async () => {
@@ -510,6 +511,57 @@ describe("optional external session recovery", () => {
     expect(JSON.stringify(body)).not.toContain(NEW_COOKIE);
     expect(JSON.stringify(objectState.storage.values.get("session"))).not.toContain(NEW_COOKIE);
     expect((await putSession(broker, candidate(OLD_COOKIE, 1))).status).toBe(409);
+  });
+
+  it("shares one recovery between the parallel reads of a single tool call", async () => {
+    const upstream = validUpstream();
+    vi.mocked(upstream.touch).mockResolvedValue({ alive: false, remainingSeconds: null });
+    let finish!: (value: RecoveredSession) => void;
+    const recovery: SessionRecoveryProvider = { recover: vi.fn(() => new Promise<RecoveredSession>((resolve) => { finish = resolve; })) };
+    const fetchImpl = vi.fn<typeof fetch>(async (input, init) => {
+      if (new Headers(init?.headers).get("cookie") === `MoodleSession=${OLD_COOKIE}`) {
+        return Response.json([{ error: true, exception: { errorcode: "servicerequireslogin", message: "Expired" } }]);
+      }
+      const info = new URL(String(input)).searchParams.get("info");
+      const data = info === "core_enrol_get_users_courses" ? [{ id: 5, fullname: "Unit", shortname: "U" }] : [];
+      return Response.json([{ error: false, data }]);
+    });
+    const broker = new SessionBroker(state(), env(), { upstream, recovery, fetchImpl });
+    await putSession(broker, candidate(OLD_COOKIE, null));
+
+    const pending = callTool(broker, "list_activities", { courseId: 5 });
+    await vi.waitFor(() => expect(recovery.recover).toHaveBeenCalledTimes(1));
+    // Let the second parallel read be rejected while the first one waits for the provider.
+    await vi.waitFor(() => expect(fetchImpl).toHaveBeenCalledTimes(2));
+    finish(recovered());
+    const body = await (await pending).json();
+
+    expect(body).toMatchObject({ response: { result: { structuredContent: { total: 0 } } } });
+    expect(recovery.recover).toHaveBeenCalledTimes(1);
+  });
+
+  it("still recovers when a routine cookie rotation preceded the session dying again", async () => {
+    const upstream = validUpstream();
+    // The estimated expiry has passed, so the call renews first; Moodle rotates the cookie but the session is alive.
+    vi.mocked(upstream.touch)
+      .mockResolvedValueOnce({ alive: true, remainingSeconds: 3600, rotatedCookie: "rotated-cookie-secret" })
+      .mockResolvedValue({ alive: false, remainingSeconds: null });
+    const recovery = provider();
+    const fetchImpl = vi.fn<typeof fetch>(async (_input, init) => {
+      if (new Headers(init?.headers).get("cookie") !== `MoodleSession=${NEW_COOKIE}`) {
+        return Response.json([{ error: true, exception: { errorcode: "servicerequireslogin", message: "Expired" } }]);
+      }
+      return Response.json([{ error: false, data: { userid: 42, fullname: "Ada", username: "ada", sitename: "Moodle", siteurl: MOODLE_ORIGIN } }]);
+    });
+    let now = 1_000;
+    const broker = new SessionBroker(state(), env(), { upstream, recovery, fetchImpl, now: () => now });
+    await putSession(broker, candidate(OLD_COOKIE, null));
+    now += 3 * 60 * 60 * 1000;
+
+    const body = await (await getUser(broker)).json();
+
+    expect(body).toMatchObject({ response: { result: { structuredContent: { user: { id: 42 } } } } });
+    expect(recovery.recover).toHaveBeenCalledTimes(1);
   });
 
   it("does not recover on unrelated tool errors or loop when the replacement is rejected", async () => {
