@@ -9,6 +9,7 @@ import type { MobileToken } from "../mobile-login-core.js";
 import { FetchMoodleSessionUpstream } from "./moodle-upstream.js";
 import { problemResponse } from "./problems.js";
 import { WORKER_SERVICE_ID, WORKER_SERVICE_VERSION } from "./http.js";
+import { isRecoveredSession, ServiceBindingSessionRecovery, type SessionRecoveryProvider, type SessionRecoveryServiceBinding } from "./session-recovery.js";
 
 const SESSION_STORAGE_KEY = "session";
 const DEFAULT_TOUCH_DELAY_MS = 30 * 60 * 1000;
@@ -21,6 +22,9 @@ const SESSION_EXPIRING_MS = 15 * 60 * 1000;
 const MINT_INTERVAL_MS = 6 * 60 * 1000;
 const MINT_RETRY_MS = 30 * 60 * 1000;
 const MAX_MINT_RETRIES = 6;
+const RECOVERY_STORAGE_KEY = "session_recovery";
+const RECOVERY_COOLDOWN_MS = 5 * 60 * 1000;
+const RECOVERY_TIMEOUT_MS = 60 * 1000;
 
 export interface DurableObjectStorageLike {
   get<T>(key: string): Promise<T | undefined>;
@@ -39,6 +43,7 @@ export interface SessionBrokerEnv {
   SESSION_ENCRYPTION_KEY: string;
   SESSION_ENCRYPTION_KEY_PREVIOUS?: string;
   SESSION_CREDENTIAL_ID?: string;
+  MOODLE_SESSION_RECOVERY?: SessionRecoveryServiceBinding;
 }
 
 export interface SessionCandidate {
@@ -85,6 +90,8 @@ export interface SessionBrokerDependencies {
   upstream: MoodleSessionUpstream;
   fetchImpl?: typeof fetch;
   now?: () => number;
+  recovery?: SessionRecoveryProvider;
+  recoveryTimeoutMs?: number;
 }
 
 interface StoredSession {
@@ -109,6 +116,7 @@ export class SessionBroker {
   private readonly dependencies: SessionBrokerDependencies;
   private keyringPromise: Promise<EncryptionKeyring> | undefined;
   private renewing: Promise<StoredSession | null> | null = null;
+  private readonly recovery: SessionRecoveryProvider | undefined;
 
   constructor(
     private readonly state: DurableObjectStateLike,
@@ -117,6 +125,8 @@ export class SessionBroker {
   ) {
     this.dependencies = dependencies ?? { upstream: new FetchMoodleSessionUpstream(env.MOODLE_ORIGIN) };
     this.now = this.dependencies.now ?? Date.now;
+    this.recovery = this.dependencies.recovery
+      ?? (env.MOODLE_SESSION_RECOVERY ? new ServiceBindingSessionRecovery(env.MOODLE_SESSION_RECOVERY) : undefined);
   }
 
   async fetch(request: Request): Promise<Response> {
@@ -153,7 +163,12 @@ export class SessionBroker {
     // Without a usable session the connector still initializes and lists tools, so a
     // hosted client shows it as connected and every tool call says where to sign in.
     let live = session && isLive(session, this.now()) ? session : null;
-    if (session && !live) live = await this.renewOnce(session);
+    // The expiry is an estimate, so ask Moodle before renewing; a dead cookie renews
+    // inside the touch.
+    if (session && !live) {
+      const touched = await this.touchSession();
+      live = typeof touched === "object" && isLive(touched, this.now()) ? touched : null;
+    }
     const signedIn = live !== null;
     const gateway = live
       ? this.gatewayFor(live)
@@ -361,15 +376,17 @@ export class SessionBroker {
       const latest = await this.loadSession();
       if (!latest) return "missing";
       if (!sameSession(latest, current)) return latest;
-      // A kept token retries on a slow schedule, in case Moodle was only briefly
-      // unwell; without one, only a new sign-in brings the session back.
-      const retryAt = latest.mobile_token && latest.failure_count < MAX_MINT_RETRIES ? this.now() + MINT_RETRY_MS : null;
+      // A kept token or a recovery service retries on a slow schedule, in case
+      // Moodle or the service was only briefly unwell; without either, only a new
+      // sign-in brings the session back.
+      const retries = Boolean(latest.mobile_token || this.recovery);
+      const retryAt = retries && latest.failure_count < MAX_MINT_RETRIES ? this.now() + MINT_RETRY_MS : null;
       const expired = {
         ...latest,
         last_error_code: "SESSION_EXPIRED",
         expires_at: this.now(),
         next_alarm_at: retryAt,
-        failure_count: latest.mobile_token ? latest.failure_count + 1 : latest.failure_count,
+        failure_count: retries ? latest.failure_count + 1 : latest.failure_count,
       };
       if (await this.putIfCurrent(latest, expired)) {
         if (retryAt) await this.state.storage.setAlarm(retryAt);
@@ -421,10 +438,14 @@ export class SessionBroker {
     });
   }
 
-  // Concurrent reads that all find the session dead share one mint, so a single
-  // outage never spends Moodle's one-key-per-six-minutes allowance twice.
+  // Concurrent reads that all find the session dead share one renewal, so a single
+  // outage never spends Moodle's one-key-per-six-minutes allowance or the recovery
+  // service's cooldown twice. The mobile token goes first: it is Moodle's own path
+  // and needs nobody. A site without it can still come back through the owner's
+  // recovery service.
   private renewOnce(current: StoredSession): Promise<StoredSession | null> {
-    this.renewing ??= this.renewFromMobileToken(current).finally(() => { this.renewing = null; });
+    this.renewing ??= (async () => await this.renewFromMobileToken(current) ?? await this.recoverFromService(current))()
+      .finally(() => { this.renewing = null; });
     return this.renewing;
   }
 
@@ -479,6 +500,52 @@ export class SessionBroker {
     } catch {
       return null;
     }
+  }
+
+  // Asks the owner's recovery service for a fresh cookie. The service only learns the
+  // origin and account; its candidate is validated and stored like any upload, so it
+  // cannot switch accounts or overwrite a newer session.
+  private async recoverFromService(expected: StoredSession): Promise<StoredSession | null> {
+    if (!this.recovery) return null;
+    const claimed = await this.transaction(async (storage) => {
+      const current = await this.readSession(storage);
+      if (!current || !sameSession(current, expected)) return false;
+      const previous = await storage.get<{ retryAfter: number }>(RECOVERY_STORAGE_KEY);
+      if (previous && previous.retryAfter > this.now()) return false;
+      // Persist before external I/O so eviction or another request cannot launch a second recovery.
+      await storage.put(RECOVERY_STORAGE_KEY, { retryAfter: this.now() + RECOVERY_COOLDOWN_MS });
+      return true;
+    });
+    if (!claimed) return null;
+
+    const controller = new AbortController();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let recovered: Awaited<ReturnType<SessionRecoveryProvider["recover"]>>;
+    try {
+      const timeout = new Promise<never>((_, reject) => {
+        timer = setTimeout(() => {
+          controller.abort();
+          reject(new Error("Moodle session recovery timed out."));
+        }, this.dependencies.recoveryTimeoutMs ?? RECOVERY_TIMEOUT_MS);
+      });
+      recovered = await Promise.race([
+        this.recovery.recover({ moodleOrigin: this.env.MOODLE_ORIGIN, moodleUserId: expected.moodle_user_id, reason: "SESSION_EXPIRED", signal: controller.signal }),
+        timeout,
+      ]);
+    } catch {
+      // Provider diagnostics may contain credentials; keep failures inside the broker.
+      return null;
+    } finally {
+      clearTimeout(timer);
+    }
+    if (!isRecoveredSession(recovered) || normalizeOrigin(recovered.moodleOrigin) !== normalizeOrigin(this.env.MOODLE_ORIGIN)) return null;
+    const stored = await this.storeSession(
+      { ...recovered, expectedRevision: expected.revision },
+      (current) => current?.revision === expected.revision ? "ok" : "revision_conflict",
+    );
+    if (!stored.ok) return null;
+    const latest = await this.loadSession();
+    return latest && isLive(latest, this.now()) ? latest : null;
   }
 
   private async recordFailure(current: StoredSession, code: string): Promise<void> {
