@@ -17,11 +17,12 @@ const POLL_SECONDS = 3;
 // one would otherwise never be checked again.
 const RECHECK_SAME_COOKIE_MS = 15_000;
 // Anyone who finds the Worker URL can reach the sign-in page, and every launch spends
-// the owner's Browser Run allowance (10 browser minutes a day on the free plan). A
-// request with the owner cookie or a pairing code is trusted; the few anonymous
-// launches are for the owner on a new device.
+// the owner's Browser Run allowance (10 browser minutes a day on the free plan). The
+// waiting page keeps a launch alive for its whole window, so anonymous launches times
+// that window must stay well under the allowance. A request with the owner cookie or
+// a pairing code is trusted; the one anonymous launch is for the owner on a new device.
 const TRUSTED_LAUNCHES_PER_DAY = 20;
-const ANONYMOUS_LAUNCHES_PER_DAY = 3;
+const ANONYMOUS_LAUNCHES_PER_DAY = 1;
 const OWNER_PREFIX = "owner:session:";
 const LOGIN_KEY = "owner:login";
 const LAUNCH_KEY = "owner:launches";

@@ -268,22 +268,20 @@ describe("Worker owner sign-in through a remote browser", () => {
     const expired = await h.send("/oauth/login", { headers: cookieHeader(first) });
     expect(expired.status).toBe(408);
     expect(h.browser.close).toHaveBeenCalledTimes(1);
-    expect((await h.send("/oauth/login", post({}))).status).toBe(303);
+    // Today's one anonymous launch is spent; a trusted one still gets the freed slot.
+    expect((await h.send("/oauth/login", post({ pairing_code: await openPairing(h) }))).status).toBe(303);
   });
 
-  it("gives anonymous visitors three launches a day without locking out the owner", async () => {
+  it("keeps anonymous launches inside half the free Browser Run allowance without locking out the owner", async () => {
     const h = await harness();
     const { cookies: owner } = await signIn(h, {});
     h.browser.readMoodleCookie.mockResolvedValue(null);
-    for (let launch = 0; launch < 2; launch += 1) {
-      expect((await h.send("/oauth/login", post({}))).status).toBe(303);
-      h.advance(6 * 60 * 1000);
-    }
+    h.advance(6 * 60 * 1000);
 
     const paused = await h.send("/oauth/login", post({}));
     expect(paused.status).toBe(429);
     expect(await paused.text()).toContain("paused for today");
-    expect(h.browser.open).toHaveBeenCalledTimes(3);
+    expect(h.browser.open).toHaveBeenCalledTimes(1);
     expect((await h.send("/oauth/login", post({}, owner))).status).toBe(303);
 
     h.advance(24 * 60 * 60 * 1000);
@@ -292,7 +290,7 @@ describe("Worker owner sign-in through a remote browser", () => {
 
   it("lets the owner take over a sign-in a stranger left running, but not the reverse", async () => {
     const h = await harness();
-    const { cookies: owner } = await signIn(h, {});
+    const { cookies: owner } = await signIn(h, { pairing_code: await openPairing(h) });
     h.browser.readMoodleCookie.mockResolvedValue(null);
     expect((await h.send("/oauth/login", post({}))).status).toBe(303);
 
