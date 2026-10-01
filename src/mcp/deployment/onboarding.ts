@@ -140,6 +140,7 @@ export function remoteLoginDeploymentCopy(input: {
   endpoint: string;
   setupUrl: string;
   expiresAt: string;
+  renewalExpected?: "mobile_token" | "sign_in" | null;
 }, theme: Theme = PLAIN): string {
   const minutes = Math.max(1, Math.round((new Date(input.expiresAt).getTime() - Date.now()) / 60_000));
   return [
@@ -152,6 +153,9 @@ export function remoteLoginDeploymentCopy(input: {
     theme.subject("Connector URL"),
     `  ${theme.key(input.endpoint)}`,
     `  ${theme.dim("After signing in, add it in Claude: Settings → Connectors → Add custom connector.")}`,
+    ...(input.renewalExpected ? ["", theme.subject("Renewal"), `  ${theme.dim(input.renewalExpected === "mobile_token"
+      ? "This site offers Moodle's mobile token, so the server renews itself after this sign-in."
+      : "This site does not offer Moodle's mobile token. When the session ends, tools answer with a sign-in link.")}`] : []),
   ].join("\n");
 }
 

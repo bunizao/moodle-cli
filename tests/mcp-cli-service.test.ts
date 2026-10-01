@@ -473,6 +473,8 @@ describe("managed MCP CLI service", () => {
       worker,
       createDeployment: () => deployment,
       stderr,
+      // The site's public config, asked without a session before the user signs in.
+      fetchImpl: vi.fn<typeof fetch>(async () => Response.json([{ error: false, data: { enablewebservices: 1, enablemobilewebservice: 1, typeoflogin: 2 } }])),
     });
 
     try {
@@ -485,8 +487,10 @@ describe("managed MCP CLI service", () => {
         endpoint: `${receipt.productionEndpoint}/mcp`,
         setupUrl: "https://moodle-school-mcp.demo.workers.dev/oauth/login?pairing=ABCD2345",
         setupExpiresAt: "2026-09-04T00:10:00.000Z",
+        renewalExpected: "mobile_token",
       });
       expect(result.text).toContain("Sign in to Moodle to finish.");
+      expect(result.text).toContain("renews itself after this sign-in");
       expect(result.text).not.toContain("sync-private-token");
     } finally {
       await rm(root, { recursive: true, force: true });

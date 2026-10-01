@@ -14,6 +14,7 @@ import { loadConfig, type MoodleConfig } from "../config.js";
 import { ENV_MOODLE_SESSION, ENV_MOODLE_TOKEN } from "../constants.js";
 import { AuthError, UsageError } from "../errors.js";
 import { getAuthStatus } from "../keepalive.js";
+import { readSiteAuthProfile, type SessionRenewal } from "../mobile-login-core.js";
 import { VERSION } from "../version.js";
 import { bridgeRemoteMcp } from "./bridge.js";
 import { connectClient, type SupportedMcpClient } from "./connectors/connectors.js";
@@ -231,7 +232,7 @@ class DefaultMcpCommandService implements McpCommandService {
       }
       if (input.remoteLogin) {
         progress.begin("Opening a sign-in window");
-        return await this.remoteLoginSuccess(identity.profile, events);
+        return await this.remoteLoginSuccess(identity, events);
       }
       progress.begin("Reading deployment status");
       const status = await deployment.inspect(identity.profile);
@@ -266,17 +267,30 @@ class DefaultMcpCommandService implements McpCommandService {
   }
 
   // The Worker has no Moodle session yet, so the run ends with the link that gets one.
-  private async remoteLoginSuccess(profile: string, events: DeploymentEvent[]): Promise<McpCommandOutput> {
-    const [receipt, credentials] = await Promise.all([this.receipts.read(profile), this.credentials.read(profile)]);
+  private async remoteLoginSuccess(identity: { profile: string; moodleOrigin: string }, events: DeploymentEvent[]): Promise<McpCommandOutput> {
+    const { profile } = identity;
+    const [receipt, credentials, renewalExpected] = await Promise.all([
+      this.receipts.read(profile),
+      this.credentials.read(profile),
+      this.expectedRenewal(identity.moodleOrigin),
+    ]);
     if (!receipt || !credentials) throw new DeploymentApplyError("MISSING_RECEIPT", "The deployment did not produce a Worker receipt");
     const pairing = await this.worker.createPairing({ endpoint: receipt.productionEndpoint, sessionSyncToken: credentials.sessionSyncToken });
     const endpoint = `${receipt.productionEndpoint.replace(/\/$/u, "")}/mcp`;
     const setupUrl = remoteLoginUrl(pairing);
     return {
-      data: { events, endpoint, setupUrl, setupExpiresAt: pairing.expiresAt },
-      text: remoteLoginDeploymentCopy({ endpoint, setupUrl, expiresAt: pairing.expiresAt }, this.theme()),
+      data: { events, endpoint, setupUrl, setupExpiresAt: pairing.expiresAt, renewalExpected },
+      text: remoteLoginDeploymentCopy({ endpoint, setupUrl, expiresAt: pairing.expiresAt, renewalExpected }, this.theme()),
       next: ["moodle mcp status", "moodle mcp pair"],
     };
+  }
+
+  // Asked before the user signs in, so the agent can say up front whether the server
+  // will renew itself; null when the site could not be asked in time.
+  private async expectedRenewal(moodleOrigin: string): Promise<SessionRenewal | null> {
+    const fetchImpl = this.options.fetchImpl ?? fetch;
+    const profile = await readSiteAuthProfile(moodleOrigin, (input, init) => fetchImpl(input, { ...init, signal: AbortSignal.timeout(5000) }));
+    return profile?.renewal ?? null;
   }
 
   private async planDeployment(
