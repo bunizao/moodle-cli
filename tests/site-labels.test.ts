@@ -87,4 +87,24 @@ describe("site labels", () => {
       expect(assignment.submission_status).toBe(refuse ? "" : "Bisher wurden keine Aufgaben abgegeben");
     }
   });
+
+  it("asks again after a failed request instead of keeping English for the client's life", async () => {
+    let calls = 0;
+    const client = createMoodleClientCore(BASE, {
+      cookie: { name: "MoodleSession", value: "cookie" },
+      sesskey: "key",
+      userid: 7,
+      fetchImpl: async input => {
+        const url = new URL(String(input));
+        if (url.pathname === "/lib/ajax/service.php") {
+          // A proxy's error page in place of Moodle's answer, then the answer.
+          return ++calls === 1 ? new Response("<html>Bad gateway</html>", { status: 502 }) : Response.json([{ error: false, data: JSON.parse(fixture("de-strings.json")) }]);
+        }
+        return new Response(fixture("de-assign-due.html"), { headers: { "content-type": "text/html" } });
+      },
+    });
+    expect((await client.getAssignment(98)).submission_status).toBe("");
+    expect((await client.getAssignment(98)).submission_status).toBe("Bisher wurden keine Aufgaben abgegeben");
+    expect(calls).toBe(2);
+  });
 });

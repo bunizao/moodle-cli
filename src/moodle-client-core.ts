@@ -589,7 +589,9 @@ export class MoodleClientCore {
   /**
    * The site's own text for the labels the page readers look for, in the session's
    * language and with any strings the site customised. One call per client; a site that
-   * refuses it leaves the readers on the English labels.
+   * refuses it leaves the readers on the English labels. A request that failed before
+   * Moodle answered reads this page in English and asks again for the next one, so one
+   * dropped request does not fix a long-lived client on English.
    */
   private siteLabels(): Promise<SiteLabels> {
     this.labels ??= (async () => {
@@ -597,6 +599,7 @@ export class MoodleClientCore {
       return siteLabelsFrom(await this.call(FUNC_GET_STRINGS, { strings: labelRequests() }));
     })().catch(error => {
       if (this.errors.isLoginRequired(error)) { this.labels = undefined; throw error; }
+      if (!this.errors.isApi(error) || !error.moodleErrorCode) this.labels = undefined;
       return {};
     });
     return this.labels;
