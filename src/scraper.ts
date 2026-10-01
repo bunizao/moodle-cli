@@ -745,7 +745,23 @@ function extractSitename(root: HTMLElement): string {
 }
 
 function pageTitle(html: string): string {
-  return cleanNodeText(parse(html).querySelector("h1"));
+  const root = parse(html);
+  const heading = cleanNodeText(root.querySelector("h1"));
+  // Boost puts the activity name in the page's h1; Classic and the themes built on it keep
+  // the course name there and open the main region with the activity's h2. The document
+  // title reads "COURSE: Activity | Site", so the heading that ends later in it is the
+  // activity's, even when a course's full name is also its short name.
+  const main = cleanNodeText(root.querySelector("#region-main h2"));
+  const title = cleanNodeText(root.querySelector("title"));
+  const separator = title.lastIndexOf(" | ");
+  const named = separator < 0 ? title : title.slice(0, separator);
+  if (main && endIn(named, main) > endIn(named, heading)) return main;
+  return heading || main;
+}
+
+function endIn(text: string, part: string): number {
+  const at = part ? text.lastIndexOf(part) : -1;
+  return at < 0 ? -1 : at + part.length;
 }
 
 function activityContext(html: string): { course_id: number; course_name: string; section_name: string } {
@@ -755,14 +771,17 @@ function activityContext(html: string): { course_id: number; course_name: string
   const links = breadcrumbs.length ? breadcrumbs : root.querySelectorAll('a[href*="/course/view.php?id="]');
   for (const link of links) {
     const href = link.getAttribute("href") ?? "";
-    const courseId = numberQueryValue(href, "id");
+    // Moodle 4.4 links a section to /course/section.php?id=SECTION, whose id is not the
+    // course's; only /course/view.php carries the course id.
+    const sectionPage = /\/course\/section\.php\b/u.test(href);
+    const courseId = /\/course\/view\.php\b/u.test(href) ? numberQueryValue(href, "id") : null;
     if (courseId !== null) {
       context.course_id = courseId;
     }
-    if (numberQueryValue(href, "section") === null) {
-      context.course_name ||= cleanNodeText(link);
-    } else {
+    if (sectionPage || numberQueryValue(href, "section") !== null) {
       context.section_name = cleanNodeText(link);
+    } else if (courseId !== null) {
+      context.course_name ||= cleanNodeText(link);
     }
   }
   return context;
@@ -796,7 +815,8 @@ function cleanTableCell(node: HTMLElement | null | undefined): string {
     return "";
   }
   const clone = parse(node.toString());
-  for (const unwanted of clone.querySelectorAll(".action-menu, .dropdown, .hidden, .accesshide, script, style")) {
+  // A user without a picture gets initials in a span; they would run into the name.
+  for (const unwanted of clone.querySelectorAll(".action-menu, .dropdown, .hidden, .accesshide, .userinitials, script, style")) {
     unwanted.remove();
   }
   return cleanText(clone.textContent.replace("( Empty )", "(Empty)"));
