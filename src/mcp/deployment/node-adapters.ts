@@ -403,6 +403,10 @@ export class NodeReleaseMaterializer implements ReleaseMaterializer {
       vars: { MOODLE_ORIGIN: plan.intent.moodleOrigin, ...(expectedHosts.length ? { EXPECTED_HOSTS: expectedHosts.join(",") } : {}), SESSION_SCHEMA_VERSION: "2", SESSION_KEY_ID: digest(credentials.sessionEncryptionKey).slice(0, 16), SESSION_CREDENTIAL_ID: digest(`${credentials.mcpAccessToken}:${credentials.sessionSyncToken}`).slice(0, 16) },
       // Remote Chrome for "Sign in with Moodle" on the authorization page.
       browser: { binding: "BROWSER" },
+      // The owner's own Worker that can sign in again when nothing else can.
+      ...(plan.intent.sessionRecoveryService
+        ? { services: [{ binding: "MOODLE_SESSION_RECOVERY", service: plan.intent.sessionRecoveryService }] }
+        : {}),
       durable_objects: {
         bindings: [
           { name: "SESSION_BROKER", class_name: "SessionBroker" },

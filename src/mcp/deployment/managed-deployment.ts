@@ -28,6 +28,9 @@ export interface DeploymentIntent {
   // Worker's remote browser instead, which is how a cloud session without a desktop
   // browser sets this up.
   remoteLogin?: boolean;
+  // The owner's own recovery Worker, bound as MOODLE_SESSION_RECOVERY. Undefined
+  // keeps whatever the last deploy bound; null removes it.
+  sessionRecoveryService?: string | null;
 }
 
 export interface RemoteWorker {
@@ -59,6 +62,8 @@ export interface DeploymentReceipt {
   sessionRevision: number;
   verified?: boolean;
   recoveryVersionId?: string;
+  // Persisted so a plain redeploy does not silently drop the binding.
+  sessionRecoveryService?: string;
   // What the scheduled renewal last found, so status can show the job is alive
   // without anyone opening its log.
   lastRenewal?: { at: string; state: string; reasonCode: string | null };
@@ -306,11 +311,14 @@ export class ManagedMcpDeployment {
       ? { ...remote, productionEndpoint: receipt.productionEndpoint, releaseDigest: receipt.releaseDigest }
       : remote;
 
+    const boundRecovery = receipt?.sessionRecoveryService ?? null;
+    const sessionRecoveryService = intent.sessionRecoveryService === undefined ? boundRecovery : intent.sessionRecoveryService;
     const rotate = (intent.rotateToken === true || intent.rotateKey === true) && credentials !== null;
-    const releaseChanged = existing?.releaseDigest !== intent.releaseDigest || receipt?.restoredRelease === true;
+    const releaseChanged = existing?.releaseDigest !== intent.releaseDigest || receipt?.restoredRelease === true
+      || sessionRecoveryService !== boundRecovery;
     const uploadCandidate = !existing || replacingExisting || releaseChanged || intent.repair === true || rotate;
     return {
-      intent: { ...intent },
+      intent: { ...intent, sessionRecoveryService },
       operation: !existing ? "create" : rotate ? "rotate" : uploadCandidate ? "update" : "reconcile",
       uploadCandidate,
       existing,
@@ -859,6 +867,9 @@ function validateIntent(intent: DeploymentIntent): void {
     // is no local session to upload again.
     throw new DeploymentPlanError("INVALID_INTENT", "--rotate-key needs a local Moodle session; run it without --remote-login");
   }
+  if (intent.sessionRecoveryService && !/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/u.test(intent.sessionRecoveryService)) {
+    throw new DeploymentPlanError("INVALID_INTENT", "--session-recovery-service must be a Cloudflare Worker name");
+  }
 }
 
 function deploymentId(accountId: string, workerName: string): string {
@@ -909,6 +920,7 @@ function makeReceipt(
       ...previousDigest(plan.existing?.releaseDigest),
       sessionRevision,
       verified: true,
+      ...recoveryService(plan.intent.sessionRecoveryService),
     };
   }
   if (!plan.existing) {
@@ -925,7 +937,12 @@ function makeReceipt(
     releaseDigest: plan.existing.releaseDigest,
     ...previousDigest(plan.receipt?.previousReleaseDigest),
     sessionRevision,
+    ...recoveryService(plan.intent.sessionRecoveryService),
   };
+}
+
+function recoveryService(name: string | null | undefined): Pick<DeploymentReceipt, "sessionRecoveryService"> {
+  return name ? { sessionRecoveryService: name } : {};
 }
 
 function previousDigest(digest: string | undefined): Pick<DeploymentReceipt, "previousReleaseDigest"> {

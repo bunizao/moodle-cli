@@ -111,6 +111,24 @@ describe("NodeReleaseMaterializer", () => {
     );
     await materializer.cleanup(release);
   });
+
+  it("binds the owner's session recovery Worker only when one is set", async () => {
+    const root = await mkdtemp(join(tmpdir(), "moodle-release-recovery-test-"));
+    const bundle = join(root, "worker.js");
+    await writeFile(bundle, "export default {};\n");
+    const materializer = new NodeReleaseMaterializer({ workerBundlePath: bundle, compatibilityDate: "2026-08-09", temporaryRoot: root });
+    const credentials = { mcpAccessToken: "mcp", sessionSyncToken: "sync", sessionEncryptionKey: "key" };
+
+    const bound = await materializer.prepare({ ...PLAN, intent: { ...PLAN.intent, sessionRecoveryService: "school-recovery" } }, credentials);
+    const unbound = await materializer.prepare(PLAN, credentials);
+
+    expect(JSON.parse(await readFile(bound.wranglerConfigPath, "utf8"))).toMatchObject({
+      services: [{ binding: "MOODLE_SESSION_RECOVERY", service: "school-recovery" }],
+    });
+    expect(JSON.parse(await readFile(unbound.wranglerConfigPath, "utf8"))).not.toHaveProperty("services");
+    await materializer.cleanup(bound);
+    await materializer.cleanup(unbound);
+  });
 });
 
 describe("NodeWranglerDeploymentAdapter", () => {

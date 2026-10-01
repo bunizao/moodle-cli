@@ -169,6 +169,17 @@ describe("ManagedMcpDeployment planning", () => {
     expect(rotation).toMatchObject({ operation: "rotate", uploadCandidate: true });
   });
 
+  it("keeps a bound session recovery Worker across plain deploys and redeploys when it changes", async () => {
+    const bound = { ...RECEIPT, releaseDigest: INTENT.releaseDigest, sessionRecoveryService: "school-recovery" };
+    const deps = dependencies({ remote: { ...REMOTE, releaseDigest: INTENT.releaseDigest }, receipt: bound });
+    const manager = new ManagedMcpDeployment(deps);
+
+    expect(await manager.plan(INTENT)).toMatchObject({ uploadCandidate: false, intent: { sessionRecoveryService: "school-recovery" } });
+    expect(await manager.plan({ ...INTENT, sessionRecoveryService: null })).toMatchObject({ uploadCandidate: true, intent: { sessionRecoveryService: null } });
+    expect(await manager.plan({ ...INTENT, sessionRecoveryService: "other-recovery" })).toMatchObject({ uploadCandidate: true });
+    await expect(manager.plan({ ...INTENT, sessionRecoveryService: "Not A Worker" })).rejects.toMatchObject({ code: "INVALID_INTENT" });
+  });
+
   it("rejects invalid roots and workers owned by another deployment", async () => {
     const manager = new ManagedMcpDeployment(dependencies());
     await expect(manager.plan({ ...INTENT, moodleOrigin: "https://moodle.example.edu/login" })).rejects.toMatchObject({
@@ -250,6 +261,13 @@ describe("ManagedMcpDeployment transaction", () => {
     expect(result.error).toBeInstanceOf(AuthError);
     expect(result.error).toMatchObject({ code: "auth", hint: "Use Node.js 22.13 or newer." });
     expect(result.events.at(-1)).toMatchObject({ status: "failed", code: "auth" });
+  });
+
+  it("records the bound session recovery Worker in the receipt", async () => {
+    const deps = dependencies();
+    await consume(new ManagedMcpDeployment(deps).apply(await new ManagedMcpDeployment(deps).plan({ ...INTENT, sessionRecoveryService: "school-recovery" })));
+
+    expect(deps.receipts.write).toHaveBeenLastCalledWith(expect.objectContaining({ sessionRecoveryService: "school-recovery" }));
   });
 
   it("uploads a candidate, validates it, promotes it, and records stable stage events", async () => {

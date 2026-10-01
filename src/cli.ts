@@ -844,7 +844,9 @@ export function buildProgram(io: CliIO = {}): Command {
     .option("--rotate-token", "Rotate the MCP access token. The old token and every connected OAuth client stop working at once; reconnect them after.")
     .option("--rollback", "Restore the previous healthy Worker release.")
     .option("--remote-login", "Skip the local Moodle session and integrations; print a link to sign in through the Worker's remote browser. For cloud sessions without a desktop browser.")
-    .action(async (options: OutputCommandOptions & { dryRun?: boolean; repair?: boolean; rotateToken?: boolean; rotateKey?: boolean; rollback?: boolean; remoteLogin?: boolean }) => {
+    .option("--session-recovery-service <worker>", "Bind your own Cloudflare Worker that signs in again when the Worker cannot renew by itself. Kept on later deploys.")
+    .option("--no-session-recovery-service", "Remove a previously bound session recovery Worker.")
+    .action(async (options: OutputCommandOptions & { dryRun?: boolean; repair?: boolean; rotateToken?: boolean; rotateKey?: boolean; rollback?: boolean; remoteLogin?: boolean; sessionRecoveryService?: string | false }) => {
       const dryRun = Boolean(options.dryRun || program.opts().dryRun);
       const introduction = options.remoteLogin ? ONBOARDING_COPY.remoteIntroduction : ONBOARDING_COPY.introduction;
       if (!dryRun && !await confirm(
@@ -863,6 +865,7 @@ export function buildProgram(io: CliIO = {}): Command {
         rollback: Boolean(options.rollback),
         yes: Boolean(program.opts().yes),
         remoteLogin: Boolean(options.remoteLogin),
+        sessionRecoveryService: options.sessionRecoveryService === false ? null : options.sessionRecoveryService,
       });
       await outputMcpResult(runtime, result, options);
     });

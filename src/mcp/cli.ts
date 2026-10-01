@@ -84,6 +84,7 @@ export interface McpDeployInput {
   rollback: boolean;
   yes: boolean;
   remoteLogin?: boolean;
+  sessionRecoveryService?: string | null;
 }
 
 export interface McpCommandService {
@@ -202,6 +203,7 @@ class DefaultMcpCommandService implements McpCommandService {
         rotateKey: input.rotateKey,
         dryRun: input.dryRun,
         remoteLogin: input.remoteLogin,
+        sessionRecoveryService: input.sessionRecoveryService,
       });
       if (input.dryRun) {
         return {
@@ -211,12 +213,14 @@ class DefaultMcpCommandService implements McpCommandService {
             accountId: plan.intent.accountId,
             moodleOrigin: plan.intent.moodleOrigin,
             uploadCandidate: plan.uploadCandidate,
+            sessionRecoveryService: plan.intent.sessionRecoveryService ?? null,
           },
           text: [
             theme.subject("Moodle MCP deployment plan"),
             `  ${theme.dim("Operation:")} ${plan.operation}`,
             `  ${theme.dim("Worker:")} ${theme.key(plan.intent.workerName)}`,
             `  ${theme.dim("Candidate upload:")} ${plan.uploadCandidate ? "yes" : "no"}`,
+            ...(plan.intent.sessionRecoveryService ? [`  ${theme.dim("Session recovery:")} ${theme.key(plan.intent.sessionRecoveryService)}`] : []),
           ].join("\n"),
           next: ["moodle mcp deploy"],
         };
