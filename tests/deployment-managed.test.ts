@@ -100,6 +100,7 @@ function dependencies(options: {
       getReadiness: vi.fn(async () => ({ status: "pass" as const, reasonCode: "SESSION_VALID", revision: 4 })),
       touchSession: vi.fn(async () => undefined),
       runSmoke: vi.fn(async () => ({ moodleUser: "Alice Example" })),
+      checkRemoteLogin: vi.fn(async () => undefined),
       manageClients: vi.fn(async () => ({ clients: [] })),
       createPairing: vi.fn(async () => ({
         code: "ABCD2345",
@@ -727,6 +728,56 @@ describe("atomic deployment recovery", () => {
     expect(deps.worker.runSmoke).toHaveBeenCalledWith(expect.objectContaining({ endpoint: REMOTE.productionEndpoint, mcpAccessToken: "mcp-current", sessionSyncToken: "sync-current" }));
     expect(deps.wrangler.restoreProduction).toHaveBeenCalledWith(expect.objectContaining({ previousVersionId: "compatible-recovery" }));
     expect(deps.receipts.write).toHaveBeenLastCalledWith(expect.objectContaining({ productionVersionId: "compatible-recovery", recoveryVersionId: "compatible-recovery" }));
+  });
+
+  it("deploys without a local Moodle session when the owner signs in remotely", async () => {
+    const deps = dependencies({ remote: null, receipt: null });
+    const manager = new ManagedMcpDeployment(deps);
+    const events = await consume(manager.apply(await manager.plan({ ...INTENT, remoteLogin: true })));
+
+    expect(events.filter((event) => event.status === "skipped").map((event) => event.stageId))
+      .toEqual(["validate_moodle_session", "upload_moodle_session", "install_local_integrations"]);
+    expect(deps.sessions.loadValidated).not.toHaveBeenCalled();
+    expect(deps.worker.putSession).not.toHaveBeenCalled();
+    expect(deps.worker.runSmoke).not.toHaveBeenCalled();
+    expect(deps.worker.checkRemoteLogin).toHaveBeenCalledWith(expect.objectContaining({ endpoint: "https://version-next.preview.example" }));
+    expect(deps.worker.checkRemoteLogin).toHaveBeenCalledWith(expect.objectContaining({ endpoint: REMOTE.productionEndpoint }));
+    expect(deps.renewal.install).not.toHaveBeenCalled();
+    expect(deps.clients.install).not.toHaveBeenCalled();
+    expect(deps.receipts.write).toHaveBeenCalledWith(expect.objectContaining({ sessionRevision: 0, productionVersionId: "version-next" }));
+  });
+
+  it("keeps the Worker's own session through a remote-login update and its recovery release", async () => {
+    const deps = dependencies();
+    deps.wrangler = { ...deps.wrangler, atomicSecrets: true };
+    deps.wrangler.deployRecovery = vi.fn(async () => ({ versionId: "compatible-recovery", previewEndpoint: null, productionEndpoint: REMOTE.productionEndpoint, deploymentId: REMOTE.deploymentId }));
+    vi.mocked(deps.materializer.prepare).mockResolvedValue({ artifactDirectory: "/private/tmp/release", wranglerConfigPath: "/private/tmp/release/main.json", recoveryConfigPath: "/private/tmp/release/recovery.json", secretsFilePath: "/private/tmp/release/secrets.json" });
+    const manager = new ManagedMcpDeployment(deps);
+
+    await consume(manager.apply(await manager.plan({ ...INTENT, remoteLogin: true })));
+
+    expect(deps.wrangler.deployRecovery).toHaveBeenCalled();
+    expect(deps.worker.putSession).not.toHaveBeenCalled();
+    expect(deps.receipts.write).toHaveBeenCalledWith(expect.objectContaining({ sessionRevision: RECEIPT.sessionRevision }));
+  });
+
+  it("restores the previous release without a session when a remote-login update fails its check", async () => {
+    const deps = dependencies();
+    vi.mocked(deps.wrangler.uploadCandidate).mockResolvedValueOnce({ versionId: "version-next", previewEndpoint: null, productionEndpoint: REMOTE.productionEndpoint, deploymentId: REMOTE.deploymentId });
+    vi.mocked(deps.worker.checkRemoteLogin).mockRejectedValueOnce(new DeploymentApplyError("REMOTE_LOGIN_UNAVAILABLE", "no browser"));
+    const manager = new ManagedMcpDeployment(deps);
+
+    const result = await consumeFailure(manager.apply(await manager.plan({ ...INTENT, remoteLogin: true })));
+
+    expect(result.error).toMatchObject({ code: "PRODUCTION_VALIDATION_FAILED_RESTORED" });
+    expect(deps.wrangler.restoreProduction).toHaveBeenCalledWith(expect.objectContaining({ previousVersionId: REMOTE.productionVersionId }));
+    expect(deps.worker.putSession).not.toHaveBeenCalled();
+  });
+
+  it("refuses to rotate the session key without a local session to re-upload", async () => {
+    const manager = new ManagedMcpDeployment(dependencies());
+
+    await expect(manager.plan({ ...INTENT, remoteLogin: true, rotateKey: true })).rejects.toMatchObject({ code: "INVALID_INTENT" });
   });
 
   it("reconciles a remotely committed revision during repair", async () => {

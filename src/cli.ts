@@ -843,10 +843,12 @@ export function buildProgram(io: CliIO = {}): Command {
     .option("--rotate-key", "Rotate the session encryption key and migrate the active session.")
     .option("--rotate-token", "Rotate the MCP access token. The old token and every connected OAuth client stop working at once; reconnect them after.")
     .option("--rollback", "Restore the previous healthy Worker release.")
-    .action(async (options: OutputCommandOptions & { dryRun?: boolean; repair?: boolean; rotateToken?: boolean; rotateKey?: boolean; rollback?: boolean }) => {
+    .option("--remote-login", "Skip the local Moodle session and integrations; print a link to sign in through the Worker's remote browser. For cloud sessions without a desktop browser.")
+    .action(async (options: OutputCommandOptions & { dryRun?: boolean; repair?: boolean; rotateToken?: boolean; rotateKey?: boolean; rollback?: boolean; remoteLogin?: boolean }) => {
       const dryRun = Boolean(options.dryRun || program.opts().dryRun);
+      const introduction = options.remoteLogin ? ONBOARDING_COPY.remoteIntroduction : ONBOARDING_COPY.introduction;
       if (!dryRun && !await confirm(
-        { summary: [ONBOARDING_COPY.introduction, "", ONBOARDING_COPY.credentials].join("\n") },
+        { summary: [introduction, "", ONBOARDING_COPY.credentials].join("\n") },
         {
           yes: Boolean(program.opts().yes),
           dryRun: false,
@@ -860,6 +862,7 @@ export function buildProgram(io: CliIO = {}): Command {
         rotateKey: Boolean(options.rotateKey),
         rollback: Boolean(options.rollback),
         yes: Boolean(program.opts().yes),
+        remoteLogin: Boolean(options.remoteLogin),
       });
       await outputMcpResult(runtime, result, options);
     });
