@@ -102,7 +102,8 @@ const TRANSIENT = /\bHTTP (?:429|502|503|504)\b|did not respond within|Could not
 /**
  * Runs every read-only intent once against the live site, in the order a person meets
  * them, and yields each result as soon as it is known. Samples come from the account's
- * own units, so nothing is created and no write path is exercised.
+ * own units and nothing is created, though Moodle logs each page view as it would for the
+ * person, and a forum read through discuss.php marks its posts read.
  *
  * A check passes only when the answer agrees with what the site states elsewhere in
  * structured form: the unit's contents for names and files, the calendar for due dates,

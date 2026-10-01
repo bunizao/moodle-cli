@@ -715,7 +715,7 @@ export function buildProgram(io: CliIO = {}): Command {
     // A health check that always succeeds cannot be scripted against.
     if (result.checks.some(c => c.status === "fail")) process.exitCode = 3;
   });
-  addOutputOptions(program.command("coverage").description("Check each command against this Moodle site with the signed-in session, one live read at a time. Nothing is written.").summary("Check which commands work on this site")).action(async (options: OutputCommandOptions) => {
+  addOutputOptions(program.command("coverage").description("Check each command against this Moodle site with the signed-in session, one live read at a time. Nothing is created.").summary("Check which commands work on this site")).action(async (options: OutputCommandOptions) => {
     // Asked live rather than from the daily cache: a report is only useful with the release that produced it.
     const [client, latest] = await Promise.all([runtime.getClient(), refreshLatestVersion({ homeDir: io.homeDir, env: io.env, fetchImpl: io.fetchImpl })]);
     const cli = { version: VERSION, latest, runtime: `${process.versions.bun ? "bun" : "node"} ${process.versions.bun ?? process.versions.node}` };
