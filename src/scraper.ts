@@ -128,9 +128,11 @@ export function parseCourseContentsHtml(html: string, baseUrl: string): Section[
         name,
         modname,
         url: href ? resolveUrl(baseUrl, href) : "",
-        // An activity the account cannot open yet (an access restriction) is listed without
-        // a link; labels never have one. The contents service calls this uservisible.
-        visible: !classes.some((item) => ["hidden", "stealth", "dimmed"].includes(item)) && (Boolean(href) || modname === "label"),
+        // An activity the account cannot open yet is listed without a link and with the
+        // restriction beside it. Labels and subsections have no link either but can be read.
+        // The contents service calls this uservisible.
+        visible: !classes.some((item) => ["hidden", "stealth", "dimmed"].includes(item))
+          && (Boolean(href) || !activityElement.querySelector(".availabilityinfo")),
         description: cleanNodeText(first(activityElement, ["[data-region='activity-description']", ".contentafterlink", ".description"])),
       });
     }

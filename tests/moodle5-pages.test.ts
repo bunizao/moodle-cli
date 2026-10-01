@@ -77,4 +77,18 @@ describe("course page on a young Moodle 5.0 site", () => {
     // Restricted until a date: listed without a link, so it cannot be opened yet.
     expect(byName.get("Locked Task")?.visible).toBe(false);
   });
+
+  it("keeps a link-less activity with no restriction visible", async () => {
+    const { createMoodleClientCore } = await import("../src/moodle-client-core.js");
+    // As Moodle lists a subsection: no link of its own and nothing restricting it.
+    const html = readFileSync(join(import.meta.dirname, "fixtures", "moodle-5.0", "course-young-site.html"), "utf8")
+      .replace(/<div[^>]*\bavailabilityinfo\b[\s\S]*?<\/div>\s*<\/div>/u, "");
+    const client = createMoodleClientCore(BASE, {
+      cookie: { name: "MoodleSession", value: "cookie" }, sesskey: "key", userid: 3,
+      unavailable: ["core_course_get_contents", "core_courseformat_get_state"],
+      fetchImpl: async () => new Response(html, { headers: { "content-type": "text/html" } }),
+    });
+    const activities = (await client.getCourseContents(2)).flatMap(s => s.activities);
+    expect(activities.find(a => a.name === "Locked Task")?.visible).toBe(true);
+  });
 });
