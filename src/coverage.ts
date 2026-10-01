@@ -9,8 +9,8 @@ import { parseSiteTheme } from "./scraper.js";
 
 export type CoverageStatus = "ok" | "fallback" | "partial" | "empty" | "mismatch" | "fail" | "skip" | "untested";
 
-/** Statuses that mean a command gives a wrong or no answer on this site. */
-export const COVERAGE_FAILURES: readonly CoverageStatus[] = ["mismatch", "fail"];
+/** Statuses that mean a command gives a wrong, unread or no answer on this site. */
+export const COVERAGE_FAILURES: readonly CoverageStatus[] = ["empty", "mismatch", "fail"];
 
 export interface CoverageCheck {
   /** The intent under test: the MCP tool of the same name and the CLI command behind it. */

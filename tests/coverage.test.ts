@@ -283,12 +283,12 @@ describe("moodle coverage", () => {
       throw new Error(`Unexpected fixture path ${url.pathname}`);
     };
   }
-  async function command(args: string[], latest?: string | null) {
+  async function command(args: string[], latest?: string | null, fetchImpl = site(latest)) {
     const home = await mkdtemp(join(tmpdir(), "moodle-coverage-"));
     let stdout = "", stderr = "";
     try {
       const code = await runCli(["node", "moodle", "coverage", ...args, "--no-cache"], {
-        env: { MOODLE_BASE_URL: siteUser.siteurl, MOODLE_SESSION: "fixture" }, homeDir: home, cwd: home, fetchImpl: site(latest),
+        env: { MOODLE_BASE_URL: siteUser.siteurl, MOODLE_SESSION: "fixture" }, homeDir: home, cwd: home, fetchImpl,
         stdin: { isTTY: false } as NodeJS.ReadStream,
         stdout: { isTTY: false, write: (value: string) => { stdout += value; return true; } } as NodeJS.WriteStream,
         stderr: { write: (value: string) => { stderr += value; return true; } },
@@ -323,6 +323,24 @@ describe("moodle coverage", () => {
     expect(result.stdout).toContain("8 skipped · 1 untested");
     // Only what this site switched off; stock Moodle's own refusals are the normal path.
     expect(result.stdout).toContain("Disabled on this site: message_popup_get_popup_notifications.");
+  });
+
+  it("exits 3 when a page was read but not understood", async () => {
+    // The command sets process.exitCode, as doctor does, rather than failing the run.
+    const exitCode = process.exitCode;
+    process.exitCode = undefined;
+    const healthy = site();
+    // A page with the activity's name and nothing else; every other check agrees.
+    const unreadable: typeof fetch = async (input, init) => new URL(String(input)).pathname === "/mod/assign/view.php"
+      ? new Response("<html><h1>Essay 1</h1></html>", { headers: { "content-type": "text/html" } })
+      : healthy(input, init);
+    const result = await command(["--json"], VERSION, unreadable);
+    const statuses = JSON.parse(result.stdout).checks.map((c: CoverageCheck) => c.status);
+    expect(statuses).toContain("empty");
+    expect(statuses).not.toContain("mismatch");
+    expect(statuses).not.toContain("fail");
+    expect(process.exitCode).toBe(3);
+    process.exitCode = exitCode;
   });
 
   it("warns that an outdated or unverified build may report failures already fixed", async () => {
