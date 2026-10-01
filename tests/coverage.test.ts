@@ -261,7 +261,8 @@ describe("moodle coverage", () => {
       if (url.pathname === "/lib/ajax/service-nologin.php") return Response.json([{ error: false, data: { enablewebservices: 1, enablemobilewebservice: 0 } }]);
       if (url.pathname.includes("/pluginfile.php/")) return new Response("slides", { headers: { "content-type": "application/pdf", "content-disposition": 'attachment; filename="slides.pdf"' } });
       if (url.pathname === "/mod/resource/view.php") return html('<html><h1>Slides</h1><div class="resourceworkaround"><a href="/pluginfile.php/1/slides.pdf">slides.pdf</a></div></html>');
-      if (url.pathname === "/mod/assign/view.php") return html(fixture("assign.html"));
+      // The fixture page sits in course 101; here it belongs to the unit it was sampled from.
+      if (url.pathname === "/mod/assign/view.php") return html(fixture("assign.html").replaceAll("course/view.php?id=101", `course/view.php?id=${units[0].id}`));
       if (url.pathname === "/course/view.php") return html(fixture("course-page.html"));
       if (url.pathname.startsWith("/grade/")) return html(fixture("grades.html"));
       if (url.pathname === "/lib/ajax/service.php") {
@@ -329,6 +330,8 @@ describe("moodle coverage", () => {
     // The command sets process.exitCode, as doctor does, rather than failing the run.
     const exitCode = process.exitCode;
     process.exitCode = undefined;
+    await command(["--json"]);
+    expect(process.exitCode).toBeUndefined();
     const healthy = site();
     // A page with the activity's name and nothing else; every other check agrees.
     const unreadable: typeof fetch = async (input, init) => new URL(String(input)).pathname === "/mod/assign/view.php"
