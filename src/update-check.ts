@@ -61,7 +61,8 @@ function refreshDue(cache: UpdateCache, now: number): boolean {
 
 // Commands that run unattended, print machine output for tooling, or are the
 // update itself must stay silent; a notice on them would confuse a parser or a log.
-const QUIET_COMMANDS = new Set(["update", "dev", "completion", "commands", "skills", "mcp", "doctor"]);
+// Coverage prints the version itself.
+const QUIET_COMMANDS = new Set(["update", "dev", "completion", "commands", "skills", "mcp", "doctor", "coverage"]);
 
 export function startupCheckApplies(args: readonly string[], env: NodeJS.ProcessEnv = process.env): boolean {
   if (env[ENV_NO_UPDATE_CHECK] || env.CI) return false;
@@ -106,18 +107,36 @@ export function detectInstallKind(argv: readonly string[] = process.argv, execPa
   return /[\\/]\.bun[\\/]/u.test(script) || /[\\/]bun[\\/]install[\\/]global[\\/]/u.test(script) ? "bun" : "npm";
 }
 
-export function installCommand(kind: InstallKind): SelfCommand | null {
-  if (kind === "bun") return { command: findExecutable("bun") ?? "bun", args: ["add", "--global", "moodle-cli@latest"] };
-  if (kind === "npm") return { command: findExecutable("npm") ?? "npm", args: ["install", "-g", "moodle-cli@latest"] };
-  return null;
+/**
+ * The installer invocation for one exact release. Asking for "latest" would let a registry
+ * mirror that has not synced yet install an older build, which then fails the version check.
+ */
+export function installCommand(kind: InstallKind, version: string, script?: string, host = platform()): SelfCommand | null {
+  const spec = `moodle-cli@${version}`;
+  if (kind === "bun") return { command: findExecutable("bun") ?? "bun", args: ["add", "--global", spec] };
+  if (kind !== "npm") return null;
+  // The npm first on PATH can belong to another Node (nvm, Volta, Homebrew) and would
+  // update a different install; the prefix that holds the running copy is the one to replace.
+  const prefix = script ? npmGlobalPrefix(script, host) : undefined;
+  return { command: findExecutable("npm") ?? "npm", args: ["install", "-g", ...(prefix ? ["--prefix", prefix] : []), spec] };
+}
+
+/** The npm global prefix a script was installed under, or undefined when it is not a global install. */
+export function npmGlobalPrefix(script: string, host = platform()): string | undefined {
+  let path = script;
+  try { path = realpathSync(script); } catch { /* Keep the unresolved path. */ }
+  // Windows keeps global packages directly under the prefix; everywhere else under lib/.
+  const layout = host === "win32" ? /^(.+)[\\/]node_modules[\\/]moodle-cli[\\/]/u : /^(.+)[\\/]lib[\\/]node_modules[\\/]moodle-cli[\\/]/u;
+  return layout.exec(path)?.[1];
 }
 
 /**
  * Swap a standalone binary for the published one. The download lands beside the
- * binary and is renamed over it, so a failed download never leaves a half-written
- * executable and the running process keeps its already-mapped file.
+ * binary and must run and report the expected version before it is renamed over it,
+ * so a truncated file or a proxy's error page never replaces a working executable,
+ * and the running process keeps its already-mapped file.
  */
-export async function replaceStandalone(execPath: string, version: string, fetchImpl: typeof fetch = fetch, host = { platform: platform(), arch: arch() }): Promise<string | null> {
+export async function replaceStandalone(execPath: string, version: string, fetchImpl: typeof fetch = fetch, host = { platform: platform(), arch: arch() }, probe: (file: string) => string | null = file => readOutput(file, ["--version"])): Promise<string | null> {
   const url = standaloneAssetUrl(version, host.platform, host.arch);
   if (!url) return `No standalone build is published for ${host.platform}-${host.arch}. See ${GITHUB_RELEASES_URL}`;
   const staging = `${execPath}.${process.pid}.download`;
@@ -126,6 +145,11 @@ export async function replaceStandalone(execPath: string, version: string, fetch
     if (!response.ok) return `Download failed with HTTP ${response.status} for ${url}`;
     await writeFile(staging, new Uint8Array(await response.arrayBuffer()), { mode: 0o755 });
     await chmod(staging, 0o755);
+    const reported = probe(staging)?.trim();
+    if (reported !== version) {
+      await rm(staging, { force: true });
+      return `The downloaded build reports ${reported || "nothing"} instead of ${version}; kept the current binary.`;
+    }
     await rename(staging, execPath);
     return null;
   } catch (error) {
@@ -135,7 +159,8 @@ export async function replaceStandalone(execPath: string, version: string, fetch
 }
 
 function readOutput(command: string, args: string[]): string | null {
-  const result = spawnSync(command, args, { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
+  // A binary that hangs must not hang the update, and a probe must not start its own update check.
+  const result = spawnSync(command, args, { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 15_000, env: { ...process.env, [ENV_NO_UPDATE_CHECK]: "1" } });
   return result.status === 0 ? result.stdout : null;
 }
 
@@ -173,12 +198,13 @@ export async function runUpdate(options: RunUpdateOptions): Promise<UpdateReport
   // the updated one; a `moodle` found on PATH could be a different, older install.
   const self = selfCommand(options.argv, options.execPath);
   if (newer) {
-    const command = installCommand(install);
+    const command = installCommand(install, latest!, self.args[0]);
     if (command) {
       const result = run(command.command, command.args);
-      if (result.status !== 0) { report.ok = false; report.note = `${command.command} exited with ${result.status ?? "a signal"}; the package was not updated.`; return report; }
+      if (result.status !== 0) { report.ok = false; report.note = `${command.command} exited with ${result.status ?? "a signal"}; the package was not updated. A registry mirror that has not synced ${latest} yet fails this way; retry later.`; return report; }
     } else {
-      const failure = await replaceStandalone(options.execPath ?? process.execPath, latest!, options.fetchImpl);
+      const probe = (file: string) => (options.readOutput ?? readOutput)(file, ["--version"]);
+      const failure = await replaceStandalone(options.execPath ?? process.execPath, latest!, options.fetchImpl, undefined, probe);
       if (failure) { report.ok = false; report.note = `${standaloneUpdateHint(VERSION, latest!)} ${failure}`; return report; }
     }
     const installed = (options.readOutput ?? readOutput)(self.command, [...self.args, "--version"])?.trim();
