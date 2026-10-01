@@ -1,4 +1,7 @@
-import { createOAuthRouter, type AccessGrant, type OAuthRouter, type OAuthStorage, type PairingIssue } from "./oauth.js";
+import { createBrowserRunLogin, type BrowserRunBinding, type LoginBrowser } from "./browser-login.js";
+import type { DurableObjectNamespaceLike } from "./http.js";
+import { createOAuthRouter, LOGIN_PATH, randomSecret, type AccessGrant, type OAuthRouter, type OAuthStorage, type PairingIssue } from "./oauth.js";
+import { createOwnerLogin, createSessionAdopter, type OwnerLogin, type OwnerLoginOptions } from "./owner-login.js";
 
 export const OAUTH_ROUTE_PREFIXES = ["/oauth/", "/.well-known/oauth-"] as const;
 export const INTERNAL_VERIFY_PATH = "/internal/verify";
@@ -12,10 +15,15 @@ export interface AuthBrokerEnv {
   EXPECTED_HOST?: string;
   SESSION_SYNC_TOKEN_DIGEST?: string;
   OAUTH_ALLOWED_REDIRECT_HOSTS?: string;
+  MOODLE_ORIGIN?: string;
+  BROWSER?: BrowserRunBinding;
+  SESSION_BROKER?: DurableObjectNamespaceLike;
 }
 
 export interface AuthBrokerDependencies {
   now?: () => number;
+  browser?: LoginBrowser;
+  adopt?: OwnerLoginOptions["adopt"];
 }
 
 export function isOAuthRoute(pathname: string): boolean {
@@ -32,6 +40,8 @@ export function parseAllowedRedirectHosts(value: string | undefined): string[] |
 
 export class AuthBroker {
   private readonly now: () => number;
+  private readonly browser?: LoginBrowser;
+  private readonly adopt?: OwnerLoginOptions["adopt"];
   private pending: Promise<unknown> = Promise.resolve();
 
   constructor(
@@ -40,6 +50,8 @@ export class AuthBroker {
     dependencies: AuthBrokerDependencies = {},
   ) {
     this.now = dependencies.now ?? Date.now;
+    this.browser = dependencies.browser ?? (env.BROWSER ? createBrowserRunLogin(env.BROWSER) : undefined);
+    this.adopt = dependencies.adopt ?? (env.SESSION_BROKER ? createSessionAdopter(env.SESSION_BROKER) : undefined);
   }
 
   async fetch(request: Request): Promise<Response> {
@@ -50,7 +62,7 @@ export class AuthBroker {
 
   private async route(request: Request): Promise<Response> {
     const url = new URL(request.url);
-    const router = this.router(this.issuer(url));
+    const { router, owner } = this.router(this.issuer(url));
     if (this.env.SESSION_SYNC_TOKEN_DIGEST) {
       const previous = await this.state.storage.get<string>("oauth:owner-credential");
       if (previous !== this.env.SESSION_SYNC_TOKEN_DIGEST) await router.revokeClients();
@@ -59,7 +71,10 @@ export class AuthBroker {
     if (url.pathname === "/internal/clients") {
       if (request.method === "GET") return Response.json({ clients: await router.listClients() });
       if (request.method === "DELETE") {
-        await router.revokeClients(url.searchParams.get("client_id") ?? undefined);
+        const clientId = url.searchParams.get("client_id") ?? undefined;
+        await router.revokeClients(clientId);
+        // An owner cookie would let the same browser approve a new client at once.
+        if (!clientId) await owner.signOutAll();
         return new Response(null, { status: 204 });
       }
     }
@@ -75,6 +90,7 @@ export class AuthBroker {
       return Response.json(await router.createPairing());
     }
 
+    if (url.pathname === LOGIN_PATH) return owner.handle(request, url);
     const response = await router.handle(request, url);
     return response ?? new Response(null, { status: 404 });
   }
@@ -83,14 +99,28 @@ export class AuthBroker {
     return this.env.EXPECTED_HOST ? `https://${this.env.EXPECTED_HOST}` : url.origin;
   }
 
-  private router(issuer: string): OAuthRouter {
+  private router(issuer: string): { router: OAuthRouter; owner: OwnerLogin } {
     const allowedRedirectHosts = parseAllowedRedirectHosts(this.env.OAUTH_ALLOWED_REDIRECT_HOSTS);
-    return createOAuthRouter({
+    // The two need each other: approval asks who the owner is, and claiming a fresh
+    // Worker spends the pairing code the router holds.
+    const owner = createOwnerLogin({
+      storage: this.state.storage,
+      mcpUrl: `${issuer}/mcp`,
+      now: this.now,
+      createSecret: randomSecret,
+      pairing: { check: (code) => router.checkPairingCode(code), close: () => router.closePairing() },
+      ...(this.env.MOODLE_ORIGIN ? { moodleOrigin: new URL(this.env.MOODLE_ORIGIN).origin } : {}),
+      ...(this.browser ? { browser: this.browser } : {}),
+      ...(this.adopt ? { adopt: this.adopt } : {}),
+    });
+    const router = createOAuthRouter({
       storage: this.state.storage,
       issuer,
+      owner,
       now: this.now,
       ...(allowedRedirectHosts ? { allowedRedirectHosts } : {}),
     });
+    return { router, owner };
   }
 }
 

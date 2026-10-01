@@ -1,14 +1,14 @@
 import { createEncryptionKeyring, decryptValue, encryptValue, type EncryptionKeyring } from "./crypto.js";
 import { createMoodleClientCore, MoodleClientCoreApiError } from "../moodle-client-core.js";
-import { createMoodleGateway } from "../mcp/gateway.js";
+import { createMoodleGateway, MoodleGatewayError, type MoodleGateway } from "../mcp/gateway.js";
 import { createMoodleMcpServer } from "../mcp/server.js";
 import { fetchLatestVersion, isNewerVersion, updateHint, UPDATE_CHECK_TTL_MS, type LatestVersionRecord } from "../update-core.js";
 import { VERSION } from "../version.js";
 import type { McpRequestContext } from "../mcp/protocol.js";
+import type { MobileToken } from "../mobile-login-core.js";
 import { FetchMoodleSessionUpstream } from "./moodle-upstream.js";
 import { problemResponse } from "./problems.js";
 import { WORKER_SERVICE_ID, WORKER_SERVICE_VERSION } from "./http.js";
-import { isRecoveredSession, ServiceBindingSessionRecovery, type SessionRecoveryProvider, type SessionRecoveryServiceBinding } from "./session-recovery.js";
 
 const SESSION_STORAGE_KEY = "session";
 const DEFAULT_TOUCH_DELAY_MS = 30 * 60 * 1000;
@@ -17,9 +17,10 @@ const MAX_BACKOFF_MS = 30 * 60 * 1000;
 const SESSION_STALE_MS = 24 * 60 * 60 * 1000;
 const LATEST_VERSION_KEY = "latest_version";
 const SESSION_EXPIRING_MS = 15 * 60 * 1000;
-const RECOVERY_STORAGE_KEY = "session_recovery";
-const RECOVERY_COOLDOWN_MS = 5 * 60 * 1000;
-const RECOVERY_TIMEOUT_MS = 60 * 1000;
+// Moodle refuses a second autologin key for the same user within six minutes.
+const MINT_INTERVAL_MS = 6 * 60 * 1000;
+const MINT_RETRY_MS = 30 * 60 * 1000;
+const MAX_MINT_RETRIES = 6;
 
 export interface DurableObjectStorageLike {
   get<T>(key: string): Promise<T | undefined>;
@@ -38,7 +39,6 @@ export interface SessionBrokerEnv {
   SESSION_ENCRYPTION_KEY: string;
   SESSION_ENCRYPTION_KEY_PREVIOUS?: string;
   SESSION_CREDENTIAL_ID?: string;
-  MOODLE_SESSION_RECOVERY?: SessionRecoveryServiceBinding;
 }
 
 export interface SessionCandidate {
@@ -75,14 +75,16 @@ export interface MoodleSessionUpstream {
     cookieValue: string;
     sesskey: string;
   }): Promise<SessionTouchResult>;
+  // Only where the site enables Moodle's mobile service: a live cookie buys a
+  // durable token, and the token later mints a fresh cookie with nobody present.
+  captureMobileToken?(cookie: { name: string; value: string }): Promise<MobileToken | null>;
+  mintSession?(moodleUserId: number, token: MobileToken): Promise<{ name: string; value: string } | null>;
 }
 
 export interface SessionBrokerDependencies {
   upstream: MoodleSessionUpstream;
   fetchImpl?: typeof fetch;
   now?: () => number;
-  recovery?: SessionRecoveryProvider;
-  recoveryTimeoutMs?: number;
 }
 
 interface StoredSession {
@@ -97,17 +99,16 @@ interface StoredSession {
   next_alarm_at: number | null;
   expires_at: number | null;
   failure_count: number;
+  mobile_token?: MobileToken;
+  last_mint_at?: number;
+  mobile_token_failed?: boolean;
 }
 
 export class SessionBroker {
   private readonly now: () => number;
   private readonly dependencies: SessionBrokerDependencies;
   private keyringPromise: Promise<EncryptionKeyring> | undefined;
-  private readonly recovery: SessionRecoveryProvider | undefined;
-  private recoveryInFlight: Promise<StoredSession | undefined> | undefined;
-  // Bumped only when a recovered session is stored. Revisions also change on routine
-  // cookie rotation, so they cannot tell a request whether recovery already ran.
-  private recoveryGeneration = 0;
+  private renewing: Promise<StoredSession | null> | null = null;
 
   constructor(
     private readonly state: DurableObjectStateLike,
@@ -116,8 +117,6 @@ export class SessionBroker {
   ) {
     this.dependencies = dependencies ?? { upstream: new FetchMoodleSessionUpstream(env.MOODLE_ORIGIN) };
     this.now = this.dependencies.now ?? Date.now;
-    this.recovery = this.dependencies.recovery
-      ?? (env.MOODLE_SESSION_RECOVERY ? new ServiceBindingSessionRecovery(env.MOODLE_SESSION_RECOVERY) : undefined);
   }
 
   async fetch(request: Request): Promise<Response> {
@@ -133,6 +132,7 @@ export class SessionBroker {
     if (url.pathname === "/mcp" && request.method === "POST") return this.handleMcp(request);
     if (url.pathname === "/readyz" && request.method === "GET") return this.ready();
     if (url.pathname === "/session" && request.method === "PUT") return this.replaceSession(request);
+    if (url.pathname === "/session/adopt" && request.method === "POST") return this.adoptSession(request);
     if (url.pathname === "/session/touch" && request.method === "POST") return this.touchNow();
     return problemResponse(404, "NOT_FOUND", "Not Found", "The requested session route does not exist.");
   }
@@ -148,54 +148,52 @@ export class SessionBroker {
       return problemResponse(400, "MCP_PROTOCOL_METADATA_INVALID", "Bad Request", "The internal MCP request is invalid.");
     }
 
-    let session = await this.loadSession();
-    if (!session) {
-      return problemResponse(503, "SESSION_MISSING", "Service Unavailable", "No Moodle session is available.");
-    }
-    const generationAtStart = this.recoveryGeneration;
-    if (this.isExpired(session) && this.recovery) {
-      const result = await this.touchSession();
-      if (result === "unreachable") {
-        return problemResponse(503, "MOODLE_UNREACHABLE", "Service Unavailable", "Moodle could not be reached.");
-      }
-      session = typeof result === "object" ? result : await this.loadSession();
-    }
-    if (!session || this.isExpired(session)) {
-      return problemResponse(503, "SESSION_EXPIRED", "Service Unavailable", "The Moodle session has expired.");
-    }
-
-    const cookieValue = session.cookie_value;
-
-    let recoveredDuringRequest = this.recoveryGeneration !== generationAtStart;
-    const client = createMoodleClientCore(this.env.MOODLE_ORIGIN, {
-      cookie: { name: session.cookie_name, value: cookieValue },
-      sesskey: session.sesskey,
-      userid: session.moodle_user_id,
-      fetchImpl: this.dependencies.fetchImpl,
-      ...(this.recovery ? { onLoginRequired: async () => {
-        if (recoveredDuringRequest) throw new MoodleClientCoreApiError("The recovered Moodle session was rejected.", "servicerequireslogin");
-        recoveredDuringRequest = true;
-        const result = await this.touchSession();
-        if (typeof result !== "object" || this.isExpired(result)) {
-          throw new MoodleClientCoreApiError("No usable Moodle session could be recovered.", "servicerequireslogin");
-        }
-        return {
-          cookie: { name: result.cookie_name, value: result.cookie_value },
-          pageContext: {
-            sesskey: result.sesskey,
-            user_info: { userid: result.moodle_user_id, username: "", fullname: "", sitename: "", siteurl: this.env.MOODLE_ORIGIN },
-          },
-        };
-      } } : {}),
-    });
+    const { signInUrl, ...context } = envelope.context;
+    const session = await this.loadSession();
+    // Without a usable session the connector still initializes and lists tools, so a
+    // hosted client shows it as connected and every tool call says where to sign in.
+    let live = session && isLive(session, this.now()) ? session : null;
+    if (session && !live) live = await this.renewOnce(session);
+    const signedIn = live !== null;
+    const gateway = live
+      ? this.gatewayFor(live)
+      : signedOutGateway();
     // Only initialize pays for the registry lookup, and only once a day; every
     // session then starts with the notice until the Worker is redeployed.
     const initializing = isRecord(envelope.request) && envelope.request.method === "initialize";
     const latest = initializing ? await this.latestVersion(true) : undefined;
-    const instructions = latest && isNewerVersion(latest, VERSION) ? [`${updateHint(VERSION, latest)} to redeploy this server.`] : undefined;
-    const server = createMoodleMcpServer(createMoodleGateway(client), { instructions });
-    const response = await server.handle(envelope.request, envelope.context);
+    const instructions = [
+      ...(signedIn ? [] : [signInUrl ? `Moodle is not signed in yet; ask the user to open ${signInUrl} and sign in.` : "Moodle is not signed in yet; ask the user to run moodle mcp login."]),
+      ...(latest && isNewerVersion(latest, VERSION) ? [`${updateHint(VERSION, latest)} to redeploy this server.`] : []),
+    ];
+    const server = createMoodleMcpServer(gateway, { instructions, ...(signInUrl ? { signInUrl } : {}) });
+    const response = await server.handle(envelope.request, context);
     return Response.json({ response }, { headers: { "cache-control": "private, no-store" } });
+  }
+
+  // The record can call a session live after Moodle has dropped it, so a refused
+  // read recovers here once and retries; the core shares that recovery with any
+  // other read already in flight.
+  private gatewayFor(session: StoredSession): MoodleGateway {
+    let used = session;
+    return createMoodleGateway(createMoodleClientCore(this.env.MOODLE_ORIGIN, {
+      cookie: { name: session.cookie_name, value: session.cookie_value },
+      sesskey: session.sesskey,
+      userid: session.moodle_user_id,
+      fetchImpl: this.dependencies.fetchImpl,
+      onLoginRequired: async () => {
+        const renewed = await this.recoverRejected(used);
+        if (!renewed) throw new MoodleClientCoreApiError("No usable Moodle session could be recovered.", "servicerequireslogin");
+        used = renewed;
+        return {
+          cookie: { name: renewed.cookie_name, value: renewed.cookie_value },
+          pageContext: {
+            sesskey: renewed.sesskey,
+            user_info: { userid: renewed.moodle_user_id, username: "", fullname: "", sitename: "", siteurl: this.env.MOODLE_ORIGIN },
+          },
+        };
+      },
+    }));
   }
 
   async alarm(): Promise<void> {
@@ -229,23 +227,36 @@ export class SessionBroker {
   }
 
   private async replaceSession(request: Request): Promise<Response> {
-    if (!request.headers.get("content-type")?.toLowerCase().startsWith("application/json")) {
-      return problemResponse(415, "UNSUPPORTED_MEDIA_TYPE", "Unsupported Media Type", "Session updates must use application/json.");
-    }
-
-    let input: unknown;
-    try {
-      input = await request.json();
-    } catch {
-      return problemResponse(400, "INVALID_JSON", "Bad Request", "The request body is not valid JSON.");
-    }
+    const input = await readJson(request);
+    if (input instanceof Response) return input;
     if (!isSessionCandidate(input)) {
       return problemResponse(400, "SESSION_CANDIDATE_INVALID", "Bad Request", "The session candidate is invalid.");
     }
     if (normalizeOrigin(input.moodleOrigin) !== normalizeOrigin(this.env.MOODLE_ORIGIN)) {
       return problemResponse(403, "MOODLE_ORIGIN_MISMATCH", "Forbidden", "The session candidate belongs to a different Moodle origin.");
     }
+    return this.storeSession(input, (current) => (current?.revision ?? null) === input.expectedRevision ? "ok" : "revision_conflict");
+  }
 
+  // A browser sign-in replaces whatever session is stored, so it skips the revision
+  // check. The account check still applies, and only a claimed sign-in may be first.
+  private async adoptSession(request: Request): Promise<Response> {
+    const input = await readJson(request);
+    if (input instanceof Response) return input;
+    const candidate = isRecord(input)
+      ? { moodleOrigin: this.env.MOODLE_ORIGIN, cookieName: input.cookieName, cookieValue: input.cookieValue, expectedRevision: null }
+      : undefined;
+    if (!isSessionCandidate(candidate) || !isRecord(input) || typeof input.allowNewOwner !== "boolean") {
+      return problemResponse(400, "SESSION_CANDIDATE_INVALID", "Bad Request", "The session candidate is invalid.");
+    }
+    const allowNewOwner = input.allowNewOwner;
+    return this.storeSession(candidate, (current) => current || allowNewOwner ? "ok" : "owner_claim_required");
+  }
+
+  private async storeSession(
+    input: SessionCandidate,
+    admit: (current: StoredSession | undefined) => "ok" | "revision_conflict" | "owner_claim_required",
+  ): Promise<Response> {
     let validation: SessionValidationSuccess | SessionValidationFailure;
     try {
       validation = await this.dependencies.upstream.validate(input);
@@ -256,10 +267,6 @@ export class SessionBroker {
       return problemResponse(422, "SESSION_CANDIDATE_INVALID", "Unprocessable Content", "Moodle rejected the session candidate.");
     }
 
-    return this.storeValidatedSession(input, validation);
-  }
-
-  private async storeValidatedSession(input: SessionCandidate, validation: SessionValidationSuccess): Promise<Response> {
     const now = this.now();
     const nextAlarmAt = nextTouchAt(now, validation.remainingSeconds);
     if (!Number.isSafeInteger(validation.moodleUserId) || validation.moodleUserId <= 0) {
@@ -267,13 +274,13 @@ export class SessionBroker {
     }
     const result = await this.transaction(async (storage) => {
       const current = await this.readSession(storage);
-      const currentRevision = current?.revision ?? null;
-      if (currentRevision !== input.expectedRevision) return null;
+      const admission = admit(current);
+      if (admission !== "ok") return admission;
       if (current && current.moodle_user_id !== validation.moodleUserId) return "identity_mismatch" as const;
       const session: StoredSession = {
         cookie_value: validation.rotatedCookie ?? input.cookieValue,
         cookie_name: input.cookieName,
-        revision: (currentRevision ?? 0) + 1,
+        revision: (current?.revision ?? 0) + 1,
         sesskey: validation.sesskey,
         moodle_user_id: validation.moodleUserId,
         last_verified_at: now,
@@ -282,6 +289,10 @@ export class SessionBroker {
         next_alarm_at: nextAlarmAt,
         expires_at: expiresAt(now, validation.remainingSeconds),
         failure_count: 0,
+        // The account check above makes the stored token safe to keep, unless
+        // Moodle already refused it; then this sign-in fetches a fresh one.
+        ...(current?.mobile_token && !current.mobile_token_failed ? { mobile_token: current.mobile_token } : {}),
+        ...(current?.last_mint_at !== undefined ? { last_mint_at: current.last_mint_at } : {}),
       };
       await this.writeSession(storage, session);
       return session;
@@ -290,12 +301,16 @@ export class SessionBroker {
     if (result === "identity_mismatch") {
       return problemResponse(409, "SESSION_ACCOUNT_MISMATCH", "Conflict", "This Worker belongs to another Moodle account. Create a separate deployment for that account.");
     }
-    if (!result) {
+    if (result === "revision_conflict") {
       return problemResponse(409, "SESSION_REVISION_CONFLICT", "Conflict", "The remote Moodle session has a newer revision.");
     }
+    if (result === "owner_claim_required") {
+      return problemResponse(403, "OWNER_CLAIM_REQUIRED", "Forbidden", "This Worker has no owner yet. Sign in with the pairing code from the deployment.");
+    }
     await this.state.storage.setAlarm(nextAlarmAt);
+    const renewal = result.mobile_token || await this.captureMobileToken(result) ? "mobile_token" : "sign_in";
     return Response.json(
-      { status: "accepted", revision: result.revision, lastVerifiedAt: new Date(result.last_verified_at).toISOString() },
+      { status: "accepted", revision: result.revision, lastVerifiedAt: new Date(result.last_verified_at).toISOString(), renewal },
       { status: 201, headers: { "cache-control": "no-store" } },
     );
   }
@@ -317,9 +332,6 @@ export class SessionBroker {
   private async touchSession(): Promise<StoredSession | "missing" | "unreachable" | "expired"> {
     const current = await this.loadSession();
     if (!current) return "missing";
-    if (current.last_error_code === "SESSION_EXPIRED" && this.recovery) {
-      return await this.recoverSession(current) ?? "expired";
-    }
 
     const cookie = current.cookie_value;
 
@@ -341,12 +353,29 @@ export class SessionBroker {
       return "unreachable";
     }
     if (!touched.alive) {
-      const expired = { ...current, last_error_code: "SESSION_EXPIRED", expires_at: this.now(), next_alarm_at: null };
-      if (await this.putIfCurrent(current, expired)) {
-        if (!this.recovery) await this.state.storage.deleteAlarm?.();
-        return await this.recoverSession(expired) ?? "expired";
+      const renewed = await this.renewOnce(current);
+      if (renewed) return renewed;
+      // The mint attempt may have stamped last_mint_at on this same session, so
+      // re-read it; anything newer was uploaded meanwhile and this touch says
+      // nothing about it.
+      const latest = await this.loadSession();
+      if (!latest) return "missing";
+      if (!sameSession(latest, current)) return latest;
+      // A kept token retries on a slow schedule, in case Moodle was only briefly
+      // unwell; without one, only a new sign-in brings the session back.
+      const retryAt = latest.mobile_token && latest.failure_count < MAX_MINT_RETRIES ? this.now() + MINT_RETRY_MS : null;
+      const expired = {
+        ...latest,
+        last_error_code: "SESSION_EXPIRED",
+        expires_at: this.now(),
+        next_alarm_at: retryAt,
+        failure_count: latest.mobile_token ? latest.failure_count + 1 : latest.failure_count,
+      };
+      if (await this.putIfCurrent(latest, expired)) {
+        if (retryAt) await this.state.storage.setAlarm(retryAt);
+        else await this.state.storage.deleteAlarm?.();
       }
-      return await this.loadSession() ?? "missing";
+      return "expired";
     }
 
     const now = this.now();
@@ -370,77 +399,86 @@ export class SessionBroker {
     return await this.loadSession() ?? "missing";
   }
 
-  private isExpired(session: StoredSession): boolean {
-    return session.last_error_code === "SESSION_EXPIRED"
-      || (session.expires_at !== null && session.expires_at <= this.now());
-  }
-
-  private recoverSession(expected: StoredSession): Promise<StoredSession | undefined> {
-    if (!this.recovery) return Promise.resolve(undefined);
-    if (this.recoveryInFlight) return this.recoveryInFlight;
-    const pending = this.performRecovery(expected).finally(() => {
-      if (this.recoveryInFlight === pending) this.recoveryInFlight = undefined;
-    });
-    this.recoveryInFlight = pending;
-    return pending;
-  }
-
-  private async performRecovery(expected: StoredSession): Promise<StoredSession | undefined> {
-    const claimed = await this.transaction(async (storage) => {
+  // Trade a live cookie for a durable token once, right after it is stored. Any
+  // failure just leaves the Worker on the sign-in path.
+  private async captureMobileToken(session: StoredSession): Promise<boolean> {
+    const { upstream } = this.dependencies;
+    if (!upstream.captureMobileToken) return false;
+    let token: MobileToken | null;
+    try {
+      token = await upstream.captureMobileToken({ name: session.cookie_name, value: session.cookie_value });
+    } catch {
+      return false;
+    }
+    // Without the private token Moodle will not issue an autologin key.
+    if (!token?.privatetoken) return false;
+    const mobileToken: MobileToken = { wstoken: token.wstoken, privatetoken: token.privatetoken };
+    return this.transaction(async (storage) => {
       const current = await this.readSession(storage);
-      if (!current || current.revision !== expected.revision || current.cookie_value !== expected.cookie_value) return false;
-      const previous = await storage.get<{ retryAfter: number }>(RECOVERY_STORAGE_KEY);
-      if (previous && previous.retryAfter > this.now()) {
-        await storage.setAlarm(previous.retryAfter);
-        return false;
-      }
-      // Persist before external I/O so eviction or another request cannot launch a second recovery.
-      const retryAfter = this.now() + RECOVERY_COOLDOWN_MS;
-      await storage.put(RECOVERY_STORAGE_KEY, { retryAfter });
-      await storage.setAlarm(retryAfter);
+      if (current?.moodle_user_id !== session.moodle_user_id) return false;
+      await this.writeSession(storage, { ...current, mobile_token: mobileToken, mobile_token_failed: false });
       return true;
     });
-    if (!claimed) {
-      const latest = await this.loadSession();
-      return latest && !this.isExpired(latest) ? latest : undefined;
-    }
+  }
 
-    const controller = new AbortController();
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    try {
-      const timeout = new Promise<never>((_, reject) => {
-        timer = setTimeout(() => {
-          controller.abort();
-          reject(new Error("Moodle session recovery timed out."));
-        }, this.dependencies.recoveryTimeoutMs ?? RECOVERY_TIMEOUT_MS);
-      });
-      const candidateAndValidation = (async () => {
-        const recovered = await this.recovery!.recover({
-          moodleOrigin: this.env.MOODLE_ORIGIN,
-          moodleUserId: expected.moodle_user_id,
-          reason: "SESSION_EXPIRED",
-          signal: controller.signal,
-        });
-        controller.signal.throwIfAborted();
-        if (!isRecoveredSession(recovered) || normalizeOrigin(recovered.moodleOrigin) !== normalizeOrigin(this.env.MOODLE_ORIGIN)) return null;
-        const input: SessionCandidate = { ...recovered, expectedRevision: expected.revision };
-        const validation = await this.dependencies.upstream.validate(input);
-        controller.signal.throwIfAborted();
-        if (!validation.valid || (validation.remainingSeconds !== null && validation.remainingSeconds <= 0)) return null;
-        return { input, validation };
-      })();
-      const recovered = await Promise.race([candidateAndValidation, timeout]);
-      if (recovered) {
-        const stored = await this.storeValidatedSession(recovered.input, recovered.validation);
-        if (stored.ok) this.recoveryGeneration += 1;
-      }
-    } catch {
-      // Provider diagnostics may contain credentials; keep failures inside the broker.
-    } finally {
-      clearTimeout(timer);
-    }
+  // Concurrent reads that all find the session dead share one mint, so a single
+  // outage never spends Moodle's one-key-per-six-minutes allowance twice.
+  private renewOnce(current: StoredSession): Promise<StoredSession | null> {
+    this.renewing ??= this.renewFromMobileToken(current).finally(() => { this.renewing = null; });
+    return this.renewing;
+  }
+
+  // Moodle refused a cookie the record still calls live. Someone may already have
+  // replaced it; otherwise mint a fresh one the same way an expired record would.
+  private async recoverRejected(used: StoredSession): Promise<StoredSession | null> {
     const latest = await this.loadSession();
-    return latest && !this.isExpired(latest) ? latest : undefined;
+    if (!latest || latest.moodle_user_id !== used.moodle_user_id) return null;
+    if (!sameSession(latest, used)) return isLive(latest, this.now()) ? latest : this.renewOnce(latest);
+    return this.renewOnce(latest);
+  }
+
+  private async renewFromMobileToken(current: StoredSession): Promise<StoredSession | null> {
+    const { upstream } = this.dependencies;
+    const token = current.mobile_token;
+    const now = this.now();
+    if (!upstream.mintSession || !token) return null;
+    if (current.last_mint_at !== undefined && now - current.last_mint_at < MINT_INTERVAL_MS) return null;
+    // Record the attempt before making it, so concurrent callers and a restarted
+    // object stay inside Moodle's rate limit.
+    const attempted: StoredSession = { ...current, last_mint_at: now };
+    if (!await this.putIfCurrent(current, attempted)) return null;
+    try {
+      const cookie = await upstream.mintSession(current.moodle_user_id, token);
+      const validation = cookie
+        ? await upstream.validate({ moodleOrigin: this.env.MOODLE_ORIGIN, cookieName: cookie.name, cookieValue: cookie.value, expectedRevision: null })
+        : null;
+      if (!cookie || !validation?.valid || validation.moodleUserId !== current.moodle_user_id) {
+        // Moodle answered and said no (revoked token, service turned off), so the
+        // next sign-in should not keep this token.
+        await this.putIfCurrent(attempted, { ...attempted, mobile_token_failed: true });
+        return null;
+      }
+      const nextAlarmAt = nextTouchAt(now, validation.remainingSeconds);
+      const renewed: StoredSession = {
+        ...attempted,
+        cookie_value: validation.rotatedCookie ?? cookie.value,
+        cookie_name: cookie.name,
+        revision: attempted.revision + 1,
+        sesskey: validation.sesskey,
+        last_verified_at: now,
+        last_touch_at: null,
+        last_error_code: null,
+        next_alarm_at: nextAlarmAt,
+        expires_at: expiresAt(now, validation.remainingSeconds),
+        failure_count: 0,
+        mobile_token_failed: false,
+      };
+      if (!await this.putIfCurrent(attempted, renewed)) return null;
+      await this.state.storage.setAlarm(nextAlarmAt);
+      return renewed;
+    } catch {
+      return null;
+    }
   }
 
   private async recordFailure(current: StoredSession, code: string): Promise<void> {
@@ -458,7 +496,8 @@ export class SessionBroker {
   private putIfCurrent(expected: StoredSession, updated: StoredSession): Promise<boolean> {
     return this.transaction(async (storage) => {
       const current = await this.readSession(storage);
-      if (current?.revision !== expected.revision || current.cookie_value !== expected.cookie_value) return false;
+      if (current?.revision !== expected.revision || current.cookie_value !== expected.cookie_value
+        || current.last_mint_at !== expected.last_mint_at) return false;
       await this.writeSession(storage, updated);
       return true;
     });
@@ -552,6 +591,8 @@ function readiness(session: StoredSession | undefined, now: number) {
         status: sessionStatus,
         code: sessionCode,
         ...(session ? { time: new Date(session.last_verified_at).toISOString(), revision: session.revision } : {}),
+        // How the session comes back after it expires: by itself, or by a new sign-in.
+        renewal: session?.mobile_token ? "mobile_token" : "sign_in",
       }],
       "moodle:upstream": [{ status: upstreamStatus, code: upstreamCode }],
     },
@@ -589,13 +630,58 @@ function isSessionCandidate(value: unknown): value is SessionCandidate {
       || (Number.isInteger(value.expectedRevision) && (value.expectedRevision as number) >= 0));
 }
 
+async function readJson(request: Request): Promise<unknown> {
+  if (!request.headers.get("content-type")?.toLowerCase().startsWith("application/json")) {
+    return problemResponse(415, "UNSUPPORTED_MEDIA_TYPE", "Unsupported Media Type", "Session updates must use application/json.");
+  }
+  try {
+    return await request.json();
+  } catch {
+    return problemResponse(400, "INVALID_JSON", "Bad Request", "The request body is not valid JSON.");
+  }
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function isMcpEnvelope(value: unknown): value is { request: unknown; context: McpRequestContext } {
+function isMcpEnvelope(value: unknown): value is { request: unknown; context: McpRequestContext & { signInUrl?: string } } {
   if (!isRecord(value) || !("request" in value) || !isRecord(value.context)) return false;
-  return (value.context.protocolVersion === undefined || typeof value.context.protocolVersion === "string")
+  return (value.context.signInUrl === undefined || (typeof value.context.signInUrl === "string" && value.context.signInUrl.startsWith("https://")))
+    && (value.context.protocolVersion === undefined || typeof value.context.protocolVersion === "string")
     && (value.context.method === undefined || typeof value.context.method === "string")
     && (value.context.toolName === undefined || typeof value.context.toolName === "string");
+}
+
+function isLive(session: StoredSession, now: number): boolean {
+  return session.last_error_code !== "SESSION_EXPIRED" && (session.expires_at === null || session.expires_at > now);
+}
+
+function sameSession(a: StoredSession, b: StoredSession): boolean {
+  return a.revision === b.revision && a.cookie_value === b.cookie_value;
+}
+
+// Every read fails the same way, so the MCP server maps it to one auth error that
+// names the sign-in link. The Worker never offers submit, signed in or not.
+function signedOutGateway(): MoodleGateway {
+  const fail = async (): Promise<never> => {
+    throw new MoodleGatewayError("auth", "No Moodle session is signed in.");
+  };
+  return {
+    getUser: fail,
+    getOverview: fail,
+    getDue: fail,
+    listCourses: fail,
+    getCourse: fail,
+    listActivities: fail,
+    getActivity: fail,
+    getQuizAttempt: fail,
+    getGrades: fail,
+    listForums: fail,
+    searchForums: fail,
+    getThread: fail,
+    getFile: fail,
+    listThreads: fail,
+    listNewsForums: fail,
+  };
 }

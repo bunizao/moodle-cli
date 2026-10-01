@@ -11,6 +11,7 @@ import {
   NodeWranglerDeploymentAdapter,
   PrivateDeploymentReceiptStore,
   WranglerCommandError,
+  parseDevicePrompt,
   createBackgroundMoodleSessionSource,
   createDefaultManagedDeployment,
   type DeploymentCommandRunner,
@@ -477,14 +478,14 @@ describe("FetchManagedWorkerClient", () => {
     const structured = new FetchManagedWorkerClient(vi.fn(async () => Response.json({
       status: "warn",
       checks: {
-        "moodle:session": [{ status: "warn", code: "SESSION_EXPIRING", revision: 12 }],
+        "moodle:session": [{ status: "warn", code: "SESSION_EXPIRING", revision: 12, renewal: "mobile_token" }],
         "moodle:upstream": [{ status: "pass", code: "MOODLE_REACHABLE" }],
       },
     })) as unknown as typeof fetch);
     const legacy = new FetchManagedWorkerClient(vi.fn(async () => Response.json({ status: "pass" })) as unknown as typeof fetch);
 
     await expect(structured.getReadiness({ endpoint: "https://worker.example", sessionSyncToken: "sync-token" }))
-      .resolves.toEqual({ status: "warn", reasonCode: "SESSION_EXPIRING", revision: 12 });
+      .resolves.toEqual({ status: "warn", reasonCode: "SESSION_EXPIRING", revision: 12, renewal: "mobile_token" });
     await expect(legacy.getReadiness({ endpoint: "https://worker.example", sessionSyncToken: "sync-token" }))
       .resolves.toEqual({ status: "pass", reasonCode: null, revision: null });
   });
@@ -709,3 +710,45 @@ describe("deployment history and atomic credentials", () => {
 function smokeToolResult(data: unknown) {
   return { content: [{ type: "text", text: JSON.stringify(data) }], structuredContent: data };
 }
+
+describe("Cloudflare device sign-in", () => {
+  // Wrangler 4.131 output, with the code replaced.
+  const OUTPUT = [
+    "",
+    " ⛅️ wrangler 4.131.0",
+    "───────────────────",
+    "Attempting to login via OAuth Device Authorization Grant...",
+    "To authorize Wrangler, please visit:",
+    "",
+    "  https://dash.cloudflare.com/oauth2/device/verify",
+    "",
+    "and enter the code:",
+    "",
+    "  abCD1234",
+    "",
+    "You have 5 minutes to approve this request.",
+  ].join("\n");
+
+  it("reads the verification link and code from Wrangler's output", () => {
+    expect(parseDevicePrompt(OUTPUT)).toEqual({ url: "https://dash.cloudflare.com/oauth2/device/verify?user_code=abCD1234", code: "abCD1234" });
+    expect(parseDevicePrompt(OUTPUT.slice(0, 200))).toBeNull();
+    expect(parseDevicePrompt(OUTPUT.replace("dash.cloudflare.com", "dash.cloudflare.com.evil.test"))).toBeNull();
+  });
+
+  it("announces the prompt once while Wrangler is still polling", async () => {
+    const runner = {
+      run: vi.fn(async (_command: string, _args: string[], _env?: NodeJS.ProcessEnv, onOutput?: (chunk: string) => void) => {
+        for (const chunk of OUTPUT.match(/[\s\S]{1,40}/gu)!) onOutput?.(chunk);
+        onOutput?.("Successfully logged in.\n");
+        return { stdout: OUTPUT, stderr: "" };
+      }),
+    };
+    const adapter = new NodeWranglerDeploymentAdapter({ wranglerBinPath: "/package/wrangler.js", runner });
+    const prompts: unknown[] = [];
+
+    await adapter.loginWithDevice((prompt) => prompts.push(prompt));
+
+    expect(runner.run).toHaveBeenCalledWith(process.execPath, ["/package/wrangler.js", "login", "--device", "--browser=false"], undefined, expect.any(Function));
+    expect(prompts).toEqual([{ url: "https://dash.cloudflare.com/oauth2/device/verify?user_code=abCD1234", code: "abCD1234" }]);
+  });
+});

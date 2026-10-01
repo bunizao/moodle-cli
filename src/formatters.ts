@@ -355,6 +355,8 @@ export function formatAuthStatus(status: AuthStatus): string {
     ["Session alive", status.session_alive === null ? (status.session_cached ? "unknown" : "") : status.session_alive ? "yes" : "no"],
     ["Server timeout in", formatDuration(status.session_time_remaining_seconds)],
     ["Keepalive agent", status.keepalive_installed ? `installed (${status.keepalive_plist_path})` : "not installed"],
+    ["Mobile service", status.mobile_service === null ? "" : status.mobile_service ? "on" : "off"],
+    ["Renewal", status.renewal === "mobile_token" ? "mobile token (no browser needed)" : "browser sign-in"],
   ], { title: "Authentication" });
 }
 
