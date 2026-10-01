@@ -766,11 +766,19 @@ function pageTitle(html: string): string {
   const heading = cleanNodeText(root.querySelector("h1"));
   // Boost puts the activity name in the page's h1; Classic and the themes built on it keep
   // the course name there and open the main region with the activity's h2. The document
-  // title names the activity either way, so it decides which heading is the activity's.
+  // title reads "COURSE: Activity | Site", so the heading that ends later in it is the
+  // activity's, even when a course's full name is also its short name.
   const main = cleanNodeText(root.querySelector("#region-main h2"));
   const title = cleanNodeText(root.querySelector("title"));
-  if (main && title.includes(main) && (!heading || !title.includes(heading))) return main;
+  const separator = title.lastIndexOf(" | ");
+  const named = separator < 0 ? title : title.slice(0, separator);
+  if (main && endIn(named, main) > endIn(named, heading)) return main;
   return heading || main;
+}
+
+function endIn(text: string, part: string): number {
+  const at = part ? text.lastIndexOf(part) : -1;
+  return at < 0 ? -1 : at + part.length;
 }
 
 function activityContext(html: string): { course_id: number; course_name: string; section_name: string } {

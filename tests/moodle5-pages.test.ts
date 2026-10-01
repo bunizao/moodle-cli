@@ -50,6 +50,12 @@ describe.each([["Boost", ""], ["Classic", "classic-"]])("readers on stock Moodle
     expect(parseLinkHtml(page("url"), 103, BASE)).toMatchObject({ name: "Course Website", course_id: COURSE, target_url: "https://example.org/" });
     expect(parsePageHtml(page("page"), 104, BASE)).toMatchObject({ name: "Welcome Page", course_id: COURSE, content_text: expect.stringContaining("Welcome to Lab Course One.") });
   });
+
+  it("names the activity when the course's full name is also its short name", () => {
+    // The document title then contains both headings.
+    const html = page("page").replaceAll("Lab Course One", "LAB101");
+    expect(parsePageHtml(html, 104, BASE).name).toBe("Welcome Page");
+  });
 });
 
 // A young Moodle 5.0 site's course page, read as HTML because the contents services are
