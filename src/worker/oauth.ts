@@ -1,4 +1,5 @@
 import { digestBearerToken, verifySecret } from "./auth.js";
+import { escapeHtml, htmlResponse, page } from "./pages.js";
 
 export const OAUTH_SCOPE = "moodle.read";
 export const PROTECTED_RESOURCE_METADATA_PATH = "/.well-known/oauth-protected-resource";
@@ -7,6 +8,7 @@ export const AUTHORIZE_PATH = "/oauth/authorize";
 export const REGISTER_PATH = "/oauth/register";
 export const TOKEN_PATH = "/oauth/token";
 export const REVOKE_PATH = "/oauth/revoke";
+export const LOGIN_PATH = "/oauth/login";
 
 const ACCESS_TOKEN_TTL_MS = 60 * 60 * 1000;
 const REFRESH_TOKEN_TTL_MS = 30 * 24 * 60 * 60 * 1000;
@@ -35,9 +37,17 @@ export interface OAuthStorage {
   list<T>(options: { prefix: string }): Promise<Map<string, T>>;
 }
 
+// The browser that has signed in as the Worker's owner, if any. Its CSRF value must
+// come back with the approval form, since the owner cookie alone rides cross-site POSTs.
+export interface OwnerVerifier {
+  verifyOwner(request: Request): Promise<{ csrf: string } | null>;
+  signInAvailable: boolean;
+}
+
 export interface OAuthRouterOptions {
   storage: OAuthStorage;
   issuer: string;
+  owner?: OwnerVerifier;
   allowedRedirectHosts?: readonly string[];
   now?: () => number;
   createSecret?: () => string;
@@ -57,6 +67,10 @@ export interface PairingIssue {
 export interface OAuthRouter {
   handle(request: Request, url: URL): Promise<Response | null>;
   createPairing(): Promise<PairingIssue>;
+  // Counts a wrong code against the window but leaves a right one open, so a
+  // sign-in that fails halfway can be retried with the same code.
+  checkPairingCode(submitted: string): Promise<boolean>;
+  closePairing(): Promise<void>;
   verifyAccessToken(token: string, resource: string): Promise<AccessGrant | null>;
   listClients(): Promise<Array<{ clientId: string; clientName: string; approved: boolean }>>;
   revokeClients(clientId?: string): Promise<void>;
@@ -225,16 +239,19 @@ export function createOAuthRouter(options: OAuthRouterOptions): OAuthRouter {
     return pairing;
   }
 
-  async function consumePairingAttempt(pairing: PairingRecord, submitted: string): Promise<boolean> {
+  async function checkPairingAttempt(pairing: PairingRecord, submitted: string): Promise<boolean> {
     const normalized = submitted.replace(/[^0-9A-Za-z]/gu, "").toUpperCase();
-    if (normalized && await verifySecret(normalized, [pairing.digest])) {
-      await storage.delete(PAIRING_KEY);
-      return true;
-    }
+    if (normalized && await verifySecret(normalized, [pairing.digest])) return true;
     const attempts = pairing.attempts + 1;
     if (attempts >= PAIRING_CODE_MAX_ATTEMPTS) await storage.delete(PAIRING_KEY);
     else await storage.put(PAIRING_KEY, { ...pairing, attempts });
     return false;
+  }
+
+  async function consumePairingAttempt(pairing: PairingRecord, submitted: string): Promise<boolean> {
+    if (!await checkPairingAttempt(pairing, submitted)) return false;
+    await storage.delete(PAIRING_KEY);
+    return true;
   }
 
   async function prune(): Promise<void> {
@@ -355,32 +372,51 @@ export function createOAuthRouter(options: OAuthRouterOptions): OAuthRouter {
     }
 
     const authorizeRequest = resolved.request;
+    const owner = await options.owner?.verifyOwner(request) ?? null;
+    const signIn = options.owner?.signInAvailable ?? false;
     const pairing = await readPairing();
     const pairingWindow = pairing ? { minutesLeft: Math.max(1, Math.ceil((pairing.expiresAt - now()) / 60000)), attemptsLeft: PAIRING_CODE_MAX_ATTEMPTS - pairing.attempts } : undefined;
     if (request.method === "GET") {
-      return htmlResponse(approvalPage(authorizeRequest, params, { window: pairingWindow }), 200, authorizeRequest.redirectUri);
+      return htmlResponse(approvalPage(authorizeRequest, params, { window: pairingWindow, owner, signIn }), 200, authorizeRequest.redirectUri);
     }
 
-    if (!pairing || !pairingWindow) {
-      return htmlResponse(approvalPage(authorizeRequest, params, {
-        message: "That pairing window has closed. Run `moodle mcp pair` again and enter the new code.",
-      }), 403, authorizeRequest.redirectUri);
-    }
     const approvedClients = [...(await storage.list<ClientRecord>({ prefix: CLIENT_PREFIX })).values()]
       .filter((client) => client.approvedAt !== undefined);
     if (authorizeRequest.client.approvedAt === undefined && approvedClients.length >= MAX_REGISTERED_CLIENTS) {
       return htmlResponse(errorPage("The approved client limit is reached. Revoke an existing client before pairing."), 409);
     }
+    if (params.has("owner_csrf")) {
+      if (!owner || !await sameSecret(params.get("owner_csrf") ?? "", owner.csrf)) {
+        return htmlResponse(approvalPage(authorizeRequest, params, {
+          window: pairingWindow,
+          signIn,
+          owner,
+          message: "That approval came from a stale page. Review the request again below.",
+        }), 403, authorizeRequest.redirectUri);
+      }
+      return issueAuthorizationCode(authorizeRequest);
+    }
+
+    if (!pairing || !pairingWindow) {
+      return htmlResponse(approvalPage(authorizeRequest, params, {
+        signIn,
+        message: "That pairing window has closed. Run `moodle mcp pair` again and enter the new code.",
+      }), 403, authorizeRequest.redirectUri);
+    }
     if (!await consumePairingAttempt(pairing, params.get("pairing_code") ?? "")) {
       const remaining = PAIRING_CODE_MAX_ATTEMPTS - pairing.attempts - 1;
       return htmlResponse(approvalPage(authorizeRequest, params, {
         window: remaining > 0 ? { ...pairingWindow, attemptsLeft: remaining } : undefined,
+        signIn,
         message: remaining > 0
           ? `That code is not correct. ${remaining} ${remaining === 1 ? "attempt" : "attempts"} left.`
           : "Too many incorrect codes, so the window closed. Run `moodle mcp pair` again for a new one.",
       }), 403, authorizeRequest.redirectUri);
     }
+    return issueAuthorizationCode(authorizeRequest);
+  }
 
+  async function issueAuthorizationCode(authorizeRequest: AuthorizeRequest): Promise<Response> {
     await storage.put(`${CLIENT_PREFIX}${authorizeRequest.clientId}`, { ...authorizeRequest.client, approvedAt: now() });
     await prune();
     const code = createSecret();
@@ -560,6 +596,15 @@ export function createOAuthRouter(options: OAuthRouterOptions): OAuthRouter {
       }
     },
 
+    async checkPairingCode(submitted) {
+      const pairing = await readPairing();
+      return pairing ? checkPairingAttempt(pairing, submitted) : false;
+    },
+
+    async closePairing() {
+      await storage.delete(PAIRING_KEY);
+    },
+
     async createPairing() {
       const code = createPairingCode();
       const expiresAt = now() + PAIRING_CODE_TTL_MS;
@@ -603,6 +648,10 @@ export function matchesAllowedHost(hostname: string, allowedHosts: readonly stri
   });
 }
 
+async function sameSecret(submitted: string, expected: string): Promise<boolean> {
+  return Boolean(submitted) && await verifySecret(submitted, [await digestBearerToken(expected)]);
+}
+
 async function pkceChallenge(verifier: string): Promise<string> {
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier));
   return base64Url(new Uint8Array(digest));
@@ -644,68 +693,60 @@ function methodNotAllowed(allow: string): Response {
   });
 }
 
-function htmlResponse(body: string, status = 200, redirectUri?: string): Response {
-  const callback = redirectUri ? ` ${new URL(redirectUri).origin}` : "";
-  return new Response(body, {
-    status,
-    headers: {
-      "content-type": "text/html; charset=utf-8",
-      "cache-control": "no-store",
-      "content-security-policy": `default-src 'none'; style-src 'unsafe-inline'; form-action 'self'${callback}; frame-ancestors 'none'`,
-      "referrer-policy": "strict-origin-when-cross-origin",
-      "x-frame-options": "DENY",
-      "x-content-type-options": "nosniff",
-    },
-  });
-}
-
-// Colours follow the OS so the page never glares in a dark client; every rule is
-// inline because the CSP allows no external assets.
-const PAGE_STYLE = `:root{color-scheme:light dark;--bg:#f6f7f9;--card:#fff;--line:#dfe2e8;--text:#16181d;--muted:#5b6472;--accent:#16181d;--accent-text:#fff;--danger:#a3111c;--ok:#0f6b3a;--mono:ui-monospace,SFMono-Regular,Menlo,monospace}
-@media(prefers-color-scheme:dark){:root{--bg:#121417;--card:#1b1e23;--line:#2c313a;--text:#e8eaee;--muted:#9aa3b0;--accent:#e8eaee;--accent-text:#121417;--danger:#ff8a8a;--ok:#6fd39a}}
-body{font:16px/1.5 system-ui,sans-serif;margin:0;padding:3rem 1.25rem;background:var(--bg);color:var(--text)}
-main{max-width:26rem;margin:0 auto;background:var(--card);border:1px solid var(--line);border-radius:12px;padding:1.75rem}
-h1{font-size:1.15rem;margin:0 0 .75rem}p{margin:.5rem 0}dl{margin:0 0 1.25rem;font-size:.9rem}dt{color:var(--muted);margin-top:.5rem}
-dd{margin:0;word-break:break-all}label{display:block;font-size:.9rem;color:var(--muted);margin-bottom:.35rem}
-input{width:100%;box-sizing:border-box;font:1.35rem/1 var(--mono);letter-spacing:.2em;text-align:center;padding:.7rem;
-border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--text);text-transform:uppercase}
-input:focus{outline:2px solid var(--accent);outline-offset:1px}
-button{width:100%;margin-top:1rem;padding:.7rem;font-size:1rem;border:0;border-radius:8px;background:var(--accent);color:var(--accent-text);cursor:pointer}
-button.quiet{background:transparent;color:var(--text);border:1px solid var(--line)}
-code{font:.9em var(--mono);background:var(--bg);border:1px solid var(--line);border-radius:4px;padding:.05em .35em}
-ol{padding-left:1.25rem;margin:.5rem 0 1rem;font-size:.95rem}li{margin:.25rem 0}
-.note{font-size:.85rem;color:var(--muted);margin-top:1rem}.error{color:var(--danger);font-size:.9rem;margin:0 0 1rem}
-.open{color:var(--ok);font-size:.9rem;margin:0 0 .75rem}`;
-
 interface PairingWindowView {
   minutesLeft: number;
   attemptsLeft: number;
 }
 
+const AUTHORIZE_FIELDS = ["response_type", "client_id", "redirect_uri", "scope", "state", "code_challenge", "code_challenge_method", "resource"];
+
+function authorizeValues(request: AuthorizeRequest, params: URLSearchParams): Array<[string, string]> {
+  return AUTHORIZE_FIELDS.flatMap((name): Array<[string, string]> => {
+    const value = name === "redirect_uri" ? request.redirectUri : params.get(name);
+    return value ? [[name, value]] : [];
+  });
+}
+
 function hiddenFields(request: AuthorizeRequest, params: URLSearchParams): string {
-  return ["response_type", "client_id", "redirect_uri", "scope", "state", "code_challenge", "code_challenge_method", "resource"]
-    .map((name) => {
-      const value = name === "redirect_uri" ? request.redirectUri : params.get(name);
-      return value ? `<input type="hidden" name="${name}" value="${escapeHtml(value)}">` : "";
-    })
+  return authorizeValues(request, params)
+    .map(([name, value]) => `<input type="hidden" name="${name}" value="${escapeHtml(value)}">`)
     .join("");
 }
 
 function approvalPage(
   request: AuthorizeRequest,
   params: URLSearchParams,
-  options: { window?: PairingWindowView; message?: string },
+  options: { window?: PairingWindowView; message?: string; owner?: { csrf: string } | null; signIn?: boolean },
 ): string {
   const hidden = hiddenFields(request, params);
-  const body = options.window
+  const message = options.message ? `<p class="error">${escapeHtml(options.message)}</p>` : "";
+  const header = `
+<h1>Approve access to your Moodle</h1>
+<dl>
+  <dt>Asking</dt><dd>${escapeHtml(request.client.clientName)}</dd>
+  <dt>Returns to</dt><dd>${escapeHtml(new URL(request.redirectUri).origin)}</dd>
+  <dt>Grants</dt><dd>Read-only access to your Moodle units, deadlines, grades, forums and files (<code>${OAUTH_SCOPE}</code>). Nothing is written to Moodle.</dd>
+</dl>`;
+
+  if (options.owner) {
+    return page("Approve MCP access", `${header}
+${message}<p class="open">You are signed in as this server's owner.</p>
+<form method="post" action="${AUTHORIZE_PATH}">${hidden}<input type="hidden" name="owner_csrf" value="${escapeHtml(options.owner.csrf)}">
+<button type="submit">Approve access</button></form>
+<p class="note">Approve only if you started this connection yourself just now. Someone else's link would hand them your Moodle.</p>`);
+  }
+
+  const pairingSection = options.window
     ? `<p class="open">A pairing window is open for ${options.window.minutesLeft} more ${options.window.minutesLeft === 1 ? "minute" : "minutes"}.</p>
-${options.message ? `<p class="error">${escapeHtml(options.message)}</p>` : ""}
 <form method="post" action="${AUTHORIZE_PATH}">${hidden}
 <label for="pairing_code">Enter the code that <code>moodle mcp pair</code> printed</label>
-<input id="pairing_code" name="pairing_code" placeholder="XXXX-XXXX" maxlength="9" required autocomplete="one-time-code" autocapitalize="characters" autocorrect="off" spellcheck="false" autofocus>
-<button type="submit">Approve access</button></form>
+<input id="pairing_code" name="pairing_code" placeholder="XXXX-XXXX" maxlength="9" required autocomplete="one-time-code" autocapitalize="characters" autocorrect="off" spellcheck="false"${options.signIn ? "" : " autofocus"}>
+<button type="submit"${options.signIn ? ' class="quiet"' : ""}>Approve with code</button></form>
 <p class="note">${options.message ? "" : `${options.window.attemptsLeft} attempts allowed. `}The code works once and only while the window is open.</p>`
-    : `${options.message ? `<p class="error">${escapeHtml(options.message)}</p>` : "<p>Nothing can be approved until you open a pairing window from your own computer.</p>"}
+    : options.signIn
+      ? `<p class="note">Or, from a computer with moodle-cli, run <code>moodle mcp pair</code> and reload this page to approve with a code.</p>
+<form method="get" action="${AUTHORIZE_PATH}">${hidden}<button type="submit" class="quiet">Reload this page</button></form>`
+      : `${options.message ? "" : "<p>Nothing can be approved until you open a pairing window from your own computer.</p>"}
 <ol>
   <li>Open a terminal on the computer where you installed moodle-cli.</li>
   <li>Run <code>moodle mcp pair</code>. It prints an eight-character code.</li>
@@ -713,34 +754,21 @@ ${options.message ? `<p class="error">${escapeHtml(options.message)}</p>` : ""}
 </ol>
 <form method="get" action="${AUTHORIZE_PATH}">${hidden}<button type="submit" class="quiet">Reload this page</button></form>
 <p class="note">Anyone who reaches this page without your code is refused, which is what keeps this server private.</p>`;
-  return page("Approve MCP access", `
-<h1>Approve access to your Moodle</h1>
-<dl>
-  <dt>Asking</dt><dd>${escapeHtml(request.client.clientName)}</dd>
-  <dt>Returns to</dt><dd>${escapeHtml(new URL(request.redirectUri).origin)}</dd>
-  <dt>Grants</dt><dd>Read-only access to your Moodle units, deadlines, grades, forums and files (<code>${OAUTH_SCOPE}</code>). Nothing is written to Moodle.</dd>
-</dl>
-${body}`);
+
+  const returnTo = `${AUTHORIZE_PATH}?${new URLSearchParams(authorizeValues(request, params))}`;
+  const signInSection = options.signIn
+    ? `<p>Sign in to the Moodle account this server belongs to. Anyone else is refused.</p>
+<form method="post" action="${LOGIN_PATH}"><input type="hidden" name="return_to" value="${escapeHtml(returnTo)}">
+<button type="submit">Sign in with Moodle</button></form>
+<hr>`
+    : "";
+  return page("Approve MCP access", `${header}
+${message}${signInSection}${pairingSection}`);
 }
 
 function errorPage(message: string): string {
   return page("Request rejected", `<h1>Request rejected</h1><p class="error">${escapeHtml(message)}</p>
 <p class="note">Close this tab and start the connection again from your MCP client. If it keeps failing, run <code>moodle mcp status</code> on your computer.</p>`);
-}
-
-function page(title: string, body: string): string {
-  return `<!doctype html><html lang="en"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex"><title>${escapeHtml(title)}</title>
-<style>${PAGE_STYLE}</style></head><body><main>${body}</main></body></html>`;
-}
-
-function escapeHtml(value: string): string {
-  return value
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("'", "&#39;");
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

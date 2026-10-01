@@ -36,6 +36,14 @@ import {
 } from "./managed-deployment.js";
 
 const MODERN_MCP_VERSION = "2026-07-28";
+
+interface ReleaseCheck {
+  endpoint: string;
+  sessionSyncToken: string;
+  expectedSessionSchemaVersion?: number;
+  expectedEncryptionKeyId?: string;
+  expectedCredentialId?: string;
+}
 const WORKER_PROPAGATION_ATTEMPTS = 10;
 const WORKER_PROPAGATION_MAX_DELAY_MS = 4_000;
 
@@ -45,11 +53,13 @@ export interface CommandResult {
 }
 
 export interface DeploymentCommandRunner {
-  run(command: string, args: string[], environment?: NodeJS.ProcessEnv): Promise<CommandResult>;
+  // onOutput sees stdout and stderr as they arrive, for commands that print something
+  // the user must act on before they exit.
+  run(command: string, args: string[], environment?: NodeJS.ProcessEnv, onOutput?: (chunk: string) => void): Promise<CommandResult>;
 }
 
 export class NodeDeploymentCommandRunner implements DeploymentCommandRunner {
-  async run(command: string, args: string[], environment: NodeJS.ProcessEnv = {}): Promise<CommandResult> {
+  async run(command: string, args: string[], environment: NodeJS.ProcessEnv = {}, onOutput?: (chunk: string) => void): Promise<CommandResult> {
     return new Promise((resolve, reject) => {
       const child = spawn(command, args, {
         env: { ...process.env, ...environment },
@@ -58,8 +68,8 @@ export class NodeDeploymentCommandRunner implements DeploymentCommandRunner {
       });
       let stdout = "";
       let stderr = "";
-      child.stdout.setEncoding("utf8").on("data", (chunk: string) => { stdout += chunk; });
-      child.stderr.setEncoding("utf8").on("data", (chunk: string) => { stderr += chunk; });
+      child.stdout.setEncoding("utf8").on("data", (chunk: string) => { stdout += chunk; onOutput?.(chunk); });
+      child.stderr.setEncoding("utf8").on("data", (chunk: string) => { stderr += chunk; onOutput?.(chunk); });
       child.on("error", reject);
       child.on("close", (code) => {
         if (code === 0) {
@@ -105,6 +115,11 @@ export interface WranglerAccount {
   name: string;
 }
 
+export interface CloudflareDevicePrompt {
+  url: string;
+  code: string;
+}
+
 export class NodeWranglerDeploymentAdapter implements WranglerDeploymentAdapter {
   readonly atomicSecrets = true;
   private readonly wranglerBinPath?: string;
@@ -123,6 +138,21 @@ export class NodeWranglerDeploymentAdapter implements WranglerDeploymentAdapter 
 
   async login(): Promise<void> {
     await this.wrangler(["login"]);
+  }
+
+  // The OAuth device grant needs no callback on localhost, so it works from a cloud
+  // sandbox: the user approves in any browser while Wrangler polls for the token.
+  async loginWithDevice(onPrompt: (prompt: CloudflareDevicePrompt) => void): Promise<void> {
+    let output = "";
+    let announced = false;
+    await this.wrangler(["login", "--device", "--browser=false"], undefined, {}, (chunk) => {
+      if (announced) return;
+      output += chunk;
+      const prompt = parseDevicePrompt(output);
+      if (!prompt) return;
+      announced = true;
+      onPrompt(prompt);
+    });
   }
 
   async checkAccess(accountId: string): Promise<void> {
@@ -313,18 +343,29 @@ export class NodeWranglerDeploymentAdapter implements WranglerDeploymentAdapter 
     args: string[],
     accountId?: string,
     environmentOverrides: NodeJS.ProcessEnv = {},
+    onOutput?: (chunk: string) => void,
   ): Promise<CommandResult> {
     const environment = { ...environmentOverrides };
     if (accountId) {
       environment.CLOUDFLARE_ACCOUNT_ID = accountId;
     }
     const executable = this.wranglerBinPath ? { command: process.execPath, args: [this.wranglerBinPath] } : await resolveWrangler(this.runner);
-    return this.runner.run(
-      executable.command,
-      [...executable.args, ...args],
-      Object.keys(environment).length ? environment : undefined,
-    );
+    const command = [...executable.args, ...args];
+    const env = Object.keys(environment).length ? environment : undefined;
+    return onOutput ? this.runner.run(executable.command, command, env, onOutput) : this.runner.run(executable.command, command, env);
   }
+}
+
+export function parseDevicePrompt(text: string): CloudflareDevicePrompt | null {
+  const clean = text.replace(/\u001B\[[0-9;]*m/gu, "");
+  const url = clean.match(/https:\/\/\S+\/oauth2\/device\S*/u)?.[0];
+  const code = clean.match(/enter the code:\s*([A-Za-z0-9-]{4,32})/u)?.[1];
+  if (!url || !code) return null;
+  const link = new URL(url);
+  // Only Cloudflare's own dashboard may be handed to the user as a sign-in link.
+  if (link.hostname !== "dash.cloudflare.com") return null;
+  link.searchParams.set("user_code", code);
+  return { url: link.toString(), code };
 }
 
 export async function copyReleaseBundle(source: string, destination: string): Promise<void> {
@@ -360,6 +401,8 @@ export class NodeReleaseMaterializer implements ReleaseMaterializer {
       preview_urls: false,
       observability: { enabled: false },
       vars: { MOODLE_ORIGIN: plan.intent.moodleOrigin, ...(expectedHosts.length ? { EXPECTED_HOSTS: expectedHosts.join(",") } : {}), SESSION_SCHEMA_VERSION: "2", SESSION_KEY_ID: digest(credentials.sessionEncryptionKey).slice(0, 16), SESSION_CREDENTIAL_ID: digest(`${credentials.mcpAccessToken}:${credentials.sessionSyncToken}`).slice(0, 16) },
+      // Remote Chrome for "Sign in with Moodle" on the authorization page.
+      browser: { binding: "BROWSER" },
       durable_objects: {
         bindings: [
           { name: "SESSION_BROKER", class_name: "SessionBroker" },
@@ -502,6 +545,7 @@ export class FetchManagedWorkerClient implements ManagedWorkerClient {
             ? session.code
             : null,
         revision: typeof session?.revision === "number" ? session.revision : null,
+        ...(session?.renewal === "mobile_token" || session?.renewal === "sign_in" ? { renewal: session.renewal } : {}),
         ...(typeof body.sessionSchemaVersion === "number" ? { sessionSchemaVersion: body.sessionSchemaVersion } : {}),
         ...(typeof body.encryptionKeyId === "string" ? { encryptionKeyId: body.encryptionKeyId } : {}),
         ...(typeof body.credentialId === "string" ? { credentialId: body.credentialId } : {}),
@@ -520,32 +564,8 @@ export class FetchManagedWorkerClient implements ManagedWorkerClient {
     }, isRetryableWorkerRouting);
   }
 
-  async runSmoke(input: {
-    endpoint: string;
-    mcpAccessToken: string;
-    sessionSyncToken: string;
-    expectedSessionSchemaVersion?: number;
-    expectedEncryptionKeyId?: string;
-    expectedCredentialId?: string;
-  }): Promise<WorkerSmokeResult> {
-    const health = await this.fetchWithRetry(
-      endpointUrl(input.endpoint, "/healthz"),
-      undefined,
-      isRetryableWorkerPropagation,
-    );
-    const healthBody = await safeJson(health);
-    if (!health.ok || !isRecord(healthBody) || healthBody.status !== "pass") {
-      throw new DeploymentApplyError("HEALTH_CHECK_FAILED", "Worker liveness check failed");
-    }
-    let readiness = await this.getReadiness(input);
-    const matchesRelease = () => (input.expectedSessionSchemaVersion === undefined || readiness.sessionSchemaVersion === input.expectedSessionSchemaVersion)
-      && (input.expectedEncryptionKeyId === undefined || readiness.encryptionKeyId === input.expectedEncryptionKeyId)
-      && (input.expectedCredentialId === undefined || readiness.credentialId === input.expectedCredentialId);
-    for (let attempt = 0; !matchesRelease() && attempt < 12; attempt += 1) {
-      await this.sleep(1_000);
-      readiness = await this.getReadiness(input);
-    }
-    if (!matchesRelease()) throw new DeploymentApplyError("STATE_PROPAGATION_FAILED", "The expected encrypted session and credentials are not active yet");
+  async runSmoke(input: ReleaseCheck & { mcpAccessToken: string }): Promise<WorkerSmokeResult> {
+    const readiness = await this.checkRelease(input);
     if (readiness.status === "fail") {
       throw new DeploymentApplyError("READINESS_CHECK_FAILED", "Moodle session readiness check failed");
     }
@@ -574,6 +594,39 @@ export class FetchManagedWorkerClient implements ManagedWorkerClient {
       }
     }
     return { moodleUser };
+  }
+
+  async checkRemoteLogin(input: ReleaseCheck): Promise<void> {
+    await this.checkRelease(input);
+    const response = await this.fetchImpl(endpointUrl(input.endpoint, "/oauth/login"));
+    // The start page only carries its form when the Worker has a browser binding.
+    if (!response.ok || !(await response.text()).includes('action="/oauth/login"')) {
+      throw new DeploymentApplyError("REMOTE_LOGIN_UNAVAILABLE", "The Worker cannot start a remote Moodle sign-in");
+    }
+  }
+
+  // Liveness, then the release's own credentials and key, which take a moment to reach
+  // every edge after a deploy.
+  private async checkRelease(input: ReleaseCheck): Promise<WorkerReadiness> {
+    const health = await this.fetchWithRetry(
+      endpointUrl(input.endpoint, "/healthz"),
+      undefined,
+      isRetryableWorkerPropagation,
+    );
+    const healthBody = await safeJson(health);
+    if (!health.ok || !isRecord(healthBody) || healthBody.status !== "pass") {
+      throw new DeploymentApplyError("HEALTH_CHECK_FAILED", "Worker liveness check failed");
+    }
+    let readiness = await this.getReadiness(input);
+    const matchesRelease = () => (input.expectedSessionSchemaVersion === undefined || readiness.sessionSchemaVersion === input.expectedSessionSchemaVersion)
+      && (input.expectedEncryptionKeyId === undefined || readiness.encryptionKeyId === input.expectedEncryptionKeyId)
+      && (input.expectedCredentialId === undefined || readiness.credentialId === input.expectedCredentialId);
+    for (let attempt = 0; !matchesRelease() && attempt < 12; attempt += 1) {
+      await this.sleep(1_000);
+      readiness = await this.getReadiness(input);
+    }
+    if (!matchesRelease()) throw new DeploymentApplyError("STATE_PROPAGATION_FAILED", "The expected encrypted session and credentials are not active yet");
+    return readiness;
   }
 
   async manageClients(input: { endpoint: string; sessionSyncToken: string; revoke?: boolean; clientId?: string }): Promise<unknown> {
