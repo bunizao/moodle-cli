@@ -109,7 +109,9 @@ export async function readSiteAuthProfile(
   const config = data.data as Record<string, unknown> | undefined;
   if (!config) return null;
   const mobileService = config.enablemobilewebservice === 1 || config.enablemobilewebservice === true;
-  const appLogin = typeof config.typeoflogin === "number" ? APP_LOGIN[config.typeoflogin] : undefined;
+  // typeoflogin describes the app's sign-in, so it means nothing while the app is shut
+  // out: an SSO-only site with the service off still reports 1 ("app").
+  const appLogin = mobileService && typeof config.typeoflogin === "number" ? APP_LOGIN[config.typeoflogin] : undefined;
   return {
     webServices: config.enablewebservices === 1 || config.enablewebservices === true,
     mobileService,

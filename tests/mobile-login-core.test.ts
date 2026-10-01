@@ -45,7 +45,7 @@ describe("readSiteAuthProfile", () => {
     });
   });
 
-  it("falls back to browser sign-in where the mobile service is off", async () => {
+  it("falls back to browser sign-in where the mobile service is off, ignoring its app login type", async () => {
     const fetchImpl = vi.fn(async () =>
       new Response(JSON.stringify([{ error: false, data: { enablewebservices: 0, enablemobilewebservice: 0, typeoflogin: 1 } }]), {
         status: 200,
@@ -54,7 +54,6 @@ describe("readSiteAuthProfile", () => {
     await expect(readSiteAuthProfile(BASE_URL, fetchImpl as unknown as typeof fetch)).resolves.toEqual({
       webServices: false,
       mobileService: false,
-      appLogin: "app",
       renewal: "sign_in",
     });
   });
