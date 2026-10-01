@@ -120,15 +120,27 @@ describe("mintSessionFromMobileToken", () => {
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
-  it("returns null on a REST fault", async () => {
+  it("returns null when Moodle refuses the token", async () => {
     const fetchImpl = vi.fn(async () =>
-      new Response(JSON.stringify({ exception: "moodle_exception", errorcode: "autologinkeygenerationlockout" }), {
+      new Response(JSON.stringify({ exception: "moodle_exception", errorcode: "invalidtoken" }), {
         status: 200,
       }),
     );
     await expect(
       mintSessionFromMobileToken(BASE_URL, 1, { wstoken: "ws", privatetoken: "p" }, fetchImpl as unknown as typeof fetch),
     ).resolves.toBeNull();
+  });
+
+  // Each of these says nothing about the token, so a caller must not drop it.
+  it.each([
+    ["Moodle is unreachable", async () => { throw new TypeError("fetch failed"); }],
+    ["a proxy answers in Moodle's place", async () => new Response("<html>Bad gateway</html>", { status: 502 })],
+    ["a page that is not Moodle's answer", async () => new Response("<html>Maintenance</html>", { status: 200 })],
+    ["another client minted within six minutes", async () => Response.json({ exception: "moodle_exception", errorcode: "autologinkeygenerationlockout" })],
+  ])("throws when %s", async (_case, respond) => {
+    await expect(
+      mintSessionFromMobileToken(BASE_URL, 1, { wstoken: "ws", privatetoken: "p" }, vi.fn(respond) as unknown as typeof fetch),
+    ).rejects.toThrow();
   });
 
   it("ignores the cleared sentinel cookie", async () => {

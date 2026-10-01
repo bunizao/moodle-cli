@@ -97,4 +97,18 @@ describe("Worker Moodle session upstream", () => {
       expectedRevision: 0,
     })).rejects.toThrow("Moodle returned HTTP 503");
   });
+
+  it("bounds both mint requests by one deadline", async () => {
+    const signals: (AbortSignal | null | undefined)[] = [];
+    const upstream = new FetchMoodleSessionUpstream(ORIGIN, async (input, init) => {
+      signals.push(init?.signal);
+      return String(input).includes("/webservice/rest/server.php")
+        ? Response.json({ key: "login-key" })
+        : new Response(null, { status: 303, headers: { "set-cookie": "MoodleSession=minted; path=/; HttpOnly" } });
+    });
+    await expect(upstream.mintSession(42, { wstoken: "ws", privatetoken: "p" })).resolves.toEqual({ name: "MoodleSession", value: "minted" });
+    expect(signals).toHaveLength(2);
+    expect(signals[0]).toBeInstanceOf(AbortSignal);
+    expect(signals[1]).toBe(signals[0]);
+  });
 });

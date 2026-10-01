@@ -690,7 +690,8 @@ export async function mintValidatedSession(
 ): Promise<{ cookie: MoodleSessionCookie; context: SessionValidation } | null> {
   if (!stored.mobileToken?.privatetoken) return null;
   const fetchImpl = options.fetch ?? globalThis.fetch;
-  const minted = await mintSessionFromMobileToken(baseUrl, stored.userid, stored.mobileToken, fetchImpl);
+  // Unreachable or refused, the CLI falls back to the browser either way.
+  const minted = await mintSessionFromMobileToken(baseUrl, stored.userid, stored.mobileToken, fetchImpl).catch(() => null);
   if (!minted) return null;
   const cookie: MoodleSessionCookie = { name: minted.cookie.name, value: minted.cookie.value, source: minted.cookie.source };
   const validate = options.validateSession ?? validateSessionWithFetch(options);

@@ -78,6 +78,7 @@ export interface MoodleSessionUpstream {
   // Only where the site enables Moodle's mobile service: a live cookie buys a
   // durable token, and the token later mints a fresh cookie with nobody present.
   captureMobileToken?(cookie: { name: string; value: string }): Promise<MobileToken | null>;
+  // Null when Moodle refused the token; throws when Moodle could not be asked.
   mintSession?(moodleUserId: number, token: MobileToken): Promise<{ name: string; value: string } | null>;
 }
 
@@ -477,6 +478,7 @@ export class SessionBroker {
       await this.state.storage.setAlarm(nextAlarmAt);
       return renewed;
     } catch {
+      // Moodle was not reached, so the token is kept for the next attempt.
       return null;
     }
   }
