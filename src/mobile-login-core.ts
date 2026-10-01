@@ -34,10 +34,26 @@ export interface MintedSession {
   cookie: { name: string; value: string; source: string };
 }
 
-export interface MobilePublicConfig {
-  webserviceEnabled: boolean;
-  mobileServiceEnabled: boolean;
+/**
+ * How a session on this site keeps going. The mobile token is the only renewal that
+ * needs nobody, so it wins wherever the site offers it; every surface (auth status,
+ * the Worker's readiness, deploy, coverage) reports it under this one name.
+ */
+export type SessionRenewal = "mobile_token" | "sign_in";
+
+/** How Moodle's own app signs in (`typeoflogin`): a password form in the app, or a browser. */
+export type AppLogin = "app" | "browser" | "embedded";
+
+/** What the site says about signing in, read without a session. */
+export interface SiteAuthProfile {
+  webServices: boolean;
+  mobileService: boolean;
+  appLogin?: AppLogin;
+  /** What a new session here can expect, before any token has been captured. */
+  renewal: SessionRenewal;
 }
+
+const APP_LOGIN: Record<number, AppLogin> = { 1: "app", 2: "browser", 3: "embedded" };
 
 type Fetcher = typeof fetch;
 
@@ -61,11 +77,11 @@ export function parseLaunchToken(location: string): MobileToken | null {
   return { wstoken: parts[1], privatetoken: parts[2] || undefined };
 }
 
-/** Read whether the site exposes the mobile web service, without signing in. */
-export async function readMobilePublicConfig(
+/** Read the site's public sign-in facts from `tool_mobile_get_public_config`, without signing in. */
+export async function readSiteAuthProfile(
   baseUrl: string,
   fetchImpl: Fetcher = fetch,
-): Promise<MobilePublicConfig | null> {
+): Promise<SiteAuthProfile | null> {
   const url = new URL(SERVICE_NOLOGIN_PATH, ensureTrailingSlash(baseUrl));
   url.searchParams.set("info", FUNC_MOBILE_PUBLIC_CONFIG);
   const body = JSON.stringify([{ index: 0, methodname: FUNC_MOBILE_PUBLIC_CONFIG, args: {} }]);
@@ -90,9 +106,15 @@ export async function readMobilePublicConfig(
   if (!data || data.error) return null;
   const config = data.data as Record<string, unknown> | undefined;
   if (!config) return null;
+  const mobileService = config.enablemobilewebservice === 1 || config.enablemobilewebservice === true;
+  // typeoflogin describes the app's sign-in, so it means nothing while the app is shut
+  // out: an SSO-only site with the service off still reports 1 ("app").
+  const appLogin = mobileService && typeof config.typeoflogin === "number" ? APP_LOGIN[config.typeoflogin] : undefined;
   return {
-    webserviceEnabled: config.enablewebservices === 1 || config.enablewebservices === true,
-    mobileServiceEnabled: config.enablemobilewebservice === 1 || config.enablemobilewebservice === true,
+    webServices: config.enablewebservices === 1 || config.enablewebservices === true,
+    mobileService,
+    ...(appLogin ? { appLogin } : {}),
+    renewal: mobileService ? "mobile_token" : "sign_in",
   };
 }
 
