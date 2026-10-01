@@ -253,7 +253,7 @@ export class MoodleClientCore {
   async getSiteInfo(): Promise<UserInfo> {
     await this.ensureSession();
     try {
-      if (this.skips(FUNC_GET_SITE_INFO) && this.userInfo?.fullname) return this.userInfo;
+      if (this.noteIfUnavailable(FUNC_GET_SITE_INFO) && this.userInfo?.fullname) return this.userInfo;
       const data = await this.call(FUNC_GET_SITE_INFO);
       if (isRecord(data) && "userid" in data) {
         const info = parseUserInfo(data);
@@ -415,7 +415,7 @@ export class MoodleClientCore {
     const seen = new Set<number>();
     // One unit's deadlines come from the per-course calendar service when the site
     // offers it; otherwise the whole timeline is read and filtered.
-    const byCourse = courseId !== undefined && !this.skips(FUNC_GET_ACTION_EVENTS_BY_COURSE);
+    const byCourse = courseId !== undefined && !this.noteIfUnavailable(FUNC_GET_ACTION_EVENTS_BY_COURSE);
     while (items.length < limit) {
       const batchSize = Math.min(50, limit - items.length);
       const window = { timesortfrom: now, timesortto: days ? now + days * 86400 : 0, aftereventid, limitnum: batchSize };
@@ -808,7 +808,7 @@ export class MoodleClientCore {
       const results = Array<OptionalAjaxBatchResult>(requests.length).fill(undefined);
       for (const [index, request] of requests.entries()) {
         if (live.some((entry) => entry.index === index)) continue;
-        this.skips(request.methodname);
+        this.noteIfUnavailable(request.methodname);
         results[index] = { ok: false, error: this.errors.api(`${request.methodname} is disabled on this site.`, "servicenotavailable") };
       }
       if (live.length) {
@@ -868,7 +868,8 @@ export class MoodleClientCore {
     return results;
   }
 
-  private skips(name: string): boolean {
+  /** Whether the site is known to refuse name; telling the listeners it was gone around. */
+  private noteIfUnavailable(name: string): boolean {
     if (!this.unavailable.has(name)) return false;
     for (const listener of this.unavailableListeners) listener(name);
     return true;

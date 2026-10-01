@@ -1,4 +1,4 @@
-import { DASHBOARD_PATH, FUNC_GET_SITE_INFO } from "./constants.js";
+import { DASHBOARD_PATH, FUNC_GET_SITE_INFO, STOCK_AJAX_UNAVAILABLE } from "./constants.js";
 import type { Intent } from "./intent-contract.js";
 import { createIntentService, type IntentService } from "./intents.js";
 import { createMoodleGateway, MAX_MCP_FILE_BYTES, type MoodleGateway } from "./mcp/gateway.js";
@@ -73,16 +73,6 @@ const ITEM_TYPES = ["assign", "quiz", "resource", "url", "page", "folder", "foru
 // A few units usually hold one of each kind; reading every unit would turn a check into a crawl.
 const SAMPLE_UNITS = 4;
 const CHECK_TIMEOUT_MS = 120_000;
-// Functions the CLI tries first that stock Moodle does not let the AJAX endpoint call (none
-// sets 'ajax' => true in Moodle 5.0's db/services.php). Going around them is the normal path
-// on every site, so it is not reported as a fallback; a site that allows them is faster.
-export const STOCK_AJAX_UNAVAILABLE: ReadonlySet<string> = new Set([
-  "core_course_get_contents",
-  "core_course_get_course_module",
-  "core_enrol_get_users_courses",
-  "core_webservice_get_site_info",
-  "mod_forum_get_forums_by_courses",
-]);
 const PAGE_READERS = new Set(["assign", "quiz", "resource", "url", "page", "folder"]);
 // The field each reader exists to find. A page read without it was fetched but not understood,
 // which on another school's theme or language is the usual way a scraper breaks.

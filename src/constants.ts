@@ -78,3 +78,14 @@ export const ENV_MOODLE_TOKEN = "MOODLE_TOKEN";
 export const MOODLE_SESSION_COOKIE_PREFIX = "MoodleSession";
 
 export const WRANGLER_VERSION = "4.131.0";
+
+// Functions the CLI tries first that stock Moodle does not let the AJAX endpoint call (none
+// sets 'ajax' => true in Moodle 5.0's db/services.php). Going around them is the normal path
+// on every site, so it is not reported as a fallback; a site that allows them is faster.
+export const STOCK_AJAX_UNAVAILABLE: ReadonlySet<string> = new Set([
+  "core_course_get_contents",
+  "core_course_get_course_module",
+  "core_enrol_get_users_courses",
+  "core_webservice_get_site_info",
+  "mod_forum_get_forums_by_courses",
+]);
