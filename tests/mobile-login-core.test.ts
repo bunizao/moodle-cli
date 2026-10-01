@@ -3,7 +3,7 @@ import {
   fetchMobileToken,
   mintSessionFromMobileToken,
   parseLaunchToken,
-  readMobilePublicConfig,
+  readSiteAuthProfile,
 } from "../src/mobile-login-core.js";
 
 const BASE_URL = "https://school.example.edu";
@@ -30,22 +30,38 @@ describe("parseLaunchToken", () => {
   });
 });
 
-describe("readMobilePublicConfig", () => {
-  it("reports whether the mobile web service is on", async () => {
+describe("readSiteAuthProfile", () => {
+  it("prefers the mobile token wherever the site offers the mobile service", async () => {
     const fetchImpl = vi.fn(async () =>
-      new Response(JSON.stringify([{ error: false, data: { enablewebservices: 1, enablemobilewebservice: 1 } }]), {
+      new Response(JSON.stringify([{ error: false, data: { enablewebservices: 1, enablemobilewebservice: 1, typeoflogin: 2 } }]), {
         status: 200,
       }),
     );
-    await expect(readMobilePublicConfig(BASE_URL, fetchImpl as unknown as typeof fetch)).resolves.toEqual({
-      webserviceEnabled: true,
-      mobileServiceEnabled: true,
+    await expect(readSiteAuthProfile(BASE_URL, fetchImpl as unknown as typeof fetch)).resolves.toEqual({
+      webServices: true,
+      mobileService: true,
+      appLogin: "browser",
+      renewal: "mobile_token",
+    });
+  });
+
+  it("falls back to browser sign-in where the mobile service is off", async () => {
+    const fetchImpl = vi.fn(async () =>
+      new Response(JSON.stringify([{ error: false, data: { enablewebservices: 0, enablemobilewebservice: 0, typeoflogin: 1 } }]), {
+        status: 200,
+      }),
+    );
+    await expect(readSiteAuthProfile(BASE_URL, fetchImpl as unknown as typeof fetch)).resolves.toEqual({
+      webServices: false,
+      mobileService: false,
+      appLogin: "app",
+      renewal: "sign_in",
     });
   });
 
   it("returns null on a fault", async () => {
     const fetchImpl = vi.fn(async () => new Response(JSON.stringify([{ error: true }]), { status: 200 }));
-    await expect(readMobilePublicConfig(BASE_URL, fetchImpl as unknown as typeof fetch)).resolves.toBeNull();
+    await expect(readSiteAuthProfile(BASE_URL, fetchImpl as unknown as typeof fetch)).resolves.toBeNull();
   });
 });
 
