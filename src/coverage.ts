@@ -2,7 +2,7 @@ import { DASHBOARD_PATH, FUNC_GET_SITE_INFO, STOCK_AJAX_UNAVAILABLE } from "./co
 import type { Intent } from "./intent-contract.js";
 import { createIntentService, type IntentService } from "./intents.js";
 import { createMoodleGateway, MAX_MCP_FILE_BYTES, type MoodleGateway } from "./mcp/gateway.js";
-import { readMobilePublicConfig } from "./mobile-login-core.js";
+import { readSiteAuthProfile } from "./mobile-login-core.js";
 import type { Activity } from "./models.js";
 import type { MoodleClientCore } from "./moodle-client-core.js";
 import { parseSiteTheme } from "./scraper.js";
@@ -379,12 +379,12 @@ async function siteFacts(client: MoodleClientCore, fetchImpl?: typeof fetch): Pr
   const [info] = await client.callBatch([{ methodname: FUNC_GET_SITE_INFO }]);
   const release = info?.ok ? record(info.data).release : undefined;
   const theme = await client.requestAbsolute(`${client.baseUrl}${DASHBOARD_PATH}`).then(response => response.text()).then(parseSiteTheme, () => undefined);
-  const mobile = await readMobilePublicConfig(client.baseUrl, fetchImpl);
+  const profile = await readSiteAuthProfile(client.baseUrl, fetchImpl);
   return {
     url: client.baseUrl,
     ...(typeof release === "string" && release ? { release } : {}),
     ...(theme ? { theme } : {}),
-    ...(mobile ? { mobile_service: mobile.mobileServiceEnabled } : {}),
+    ...(profile ? { mobile_service: profile.mobileService } : {}),
   };
 }
 
