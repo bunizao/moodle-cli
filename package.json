@@ -47,7 +47,7 @@
     "tsup": "^8.5.0",
     "typescript": "^7.0.2",
     "vitest": "^5.0.0",
-    "wrangler": "^4.131.0"
+    "wrangler": "^4.145.0"
   },
   "engines": {
     "node": ">=22.13"
