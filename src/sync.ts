@@ -205,7 +205,7 @@ export function sectionDirectories(sections: readonly Section[]): Map<number, st
     const parts: string[] = [];
     for (let current: Section | undefined = section, depth = 0; current && depth < 10; depth++) {
       parts.unshift(pathSegment(current.name || `Section ${current.section}`));
-      current = current.parent_id ? byId.get(current.parent_id) : undefined;
+      current = current.parent ? byId.get(current.parent) : undefined;
     }
     dirs.set(section.id, parts.join("/"));
   }

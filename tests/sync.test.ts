@@ -35,7 +35,7 @@ function site() {
     baseUrl: BASE_URL,
     getCourseContents: async (): Promise<Section[]> => [
       { id: 10, name: "Week 1", section: 1, visible: true, summary: "", activities: [] },
-      { id: 11, name: "Real-time", section: 2, visible: true, summary: "", parent_id: 10, activities: state.activities },
+      { id: 11, name: "Real-time", section: 2, visible: true, summary: "", parent: 10, activities: state.activities },
     ],
     getFolder: async () => ({ file_entries: state.folderFiles.map((url) => ({ name: "week1.csv", url, requires_authentication: true })) }),
     getAssignment: async () => ({ file_entries: state.assignFiles.map((url) => ({ name: "brief.pdf", url, requires_authentication: true })) }),
@@ -298,7 +298,7 @@ describe("sync paths", () => {
   });
 
   it("nests child sections under their parent", () => {
-    const section = (id: number, name: string, parent_id?: number): Section => ({ id, name, section: id, visible: true, summary: "", activities: [], ...(parent_id ? { parent_id } : {}) });
+    const section = (id: number, name: string, parent?: number): Section => ({ id, name, section: id, visible: true, summary: "", activities: [], ...(parent ? { parent } : {}) });
     expect([...sectionDirectories([section(1, "Learning"), section(2, "Week 1", 1), section(3, "Own-time", 2), section(4, "")]).values()])
       .toEqual(["Learning", "Learning/Week 1", "Learning/Week 1/Own-time", "Section 4"]);
   });

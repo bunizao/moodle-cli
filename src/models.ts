@@ -42,7 +42,7 @@ export interface Section {
   summary: string;
   current?: boolean;
   /** The enclosing section's id, when the course format nests sections. */
-  parent_id?: number;
+  parent?: number;
   activities: Activity[];
 }
 

@@ -137,7 +137,7 @@ export function parseCourseFormatState(value: unknown, baseUrl: string): Section
       visible: booleanValue(data.visible, true),
       summary: htmlText(data.summary, baseUrl),
       ...(data.current !== undefined ? { current: booleanValue(data.current) } : {}),
-      ...(numberValue(data.parentid) > 0 ? { parent_id: numberValue(data.parentid) } : {}),
+      ...(numberValue(data.parentid) > 0 ? { parent: numberValue(data.parentid) } : {}),
       activities: hasActivityList ? listedActivities : activitiesBySection.get(String(id)) ?? [],
     };
   });
