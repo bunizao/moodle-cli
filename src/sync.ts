@@ -304,6 +304,7 @@ async function syncDocument(run: UnitRun, item: SyncItem): Promise<void> {
   if (looksLikeLoginPage(html)) throw new CliError("auth", "Moodle returned a login page instead of a page.", "Run `moodle auth login`.");
   const content = parseSavedDocumentHtml(html, run.client.baseUrl);
   if (!content) throw new NotFoundError("The page shows nothing to save.");
+  await inlineImages(run, content);
   const contentSha1 = createHash("sha1").update(content.toString()).digest("hex");
   if (run.manifest.files[item.key]?.content_sha1 === contentSha1) {
     run.result.unchanged++;
@@ -311,7 +312,6 @@ async function syncDocument(run: UnitRun, item: SyncItem): Promise<void> {
   }
   const relative = joinRelative(item.dir, safeFileName(item.name!));
   if (run.dryRun) return reportDryRun(run, item.key, relative);
-  await inlineImages(run, content);
   const target = await prepareTarget(run, relative);
   const temporary = await writeTemporary(standaloneHtml(item.label, item.url, content.toString()), target);
   await settle(run, item.key, relative, temporary, { url: item.url, content_sha1: contentSha1 });

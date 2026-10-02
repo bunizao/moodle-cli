@@ -347,4 +347,24 @@ describe("sync receipt", () => {
     expect(repeated.units[0].directory).toBe(second.units[0].directory);
   });
 
+  it("updates embedded images even when their Moodle URLs stay unchanged", async () => {
+    const moodle = site();
+    const base = await root();
+    const page = `${BASE_URL}/mod/page/view.php?id=5`;
+    const image = `${BASE_URL}/pluginfile.php/15/mod_page/content/1/diagram.png`;
+    moodle.state.activities = [activity(5, "page", "Picture")];
+    moodle.state.pages.set(page, () => `<div role="main"><p>Diagram</p><img src="${image}"></div>`);
+    moodle.put(image, "PNG_V1", "image/png");
+    const first = await syncUnits(moodle.client, [COURSE], { root: base, now: NOW });
+    const filename = first.units[0].changes[0].path;
+    moodle.put(image, "PNG_V2", "image/png");
+    const second = await syncUnits(moodle.client, [COURSE], { root: base, now: NOW });
+    expect(second.units[0]).toMatchObject({ unchanged: 0, problems: [], changes: [{ status: "updated", path: filename }] });
+    const saved = await readFile(filename, "utf8");
+    expect(saved).toContain(Buffer.from("PNG_V2").toString("base64"));
+    expect(saved).not.toContain(Buffer.from("PNG_V1").toString("base64"));
+    const third = await syncUnits(moodle.client, [COURSE], { root: base, now: NOW });
+    expect(third.units[0]).toMatchObject({ unchanged: 1, changes: [] });
+  });
+
 });
