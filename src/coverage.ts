@@ -66,7 +66,7 @@ export interface CoverageOptions {
   timeoutMs?: number;
   retryDelayMs?: number;
   language?: string;
-  timezone?: string;
+  timezone?: string | null;
 }
 
 type Row = Record<string, unknown>;
@@ -179,7 +179,7 @@ export async function* checkCoverage(service: IntentService, gateway: MoodleGate
     return { detail: `${count(num(r.total), "item")} in 30 days`, verified: rowsDue.length ? ["window"] : [] };
   });
   yield due.check;
-  const deadlines = new Map(rows(due.result, "due").filter(row => num(row.activity_id)).map(row => [num(row.activity_id), options.timezone ? isoTime(num(row.due_at), options.timezone) ?? "" : String(row.due ?? "")]));
+  const deadlines = new Map(rows(due.result, "due").filter(row => num(row.activity_id)).map(row => [num(row.activity_id), options.timezone === null ? "" : options.timezone ? isoTime(num(row.due_at), options.timezone) ?? "" : String(row.due ?? "")]));
 
   const language = options.language || await gateway.getUser().then(user => user.lang || "en", () => "en");
   const sample = sampleUnits(rows(units.result, "units"), now() / 1000);
@@ -375,7 +375,7 @@ export async function coverageReport(client: MoodleClientCore, cli: CoverageCli,
     const gateway = createMoodleGateway(client);
     const checks: CoverageCheck[] = [];
     const takeDisabled = () => { const names = pending; pending = []; return names; };
-    for await (const check of checkCoverage(createIntentService(gateway), gateway, { ...options, language: site.language, timezone: site.timezone, takeDisabled })) {
+    for await (const check of checkCoverage(createIntentService(gateway), gateway, { ...options, language: site.language, timezone: site.timezone ?? null, takeDisabled })) {
       checks.push(check);
       options.onCheck?.(check);
     }
@@ -447,8 +447,9 @@ function describeItem(type: string, result: Row, pick: Pick, deadline?: string, 
   }
   // The calendar is structured; a due date it knows and the page reader missed is a label
   // the reader did not recognise, typically another language or a renamed string.
-  if (type === "assign" && deadline) {
+  if (type === "assign" && deadline !== undefined) {
     if (!item.due_pretty) return { status: "mismatch", detail: "The calendar has a due date the assignment page reader did not find." };
+    if (!deadline) return { status: "partial", detail: "The assignment's due date was read but its timezone could not be verified." };
     const agrees = calendarDateAgrees(String(item.due_pretty), deadline, language);
     if (agrees === false) return { status: "mismatch", detail: "The assignment page and the calendar show different due dates." };
     if (agrees === undefined) return { status: "partial", detail: "The assignment's due date was read but its format could not be compared with the calendar." };

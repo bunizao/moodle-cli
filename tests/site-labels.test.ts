@@ -113,3 +113,8 @@ it("reads Moodle's resolved inherited timezone and session language", () => {
   const html = '<html lang="de"><script>M.cfg = {"sesskey":"fixture","userId":7,"timezone":"99","usertimezone":"Europe/London","language":"de"};</script></html>';
   expect(parsePageContext(html, BASE).user_info).toMatchObject({ timezone: "Europe/London", lang: "de" });
 });
+
+it("resolves Moodle's localized display timezone to an IANA name", () => {
+  const html = '<html lang="de"><script>M.cfg = {"sesskey":"fixture","userId":7,"usertimezone":"Europa/London","language":"de"};</script></html>';
+  expect(parsePageContext(html, BASE).user_info).toMatchObject({ timezone: "Europe/London", lang: "de" });
+});

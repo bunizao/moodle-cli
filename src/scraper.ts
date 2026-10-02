@@ -62,6 +62,7 @@ export function parsePageContext(html: string, baseUrl: string): PageContext {
   const root = parse(html);
   const config = parseMoodleConfig(html);
   const sesskey = stringValue(config.sesskey).trim();
+  const timezone = moodleTimezone(config.usertimezone || config.timezone);
   const userid = numberValue(config.userId) || numberValue(root.querySelector("[data-user-id]")?.getAttribute("data-user-id"));
   if (!sesskey || !userid) {
     throw new Error("Session appears invalid: could not load authenticated Moodle context");
@@ -74,10 +75,25 @@ export function parsePageContext(html: string, baseUrl: string): PageContext {
       fullname: cleanNodeText(root.querySelector(".userfullname")),
       sitename: extractSitename(root),
       siteurl: baseUrl,
-      ...((config.usertimezone || config.timezone) ? { timezone: stringValue(config.usertimezone || config.timezone) } : {}),
+      ...(timezone ? { timezone } : {}),
       lang: stringValue(config.language) || root.querySelector("html")?.getAttribute("lang") || "",
     },
   };
+}
+
+// Moodle translates the continent in its display timezone ("Europa/London").
+// Resolve a unique IANA city suffix before passing it to Intl.
+function moodleTimezone(value: unknown): string | undefined {
+  const name = stringValue(value);
+  if (!name) return undefined;
+  try { new Intl.DateTimeFormat("en", { timeZone: name }); return name; }
+  catch {
+    const slash = name.indexOf("/");
+    if (slash < 0) return undefined;
+    const suffix = name.slice(slash);
+    const matches = Intl.supportedValuesOf("timeZone").filter(zone => zone.slice(zone.indexOf("/")) === suffix);
+    return matches.length === 1 ? matches[0] : undefined;
+  }
 }
 
 export function parseCourseContentsHtml(html: string, baseUrl: string): Section[] {

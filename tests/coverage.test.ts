@@ -171,6 +171,13 @@ describe("coverage catches injected faults", () => {
     }
   });
 
+  it("does not compare the host clock when Moodle's timezone is unresolved", async () => {
+    const gateway = healthy();
+    const checks: CoverageCheck[] = [];
+    for await (const check of checkCoverage(createIntentService(gateway), gateway, { now: () => 0, timezone: null })) checks.push(check);
+    expect(byName(checks)["item:assign"]).toMatchObject({ status: "partial", detail: expect.stringContaining("timezone") });
+  });
+
   it("requests and follows detailed gradebook pages for cross-checking", async () => {
     const gateway = healthy();
     const service = createIntentService(gateway);
