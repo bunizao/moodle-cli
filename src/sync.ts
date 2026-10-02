@@ -260,6 +260,20 @@ async function resourceFileUrl(client: MoodleClient, id: number): Promise<string
 async function syncItem(run: UnitRun, item: SyncItem): Promise<void> {
   run.seen.add(item.key);
   if (item.document) return syncDocument(run, item);
+  for (let attempt = 1; ; attempt++) {
+    try {
+      await syncFile(run, item);
+      return;
+    } catch (error) {
+      if (!(error instanceof CliError) || error.code !== "network" || attempt === ATTEMPTS) throw error;
+      await delay(attempt * 1000, run.signal);
+    }
+  }
+}
+
+// Retry the whole download after a broken body; the partial temporary file is removed
+// before this function is called again, and no manifest is advanced until it completes.
+async function syncFile(run: UnitRun, item: SyncItem): Promise<void> {
   const known = run.manifest.files[item.key];
   let url = item.url;
   let response = await fetchFile(run, url, known);

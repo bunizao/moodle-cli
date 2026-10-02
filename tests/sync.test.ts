@@ -367,4 +367,23 @@ describe("sync receipt", () => {
     expect(third.units[0]).toMatchObject({ unchanged: 1, changes: [] });
   });
 
+  it("retries a dropped download body without keeping the partial file", async () => {
+    const moodle = site();
+    const base = await root();
+    moodle.state.activities = [activity(1, "resource", "Lecture")];
+    const request = moodle.client.requestAbsolute.bind(moodle.client);
+    let attempts = 0;
+    moodle.client.requestAbsolute = async (url, init, options) => {
+      if (url === moodle.state.resourceFile && ++attempts === 1) {
+        return at(url, new ReadableStream({ start(controller) { controller.enqueue(new TextEncoder().encode("partial")); controller.error(new Error("connection reset")); } }), { "content-type": "application/pdf" });
+      }
+      return request(url, init, options);
+    };
+    const result = await syncUnits(moodle.client, [COURSE], { root: base, now: NOW });
+    expect(attempts).toBe(2);
+    expect(result.units[0]).toMatchObject({ problems: [], changes: [{ status: "new", path: lecture(base) }] });
+    expect(await readFile(lecture(base), "utf8")).toBe("slides v1");
+    expect(await readdir(join(unitDir(base), "Week 1", "Real-time"))).toEqual(["slides.pdf"]);
+  });
+
 });
