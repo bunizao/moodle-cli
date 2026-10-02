@@ -179,22 +179,18 @@ describe("coverage catches injected faults", () => {
   });
 
   it("requests and follows detailed gradebook pages for cross-checking", async () => {
-    const gateway = healthy();
+    const base = healthy();
+    const gateway: MoodleGateway = { ...base, getGrades: async input => {
+      const grades = await base.getGrades(input);
+      return { ...grades, items: [...Array.from({ length: 201 }, (_, i) => ({ ...grades.items[0], name: `Ungraded ${i}`, grade: "-" })), ...grades.items] };
+    } };
     const service = createIntentService(gateway);
     const originalRun = service.run;
     const calls: Array<Record<string, unknown>> = [];
     const paged = intentContracts.grades.input.safeParse({ mode: "all", limit: 200 }).success;
     service.run = async (name, args = {}) => {
-      if (name !== "grades") return originalRun(name, args);
-      calls.push(args);
-      const result = await originalRun(name, args);
-      if (!paged) return result;
-      expect(args.mode).toBe("all");
-      const row = (result.grades as Array<Record<string, unknown>>)[0];
-      const items = [...Array.from({ length: 201 }, (_, i) => ({ name: `Ungraded ${i}`, grade: "-" })), ...row.items as Array<Record<string, unknown>>];
-      const offset = Number(args.offset ?? 0);
-      const page = items.slice(offset, offset + Number(args.limit));
-      return { ...result, grades: [{ ...row, total: items.length, items: page }], offset, returned: page.length, has_more: offset + page.length < items.length };
+      if (name === "grades") calls.push(args);
+      return originalRun(name, args);
     };
     const checks: CoverageCheck[] = [];
     for await (const check of checkCoverage(service, gateway, { now: () => 0 })) checks.push(check);
