@@ -6,6 +6,7 @@ import { describe, expect, it } from "vitest";
 
 import { runCli } from "../src/cli.js";
 import { checkCoverage, type CoverageCheck } from "../src/coverage.js";
+import { intentContracts } from "../src/intent-contract.js";
 import { createIntentService } from "../src/intents.js";
 import type { MoodleGateway } from "../src/mcp/gateway.js";
 import { createMoodleClientCore } from "../src/moodle-client-core.js";
@@ -30,7 +31,7 @@ describe("coverage checks", () => {
       ...base,
       getActivity: async ({ activityId }) => activityId % 10 === 0
         ? { id: activityId, name: "Lecture slides", type: "resource", course_id: Math.floor(activityId / 100), course_name: "", section_name: "", target_name: "slides.pdf", target_url: "", file_entries: [{ name: "slides.pdf", url: "https://moodle.example.edu/pluginfile.php/1/slides.pdf", requires_authentication: true }], url: "" }
-        : { ...await base.getActivity({ activityId }), due_pretty: "Friday, 18 September 2026" },
+        : { ...await base.getActivity({ activityId }), due_pretty: "Saturday, 19 September 2026, 15:55" },
       submitAssignment: async input => { submitted.push(input); return base.submitAssignment!(input); },
     };
     const checks = byName(await collect(gateway));
@@ -107,7 +108,7 @@ describe("coverage catches injected faults", () => {
         ? { id: QUIZ, name: "Quiz One", type: "quiz", course_id: 1, course_name: "", section_name: "", opens_pretty: "", closes_pretty: "", attempts_allowed: "2", time_limit: "", availability: "", grade: "5.00 out of 10.00 (50%)", attempts: [{ id: 6, number: 1, status: "Finished", started: "", completed: "", duration: "", marks: "1.00/2.00", grade: "5.00 out of 10.00 (50%)", review_url: "" }], url: "" }
         : activityId % 10 === 0
           ? { id: activityId, name: "Lecture slides", type: "resource", course_id: Math.floor(activityId / 100), course_name: "", section_name: "", target_name: "slides.pdf", target_url: "", file_entries: [{ name: "slides.pdf", url: "https://moodle.example.edu/pluginfile.php/1/slides.pdf", requires_authentication: true }], url: "" }
-          : { ...await base.getActivity({ activityId }), due_pretty: "Friday, 18 September 2026" },
+          : { ...await base.getActivity({ activityId }), due_pretty: "Saturday, 19 September 2026, 15:55" },
       getQuizAttempt: async attemptId => ({ ...await base.getQuizAttempt!(attemptId), quiz_id: QUIZ, course_id: 1, grade: "5.00 out of 10.00 (50%)" }),
       getGrades: async input => {
         const grades = await base.getGrades(input);
@@ -135,6 +136,8 @@ describe("coverage catches injected faults", () => {
   it.each<[string, (base: MoodleGateway) => Partial<MoodleGateway>, string, string]>([
     ["a page that names another activity", () => ({ getActivity: async input => ({ ...await healthy().getActivity(input), ...(input.activityId % 10 === 1 ? { name: "Unit handbook" } : {}) }) }), "item:assign", "mismatch"],
     ["a due date the page reader cannot read", base => ({ getActivity: async input => input.activityId % 10 === 0 ? healthy().getActivity(input) : { ...await base.getActivity(input), due_pretty: "" } }), "item:assign", "mismatch"],
+    ["a due date that disagrees with the calendar", () => ({ getActivity: async input => ({ ...await healthy().getActivity(input), due_pretty: "Saturday, 19 September 2099, 15:55" }) }), "item:assign", "mismatch"],
+    ["a due time that disagrees with the calendar", () => ({ getActivity: async input => ({ ...await healthy().getActivity(input), due_pretty: "Saturday, 19 September 2026, 16:55" }) }), "item:assign", "mismatch"],
     ["a resource page with the wrong file", () => ({ getActivity: async input => ({ ...await healthy().getActivity(input), ...(input.activityId % 10 === 0 ? { file_entries: [{ name: "handout.docx", url: "", requires_authentication: true }] } : {}) }) }), "item:resource", "mismatch"],
     ["a search that misses a known discussion", () => ({ searchForums: async () => [] }), "search_forums", "mismatch"],
     ["a dashboard that drops a unit", base => ({ getOverview: async input => ({ ...await base.getOverview(input), courses: units.slice(1) }) }), "home", "mismatch"],
@@ -157,6 +160,39 @@ describe("coverage catches injected faults", () => {
     expect(checks[key]).toMatchObject({ status });
     // The fault stays on its own line; every other check keeps passing.
     expect(failing(checks)).toEqual([key]);
+  });
+
+  it("checks a localized due date and reports unknown formats as partial", async () => {
+    const base = healthy();
+    for (const [date, status] of [["Samstag, 19. September 2026, 15:55", "ok"], ["Samstag, 19. September 2099, 15:55", "mismatch"], ["when the teacher says", "partial"]]) {
+      const checks = await run({ ...base, getUser: async () => ({ ...siteUser, lang: "de" }), getActivity: async input => ({ ...await base.getActivity(input), due_pretty: date }) });
+      expect(checks["item:assign"].status).toBe(status);
+      if (status === "partial") expect(checks["item:assign"].verified).toBeUndefined();
+    }
+  });
+
+  it("requests and follows detailed gradebook pages for cross-checking", async () => {
+    const gateway = healthy();
+    const service = createIntentService(gateway);
+    const originalRun = service.run;
+    const calls: Array<Record<string, unknown>> = [];
+    const paged = intentContracts.grades.input.safeParse({ mode: "all", limit: 200 }).success;
+    service.run = async (name, args = {}) => {
+      if (name !== "grades") return originalRun(name, args);
+      calls.push(args);
+      const result = await originalRun(name, args);
+      if (!paged) return result;
+      expect(args.mode).toBe("all");
+      const row = (result.grades as Array<Record<string, unknown>>)[0];
+      const items = [...Array.from({ length: 201 }, (_, i) => ({ name: `Ungraded ${i}`, grade: "-" })), ...row.items as Array<Record<string, unknown>>];
+      const offset = Number(args.offset ?? 0);
+      const page = items.slice(offset, offset + Number(args.limit));
+      return { ...result, grades: [{ ...row, total: items.length, items: page }], offset, returned: page.length, has_more: offset + page.length < items.length };
+    };
+    const checks: CoverageCheck[] = [];
+    for await (const check of checkCoverage(service, gateway, { now: () => 0 })) checks.push(check);
+    expect(byName(checks).grades).toMatchObject({ status: "ok", verified: ["quiz page grade"] });
+    expect(calls.map(call => call.offset ?? 0)).toEqual(paged ? [0, 200] : [0]);
   });
 
   it("accepts a gradebook that shows the same grade as a percentage or a letter", async () => {

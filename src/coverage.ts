@@ -1,5 +1,5 @@
 import { DASHBOARD_PATH, FUNC_GET_SITE_INFO, STOCK_AJAX_UNAVAILABLE } from "./constants.js";
-import type { Intent } from "./intent-contract.js";
+import { intentContracts, type Intent } from "./intent-contract.js";
 import { createIntentService, type IntentService } from "./intents.js";
 import { createMoodleGateway, MAX_MCP_FILE_BYTES, type MoodleGateway } from "./mcp/gateway.js";
 import { readSiteAuthProfile } from "./mobile-login-core.js";
@@ -104,7 +104,7 @@ export async function* checkCoverage(service: IntentService, gateway: MoodleGate
   const now = options.now ?? Date.now;
   const timeoutMs = options.timeoutMs ?? CHECK_TIMEOUT_MS;
   const retryDelayMs = options.retryDelayMs ?? 1000;
-  const run = async (name: Intent, args: Row, describe: (result: Row) => Outcome, extra: { target?: string; ref?: number; accept?: (error: unknown) => Outcome | undefined } = {}): Promise<{ check: CoverageCheck; result?: Row }> => {
+  const run = async (name: Intent, args: Row, describe: (result: Row) => Outcome | Promise<Outcome>, extra: { target?: string; ref?: number; accept?: (error: unknown) => Outcome | undefined } = {}): Promise<{ check: CoverageCheck; result?: Row }> => {
     options.onStart?.(name, extra.target);
     // Anything refused while sampling between checks belongs to no check.
     take();
@@ -129,7 +129,7 @@ export async function* checkCoverage(service: IntentService, gateway: MoodleGate
     for (;;) {
       try {
         const result = await withTimeout(service.run(name, args), timeoutMs);
-        return { result, check: finish(describe(result)) };
+        return { result, check: finish(await withTimeout(Promise.resolve(describe(result)), timeoutMs)) };
       } catch (error) {
         // An expired session would fail every later check for the same reason.
         if ((error as { code?: unknown }).code === "auth") throw error;
@@ -174,8 +174,9 @@ export async function* checkCoverage(service: IntentService, gateway: MoodleGate
     return { detail: `${count(num(r.total), "item")} in 30 days`, verified: rowsDue.length ? ["window"] : [] };
   });
   yield due.check;
-  const deadlines = new Map(rows(due.result, "due").filter(row => num(row.activity_id)).map(row => [num(row.activity_id), num(row.due_at)]));
+  const deadlines = new Map(rows(due.result, "due").filter(row => num(row.activity_id)).map(row => [num(row.activity_id), String(row.due ?? "")]));
 
+  const language = await gateway.getUser().then(user => user.lang || "en", () => "en");
   const sample = sampleUnits(rows(units.result, "units"), now() / 1000);
   const primary = sample[0];
   if (!primary) {
@@ -229,7 +230,7 @@ export async function* checkCoverage(service: IntentService, gateway: MoodleGate
     if (!candidates.length) { yield skip("item", `No ${type} the account can open in the sampled units.`, type); continue; }
     let chosen: { pick: Pick; check: CoverageCheck; result?: Row } | undefined;
     for (const pick of candidates) {
-      chosen = { pick, ...await run("item", { ref: pick.activity.id }, r => describeItem(type, r, pick, deadlines.get(pick.activity.id)), { target: type, ref: pick.activity.id }) };
+      chosen = { pick, ...await run("item", { ref: pick.activity.id }, r => describeItem(type, r, pick, deadlines.get(pick.activity.id), language), { target: type, ref: pick.activity.id }) };
       if (!passed(chosen.check) || rows(chosen.result, "threads").length || type !== "forum") break;
     }
     if (chosen!.result) items.set(type, { pick: chosen!.pick, result: chosen!.result });
@@ -269,11 +270,23 @@ export async function* checkCoverage(service: IntentService, gateway: MoodleGate
 
   // The unit holding the quiz lets the gradebook be checked against the quiz page's grade.
   const gradeUnit = quiz?.pick.unit ?? items.get("assign")?.pick.unit ?? primary;
-  yield (await run("grades", { unit: gradeUnit }, r => {
+  // Older grade contracts return all items and reject pagination arguments.
+  const detailInput = { unit: gradeUnit, mode: "all", limit: 200 };
+  const gradeInput = intentContracts.grades.input.safeParse(detailInput).success ? detailInput : { unit: gradeUnit };
+  yield (await run("grades", gradeInput, async r => {
     const row = rows(r, "grades")[0] ?? {};
     const total = num(row.total);
     if (!total) return { status: "empty", detail: "No gradebook items for the checked unit; it may have none yet." };
     const gradebook = rows(row, "items");
+    let page = r;
+    let offset = 0;
+    while (page.has_more === true) {
+      const next = num(page.offset) + num(page.returned);
+      if (next <= offset) throw new Error("The gradebook repeated a page.");
+      offset = next;
+      page = await service.run("grades", { ...gradeInput, offset });
+      gradebook.push(...rows(rows(page, "grades")[0], "items"));
+    }
     if (gradebook.some(item => !item.name)) return { status: "empty", detail: "Some gradebook rows came back without a name." };
     const verified: string[] = [];
     const quizGrade = quiz && quiz.pick.unit === gradeUnit ? record(quiz.result.item).grade : undefined;
@@ -394,7 +407,7 @@ function sampleUnits(units: readonly Row[], nowSeconds: number): number[] {
   return [...units].sort((a, b) => Number(current(b)) - Number(current(a))).map(unit => num(unit.id)).filter(Boolean).slice(0, SAMPLE_UNITS);
 }
 
-function describeItem(type: string, result: Row, pick: Pick, deadline?: number): Outcome {
+function describeItem(type: string, result: Row, pick: Pick, deadline?: string, language = "en"): Outcome {
   const listed = pick.activity;
   const item = record(result.item);
   const files = rows(item, "files");
@@ -425,6 +438,9 @@ function describeItem(type: string, result: Row, pick: Pick, deadline?: number):
   // the reader did not recognise, typically another language or a renamed string.
   if (type === "assign" && deadline) {
     if (!item.due_pretty) return { status: "mismatch", detail: "The calendar has a due date the assignment page reader did not find." };
+    const agrees = calendarDateAgrees(String(item.due_pretty), deadline, language);
+    if (agrees === false) return { status: "mismatch", detail: "The assignment page and the calendar show different due dates." };
+    if (agrees === undefined) return { status: "partial", detail: "The assignment's due date was read but its format could not be compared with the calendar." };
     verified.push("calendar due date");
   }
   const facts = [
@@ -439,6 +455,40 @@ function describeItem(type: string, result: Row, pick: Pick, deadline?: number):
     type === "forum" && count(num(result.total), "thread"),
   ].filter((fact): fact is string => typeof fact === "string");
   return { detail: facts.join(", ") || "read", verified };
+}
+
+// Moodle shows a localized wall clock. Compare only components it actually prints,
+// using the calendar's ISO offset rather than the machine running this check.
+function calendarDateAgrees(shown: string, expected: string, language: string): boolean | undefined {
+  const calendar = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/u.exec(expected);
+  if (!calendar) return undefined;
+  const text = shown.normalize("NFKC").toLowerCase();
+  let date = /^(\d{4})-(\d{2})-(\d{2})/u.exec(text)?.slice(1).map(Number);
+  if (!date) {
+    let monthName: Intl.DateTimeFormat;
+    try { monthName = new Intl.DateTimeFormat(language.replaceAll("_", "-"), { month: "long", timeZone: "UTC" }); }
+    catch { monthName = new Intl.DateTimeFormat("en", { month: "long", timeZone: "UTC" }); }
+    for (let month = 1; month <= 12; month++) {
+      const name = monthName.format(new Date(Date.UTC(2026, month - 1))).normalize("NFKC").toLowerCase();
+      const index = text.indexOf(name);
+      if (index < 0) continue;
+      const before = text.slice(0, index);
+      const after = text.slice(index + name.length);
+      if (/\p{L}$/u.test(before) || /^\p{L}/u.test(after)) continue;
+      const dayFirst = /(\d{1,2})\D*$/u.exec(before);
+      const yearAfter = /^\D*(\d{4})/u.exec(after);
+      const monthFirst = /^\D*(\d{1,2})\D+(\d{4})/u.exec(after);
+      if (dayFirst && yearAfter) date = [Number(yearAfter[1]), month, Number(dayFirst[1])];
+      else if (monthFirst) date = [Number(monthFirst[2]), month, Number(monthFirst[1])];
+      break;
+    }
+  }
+  if (!date) return undefined;
+  if (date.some((value, index) => value !== Number(calendar[index + 1]))) return false;
+  const clock = /(\d{1,2}):(\d{2})(?::\d{2})?\s*(am|pm)?/u.exec(text);
+  if (!clock) return true;
+  const hour = clock[3] ? Number(clock[1]) % 12 + (clock[3] === "pm" ? 12 : 0) : Number(clock[1]);
+  return hour === Number(calendar[4]) && Number(clock[2]) === Number(calendar[5]);
 }
 
 function counted(total: number, noun: string, empty: string): Outcome {
