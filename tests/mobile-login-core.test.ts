@@ -157,4 +157,18 @@ describe("mintSessionFromMobileToken", () => {
       mintSessionFromMobileToken(BASE_URL, 1, { wstoken: "ws", privatetoken: "p" }, fetchImpl as unknown as typeof fetch),
     ).resolves.toBeNull();
   });
+  it.each([200, 429, 502])("preserves the token when autologin answers HTTP %s without a Moodle refusal", async status => {
+    const fetchImpl = vi.fn<typeof fetch>(async input => String(input).includes("server.php")
+      ? Response.json({ key: "fixture-key" })
+      : new Response("<html>Maintenance proxy</html>", { status, headers: { "content-type": "text/html" } }));
+    await expect(mintSessionFromMobileToken(BASE_URL, 42, { wstoken: "ws", privatetoken: "private" }, fetchImpl)).rejects.toThrow();
+  });
+
+  it("returns null for a Moodle autologin refusal", async () => {
+    const fetchImpl = vi.fn<typeof fetch>(async input => String(input).includes("server.php")
+      ? Response.json({ key: "fixture-key" })
+      : new Response('<html><div class="errormessage">Invalid key</div><a href="https://docs.moodle.org/en/error/moodle/invalidkey">More information</a></html>', { headers: { "content-type": "text/html" } }));
+    await expect(mintSessionFromMobileToken(BASE_URL, 42, { wstoken: "ws", privatetoken: "private" }, fetchImpl)).resolves.toBeNull();
+  });
+
 });

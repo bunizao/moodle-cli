@@ -1,3 +1,4 @@
+import { parseMoodleErrorHtml } from "./scraper.js";
 import {
   FUNC_MOBILE_AUTOLOGIN_KEY,
   FUNC_MOBILE_PUBLIC_CONFIG,
@@ -22,7 +23,8 @@ import {
  *
  * The whole path is HTTP only, so it lives in a runtime-neutral module the
  * Worker can share. It only works where the site enables the mobile web service;
- * every call degrades to null rather than throwing so callers can fall back.
+ * unavailable features return null; transport failures during minting throw so
+ * callers can keep the token and retry later.
  */
 
 export interface MobileToken {
@@ -228,7 +230,13 @@ async function exchangeAutologinKey(
   if (response.status >= 500) throw new Error(`Moodle returned HTTP ${response.status} for autologin`);
 
   const value = extractSessionCookie(response);
-  return value ? { cookie: { name: value.name, value: value.value, source: "mobile-token" } } : null;
+  if (value) return { cookie: { name: value.name, value: value.value, source: "mobile-token" } };
+  // A Moodle redirect can clear the cookie after refusing the key. An arbitrary
+  // successful HTML page says nothing about the token and must remain retryable.
+  if (response.status >= 300 && response.status < 400) return null;
+  const refusal = parseMoodleErrorHtml(await response.text());
+  if (refusal?.code) return null;
+  throw new Error(`Moodle did not return an autologin result (HTTP ${response.status})`);
 }
 
 function extractSessionCookie(response: Response): { name: string; value: string } | null {
