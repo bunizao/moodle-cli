@@ -259,7 +259,7 @@ export function buildProgram(io: CliIO = {}): Command {
 
   const execute = async (name: Intent, args: Record<string, unknown>, options: OutputCommandOptions = {}, service?: IntentService) => {
     const runner = service ?? createIntentService(createMoodleGateway(await runtime.getClient()));
-    const result = await runner.run(name, args);
+    const result = await runner.run(name, name === "grades" ? { ...args, mode: args.mode ?? "graded" } : args);
     await runtime.output(result, () => screen(result, options, name), options);
   };
 
@@ -656,7 +656,7 @@ export function buildProgram(io: CliIO = {}): Command {
   });
 
   const grades = program.command("grades").description("Inspect grades.");
-  addOutputOptions(grades.command("list").description("Summarize grades; request graded or all for details.").argument("[unit]", "Unit code, name, id or URL"))
+  addOutputOptions(grades.command("list").description("Show marked grades; request summary or all.").argument("[unit]", "Unit code, name, id or URL"))
     .option("--mode <mode>", "summary, graded or all.")
     .option("--types <types>", "Comma-separated module types (assign, quiz, h5pactivity).")
     .option("--include-feedback", "Include full grader feedback.")
@@ -1074,7 +1074,7 @@ async function dispatchUrl(runtime: Runtime, target: string, options: OutputComm
       break;
     }
     case "course": result = await service.run("unit", { unit: Number(first) }); break;
-    case "grades": result = await service.run("grades", { unit: Number(first) }); break;
+    case "grades": result = await service.run("grades", { unit: Number(first), mode: "graded" }); break;
     case "forum:discussion": {
       result = await service.run("thread", { discussion_id: Number(first) });
       const hash = resolved.args?.[1];

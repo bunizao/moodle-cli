@@ -36,7 +36,7 @@ asks for confirmation (`--yes` skips it) and prints the receipt Moodle shows aft
 | moodle forums search | Search forum discussion titles and post text. | <query> | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required)<br>--unit (value required)<br>--course (value required)<br>--forum (value required)<br>--titles-only<br>--unread-only<br>--recent<br>--limit-forums (value required)<br>--limit-discussions (value required)<br>--limit (value required) |
 | moodle forums show | List discussions from a forum. | <forum> | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required)<br>--limit (value required)<br>--query (value required) |
 | moodle grades | Inspect grades. |  |  |
-| moodle grades list | Summarize grades; request graded or all for details. | [unit] | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required)<br>--mode (value required)<br>--types (value required)<br>--include-feedback<br>--include-ungraded<br>--limit (value required)<br>--offset (value required)<br>--graded-only |
+| moodle grades list | Show marked grades; request summary or all. | [unit] | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required)<br>--mode (value required)<br>--types (value required)<br>--include-feedback<br>--include-ungraded<br>--limit (value required)<br>--offset (value required)<br>--graded-only |
 | moodle mcp | Deploy a private MCP Worker on Cloudflare; encrypted session storage and local renewal. Free-tier limits apply. |  |  |
 | moodle mcp bridge | Bridge a stdio MCP client to the managed remote server. |  | --profile (value required) |
 | moodle mcp clients | List pending and approved OAuth clients. |  | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required) |
@@ -100,10 +100,10 @@ search_forums and file; a local server also lists submit, the only tool that wri
 Legacy names remain callable for one minor version and return
 compact v2 envelopes. They are deprecated and omitted from default discovery.
 Unit results contain a section index; supply section for activity details.
-Grades default to summary counts and course totals, without item rows or feedback.
-Use `--mode graded` for marked items or `--mode all` for every item; `--include-ungraded`
+CLI grades default to marked items; MCP defaults to summary counts and course totals.
+Use `--mode summary` for CLI summaries, `--mode graded` for marked items or `--mode all` for every item; `--include-ungraded`
 also includes unmarked items in graded mode. Filter with `--types assign,quiz` (Moodle
-module names, independent of the site's language). `--include-feedback` opts into full
+module names, independent of the site's language; assignment is accepted as assign). `--include-feedback` opts into full
 feedback; `--graded-only` remains an alias for graded mode. MCP uses the corresponding
 `mode`, `types`, `include_ungraded`, `include_feedback`, `limit` and `offset` arguments.
 Detail modes return at most 20 rows across all units by default. `matched`, `returned`,

@@ -1,25 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
 import { createIntentService } from "../src/intents.js";
 import { createMoodleMcpServer, TOOL_CATALOG } from "../src/mcp/server.js";
-import { gradeActivity, hasGrade } from "../src/grades-core.js";
+import { hasGrade, pageGradeReports } from "../src/grades.js";
+import { parseGradeItem } from "../src/parsers.js";
 import { renderScreen } from "../src/screens.js";
 import type { GradeItem } from "../src/models.js";
-import { fixtureGateway } from "./fixtures/intent-site.js";
+import { feedback, item, gradebook } from "./fixtures/gradebook.js";
 
-const feedback = "Detailed marker feedback. ".repeat(300);
-const item = (overrides: Partial<GradeItem>): GradeItem => ({ name: "Task", item_type: "Assignment", grade: "8", range: "0–10", percentage: "80%", weight: "", contribution: "", feedback, url: "", status: "", ...overrides });
-function gradebook() {
-  const gateway = fixtureGateway();
-  gateway.getGrades = async ({ courseId }) => ({
-    course_id: courseId, course_name: "Algorithms", learner_name: "Alex", total_grade: "78", total_range: "0–100", total_percentage: "78%",
-    items: [
-      ...Array.from({ length: 43 }, (_, i) => item({ name: `Question ${i + 1}`, item_type: "Interactive content", grade: ["-", " – ", "—", "", "−"][i % 5], feedback: "", url: `https://moodle.example.edu/mod/h5pactivity/view.php?id=${courseId * 1000 + i + 1}` })),
-      item({ name: "Assignment 1", item_type: "作业", grade: "0", percentage: "0%", url: `https://moodle.example.edu/mod/assign/view.php?id=${courseId * 1000 + 44}` }),
-      item({ name: "Quiz 1", item_type: "测验", url: `https://moodle.example.edu/mod/quiz/view.php?id=${courseId * 1000 + 45}` }),
-    ],
-  });
-  return gateway;
-}
 async function mcp(args: Record<string, unknown>, gateway = gradebook()) {
   const response = await createMoodleMcpServer(gateway).handle({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "grades", arguments: args } }, { protocolVersion: "2025-06-18" });
   return (response as { result: { structuredContent: Record<string, unknown>; content: { text: string }[]; isError?: boolean } }).result;
@@ -52,8 +39,8 @@ describe("bounded gradebook output", () => {
     expect(profile).not.toHaveBeenCalled();
     expect(JSON.parse(result.content[0].text)).toEqual(result.structuredContent);
   });
-  it("filters translated icon labels by module URL and returns full feedback only on request", async () => {
-    const args = { unit: "algo-2", mode: "all", types: [" ASSIGN "], include_feedback: true, limit: 1 };
+  it("filters translated icon labels and normalizes assignment aliases", async () => {
+    const args = { unit: "algo-2", mode: "all", types: [" Assignment "], include_feedback: true, limit: 1 };
     const result = await mcp(args);
     expect(result.isError).toBeUndefined();
     expect(result.structuredContent).toMatchObject({ matched: 1, returned: 1, grades: [{ total: 1, graded: 1, ungraded: 0, total_grade: "78", items: [{ type: "assign", feedback }] }] });
@@ -88,7 +75,43 @@ describe("bounded gradebook output", () => {
     expect(TOOL_CATALOG.filter(t => t.name === "grades")).toHaveLength(1);
     expect(["", " ", "-", " – ", "—", "−"].map(hasGrade)).toEqual(Array(6).fill(false));
     expect(["0", "0.00", "0%", "Pass", "-1"].map(hasGrade)).toEqual(Array(5).fill(true));
-    expect(gradeActivity(item({ item_type: "Assignment" }))).toEqual({ type: "assign" });
-    expect(gradeActivity(item({ url: "https://moodle.example.edu/mod/assign/view.php" }))).toEqual({ type: "assign", id: undefined });
+    expect(parseGradeItem(item({ item_type: "Assignment" }))).toMatchObject({ modname: "assign" });
+    expect(parseGradeItem(item({ url: "https://moodle.example.edu/mod/assign/view.php" }))).toMatchObject({ modname: "assign" });
+  });
+  it("keeps MCP's default as summary", async () => {
+    expect((await mcp({ unit: "algo-2" })).structuredContent).toMatchObject({ mode: "summary" });
+  });
+});
+
+describe("grade item parsing", () => {
+  it("reads stable module and cmid from translated activity links", () => {
+    expect(parseGradeItem({ item_type: "作业", url: "https://moodle.example.edu/mod/assign/view.php?id=42" })).toMatchObject({ modname: "assign", cmid: 42 });
+  });
+  it.each(["", "?id=0", "?id=-1", "?id=1.5", "?id=broken"])("does not invent a cmid for %s", query => {
+    expect(parseGradeItem({ url: `https://moodle.example.edu/mod/quiz/view.php${query}` })).not.toHaveProperty("cmid");
+  });
+  it("preserves manual grade rows without an activity URL", () => {
+    expect(parseGradeItem({ name: "Participation", item_type: "Manual", grade: "0" })).toMatchObject({ name: "Participation", modname: "manual", grade: "0" });
+  });
+});
+
+describe("cross-unit grade pagination", () => {
+  const reports = [{ code: "a", items: [1, 2] }, { code: "empty", items: [] }, { code: "b", items: [3, 4, 5] }];
+  it.each([
+    [0, 3, [[1, 2], [], [3]], 3, true],
+    [1, 2, [[2], [], [3]], 2, true],
+    [2, 2, [[], [], [3, 4]], 2, true],
+    [4, 2, [[], [], [5]], 1, false],
+    [5, 2, [[], [], []], 0, false],
+    [9, 2, [[], [], []], 0, false],
+  ])("pages offset %i with limit %i", (offset, limit, items, returned, has_more) => {
+    const page = pageGradeReports(reports, limit, offset);
+    expect(page).toMatchObject({ matched: 5, returned, offset, has_more });
+    expect(page.pages.map(r => r.items)).toEqual(items);
+    expect(page.pages.map(r => r.code)).toEqual(["a", "empty", "b"]);
+    expect(reports[0].items).toEqual([1, 2]);
+  });
+  it("handles no units", () => {
+    expect(pageGradeReports([], 20, 0)).toEqual({ pages: [], matched: 0, returned: 0, offset: 0, has_more: false });
   });
 });

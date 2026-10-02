@@ -3,7 +3,7 @@ import { MoodleGatewayError, type MoodleGateway } from "./mcp/gateway.js";
 import { intentContracts, type Intent } from "./intent-contract.js";
 import { currentSection, ReferenceError, resolveSection, resolveUnit, searchSections, sectionLabels, sectionTree, splitUnitPhrase, tokensMatch, withChildSections, type SearchMatch } from "./resolve.js";
 import { activityRow, dueRow, isoTime, itemRow, postRow, stripEmpty, timezoneFor, unitRow } from "./results.js";
-import { gradeActivity, hasGrade } from "./grades-core.js";
+import { hasGrade, pageGradeReports } from "./grades.js";
 
 // Bounded fan-out: these calls hit a live Moodle, so unit lists run a few at a time
 // instead of all at once or one after another.
@@ -155,10 +155,10 @@ export function createIntentService(gateway: MoodleGateway, now = () => Date.now
       case "grades": {
         const units = await selected(ref);
         const mode = input.graded_only ? "graded" : input.mode;
-        const types = (input.types as string[] | undefined)?.map(t => t.toLowerCase());
+        const types = input.types as string[] | undefined;
         const reports = await inParallel(units, 5, async c => {
           const g = await gateway.getGrades({ courseId: c.id });
-          const scoped = g.items.filter(i => !types?.length || types.includes(gradeActivity(i).type));
+          const scoped = g.items.filter(i => !types?.length || types.includes(i.modname));
           const graded = scoped.filter(i => hasGrade(i.grade)).length;
           const items = scoped.filter(i => mode === "all" || input.include_ungraded || hasGrade(i.grade));
           return { c, summary: { unit_id: c.id, code: c.shortname || c.fullname, graded, ungraded: scoped.length - graded, total: scoped.length, total_grade: g.total_grade, total_range: g.total_range, total_percentage: g.total_percentage }, items };
@@ -166,16 +166,7 @@ export function createIntentService(gateway: MoodleGateway, now = () => Date.now
         if (mode === "summary") {
           result = { grades: reports.map(r => r.summary), total: units.length, mode }; break;
         }
-        // A single budget covers all units, in enrollment order, after filtering.
-        const offset = Number(input.offset);
-        let skipped = 0, returned = 0;
-        const pages = reports.map(r => {
-          const start = Math.max(0, offset - skipped);
-          skipped += r.items.length;
-          const items = r.items.slice(start, start + limit - returned);
-          returned += items.length;
-          return { ...r, items };
-        });
+        const { pages, ...pagination } = pageGradeReports(reports, limit, Number(input.offset));
         const needsDue = pages.some(r => r.items.some(i => !hasGrade(i.grade)));
         const tz = needsDue ? await timezone() : "UTC";
         const rows = await inParallel(pages, 5, async r => {
@@ -183,11 +174,11 @@ export function createIntentService(gateway: MoodleGateway, now = () => Date.now
           const items = r.items.map(i => {
             const matches = todo.filter(t => (t.activity_name || t.name) === i.name);
             const due = matches.length === 1 && !hasGrade(i.grade) ? matches[0].due_at : undefined;
-            return { ...i, ...gradeActivity(i), feedback: input.include_feedback ? i.feedback : undefined, due_at: due, due: isoTime(due, tz) };
+            return { ...i, type: i.modname, id: i.cmid, feedback: input.include_feedback ? i.feedback : undefined, due_at: due, due: isoTime(due, tz) };
           });
           return { ...r.summary, items };
         });
-        result = { grades: rows, total: units.length, mode, matched: skipped, returned, offset, has_more: offset + returned < skipped }; break;
+        result = { grades: rows, total: units.length, mode, ...pagination }; break;
       }
       case "news": {
         const units = await selected(ref);

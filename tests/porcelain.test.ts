@@ -50,12 +50,17 @@ async function command(args: string[], options: { label?: string; tty?: boolean;
 }
 
 describe("porcelain through the real Commander and HTTP boundary", () => {
-  it("defaults grades to summaries and passes detail selectors through CLI normalization", async () => {
-    const summary = await command(["grades", "algo-2"]);
-    expect(summary.code, summary.stderr).toBe(0);
-    const data = JSON.parse(summary.stdout);
-    expect(data.mode).toBe("summary");
-    expect(data.grades[0]).not.toHaveProperty("items");
+  it("defaults grades to marked items and passes detail selectors through CLI normalization", async () => {
+    for (const args of [["grades", "algo-2"], ["algo-2", "grades"], ["https://moodle.example.edu/grade/report/user/index.php?id=2"]]) {
+      const result = await command(args);
+      expect(result.code, result.stderr).toBe(0);
+      const data = JSON.parse(result.stdout);
+      expect(data.mode).toBe("graded");
+      expect(data.grades[0].items).toEqual([expect.objectContaining({ name: "Quiz 1", grade: "8.00" })]);
+    }
+    const explicit = await command(["grades", "algo-2", "--mode", "summary"]);
+    expect(JSON.parse(explicit.stdout)).toMatchObject({ mode: "summary" });
+    expect(JSON.parse(explicit.stdout).grades[0]).not.toHaveProperty("items");
     for (const args of [
       ["grades", "--mode", "all", "algo-2", "--types", "quiz", "--include-feedback", "--offset", "0", "--limit", "1"],
       ["--limit", "1", "grades", "list", "algo-2", "--mode", "all", "--types", "quiz", "--include-feedback"],
