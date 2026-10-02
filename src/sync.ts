@@ -562,7 +562,13 @@ async function unitDirectory(root: string, course: Course, site: string): Promis
     const manifest = await readJson(path.join(root, entry.name, MANIFEST_NAME));
     if (manifest?.unit_id === course.id && manifest.site === site) return path.join(root, entry.name);
   }
-  return path.join(root, pathSegment(course.shortname || course.fullname || `Unit ${course.id}`));
+  const name = pathSegment(course.shortname || course.fullname || `Unit ${course.id}`);
+  for (let count = 0; ; count++) {
+    const suffix = count === 0 ? "" : ` (${course.id}${count === 1 ? "" : `-${count}`})`;
+    const directory = path.join(root, name + suffix);
+    // A manifest belonging to another unit or site reserves the folder's name.
+    if (!await exists(path.join(directory, MANIFEST_NAME))) return directory;
+  }
 }
 
 async function readManifest(directory: string, unitId: number, site: string): Promise<Manifest> {

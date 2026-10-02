@@ -327,4 +327,24 @@ describe("sync receipt", () => {
     expect(text).toContain("  − old.pdf is gone from Moodle; your copy stays");
     expect(text).toContain("  ✗ Lab data: HTTP 503");
   });
+  it("keeps separate ledgers for unit names that sanitize to the same folder", async () => {
+    const moodle = site();
+    const base = await root();
+    const firstCourse = { ...COURSE, shortname: "UNIT:1001" };
+    const secondCourse = { ...COURSE, id: 200, shortname: "UNIT1001" };
+    const first = await syncUnits(moodle.client, [firstCourse], { root: base, now: NOW });
+    const second = await syncUnits(moodle.client, [secondCourse], { root: base, now: NOW });
+    expect(first.units[0].directory).not.toBe(second.units[0].directory);
+    for (const [result, id] of [[first, 100], [second, 200]] as const) {
+      const ledger = JSON.parse(await readFile(join(result.units[0].directory, MANIFEST_NAME), "utf8"));
+      expect(ledger.unit_id).toBe(id);
+    }
+    moodle.put(moodle.state.resourceFile, "slides v2");
+    const next = await syncUnits(moodle.client, [firstCourse], { root: base, now: NOW });
+    expect(next.units[0].changes).toEqual([{ status: "updated", path: lecture(base), bytes: 9 }]);
+    expect(await readFile(lecture(base), "utf8")).toBe("slides v2");
+    const repeated = await syncUnits(moodle.client, [secondCourse], { root: base, now: NOW });
+    expect(repeated.units[0].directory).toBe(second.units[0].directory);
+  });
+
 });
