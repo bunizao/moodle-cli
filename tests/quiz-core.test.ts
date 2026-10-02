@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { answerQuizQuestion, finishQuizAttempt, getAttemptPage, parseAttemptPage, startQuizAttempt, type QuizDeps } from "../src/moodle-quiz-core.js";
+import { answerQuizQuestion, finishQuizAttempt, getAttemptPage, parseAttemptPage, planQuizStart, startQuizAttempt, type QuizDeps } from "../src/moodle-quiz-core.js";
 import { redactSesskey } from "../src/cli.js";
 
 const BASE = "https://school.example.edu";
@@ -27,6 +27,11 @@ function fakeDeps(routes: Record<string, (call: Call) => { url: string; html: st
     fail: (message) => new Error(`fail: ${message}`),
     usage: (message, hint) => new Error(`usage: ${message}${hint ? ` (${hint})` : ""}`),
   };
+}
+
+// Moodle renders a sequential quiz's navigation as spans: the buttons cannot be followed.
+function sequential(html: string): string {
+  return html.replace(/<a (class="qnbutton[^"]*?)free([^"]*")([^>]*?) href="[^"]*"([^>]*)>([\s\S]*?)<\/a>/gu, "<span $1sequential$2$3$4>$5</span>");
 }
 
 function saved(html: string, slot: number): string {
@@ -74,6 +79,68 @@ describe("quiz attempt pages", () => {
   it("refuses a finished attempt with the review link", async () => {
     const deps = fakeDeps({ "GET /mod/quiz/attempt.php": () => ({ url: `${BASE}/mod/quiz/review.php?attempt=900`, html: fixture("quiz-review.html") }) });
     await expect(getAttemptPage(deps, 900, 32, 0)).rejects.toThrow(/already finished.*review\.php/u);
+  });
+});
+
+describe("sequential quizzes", () => {
+  // Moodle keeps a sequential attempt on its current page (here page 2): a request for an
+  // earlier page lands there, and opening the next page moves the attempt on for good.
+  function sequentialDeps() {
+    return fakeDeps({
+      "GET /mod/quiz/attempt.php": ({ url }) => {
+        const page = Number(new URL(url).searchParams.get("page") ?? "0");
+        const shown = page === 2 ? 2 : 1;
+        return { url: `${ATTEMPT}&page=${shown}`, html: sequential(fixture(`quiz-attempt-page-${shown}.html`)) };
+      },
+    });
+  }
+  const pagesOpened = (deps: ReturnType<typeof sequentialDeps>) => deps.calls.map(call => new URL(call.url).searchParams.get("page") ?? "0");
+
+  it("reads the span navigation Moodle renders and says the quiz moves forward only", () => {
+    const page = parseAttemptPage(sequential(fixture("quiz-attempt-page-0.html")), ATTEMPT, { baseUrl: BASE, fail: message => new Error(message) });
+    expect(page.navigation_method).toBe("sequential");
+    expect(page.navigation.map(entry => [entry.number, entry.page])).toEqual(parseAttemptPage(fixture("quiz-attempt-page-0.html"), ATTEMPT, { baseUrl: BASE, fail: message => new Error(message) }).navigation.map(entry => [entry.number, entry.page]));
+    expect(page.navigation.length).toBeGreaterThan(0);
+  });
+
+  it("shows the current page and opens the next one only when told to advance", async () => {
+    const deps = sequentialDeps();
+    expect((await getAttemptPage(deps, 900, 32)).page).toBe(1);
+    await expect(getAttemptPage(deps, 900, 32, 0)).rejects.toThrow(/usage: Page 1 is locked/u);
+    await expect(getAttemptPage(deps, 900, 32, 2)).rejects.toThrow(/usage: Opening page 3 locks page 2 for good/u);
+    await expect(getAttemptPage(deps, 900, 32, 3)).rejects.toThrow(/one page at a time; the next page is 3/u);
+    expect(pagesOpened(deps)).not.toContain("2");
+    expect((await getAttemptPage(deps, 900, 32, 2, { advance: true })).page).toBe(2);
+    expect(pagesOpened(deps).at(-1)).toBe("2");
+  });
+
+  it("refuses a locked page", async () => {
+    const deps = fakeDeps({ "GET /mod/quiz/attempt.php": () => ({ url: `${ATTEMPT}&page=2`, html: sequential(fixture("quiz-attempt-page-2.html")) }) });
+    await expect(getAttemptPage(deps, 900, 32, 1)).rejects.toThrow(/usage: Page 2 is locked/u);
+  });
+
+  it("never opens another page to answer a question", async () => {
+    const deps = sequentialDeps();
+    const later = parseAttemptPage(sequential(fixture("quiz-attempt-page-2.html")), `${ATTEMPT}&page=2`, { baseUrl: BASE, fail: message => new Error(message) }).navigation.find(entry => entry.page === 2)!;
+    await expect(answerQuizQuestion(deps, { attemptId: 900, quizId: 32, question: later.number, value: "a" })).rejects.toThrow(/moves forward only and is on page 2/u);
+    expect(pagesOpened(deps)).toEqual(["0"]);
+  });
+});
+
+describe("planQuizStart", () => {
+  const view = (html: string) => fakeDeps({ "GET /mod/quiz/view.php": () => ({ url: `${BASE}/mod/quiz/view.php?id=32`, html }) });
+
+  it("reads the time limit, the attempt it would use and the grading method without sending anything", async () => {
+    const html = fixture("quiz-start.html").replace('<p class="text-start">Grading method: Highest grade</p>', '<p class="text-start">Attempts allowed: 2</p><p class="text-start">Time limit: 55 mins</p><p class="text-start">Grading method: Highest grade</p>')
+      .replace('<div class="box py-3 quizattempt"></div>', '<div class="box py-3 quizattempt"><table class="generaltable quizreviewsummary"><tr><th>Status</th><td>Finished</td></tr></table></div>');
+    const deps = view(html);
+    expect(await planQuizStart(deps, 32)).toMatchObject({ action: "start", time_limit: "55 mins", attempts_allowed: "2", attempts_used: 1, grading_method: "Highest grade" });
+    expect(deps.calls.map(call => call.method)).toEqual(["GET"]);
+  });
+
+  it("tells continuing an attempt in progress apart from starting one", async () => {
+    const html = fixture("quiz-start.html").replace("Attempt quiz", "Continue your attempt");
+    expect(await planQuizStart(view(html), 32)).toMatchObject({ action: "continue" });
   });
 });
 

@@ -5,7 +5,7 @@ import { DOWNLOADABLE_TYPES, downloadableActivities, sectionPage } from "./downl
 import { CliError, UsageError } from "./errors.js";
 import type { IntentService } from "./intents.js";
 import type { Course, Section } from "./models.js";
-import { ReferenceError, resolveUnit, sectionLabels } from "./resolve.js";
+import { ReferenceError, resolveUnit, sectionLabels, sectionTree } from "./resolve.js";
 
 const KINDS: Record<string, string> = { resource: "file", folder: "folder", assign: "assignment" };
 
@@ -72,12 +72,13 @@ async function unitAndQuery(raw: string, courses: readonly Course[], ui?: Ui): P
 // says so and stays on the section list.
 async function browse(client: MoodleClient, service: IntentService, courses: readonly Course[], ui: Ui, start?: Course): Promise<string> {
   let course = start;
+  let left: Course | undefined;
   let sectionId: number | undefined;
   for (;;) {
-    course ??= await pickUnit(ui, courses, "Unit");
+    course ??= await pickUnit(ui, courses, "Unit", left);
     const sections = await service.sections(course.id);
     const labels = sectionLabels(sections);
-    const counts = itemCounts(sections, labels);
+    const counts = itemCounts(sections);
     const listed = sections.filter(s => counts.get(s.id));
     if (!listed.length) {
       if (courses.length < 2) throw new ReferenceError("not_found", `${unitName(course)} has nothing to download.`, []);
@@ -93,6 +94,7 @@ async function browse(client: MoodleClient, service: IntentService, courses: rea
       ...(s.current ? { hint: "current" } : {}),
     })), { search: true, back: true, ...(initial !== undefined ? { initial } : {}) });
     if (picked === BACK) {
+      left = course;
       course = undefined;
       sectionId = undefined;
       continue;
@@ -117,30 +119,23 @@ async function browse(client: MoodleClient, service: IntentService, courses: rea
   }
 }
 
-// What the flat list puts under each section, counting the child sections a nested
-// format renders inside its parent's page. The page itself is only read once chosen.
-function itemCounts(sections: readonly Section[], labels: Map<number, string>): Map<number, number> {
-  const counts = new Map<number, number>();
-  let parent: Section | undefined;
-  for (const s of sections) {
-    const own = downloadableActivities(s).length;
-    counts.set(s.id, own);
-    if (parent && labels.get(s.id) !== (s.name || `Section ${s.section}`)) counts.set(parent.id, counts.get(parent.id)! + own);
-    else parent = s;
-  }
-  return counts;
+// What the flat list puts under each top-level section, counting the child sections a
+// nested format renders inside it. The page itself is only read once chosen.
+function itemCounts(sections: readonly Section[]): Map<number, number> {
+  return new Map(sectionTree(sections).map(({ section, children }) =>
+    [section.id, [section, ...children].reduce((n, s) => n + downloadableActivities(s).length, 0)]));
 }
 
 function plural(count: number, noun: string): string {
   return `${count} ${noun}${count === 1 ? "" : "s"}`;
 }
 
-function pickUnit(ui: Ui, courses: readonly Course[], message: string): Promise<Course> {
+function pickUnit(ui: Ui, courses: readonly Course[], message: string, initial?: Course): Promise<Course> {
   return ui.select(message, courses.map(c => ({
     value: c,
     label: c.fullname || c.shortname,
     ...(c.shortname && c.shortname !== c.fullname ? { hint: c.shortname } : {}),
-  })), { search: true });
+  })), { search: true, ...(initial ? { initial } : {}) });
 }
 
 async function sectionOf(service: IntentService, row: { unit_id: number; section_id: number }): Promise<Section> {

@@ -5,7 +5,8 @@ Generated from the live command tree. UNIT is a code/name, id or URL from `moodl
 Resources, folders and assignments return `files` with names and URLs.
 `moodle download REF --to DIR` saves one file, every file of an activity, or a whole
 section (`moodle download "UNIT week 3"` or a section URL). The receipt lists `files`
-with path, byte count and content type; `--dest PATH` names the file when there is one.
+with path, byte count and content type, and `skipped` with a reason: `exists` (already
+saved; `--force` replaces it) or `unavailable`. `--dest PATH` names the file when there is one.
 `moodle sync [UNIT] --to DIR` mirrors units (files, plus pages and books as HTML) into one folder each and reruns incrementally;
 it never overwrites a file you edited (the new version lands beside it as a `conflict`).
 `moodle submit "UNIT TASK" FILE... --dry-run` shows the upload plan; without `--dry-run` it
@@ -42,7 +43,7 @@ asks for confirmation (`--yes` skips it) and prints the receipt Moodle shows aft
 | moodle mcp bridge | Bridge a stdio MCP client to the managed remote server. |  | --profile (value required) |
 | moodle mcp clients | List pending and approved OAuth clients. |  | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required) |
 | moodle mcp connect | Connect a supported MCP client. | [client] | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required)<br>--mode (value required)<br>--show-token |
-| moodle mcp deploy | Deploy or update the managed Moodle MCP server. |  | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required)<br>--dry-run<br>--repair<br>--rotate-key<br>--rotate-token<br>--rollback |
+| moodle mcp deploy | Deploy or update the managed Moodle MCP server. |  | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required)<br>--dry-run<br>--repair<br>--rotate-key<br>--rotate-token<br>--rollback<br>--remote-login |
 | moodle mcp login | Acquire and upload a fresh Moodle session. |  | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required) |
 | moodle mcp pair | Open a pairing window so Claude can connect to the remote MCP server. |  | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required) |
 | moodle mcp remove | Remove one managed Moodle MCP deployment. |  | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required) |

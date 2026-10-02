@@ -228,7 +228,22 @@ describe("getAuthStatus", () => {
       session_alive: true,
       session_time_remaining_seconds: 600,
       keepalive_installed: false,
+      mobile_service: null,
+      renewal: "sign_in",
     });
+  });
+
+  it("reports mobile token renewal once a token is held", async () => {
+    const homeDir = await mkdtemp(join(tmpdir(), "moodle-cli-keepalive-"));
+    await writeCachedSession(
+      { baseUrl: BASE_URL, cookieName: COOKIE.name, cookieValue: COOKIE.value, sesskey: "sess", userid: 7, savedAt: 1000, mobileServiceEnabled: true, mobileToken: { wstoken: "ws", privatetoken: "private" } },
+      { homeDir },
+    );
+    const fetchImpl = vi.fn(async () => jsonResponse([{ error: false, data: { userid: 7, timeremaining: 600 } }]));
+
+    const status = await getAuthStatus(BASE_URL, { homeDir, fetchImpl: fetchImpl as unknown as typeof fetch, now: () => 1000 });
+    expect(status).toMatchObject({ mobile_service: true, renewal: "mobile_token" });
+    expect(JSON.stringify(status)).not.toContain("private");
   });
 });
 

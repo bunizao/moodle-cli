@@ -2,12 +2,12 @@
 
 exports[`shared intent contract > pins the home, section, item and grades screens at 80 columns > grades 1`] = `
 "algo-2 · 1 of 2 graded
-┌───────────┬───────┬───────┬───────────────────────────────┐
-│ Name      │ Grade │ Range │ Feedback                      │
-├───────────┼───────┼───────┼───────────────────────────────┤
-│ Mini Test │ -     │ 0–10  │ in 5 days · Sat 19 Sep, 15:55 │
-│ Quiz      │ 8     │ 0–10  │ Well done                     │
-└───────────┴───────┴───────┴───────────────────────────────┘
+┌───────────┬───────┬───────┬───────────────────────────────┬───────────┐
+│ Name      │ Grade │ Range │ Due                           │ Feedback  │
+├───────────┼───────┼───────┼───────────────────────────────┼───────────┤
+│ Mini Test │ -     │ 0–10  │ in 4 days · Sat 19 Sep, 15:55 │           │
+│ Quiz      │ 8     │ 0–10  │                               │ Well done │
+└───────────┴───────┴───────┴───────────────────────────────┴───────────┘
 
 Try  moodle due --days 30
      moodle grades"
@@ -18,10 +18,10 @@ exports[`shared intent contract > pins the home, section, item and grades screen
 https://moodle.example.edu
 
 Due soon
-  DB240  Mini Test  in 5 days · Sat 19 Sep, 15:55  #1
-  algo-2  Mini Test  in 5 days · Sat 19 Sep, 15:55  #2
-  STATS  Mini Test  in 5 days · Sat 19 Sep, 15:55  #3
-  assign  Mini Test  in 5 days · Sat 19 Sep, 15:55  #4
+  DB240  Mini Test  in 4 days · Sat 19 Sep, 15:55  #101
+  algo-2  Mini Test  in 4 days · Sat 19 Sep, 15:55  #201
+  STATS  Mini Test  in 4 days · Sat 19 Sep, 15:55  #301
+  assign  Mini Test  in 4 days · Sat 19 Sep, 15:55  #401
 
 Unread  nothing
 

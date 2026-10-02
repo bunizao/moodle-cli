@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { currentSection, resolveSection, resolveUnit, searchSections, splitUnitPhrase, tokensMatch } from "../src/resolve.js";
+import { currentSection, resolveSection, resolveUnit, searchSections, sectionLabels, sectionTree, splitUnitPhrase, tokensMatch, withChildSections } from "../src/resolve.js";
 import type { Course, Section } from "../src/models.js";
 
 export const fixtureUnits: Course[] = [
@@ -50,13 +50,39 @@ describe("site vocabulary resolution", () => {
     expect(rows.map(r => [r.id, r.section])).toEqual([[20, "Week 7 › Own time"]]);
     expect(searchSections(fixtureUnits[1], nested, "week 7").filter(r => r.type === "section").map(r => r.id)).toEqual([70]);
   });
-  it("uses the site marker, never week arithmetic, and tags an unfinished guess", () => {
-    expect(currentSection(fixtureSections())?.section.id).toBe(70);
+  it("prefers the week over a numbered assessment and reaches nested children through the parent", () => {
+    const child = (id: number, name: string): Section => ({ id, section: id, name, visible: true, summary: "", activities: [] });
+    const [week7, week17] = fixtureSections();
+    const nested = [week7, child(2, "Own time"), child(3, "Real time"), week17, child(5, "Own time"), child(6, "Real time"), child(8, "7. Written")];
+    expect(resolveSection("week 7", nested).section.id).toBe(70);
+    expect(resolveSection("week 7 real time", nested).section.id).toBe(3);
+    // A bare number is honestly ambiguous; a repeated child name lists its parents.
+    expect(() => resolveSection(7, nested)).toThrow(expect.objectContaining({ candidates: [{ id: 70, name: "Week 7" }, { id: 8, name: "7. Written" }] }));
+    expect(() => resolveSection("own time", nested)).toThrow(expect.objectContaining({ candidates: [{ id: 2, name: "Week 7 › Own time" }, { id: 5, name: "Week 17 › Own time" }] }));
+    // Words beside the number must name the section, so an item phrase falls through to items.
+    expect(() => resolveSection("assignment 7", nested)).toThrow(expect.objectContaining({ code: "not_found" }));
+    expect(resolveSection("7 written", nested).section.id).toBe(8);
+    expect(withChildSections(week7, nested).map(s => s.id)).toEqual([70, 2, 3]);
+    expect(withChildSections(week17, nested).map(s => s.id)).toEqual([71, 5, 6]);
+  });
+  it("folds only the innermost level when the site gives parent ids", () => {
+    const at = (id: number, name: string, parent?: number): Section => ({ id, section: id, name, visible: true, summary: "", ...(parent ? { parent } : {}), activities: [] });
+    // A tab of weeks holds sections that hold sections, so it stays a heading.
+    const sections = [at(1, "Learning"), at(2, "Getting started", 1), at(3, "Week 7", 1), at(4, "Own time", 3), at(5, "Assessments"), at(6, "1. Written", 5), at(7, "2. Written", 5)];
+    expect([...sectionLabels(sections).values()]).toEqual(["Learning", "Getting started", "Week 7", "Week 7 › Own time", "Assessments", "Assessments › 1. Written", "Assessments › 2. Written"]);
+    expect(sectionTree(sections).map(n => [n.section.id, n.children.map(c => c.id)])).toEqual([[1, []], [2, []], [3, [4]], [5, [6, 7]]]);
+    expect(resolveSection("2. written", sections).section.id).toBe(7);
+    // A child listed ahead of its parent still belongs to it.
+    const [learning, started, week, own] = sections;
+    expect(withChildSections(week, [own, learning, started, week]).map(s => s.id)).toEqual([3, 4]);
+  });
+  it("uses the site marker and never guesses without one", () => {
+    expect(currentSection(fixtureSections())?.id).toBe(70);
     const unmarked = fixtureSections().map(s => ({ ...s, current: false }));
-    // A course start date is often the enrolment date, so it must not pick a section.
     expect(currentSection(unmarked)).toBeUndefined();
+    // Unfinished work used to stand in for the marker and named week 1 in week 9.
     const unfinished = unmarked.map((s, index) => index === 1 ? { ...s, activities: s.activities.map(a => ({ ...a, completion: 0 })) } : s);
-    expect(currentSection(unfinished)).toMatchObject({ section: { id: unfinished[1].id }, estimated: true });
+    expect(currentSection(unfinished)).toBeUndefined();
   });
   it("matches letter-and-number shorthand against numbered names", () => {
     expect(tokensMatch("Assignment 2 (Weight: 20%)", "a2")).toBe(true);

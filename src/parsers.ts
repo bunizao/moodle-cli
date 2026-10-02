@@ -130,6 +130,9 @@ export function parseCourseFormatState(value: unknown, baseUrl: string): Section
     const listedActivities = asArray(data.cmlist)
       .map((activityId) => activities.get(stringValue(activityId)))
       .filter((activity): activity is Activity => activity !== undefined);
+    // Core names the parent of a delegated subsection parentsectionid; nesting formats
+    // that predate it use parentid.
+    const parent = numberValue(data.parentsectionid ?? data.parentid);
     return {
       id,
       name: htmlText(data.title || data.rawtitle, baseUrl),
@@ -137,7 +140,7 @@ export function parseCourseFormatState(value: unknown, baseUrl: string): Section
       visible: booleanValue(data.visible, true),
       summary: htmlText(data.summary, baseUrl),
       ...(data.current !== undefined ? { current: booleanValue(data.current) } : {}),
-      ...(numberValue(data.parentid) > 0 ? { parent: numberValue(data.parentid) } : {}),
+      ...(parent ? { parent } : {}),
       activities: hasActivityList ? listedActivities : activitiesBySection.get(String(id)) ?? [],
     };
   });

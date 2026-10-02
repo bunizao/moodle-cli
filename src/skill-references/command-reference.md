@@ -5,7 +5,8 @@ Generated from the live command tree. UNIT is a code/name, id or URL from `moodl
 Resources, folders and assignments return `files` with names and URLs.
 `moodle download REF --to DIR` saves one file, every file of an activity, or a whole
 section (`moodle download "UNIT week 3"` or a section URL). The receipt lists `files`
-with path, byte count and content type; `--dest PATH` names the file when there is one.
+with path, byte count and content type, and `skipped` with a reason: `exists` (already
+saved; `--force` replaces it) or `unavailable`. `--dest PATH` names the file when there is one.
 `moodle sync [UNIT] --to DIR` mirrors units (files, plus pages and books as HTML) into one folder each and reruns incrementally;
 it never overwrites a file you edited (the new version lands beside it as a `conflict`).
 `moodle submit "UNIT TASK" FILE... --dry-run` shows the upload plan; without `--dry-run` it

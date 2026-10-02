@@ -41,7 +41,7 @@ export interface Section {
   visible: boolean;
   summary: string;
   current?: boolean;
-  /** The enclosing section's id, when the course format nests sections. */
+  // The section this one is nested in, when the site's format says.
   parent?: number;
   activities: Activity[];
 }

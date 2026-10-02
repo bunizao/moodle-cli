@@ -28,7 +28,7 @@ import {
   URL_VIEW_PATH,
 } from "./constants.js";
 import { submitAssignmentFiles, type SubmissionReceipt, type SubmitAssignmentRequest } from "./moodle-assign-core.js";
-import { answerQuizQuestion, finishQuizAttempt, getAttemptPage, getAttemptSummary, startQuizAttempt, type AnswerRequest, type AttemptFinishReceipt, type AttemptPage, type AttemptSummary, type QuizDeps, type StartOptions } from "./moodle-quiz-core.js";
+import { answerQuizQuestion, finishQuizAttempt, getAttemptPage, getAttemptSummary, planQuizStart, startQuizAttempt, type AnswerRequest, type AttemptFinishReceipt, type AttemptPage, type AttemptSummary, type QuizDeps, type QuizStartPlan, type StartOptions } from "./moodle-quiz-core.js";
 import { ForumModule } from "./moodle-forum-core.js";
 import { searchForumContent as searchForumModule } from "./moodle-forum-search-core.js";
 import type {
@@ -80,6 +80,14 @@ import {
   parseQuizReviewHtml,
   parseResourceHtml,
 } from "./scraper.js";
+
+// Moodle's own activity modules. Anything else without a reader may be an alias whose
+// page redirects to the real activity.
+const STANDARD_MODULES = new Set([
+  "assign", "bigbluebuttonbn", "book", "chat", "choice", "data", "feedback", "folder", "forum", "glossary",
+  "h5pactivity", "imscp", "label", "lesson", "lti", "page", "qbank", "quiz", "resource", "scorm",
+  "subsection", "survey", "url", "wiki", "workshop",
+]);
 
 export interface AjaxCall {
   methodname: string;
@@ -206,7 +214,10 @@ export class MoodleClientCore {
   private writeSessionCache?: (session: MoodleClientSessionSnapshot) => Promise<void>;
   private readonly errors: MoodleClientErrorAdapter;
   private onLoginRequired?: () => Promise<{ cookie: MoodleSessionCookie; pageContext: PageContext }>;
-  private retryingLogin = false;
+  // Reads run in parallel and Moodle rejects them all at once; they must share one
+  // reauthentication. The generation tells a late rejection that a newer session exists.
+  private authGeneration = 0;
+  private reauthInFlight?: Promise<void>;
   private readonly forum: ForumModule;
 
   constructor(baseUrl: string, options: MoodleClientCoreOptions | string) {
@@ -344,6 +355,10 @@ export class MoodleClientCore {
   }
 
   async getActivity(id: number): Promise<ActivityDetail & { type: string }> {
+    return this.readActivity(id, true);
+  }
+
+  private async readActivity(id: number, followAlias: boolean): Promise<ActivityDetail & { type: string }> {
     await this.ensureSession();
     let activity: Activity | null = null;
     let courseId: number | undefined;
@@ -370,10 +385,25 @@ export class MoodleClientCore {
     };
     const load = loaders[type];
     if (!load) {
+      // Some plugins only place a shortcut to another activity in a second section, and
+      // their page redirects there; describe the real activity, which has the due date
+      // and files. Standard modules are real content, so their pages are not fetched.
+      const alias = followAlias && /^[a-z][a-z0-9_]*$/u.test(type) && !STANDARD_MODULES.has(type)
+        ? await this.redirectedActivity(type, id)
+        : undefined;
+      if (alias) return this.readActivity(alias, false);
       activity ??= await this.findActivity(id, courseId);
       return { ...activity, type: type || activity.modname || "unknown" };
     }
     return { ...(await load()), type: type === "url" ? "link" : type };
+  }
+
+  private async redirectedActivity(type: string, id: number): Promise<number | undefined> {
+    const response = await this.requestAbsolute(`${this.baseUrl}/mod/${type}/view.php?id=${id}`, {}, { allowErrorStatus: true });
+    await response.body?.cancel().catch(() => undefined);
+    const match = /\/mod\/\w+\/view\.php\?(?:.*&)?id=(\d+)/u.exec(response.url);
+    const target = match ? Number(match[1]) : undefined;
+    return target && target !== id ? target : undefined;
   }
 
   async getTodo(limit = 20, days?: number, courseId?: number): Promise<TodoItem[]> {
@@ -611,12 +641,16 @@ export class MoodleClientCore {
   }
 
   /** Starts a new attempt, or resumes the one already in progress, and returns its first page. */
+  async planQuizStart(quizId: number): Promise<QuizStartPlan> {
+    return planQuizStart(await this.quizDeps(), quizId);
+  }
+
   async startQuizAttempt(quizId: number, options: StartOptions = {}): Promise<AttemptPage> {
     return startQuizAttempt(await this.quizDeps(), quizId, options);
   }
 
-  async getQuizAttemptPage(attemptId: number, quizId: number, page = 0): Promise<AttemptPage> {
-    return getAttemptPage(await this.quizDeps(), attemptId, quizId, page);
+  async getQuizAttemptPage(attemptId: number, quizId: number, page?: number, options: { advance?: boolean } = {}): Promise<AttemptPage> {
+    return getAttemptPage(await this.quizDeps(), attemptId, quizId, page, options);
   }
 
   async getQuizAttemptSummary(attemptId: number, quizId: number): Promise<AttemptSummary> {
@@ -744,6 +778,7 @@ export class MoodleClientCore {
       return results;
     }
     const payload = requests.map((request, index) => ({ index, methodname: request.methodname, args: request.args ?? {} }));
+    const sentGeneration = this.authGeneration;
     const response = await fetchWithSession(`${this.baseUrl}${AJAX_SERVICE_PATH}?sesskey=${encodeURIComponent(this.sesskey ?? "")}&info=${requests.map((request) => request.methodname).join(",")}`, {
       method: "POST",
       headers: {
@@ -753,8 +788,8 @@ export class MoodleClientCore {
       body: JSON.stringify(payload),
     }, this.baseUrl, this.cookie, this.fetchImpl);
     if (response.url.includes("/login/")) {
-      if (this.onLoginRequired && allowRetry && !this.retryingLogin) {
-        await this.reauthenticate();
+      if (this.onLoginRequired && allowRetry) {
+        await this.reauthenticate(sentGeneration);
         return this.callBatchInternal(requests, false);
       }
       throw this.errors.api("Session expired", "servicerequireslogin");
@@ -782,11 +817,10 @@ export class MoodleClientCore {
     if (learned) await this.writeCache();
     if (
       allowRetry &&
-      !this.retryingLogin &&
       this.onLoginRequired &&
       results.some((result) => result !== undefined && !result.ok && this.errors.isLoginRequired(result.error))
     ) {
-      await this.reauthenticate();
+      await this.reauthenticate(sentGeneration);
       return this.callBatchInternal(requests, false);
     }
     return results;
@@ -812,10 +846,11 @@ export class MoodleClientCore {
   }
 
   private async requestAbsoluteInternal(url: string, init: RequestInit, allowRetry: boolean, allowErrorStatus = false): Promise<Response> {
+    const sentGeneration = this.authGeneration;
     const response = await fetchWithSession(url, init, this.baseUrl, this.cookie, this.fetchImpl);
     if (response.url.includes("/login/")) {
-      if (this.onLoginRequired && allowRetry && !this.retryingLogin) {
-        await this.reauthenticate();
+      if (this.onLoginRequired && allowRetry) {
+        await this.reauthenticate(sentGeneration);
         return this.requestAbsoluteInternal(url, init, false, allowErrorStatus);
       }
       throw this.errors.api("Session expired", "servicerequireslogin");
@@ -959,20 +994,28 @@ export class MoodleClientCore {
     return sections;
   }
 
-  private async reauthenticate(): Promise<void> {
+  private reauthenticate(sentGeneration: number): Promise<void> {
+    // The request was sent with a session that has since been replaced, so retrying is enough.
+    if (sentGeneration !== this.authGeneration) return Promise.resolve();
+    if (!this.reauthInFlight) {
+      const pending = this.performReauthentication().finally(() => {
+        if (this.reauthInFlight === pending) this.reauthInFlight = undefined;
+      });
+      this.reauthInFlight = pending;
+    }
+    return this.reauthInFlight;
+  }
+
+  private async performReauthentication(): Promise<void> {
     if (!this.onLoginRequired) {
       throw this.errors.api("Session expired", "servicerequireslogin");
     }
-    this.retryingLogin = true;
     await this.clearSessionCache?.();
-    try {
-      const auth = await this.onLoginRequired();
-      this.cookie = auth.cookie;
-      this.applyContext(auth.pageContext);
-      await this.writeCache();
-    } finally {
-      this.retryingLogin = false;
-    }
+    const auth = await this.onLoginRequired();
+    this.cookie = auth.cookie;
+    this.applyContext(auth.pageContext);
+    this.authGeneration += 1;
+    await this.writeCache();
   }
 
   private applyContext(context: PageContext): void {

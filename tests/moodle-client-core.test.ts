@@ -123,6 +123,89 @@ describe("runtime-neutral Moodle client core", () => {
     expect(fetchImpl).toHaveBeenCalledTimes(2);
   });
 
+  describe("concurrent reads that are rejected as signed out", () => {
+    const renewed = {
+      cookie: { name: "MoodleSession", value: "renewed-cookie" },
+      pageContext: {
+        sesskey: "renewed-key",
+        user_info: { userid: 7, username: "ada", fullname: "Ada", sitename: "Example Moodle", siteurl: BASE_URL },
+      },
+    };
+    const loginPage = () => {
+      const response = new Response("login", { headers: { "content-type": "text/html" } });
+      Object.defineProperty(response, "url", { value: `${BASE_URL}/login/index.php` });
+      return response;
+    };
+
+    it("joins one in-flight reauthentication and retries each read with the new session", async () => {
+      let finish!: () => void;
+      const onLoginRequired = vi.fn(() => new Promise<typeof renewed>((resolve) => { finish = () => resolve(renewed); }));
+      const fetchImpl = vi.fn<typeof fetch>(async (_input, init) => {
+        const cookie = new Headers(init?.headers).get("cookie");
+        return cookie === "MoodleSession=renewed-cookie" ? new Response("slides") : loginPage();
+      });
+      const client = createMoodleClientCore(BASE_URL, {
+        cookie: { name: "MoodleSession", value: "expired-cookie" },
+        sesskey: "expired-key",
+        userid: 7,
+        fetchImpl,
+        onLoginRequired,
+      });
+
+      const reads = [client.requestAbsolute(`${BASE_URL}/a`), client.requestAbsolute(`${BASE_URL}/b`)];
+      await vi.waitFor(() => expect(fetchImpl).toHaveBeenCalledTimes(2));
+      await vi.waitFor(() => expect(onLoginRequired).toHaveBeenCalledOnce());
+      finish();
+
+      for (const read of reads) await expect((await read).text()).resolves.toBe("slides");
+      expect(onLoginRequired).toHaveBeenCalledOnce();
+    });
+
+    it("retries a read that was rejected before recovery finished without a second recovery", async () => {
+      const onLoginRequired = vi.fn(async () => renewed);
+      let releaseSlow!: () => void;
+      const fetchImpl = vi.fn<typeof fetch>(async (input, init) => {
+        const cookie = new Headers(init?.headers).get("cookie");
+        if (cookie === "MoodleSession=renewed-cookie") return new Response("slides");
+        // The slow read was sent with the old cookie and is only rejected after the fast read recovered.
+        if (String(input).endsWith("/slow")) await new Promise<void>((resolve) => { releaseSlow = resolve; });
+        return loginPage();
+      });
+      const client = createMoodleClientCore(BASE_URL, {
+        cookie: { name: "MoodleSession", value: "expired-cookie" },
+        sesskey: "expired-key",
+        userid: 7,
+        fetchImpl,
+        onLoginRequired,
+      });
+
+      const slow = client.requestAbsolute(`${BASE_URL}/slow`);
+      await vi.waitFor(() => expect(releaseSlow).toBeTypeOf("function"));
+      await expect((await client.requestAbsolute(`${BASE_URL}/fast`)).text()).resolves.toBe("slides");
+      releaseSlow();
+
+      await expect((await slow).text()).resolves.toBe("slides");
+      expect(onLoginRequired).toHaveBeenCalledOnce();
+    });
+
+    it("rejects every joined read when the shared reauthentication fails", async () => {
+      const onLoginRequired = vi.fn(async () => { throw new Error("no session"); });
+      const fetchImpl = vi.fn<typeof fetch>(async () => loginPage());
+      const client = createMoodleClientCore(BASE_URL, {
+        cookie: { name: "MoodleSession", value: "expired-cookie" },
+        sesskey: "expired-key",
+        userid: 7,
+        fetchImpl,
+        onLoginRequired,
+      });
+
+      const results = await Promise.allSettled([client.requestAbsolute(`${BASE_URL}/a`), client.requestAbsolute(`${BASE_URL}/b`)]);
+
+      expect(results.map((result) => result.status)).toEqual(["rejected", "rejected"]);
+      expect(onLoginRequired).toHaveBeenCalledOnce();
+    });
+  });
+
   it("does not forward the Moodle cookie across an actual cross-origin redirect", async () => {
     let redirectedCookie: string | undefined;
     const target = createServer((request, response) => {

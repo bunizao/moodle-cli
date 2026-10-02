@@ -233,6 +233,14 @@ describe("Moodle file downloads", () => {
     await expect(readdir(directory)).resolves.toEqual([]);
   });
 
+  it("stops waiting on a slow section lookup as soon as it is cancelled", async () => {
+    const controller = new AbortController();
+    const hanging = client({ getActivity: () => new Promise(() => undefined) as never });
+    const pending = downloadMoodleFiles(hanging, { source: `${BASE_URL}/mod/folder/view.php?id=5` }, controller.signal);
+    controller.abort();
+    await expect(pending).rejects.toMatchObject({ code: "cancelled" });
+  });
+
   it("does not request Moodle when cancellation is already signalled", async () => {
     const requestAbsolute = vi.fn();
     const controller = new AbortController();
@@ -333,6 +341,22 @@ describe("Moodle file downloads", () => {
     await expect(readdir(directory)).resolves.toEqual(["slides (2).pdf", "slides.pdf"]);
   });
 
+  it("names each file on a dry run without creating the directory or writing anything", async () => {
+    const directory = join(await mkdtemp(join(tmpdir(), "moodle-download-")), "week-3");
+    const file = (n: number) => `${BASE_URL}/pluginfile.php/7/mod_folder/content/0/${n}/slides.pdf`;
+    const result = await downloadMoodleFiles(client({
+      getActivity: async () => ({ id: 5, type: "folder", url: `${BASE_URL}/mod/folder/view.php?id=5`, file_entries: [
+        { name: "slides.pdf", url: file(1), requires_authentication: true },
+        { name: "notes.pdf", url: file(2), requires_authentication: true },
+      ] }) as never,
+      requestAbsolute: async (url: string) => responseAt(url, "%PDF", { "content-type": "application/pdf" }),
+    }), { source: `${BASE_URL}/mod/folder/view.php?id=5`, directory, dryRun: true });
+
+    expect(result).toMatchObject({ dry_run: true, total: 2, files: [{ filename: "slides.pdf", bytes_written: 0 }, { filename: "notes.pdf", bytes_written: 0 }] });
+    await expect(readdir(directory)).rejects.toThrow();
+    expect(formatDownloadResult(result, directory)).toBe("Would save 2 files → .\n  slides.pdf\n  notes.pdf");
+  });
+
   it("saves one document linked twice under different URLs once, now and on a rerun", async () => {
     const directory = await mkdtemp(join(tmpdir(), "moodle-download-"));
     const file = (n: number) => `${BASE_URL}/pluginfile.php/${n}/brief.pdf`;
@@ -405,6 +429,25 @@ describe("Moodle file downloads", () => {
     // The assignment links the folder's first file again, so it is saved once; case never collides.
     expect(result.files.map(f => f.filename)).toEqual(["Slides.pdf", "slides (2).pdf"]);
     expect(result.skipped.map(s => `${s.reason} ${s.name}`)).toEqual(["unavailable a5", "unavailable gone.pdf"]);
+  });
+
+  it("skips a file Moodle gives no name for, and saves one to --dest anyway", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "moodle-download-"));
+    const nameless = `${BASE_URL}/pluginfile.php/7/mod_folder/content/0/`;
+    const folder = client({
+      getActivity: async () => ({ id: 5, type: "folder", url: `${BASE_URL}/mod/folder/view.php?id=5`, file_entries: [
+        { name: "a.pdf", url: `${BASE_URL}/pluginfile.php/7/mod_folder/content/0/a.pdf`, requires_authentication: true },
+        { name: "", url: nameless, requires_authentication: true },
+      ] }) as never,
+      requestAbsolute: async (url: string) => responseAt(url, "%PDF", { "content-type": "application/pdf" }),
+    });
+    const result = await downloadMoodleFiles(folder, { source: `${BASE_URL}/mod/folder/view.php?id=5`, directory });
+    expect(result.files.map(f => f.filename)).toEqual(["a.pdf"]);
+    expect(result.skipped).toMatchObject([{ reason: "unavailable", detail: "Moodle did not provide a safe filename." }]);
+
+    const destination = join(directory, "named-here.pdf");
+    const single = client({ requestAbsolute: async (url: string) => responseAt(url, "%PDF", { "content-type": "application/pdf" }) });
+    await expect(downloadMoodleFile(single, { source: nameless, destination })).resolves.toMatchObject({ filename: "named-here.pdf" });
   });
 
   it("reads a section linked by its id", async () => {

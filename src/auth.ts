@@ -12,7 +12,7 @@ import {
 } from "./constants.js";
 import { browserCookieStores, cookieStoresBlocked, unreadableCookieStores, type CookieStore } from "./cookie-stores.js";
 import { CdpError, cdpProfileDir, findChromiumBrowser, loginWithCdp, type CdpCookie, type CdpLoginOptions, type CdpLoginResult } from "./cdp-login.js";
-import { fetchMobileToken, mintSessionFromMobileToken, readMobilePublicConfig, type MobileToken } from "./mobile-login-core.js";
+import { fetchMobileToken, mintSessionFromMobileToken, readSiteAuthProfile, type MobileToken } from "./mobile-login-core.js";
 import { AuthError, asNetworkError } from "./errors.js";
 import {
   deleteCachedSession,
@@ -667,12 +667,12 @@ async function captureMobileToken(
 ): Promise<{ supported?: boolean; token?: MobileToken }> {
   const fetchImpl = options.fetch ?? globalThis.fetch;
   try {
-    const config = await readMobilePublicConfig(baseUrl, fetchImpl);
-    if (config && !config.mobileServiceEnabled) return { supported: false };
+    const profile = await readSiteAuthProfile(baseUrl, fetchImpl);
+    if (profile && !profile.mobileService) return { supported: false };
     const token = (await fetchMobileToken(baseUrl, cookie, fetchImpl)) ?? undefined;
     // With a readable config, trust its flag; otherwise a minted token is itself
     // proof of support, and no token leaves support undetermined for next time.
-    return { supported: config?.mobileServiceEnabled ?? (token ? true : undefined), token };
+    return { supported: profile?.mobileService ?? (token ? true : undefined), token };
   } catch {
     return {};
   }

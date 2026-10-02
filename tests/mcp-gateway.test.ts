@@ -89,6 +89,24 @@ describe("Moodle gateway", () => {
     });
   });
 
+  it("returns an assignment's only attachment and names the choice when there are several", async () => {
+    const attachment = (name: string) => ({ name, url: `https://moodle.example.edu/pluginfile.php/7/mod_assign/introattachment/0/${name}`, requires_authentication: true });
+    const assignment = (files: ReturnType<typeof attachment>[]) => createMoodleGateway({
+      ...fakeClient(),
+      getActivity: async () => ({ id: 501, name: "Assignment 1", type: "assign", file_entries: files }) as never,
+      requestAbsolute: async (url: string) => responseAt(url, "brief", { "content-type": "application/pdf" }),
+    });
+
+    await expect(assignment([attachment("brief.pdf")]).getFile({ source: 501 })).resolves.toMatchObject({ name: "brief.pdf" });
+    await expect(assignment([attachment("brief.pdf")]).getFile({ source: "https://moodle.example.edu/mod/assign/view.php?id=501" }))
+      .resolves.toMatchObject({ name: "brief.pdf" });
+    await expect(assignment([attachment("brief.pdf"), attachment("data.csv")]).getFile({ source: 501 })).rejects.toMatchObject({
+      code: "MOODLE_FILE_SOURCE_AMBIGUOUS",
+      message: "Activity 501 has 2 files.",
+      hint: "Call item 501 for their URLs, then file with one URL.",
+    });
+  });
+
   it("follows a same-site resource wrapper when Moodle omits file entries", async () => {
     const wrapperUrl = "https://moodle.example.edu/mod/resource/view.php?id=91235";
     const fileUrl = "https://moodle.example.edu/pluginfile.php/1/wrapper.pdf";

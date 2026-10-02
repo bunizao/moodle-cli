@@ -1,7 +1,7 @@
 import type { Course, Overview } from "./models.js";
 import { MoodleGatewayError, type MoodleGateway } from "./mcp/gateway.js";
 import { intentContracts, type Intent } from "./intent-contract.js";
-import { currentSection, ReferenceError, resolveSection, resolveUnit, searchSections, splitUnitPhrase, tokensMatch, type SearchMatch } from "./resolve.js";
+import { currentSection, ReferenceError, resolveSection, resolveUnit, searchSections, sectionLabels, sectionTree, splitUnitPhrase, tokensMatch, withChildSections, type SearchMatch } from "./resolve.js";
 import { activityRow, dueRow, isoTime, itemRow, postRow, stripEmpty, timezoneFor, unitRow } from "./results.js";
 
 // Bounded fan-out: these calls hit a live Moodle, so unit lists run a few at a time
@@ -43,8 +43,8 @@ export function createIntentService(gateway: MoodleGateway, now = () => Date.now
   // One unit's deadlines: the per-course calendar when the gateway offers it, else the whole timeline filtered.
   const unitDeadlines = async (unitId: number, days: number) => gateway.getDue ? gateway.getDue(days, unitId) : (await overview(days)).todo.filter(t => t.course_id === unitId);
   const compactCurrent = (sections: CourseDetail["sections"]) => {
-    const result = currentSection(sections);
-    return result ? { id: result.section.id, name: result.section.name, estimated: result.estimated } : undefined;
+    const current = currentSection(sections);
+    return current ? { id: current.id, name: sectionLabels(sections).get(current.id) } : undefined;
   };
 
   async function find(query: string, ref?: string | number, types?: string[], threads = true): Promise<SearchMatch[]> {
@@ -81,7 +81,9 @@ export function createIntentService(gateway: MoodleGateway, now = () => Date.now
     const parsed = splitUnitPhrase(raw, await courses());
     // Items are activities; a miss must not trigger the discussion-subject crawl.
     const matches = (await find(parsed?.query || raw, parsed?.course.id, undefined, false)).filter(r => r.type !== "section");
-    if (matches.length === 1) return matches[0].id;
+    // An item named exactly what was typed wins over ones that merely contain the words.
+    const exact = matches.filter(m => m.score === 100);
+    if (matches.length === 1 || exact.length === 1) return (exact[0] ?? matches[0]).id;
     throw new ReferenceError(matches.length ? "ambiguous" : "not_found", `${matches.length ? "Several items match" : "No item matches"} '${raw}'.`, matches.map(({ id, name, type, unit_code }) => ({ id, name, type, code: unit_code })));
   }
 
@@ -91,14 +93,20 @@ export function createIntentService(gateway: MoodleGateway, now = () => Date.now
     const limit = Number(input.limit ?? 20);
     let result: unknown;
     switch (name) {
-      case "units": { const rows = await courses(); result = { units: rows.slice(0, limit).map(c => unitRow(c)), total: rows.length }; break; }
+      case "units": { const rows = await courses(); const tz = await timezone(); result = { units: rows.slice(0, limit).map(c => unitRow(c, tz)), total: rows.length }; break; }
       case "unit": {
         const c = await course(ref!);
         const { sections } = await courseDetail(c.id);
         const tz = await timezone();
         const chosen = input.section !== undefined ? resolveSection(input.section as string | number, sections) : undefined;
-        const rows = chosen ? [chosen.section] : sections;
-        result = { unit: { ...unitRow(c, tz), current_section: compactCurrent(sections) }, sections: rows.map(s => ({ id: s.id, name: s.name, activity_count: s.activities.length, hidden: s.visible === false ? true : undefined, positional: chosen?.positional, activities: chosen ? s.activities.filter(a => a.modname !== "label").map(a => activityRow(a, s)) : undefined })), total: rows.length };
+        // The index lists what the course page shows at the top level, counting nested
+        // children in their parent; a chosen section brings its children, whose labels
+        // name the parent because nested formats repeat child names in every week.
+        const labels = sectionLabels(sections);
+        const rows = chosen
+          ? withChildSections(chosen.section, sections).map(s => ({ s, count: s.activities.length }))
+          : sectionTree(sections).map(({ section, children }) => ({ s: section, count: [section, ...children].reduce((n, x) => n + x.activities.length, 0) }));
+        result = { unit: { ...unitRow(c, tz), current_section: compactCurrent(sections) }, sections: rows.map(({ s, count }) => ({ id: s.id, name: labels.get(s.id), activity_count: count, hidden: s.visible === false ? true : undefined, positional: chosen?.positional, activities: chosen ? s.activities.filter(a => a.modname !== "label").map(a => activityRow(a, s)) : undefined })), total: rows.length };
         break;
       }
       case "find": { const rows = await find(String(input.query), ref, input.types as string[] | undefined); result = { results: rows.slice(0, limit).map(({ activity, ...row }) => ({ ...row, files: activity?.file_entries })), total: rows.length }; break; }

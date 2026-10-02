@@ -17,6 +17,8 @@ export interface DownloadRequest {
   destination?: string;
   directory?: string;
   force?: boolean;
+  /** Name each file and where it would go, writing nothing. */
+  dryRun?: boolean;
   /** Called before each file, so a terminal can say which one is moving. */
   onFile?: (index: number, total: number, name: string) => void;
 }
@@ -44,6 +46,8 @@ export interface DownloadResult {
   files: DownloadReceipt[];
   skipped: SkippedDownload[];
   total: number;
+  // Set on a dry run: files lists what would be saved, and bytes_written is 0.
+  dry_run?: true;
 }
 
 export interface ResolvedDownload {
@@ -105,12 +109,12 @@ async function downloadAll(client: MoodleClient, request: DownloadRequest, signa
   }
 
   const skipped: SkippedDownload[] = [];
-  const targets = await resolveTargets(client, request.source, skipped, signal);
+  const targets = await untilCancelled(resolveTargets(client, request.source, skipped, signal), signal);
   if (explicitDestination && targets.length > 1) {
     throw new UsageError(`This source has ${targets.length} files, and --dest names exactly one.`, "Pass --to DIR to save them all.");
   }
   const directory = path.resolve(request.directory ?? process.cwd());
-  if (!explicitDestination && request.directory) {
+  if (!explicitDestination && request.directory && !request.dryRun) {
     await mkdir(directory, { recursive: true }).catch(() => {
       throw new ConfigError(`Cannot create local directory '${directory}'.`);
     });
@@ -125,10 +129,14 @@ async function downloadAll(client: MoodleClient, request: DownloadRequest, signa
   for (const [index, target] of targets.entries()) {
     throwIfCancelled(signal);
     request.onFile?.(index + 1, targets.length, target.name ?? "");
-    let resolved: ResolvedDownload;
+    let resolved: ResolvedDownload | undefined;
+    let upstream: string;
     try {
       resolved = await responseOrWrapper(client, target.url, target.sourceUrl, target.name, signal);
+      // --dest already names the file, so a response without a usable name is fine then.
+      upstream = explicitDestination ? path.basename(explicitDestination) : chooseUpstreamFilename(resolved);
     } catch (error) {
+      await resolved?.response.body?.cancel().catch(() => undefined);
       // One broken link in a folder should not cost the rest of the section.
       if (targets.length > 1 && error instanceof CliError && error.code === "not_found") {
         skipped.push({ name: target.name ?? publicUrl(target.url), reason: "unavailable", source_url: publicUrl(target.sourceUrl), detail: error.message });
@@ -137,7 +145,6 @@ async function downloadAll(client: MoodleClient, request: DownloadRequest, signa
       throw error;
     }
     throwIfCancelled(signal);
-    const upstream = chooseUpstreamFilename(resolved);
     const first = firstByName.get(upstream.toLowerCase());
     const filename = explicitDestination ? path.basename(explicitDestination) : uniqueFilename(upstream, used);
     const destination = explicitDestination ?? path.join(directory, filename);
@@ -148,9 +155,11 @@ async function downloadAll(client: MoodleClient, request: DownloadRequest, signa
       skipped.push({ name: filename, reason: "exists", source_url: publicUrl(resolved.sourceUrl), file_path: destination });
       continue;
     }
-    const bytesWritten = await writeResponse(resolved.response, destination, Boolean(request.force), signal);
+    // Only the response headers name the file, so a dry run still asks for each one.
+    if (request.dryRun) await resolved.response.body?.cancel().catch(() => undefined);
+    const bytesWritten = request.dryRun ? 0 : await writeResponse(resolved.response, destination, Boolean(request.force), signal);
     if (!first) firstByName.set(upstream.toLowerCase(), destination);
-    else if (!explicitDestination && await sameBytes(first, destination)) {
+    else if (!explicitDestination && !request.dryRun && await sameBytes(first, destination)) {
       await unlink(destination);
       used.delete(filename.toLowerCase());
       continue;
@@ -164,7 +173,7 @@ async function downloadAll(client: MoodleClient, request: DownloadRequest, signa
       final_url: publicUrl(resolved.response.url || resolved.requestUrl),
     });
   }
-  return { files, skipped, total: files.length };
+  return { files, skipped, total: files.length, ...(request.dryRun ? { dry_run: true as const } : {}) };
 }
 
 async function resolveTargets(client: MoodleClient, rawSource: string, skipped: SkippedDownload[], signal?: AbortSignal): Promise<DownloadTarget[]> {
@@ -527,6 +536,19 @@ export function publicUrl(value: string): string {
 
 // Finished files stay, and a rerun skips them, so starting again costs nothing.
 const CANCELLED_HINT = "Run it again to pick up where it stopped.";
+
+// Finding files makes Moodle calls that take no signal and can run for seconds. Nothing
+// is written yet, so Ctrl+C stops waiting on them rather than on the slowest one.
+function untilCancelled<T>(work: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) return work;
+  work.catch(() => undefined);
+  return new Promise<T>((resolve, reject) => {
+    const cancel = () => reject(new CliError("cancelled", "Download cancelled.", CANCELLED_HINT));
+    if (signal.aborted) return cancel();
+    signal.addEventListener("abort", cancel, { once: true });
+    work.then(resolve, reject).finally(() => signal.removeEventListener("abort", cancel));
+  });
+}
 
 function throwIfCancelled(signal?: AbortSignal): void {
   if (signal?.aborted) {
