@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import { createMoodleClientCore } from "../src/moodle-client-core.js";
-import { parseAssignmentHtml, parseQuizHtml, parseQuizReviewHtml } from "../src/scraper.js";
+import { parseAssignmentHtml, parsePageContext, parseQuizHtml, parseQuizReviewHtml } from "../src/scraper.js";
 import { labelRequests, siteLabelsFrom } from "../src/site-labels.js";
 
 // Pages and core_get_strings answers from a stock Moodle 5.0 site: once with the student's
@@ -107,4 +107,9 @@ describe("site labels", () => {
     expect((await client.getAssignment(98)).submission_status).toBe("Bisher wurden keine Aufgaben abgegeben");
     expect(calls).toBe(2);
   });
+});
+
+it("reads Moodle's resolved inherited timezone and session language", () => {
+  const html = '<html lang="de"><script>M.cfg = {"sesskey":"fixture","userId":7,"timezone":"99","usertimezone":"Europe/London","language":"de"};</script></html>';
+  expect(parsePageContext(html, BASE).user_info).toMatchObject({ timezone: "Europe/London", lang: "de" });
 });

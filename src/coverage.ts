@@ -5,7 +5,8 @@ import { createMoodleGateway, MAX_MCP_FILE_BYTES, type MoodleGateway } from "./m
 import { readSiteAuthProfile } from "./mobile-login-core.js";
 import type { Activity } from "./models.js";
 import type { MoodleClientCore } from "./moodle-client-core.js";
-import { parseSiteTheme } from "./scraper.js";
+import { isoTime } from "./results.js";
+import { parsePageContext, parseSiteTheme } from "./scraper.js";
 
 export type CoverageStatus = "ok" | "fallback" | "partial" | "empty" | "mismatch" | "fail" | "skip" | "untested";
 
@@ -44,6 +45,8 @@ export interface CoverageSite {
   release?: string;
   theme?: string;
   mobile_service?: boolean;
+  language?: string;
+  timezone?: string;
 }
 
 export interface CoverageReport {
@@ -62,6 +65,8 @@ export interface CoverageOptions {
   /** A check that runs longer fails instead of stalling the report. */
   timeoutMs?: number;
   retryDelayMs?: number;
+  language?: string;
+  timezone?: string;
 }
 
 type Row = Record<string, unknown>;
@@ -174,9 +179,9 @@ export async function* checkCoverage(service: IntentService, gateway: MoodleGate
     return { detail: `${count(num(r.total), "item")} in 30 days`, verified: rowsDue.length ? ["window"] : [] };
   });
   yield due.check;
-  const deadlines = new Map(rows(due.result, "due").filter(row => num(row.activity_id)).map(row => [num(row.activity_id), String(row.due ?? "")]));
+  const deadlines = new Map(rows(due.result, "due").filter(row => num(row.activity_id)).map(row => [num(row.activity_id), options.timezone ? isoTime(num(row.due_at), options.timezone) ?? "" : String(row.due ?? "")]));
 
-  const language = await gateway.getUser().then(user => user.lang || "en", () => "en");
+  const language = options.language || await gateway.getUser().then(user => user.lang || "en", () => "en");
   const sample = sampleUnits(rows(units.result, "units"), now() / 1000);
   const primary = sample[0];
   if (!primary) {
@@ -370,7 +375,7 @@ export async function coverageReport(client: MoodleClientCore, cli: CoverageCli,
     const gateway = createMoodleGateway(client);
     const checks: CoverageCheck[] = [];
     const takeDisabled = () => { const names = pending; pending = []; return names; };
-    for await (const check of checkCoverage(createIntentService(gateway), gateway, { ...options, takeDisabled })) {
+    for await (const check of checkCoverage(createIntentService(gateway), gateway, { ...options, language: site.language, timezone: site.timezone, takeDisabled })) {
       checks.push(check);
       options.onCheck?.(check);
     }
@@ -391,12 +396,18 @@ export function summarizeCoverage(checks: readonly CoverageCheck[]): Partial<Rec
 async function siteFacts(client: MoodleClientCore, fetchImpl?: typeof fetch): Promise<CoverageSite> {
   const [info] = await client.callBatch([{ methodname: FUNC_GET_SITE_INFO }]);
   const release = info?.ok ? record(info.data).release : undefined;
-  const theme = await client.requestAbsolute(`${client.baseUrl}${DASHBOARD_PATH}`).then(response => response.text()).then(parseSiteTheme, () => undefined);
+  const html = await client.requestAbsolute(`${client.baseUrl}${DASHBOARD_PATH}`).then(response => response.text(), () => undefined);
+  const theme = html ? parseSiteTheme(html) : undefined;
+  let pageContext: ReturnType<typeof parsePageContext> | undefined;
+  try { if (html) pageContext = parsePageContext(html, client.baseUrl); }
+  catch { /* A theme may omit page context; retain the regular user-info fallback. */ }
   const profile = await readSiteAuthProfile(client.baseUrl, fetchImpl);
   return {
     url: client.baseUrl,
     ...(typeof release === "string" && release ? { release } : {}),
     ...(theme ? { theme } : {}),
+    ...(pageContext?.user_info.lang ? { language: pageContext.user_info.lang } : {}),
+    ...(pageContext?.user_info.timezone ? { timezone: pageContext.user_info.timezone } : {}),
     ...(profile ? { mobile_service: profile.mobileService } : {}),
   };
 }
