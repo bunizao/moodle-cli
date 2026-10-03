@@ -8,7 +8,7 @@ Only the latest release gets security fixes. Run `moodle update` before reportin
 
 ## Report a vulnerability
 
-Please do not open a public issue. Report it privately through [GitHub's private vulnerability reporting](https://github.com/bunizao/moodle-cli/security/advisories/new), or email **bunizaoccc@gmail.com**.
+Please do not open a public issue. Report it privately through [GitHub's private vulnerability reporting](https://github.com/bunizao/moodle-cli/security/advisories/new), or email **me@buxx.me**.
 
 Include the version, the affected component (CLI, local MCP server, or Worker), and the steps to reproduce. Do not send real credentials: describe where a secret leaks, not the secret itself.
 

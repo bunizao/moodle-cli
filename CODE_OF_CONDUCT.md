@@ -27,7 +27,7 @@ This applies in every project space, including issues, pull requests, discussion
 
 ## Reporting
 
-Report unacceptable behaviour to the maintainer at **bunizaoccc@gmail.com**. Reports are handled privately, and the reporter's identity is kept confidential.
+Report unacceptable behaviour to the maintainer at **me@buxx.me**. Reports are handled privately, and the reporter's identity is kept confidential.
 
 ## Enforcement
 
