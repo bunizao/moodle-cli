@@ -17,6 +17,7 @@ Let it keep up with deadlines and grades, fetch course files, and search forum d
 - [Study Boooooooooost](#study-boooooooooost)
 - [Connect web AI through a private MCP server](#remote-mcp-for-web-ai)
 - [Developer and agent reference](#for-developers-and-agents)
+- [Contributing](#contributing)
 
 ## For users
 
@@ -321,6 +322,8 @@ For local use, save `base_url` in `~/.config/moodle-cli/config.yaml`. `MOODLE_UR
 
 ### Build from source
 
+The [development guide](docs/development.md) covers the code layout, test lanes, scripts, the Moodle lab and releases.
+
 Node.js workflow:
 
 ```bash
@@ -340,10 +343,6 @@ bunx vitest run
 bun run build
 bun run pack:check
 ```
-
-## License
-
-[MIT](LICENSE)
 
 ### Private MCP operations
 
@@ -406,3 +405,11 @@ request paths and timing; it never logs URL queries or credentials.
 Run `npm run measure:mcp` to reproduce fixture payload measurements. See
 [implementation evidence](docs/plans/optimization-implementation.md) for live checks,
 measurement scope and remaining budget differences.
+
+## Contributing
+
+Bug reports from real Moodle sites help most: run `moodle coverage --json` and attach the output. See [CONTRIBUTING.md](CONTRIBUTING.md) before opening a pull request, and [SECURITY.md](SECURITY.md) for vulnerabilities. Everyone taking part follows the [Code of Conduct](CODE_OF_CONDUCT.md).
+
+## License
+
+[MIT](LICENSE). You may use, copy, modify and redistribute this code, including in your own and commercial projects, without asking. Keep the copyright notice and the license text with any copy or substantial portion of it. A link back to this repository is appreciated but not required.
