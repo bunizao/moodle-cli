@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { createReadStream, createWriteStream } from "node:fs";
-import { link, mkdir, readdir, readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
+import { link, mkdir, open, readdir, readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { Readable, Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
@@ -551,12 +551,30 @@ async function place(run: UnitRun, temporary: TemporaryFile, relative: string, a
     run.claimed.add(candidate.toLowerCase());
     const absolute = path.join(run.directory, candidate);
     try {
-      await link(temporary.path, absolute);
+      await linkOrCopy(temporary.path, absolute);
       return { relative: candidate, adopted: false };
     } catch (error) {
       if (!isNodeError(error, "EEXIST")) throw new ConfigError(`Cannot write local file '${absolute}'.`);
       if (adopt && await fileSha1(absolute).catch(() => "") === temporary.sha1) return { relative: candidate, adopted: true };
     }
+  }
+}
+
+// A hard link is instant, but exFAT/FAT drives and some network shares have none. The copy
+// still creates its file exclusively, so neither path ever replaces an existing one.
+async function linkOrCopy(source: string, destination: string): Promise<void> {
+  try {
+    return await link(source, destination);
+  } catch (error) {
+    if (isNodeError(error, "EEXIST")) throw error;
+  }
+  const handle = await open(destination, "wx");
+  try {
+    await pipeline(createReadStream(source), handle.createWriteStream());
+  } catch (error) {
+    await handle.close().catch(() => undefined);
+    await unlink(destination).catch(() => undefined);
+    throw error;
   }
 }
 

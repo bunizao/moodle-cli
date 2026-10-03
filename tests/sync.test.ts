@@ -3,13 +3,29 @@ import { mkdir, mkdtemp, readdir, readFile, rename, writeFile } from "node:fs/pr
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { MoodleClient } from "../src/client.js";
 import { CliError } from "../src/errors.js";
 import { formatSyncResult } from "../src/formatters.js";
 import type { Activity, Course, Section } from "../src/models.js";
 import { MANIFEST_NAME, pathSegment, sectionDirectories, storedPath, syncUnits } from "../src/sync.js";
+
+// exFAT/FAT drives and some network shares refuse hard links; a test can switch that on.
+const disk = vi.hoisted(() => ({ hardLinks: true }));
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs/promises")>();
+  return {
+    ...actual,
+    link: async (...args: Parameters<typeof actual.link>) => {
+      if (!disk.hardLinks) throw Object.assign(new Error("operation not permitted"), { code: "EPERM" });
+      return actual.link(...args);
+    },
+  };
+});
+afterEach(() => {
+  disk.hardLinks = true;
+});
 
 const BASE_URL = "https://school.example.edu";
 const COURSE: Course = { id: 100, shortname: "UNIT1001", fullname: "Unit One", category: 1, visible: true, startdate: 0 };
@@ -330,6 +346,22 @@ describe("moodle sync", () => {
       throw new CliError("auth", "Session expired.");
     };
     await expect(syncUnits(moodle.client, [COURSE, other], { root: base, now: NOW })).rejects.toMatchObject({ code: "auth" });
+  });
+
+  it("copies instead of linking on a disk without hard links, still never over an existing file", async () => {
+    const moodle = site();
+    const base = await root();
+    disk.hardLinks = false;
+    await mkdir(join(unitDir(base), "Week 1", "Real-time"), { recursive: true });
+    await writeFile(lecture(base), "someone else's slides");
+
+    const result = await syncUnits(moodle.client, [COURSE], { root: base, now: NOW });
+
+    expect(result.units[0]).toMatchObject({ problems: [] });
+    expect(result.units[0].changes.map((change) => change.status)).toEqual(["new", "new", "new"]);
+    await expect(readFile(lecture(base), "utf8")).resolves.toBe("someone else's slides");
+    await expect(readFile(join(unitDir(base), "Week 1", "Real-time", "slides (2).pdf"), "utf8")).resolves.toBe("slides v1");
+    expect((await readdir(unitDir(base), { recursive: true })).filter((name) => name.endsWith(".tmp"))).toEqual([]);
   });
 });
 
