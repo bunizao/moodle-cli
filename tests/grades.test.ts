@@ -17,7 +17,7 @@ describe("bounded gradebook output", () => {
     const gateway = gradebook();
     const profile = vi.spyOn(gateway, "getUser");
     const deadlines = vi.spyOn(gateway, "getOverview");
-    const result = await createIntentService(gateway).run("grades", { unit: "algo-2" });
+    const result = await createIntentService(gateway).run("grades", { unit: "algo-2", mode: "summary" });
     expect(result).toEqual({ mode: "summary", total: 1, grades: [{ unit_id: 2, code: "algo-2", graded: 2, ungraded: 43, total: 45, total_grade: "78", total_range: "0–100", total_percentage: "78%" }] });
     expect(JSON.stringify(result).length).toBeLessThan(250);
     expect(profile).not.toHaveBeenCalled();
@@ -31,7 +31,7 @@ describe("bounded gradebook output", () => {
     const gateway = gradebook();
     const deadlines = vi.spyOn(gateway, "getOverview");
     const profile = vi.spyOn(gateway, "getUser");
-    const result = await mcp({ unit: "algo-2", mode: "graded" }, gateway);
+    const result = await mcp({ unit: "algo-2" }, gateway);
     expect(result.isError).toBeUndefined();
     expect(result.structuredContent).toMatchObject({ mode: "graded", matched: 2, returned: 2, has_more: false, grades: [{ graded: 2, total: 45, items: [{ id: 2044, type: "assign", grade: "0" }, { id: 2045, type: "quiz" }] }] });
     expect(JSON.stringify(result.structuredContent)).not.toMatch(/feedback|Question/);
@@ -45,7 +45,7 @@ describe("bounded gradebook output", () => {
     expect(result.isError).toBeUndefined();
     expect(result.structuredContent).toMatchObject({ matched: 1, returned: 1, grades: [{ total: 1, graded: 1, ungraded: 0, total_grade: "78", items: [{ type: "assign", feedback }] }] });
     expect(result.structuredContent).toEqual(await createIntentService(gradebook()).run("grades", args));
-    const summary = await createIntentService(gradebook()).run("grades", { unit: "algo-2", types: ["h5pactivity"] });
+    const summary = await createIntentService(gradebook()).run("grades", { unit: "algo-2", mode: "summary", types: ["h5pactivity"] });
     expect(summary).toMatchObject({ grades: [{ graded: 0, ungraded: 43, total: 43 }] });
   });
   it("applies one default row budget across all units and pages after filtering", async () => {
@@ -78,8 +78,8 @@ describe("bounded gradebook output", () => {
     expect(parseGradeItem(item({ item_type: "Assignment" }))).toMatchObject({ modname: "assign" });
     expect(parseGradeItem(item({ url: "https://moodle.example.edu/mod/assign/view.php" }))).toMatchObject({ modname: "assign" });
   });
-  it("keeps MCP's default as summary", async () => {
-    expect((await mcp({ unit: "algo-2" })).structuredContent).toMatchObject({ mode: "summary" });
+  it("shares the graded default between CLI and MCP", async () => {
+    expect((await mcp({ unit: "algo-2" })).structuredContent).toMatchObject({ mode: "graded" });
   });
 });
 

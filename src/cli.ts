@@ -329,9 +329,7 @@ export function buildProgram(io: CliIO = {}): Command {
     }
     const unit = parsed.course.id;
     const query = parsed.query;
-    // A person at a terminal wants marks; MCP keeps the contract's summary default.
-    if (query === "grades") return execute("grades", { unit, mode: "graded", limit: program.opts().limit }, merged, service);
-    if (["news", "due"].includes(query)) return execute(query as Intent, { unit, limit: program.opts().limit }, merged, service);
+    if (["grades", "news", "due"].includes(query)) return execute(query as Intent, { unit, limit: program.opts().limit }, merged, service);
     if (query === "files") return execute("find", { query: "*", unit, types: ["resource", "folder"], limit: program.opts().limit }, merged, service);
     if (query === "forums") { const rows = await createMoodleGateway(client).listForums({ courseId: unit }); return runtime.output({ forums: rows.map(f => ({ id: f.id, name: f.name, unit_id: f.course_id })), total: rows.length }, () => formatForumActivities(rows), merged); }
     if (!query) {
@@ -659,7 +657,7 @@ export function buildProgram(io: CliIO = {}): Command {
 
   const grades = program.command("grades").description("Inspect grades.");
   addOutputOptions(grades.command("list").description("Show marked grades; request summary or all.").argument("[unit]", "Unit code, name, id or URL"))
-    .option("--mode <mode>", "summary, graded or all.", "graded")
+    .option("--mode <mode>", "graded (default), summary or all.")
     .option("--types <types>", "Comma-separated module types (assign, quiz, h5pactivity).")
     .option("--include-feedback", "Include full grader feedback.")
     .option("--include-ungraded", "Include ungraded items in graded mode.")
@@ -1076,7 +1074,7 @@ async function dispatchUrl(runtime: Runtime, target: string, options: OutputComm
       break;
     }
     case "course": result = await service.run("unit", { unit: Number(first) }); break;
-    case "grades": result = await service.run("grades", { unit: Number(first), mode: "graded" }); break;
+    case "grades": result = await service.run("grades", { unit: Number(first) }); break;
     case "forum:discussion": {
       result = await service.run("thread", { discussion_id: Number(first) });
       const hash = resolved.args?.[1];

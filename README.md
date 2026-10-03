@@ -103,7 +103,7 @@ moodle grades
 moodle news UNIT
 ```
 
-`moodle grades [UNIT]` defaults to marked items; MCP defaults to counts and course totals. Use `--mode summary` for a CLI summary or `--mode all` for all items, with `--types assign,quiz` to filter by Moodle module type (`assignment` is accepted as `assign`). Feedback is omitted unless `--include-feedback` is set. Details return at most 20 rows across units; `--limit` and `--offset` page through the filtered results. MCP uses the same options with underscores (`include_feedback`, `include_ungraded`); `--graded-only` remains an alias for graded mode.
+`moodle grades [UNIT]` returns marked items. Use `--mode summary` for per-unit counts and course totals or `--mode all` to add ungraded items, with `--types assign,quiz` to filter by Moodle module type (`assignment` is accepted as `assign`). Feedback is omitted unless `--include-feedback` is set. Details return at most 20 rows across units; `--limit` and `--offset` page through the filtered results. MCP uses the same options with underscores (`include_feedback`, `include_ungraded`); `--graded-only` remains an alias for graded mode.
 
 Ambiguous references list candidates. JSON callers receive `error.code: "ambiguous"`;
 At a terminal you pick the match from a list (arrow keys, or type to filter a long one). A bare number in a section reference matches

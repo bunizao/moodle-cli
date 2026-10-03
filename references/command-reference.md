@@ -100,8 +100,8 @@ search_forums and file; a local server also lists submit, the only tool that wri
 Legacy names remain callable for one minor version and return
 compact v2 envelopes. They are deprecated and omitted from default discovery.
 Unit results contain a section index; supply section for activity details.
-CLI grades default to marked items; MCP defaults to summary counts and course totals.
-Use `--mode summary` for CLI summaries, `--mode graded` for marked items or `--mode all` for every item; `--include-ungraded`
+Grades default to marked items, without feedback.
+Use `--mode summary` for counts and course totals or `--mode all` for every item; `--include-ungraded`
 also includes unmarked items in graded mode. Filter with `--types assign,quiz` (Moodle
 module names, independent of the site's language; assignment is accepted as assign). `--include-feedback` opts into full
 feedback; `--graded-only` remains an alias for graded mode. MCP uses the corresponding
