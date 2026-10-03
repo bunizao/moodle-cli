@@ -146,26 +146,32 @@ async function syncUnit(client: MoodleClient, course: Course, root: string, opti
   const dirs = sectionDirectories(sections);
   const activities = syncableActivities(sections);
   let done = 0;
-  await eachLimit(activities, WORKERS, async ({ activity, sectionId }) => {
-    throwIfCancelled(options.signal);
-    let items: SyncItem[] = [];
-    try {
-      items = await listActivity(run, activity, dirs.get(sectionId) ?? "");
-    } catch (error) {
-      rethrowFatal(error);
-      run.failedSources.add(`cm:${activity.id}`);
-      run.result.problems.push({ item: activity.name, message: problemMessage(error) });
-    }
-    for (const item of items) {
+  try {
+    await eachLimit(activities, WORKERS, async ({ activity, sectionId }) => {
+      throwIfCancelled(options.signal);
+      let items: SyncItem[] = [];
       try {
-        await syncItem(run, item);
+        items = await listActivity(run, activity, dirs.get(sectionId) ?? "");
       } catch (error) {
         rethrowFatal(error);
-        run.result.problems.push({ item: item.name || item.label, message: problemMessage(error) });
+        run.failedSources.add(`cm:${activity.id}`);
+        run.result.problems.push({ item: activity.name, message: problemMessage(error) });
       }
-    }
-    options.onProgress?.(`Syncing ${label} · ${++done}/${activities.length}`);
-  });
+      for (const item of items) {
+        try {
+          await syncItem(run, item);
+        } catch (error) {
+          rethrowFatal(error);
+          run.result.problems.push({ item: item.name || item.label, message: problemMessage(error) });
+        }
+      }
+      options.onProgress?.(`Syncing ${label} · ${++done}/${activities.length}`);
+    });
+  } catch (error) {
+    // Files already replaced must be on record, or the next run takes them for your edits.
+    await saveManifest(run).catch(() => undefined);
+    throw error;
+  }
 
   for (const [key, file] of Object.entries(manifest.files)) {
     if (run.seen.has(key) || run.failedSources.has(key.split("/")[0])) continue;
@@ -176,9 +182,7 @@ async function syncUnit(client: MoodleClient, course: Course, root: string, opti
   }
   // Workers finish in any order; the report reads in folder order.
   run.result.changes.sort((a, b) => a.path.localeCompare(b.path));
-  if (!run.dryRun && (Object.keys(manifest.files).length || await exists(directory))) {
-    await writeManifest(directory, manifest);
-  }
+  await saveManifest(run);
   return run.result;
 }
 
@@ -585,6 +589,11 @@ async function unitDirectory(root: string, course: Course, site: string): Promis
   }
 }
 
+async function saveManifest(run: UnitRun): Promise<void> {
+  if (run.dryRun || (!Object.keys(run.manifest.files).length && !await exists(run.directory))) return;
+  await writeManifest(run.directory, run.manifest);
+}
+
 async function readManifest(directory: string, unitId: number, site: string): Promise<Manifest> {
   const data = await readJson(path.join(directory, MANIFEST_NAME));
   const files = data?.unit_id === unitId && data.site === site && data.files && typeof data.files === "object" ? data.files as Record<string, ManifestFile> : {};
@@ -671,12 +680,22 @@ function localDate(date: Date): string {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
 }
 
+// The first failure stops new work, but waits for the work in flight: a file being placed
+// must reach the manifest before anyone writes it.
 async function eachLimit<T>(items: readonly T[], limit: number, work: (item: T) => Promise<void>): Promise<void> {
   let next = 0;
+  let failure: { error: unknown } | undefined;
   const worker = async () => {
-    while (next < items.length) await work(items[next++]);
+    while (!failure && next < items.length) {
+      try {
+        await work(items[next++]);
+      } catch (error) {
+        failure ??= { error };
+      }
+    }
   };
   await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  if (failure) throw failure.error;
 }
 
 // A lost session or a cancel ends the whole run; anything else costs one item.

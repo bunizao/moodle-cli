@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import type { MoodleClient } from "../src/client.js";
+import { CliError } from "../src/errors.js";
 import { formatSyncResult } from "../src/formatters.js";
 import type { Activity, Course, Section } from "../src/models.js";
 import { MANIFEST_NAME, pathSegment, sectionDirectories, storedPath, syncUnits } from "../src/sync.js";
@@ -281,6 +282,33 @@ describe("moodle sync", () => {
 
     expect(result.units[0]).toMatchObject({ directory: join(base, "Theory"), changes: [], unchanged: 3 });
     await expect(readdir(base)).resolves.toEqual(["Theory"]);
+  });
+
+  it("records files already replaced when a run stops on a fatal error", async () => {
+    const moodle = site();
+    const base = await root();
+    await syncUnits(moodle.client, [COURSE], { root: base, now: NOW });
+
+    moodle.put(moodle.state.resourceFile, "slides v2");
+    const request = moodle.client.requestAbsolute.bind(moodle.client);
+    // The resource is still downloading when the folder finds the session gone.
+    moodle.client.requestAbsolute = async (url, init, options) => {
+      if (url === moodle.state.resourceFile) await new Promise((resolve) => setTimeout(resolve, 20));
+      return request(url, init, options);
+    };
+    const getFolder = moodle.client.getFolder;
+    moodle.client.getFolder = async () => {
+      throw new CliError("auth", "Session expired.");
+    };
+    await expect(syncUnits(moodle.client, [COURSE], { root: base, now: NOW })).rejects.toMatchObject({ code: "auth" });
+    await expect(readFile(lecture(base), "utf8")).resolves.toBe("slides v2");
+
+    // The replaced copy is still pristine, so the next version replaces it again.
+    moodle.client.getFolder = getFolder;
+    moodle.put(moodle.state.resourceFile, "slides v3");
+    const next = await syncUnits(moodle.client, [COURSE], { root: base, now: NOW });
+    expect(next.units[0].changes).toEqual([{ status: "updated", path: lecture(base), bytes: 9 }]);
+    await expect(readdir(join(unitDir(base), "Week 1", "Real-time"))).resolves.toEqual(expect.not.arrayContaining([expect.stringContaining("(updated")]));
   });
 });
 

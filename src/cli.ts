@@ -675,11 +675,17 @@ export function buildProgram(io: CliIO = {}): Command {
     // A whole unit is many requests; a terminal sees which one is moving.
     const spin = human() ? createUi({ input: io.stdin ?? process.stdin, output: stderr as Writable, interactive: true }).spinner() : undefined;
     runtime.busy = true;
+    // The first Ctrl+C lets the unit record the files it already replaced; a second one
+    // falls back to the default exit.
+    const abort = new AbortController();
+    const onInterrupt = () => abort.abort();
+    process.once("SIGINT", onInterrupt);
     spin?.start("Reading units");
     let result: SyncResult;
     try {
-      result = await syncUnits(client, selected, { root: path.resolve(cwd, options.to ?? "."), dryRun: Boolean(program.opts().dryRun), onProgress: (message) => spin?.message(message) });
+      result = await syncUnits(client, selected, { root: path.resolve(cwd, options.to ?? "."), dryRun: Boolean(program.opts().dryRun), onProgress: (message) => spin?.message(message), signal: abort.signal });
     } finally {
+      process.off("SIGINT", onInterrupt);
       spin?.clear();
       runtime.busy = false;
     }
