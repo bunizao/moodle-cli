@@ -28,6 +28,21 @@ describe("site vocabulary resolution", () => {
     expect(resolveUnit("https://moodle.example.edu/course/view.php?id=2", fixtureUnits).id).toBe(2);
     expect(() => resolveUnit("missing", fixtureUnits)).toThrow("Your units: DB240, algo-2, STATS, Ethics in Computing");
   });
+  it("reads a lone number as a unit only by id or whole code", () => {
+    const labs = [
+      { ...fixtureUnits[0], id: 16, shortname: "LAB101", fullname: "Lab One" },
+      { ...fixtureUnits[0], id: 17, shortname: "LAB202", fullname: "Lab Two" },
+      { ...fixtureUnits[0], id: 18, shortname: "LAB160", fullname: "Lab Three" },
+      { ...fixtureUnits[0], id: 19, shortname: "3030", fullname: "Numbered" },
+    ];
+    expect(splitUnitPhrase("101", labs)).toBeUndefined();
+    expect(splitUnitPhrase("16", labs)).toMatchObject({ course: { id: 16 }, query: "" });
+    expect(splitUnitPhrase("3030", labs)).toMatchObject({ course: { id: 19 }, query: "" });
+    expect(splitUnitPhrase("LAB101 week 7", labs)).toMatchObject({ course: { id: 16 }, query: "week 7" });
+    // A unit slot takes nothing but units, so a partial code still names one there.
+    expect(resolveUnit("101", labs).id).toBe(16);
+    expect(resolveUnit("16", labs).id).toBe(16);
+  });
   it.each(["Week", "Topic", "Semana"])("resolves %s 7 without matching 17", label => {
     expect(resolveSection(7, fixtureSections(label)).section.id).toBe(70);
     expect(resolveSection(`${label} 7`, fixtureSections(label)).section.id).toBe(70);

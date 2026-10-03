@@ -690,6 +690,25 @@ describe("SessionBroker renewal from a Moodle mobile token", () => {
     expect(upstream.mintSession).toHaveBeenLastCalledWith(42, FRESH);
   });
 
+  it("keeps the token when the mint could not reach Moodle", async () => {
+    let now = 1_000;
+    const upstream = mobileUpstream();
+    const broker = new SessionBroker(state(), env(), { upstream, now: () => now });
+    await putSession(broker, candidate(OLD_COOKIE, null));
+    vi.mocked(upstream.mintSession).mockRejectedValueOnce(new Error("The operation was aborted due to timeout"));
+    vi.mocked(upstream.touch).mockResolvedValueOnce({ alive: false, remainingSeconds: null });
+    await broker.alarm();
+
+    await putSession(broker, candidate(NEW_COOKIE, 1));
+    expect(upstream.captureMobileToken).toHaveBeenCalledTimes(1);
+
+    now += 7 * 60 * 1000;
+    vi.mocked(upstream.touch).mockResolvedValueOnce({ alive: false, remainingSeconds: null });
+    await broker.alarm();
+    expect(upstream.mintSession).toHaveBeenCalledTimes(2);
+    expect(upstream.mintSession).toHaveBeenLastCalledWith(42, TOKEN);
+  });
+
   it("renews when Moodle refuses a session the record still calls live", async () => {
     const upstream = mobileUpstream();
     const fetchImpl = vi.fn<typeof fetch>(async (_input, init) => new Headers(init?.headers).get("cookie") === `MoodleSession=${MINTED_COOKIE}`

@@ -1,3 +1,4 @@
+import { parseMoodleErrorHtml } from "./scraper.js";
 import {
   FUNC_MOBILE_AUTOLOGIN_KEY,
   FUNC_MOBILE_PUBLIC_CONFIG,
@@ -22,7 +23,8 @@ import {
  *
  * The whole path is HTTP only, so it lives in a runtime-neutral module the
  * Worker can share. It only works where the site enables the mobile web service;
- * every call degrades to null rather than throwing so callers can fall back.
+ * unavailable features return null; transport failures during minting throw so
+ * callers can keep the token and retry later.
  */
 
 export interface MobileToken {
@@ -161,8 +163,10 @@ export async function fetchMobileToken(
 
 /**
  * Mint a fresh MoodleSession cookie from a stored mobile token, no browser
- * involved. Returns null when the site has since disabled the mobile service or
- * the token was revoked, so the caller can fall back to a real login.
+ * involved. Returns null when Moodle answered no (the mobile service was turned
+ * off, the token revoked), so the caller can fall back to a real login. Throws
+ * when Moodle could not be reached or did not answer, which says nothing about
+ * the token.
  */
 export async function mintSessionFromMobileToken(
   baseUrl: string,
@@ -187,24 +191,20 @@ async function requestAutologinKey(
   url.searchParams.set("wstoken", token.wstoken);
 
   const form = new URLSearchParams({ privatetoken: token.privatetoken ?? "" });
-  let response: Response;
-  try {
-    response = await fetchImpl(url.toString(), {
-      method: "POST",
-      headers: { "content-type": "application/x-www-form-urlencoded", "user-agent": MOBILE_USER_AGENT },
-      body: form.toString(),
-    });
-  } catch {
-    return null;
-  }
-  if (!response.ok) return null;
-  let payload: unknown;
-  try {
-    payload = await response.json();
-  } catch {
-    return null;
-  }
+  const response = await fetchImpl(url.toString(), {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded", "user-agent": MOBILE_USER_AGENT },
+    body: form.toString(),
+  });
+  if (!response.ok) throw new Error(`Moodle returned HTTP ${response.status} for an autologin key`);
+  // Not JSON is a proxy or maintenance page rather than Moodle's answer; let it throw.
+  const payload: unknown = await response.json();
   // A REST fault comes back as { exception, errorcode, message }; a success as { key, autologinurl }.
+  // The lockout is Moodle's per-user rate limit, which another client minting first can
+  // trip; it says the token is fine but busy.
+  if (payload && typeof payload === "object" && (payload as { errorcode?: unknown }).errorcode === "autologinkeygenerationlockout") {
+    throw new Error("Moodle allows one autologin key per user every six minutes");
+  }
   if (!payload || typeof payload !== "object" || "exception" in payload) return null;
   const key = (payload as { key?: unknown }).key;
   return typeof key === "string" && key ? key : null;
@@ -220,21 +220,23 @@ async function exchangeAutologinKey(
   url.searchParams.set("userid", String(userid));
   url.searchParams.set("key", key);
 
-  let response: Response;
-  try {
-    // autologin.php replies with a 3xx and Set-Cookie; read the header directly
-    // rather than following the redirect so we can capture the new cookie.
-    response = await fetchImpl(url.toString(), {
-      method: "GET",
-      headers: { "user-agent": MOBILE_USER_AGENT },
-      redirect: "manual",
-    });
-  } catch {
-    return null;
-  }
+  // autologin.php replies with a 3xx and Set-Cookie; read the header directly
+  // rather than following the redirect so we can capture the new cookie.
+  const response = await fetchImpl(url.toString(), {
+    method: "GET",
+    headers: { "user-agent": MOBILE_USER_AGENT },
+    redirect: "manual",
+  });
+  if (response.status >= 500) throw new Error(`Moodle returned HTTP ${response.status} for autologin`);
 
   const value = extractSessionCookie(response);
-  return value ? { cookie: { name: value.name, value: value.value, source: "mobile-token" } } : null;
+  if (value) return { cookie: { name: value.name, value: value.value, source: "mobile-token" } };
+  // A Moodle redirect can clear the cookie after refusing the key. An arbitrary
+  // successful HTML page says nothing about the token and must remain retryable.
+  if (response.status >= 300 && response.status < 400) return null;
+  const refusal = parseMoodleErrorHtml(await response.text());
+  if (refusal?.code) return null;
+  throw new Error(`Moodle did not return an autologin result (HTTP ${response.status})`);
 }
 
 function extractSessionCookie(response: Response): { name: string; value: string } | null {
