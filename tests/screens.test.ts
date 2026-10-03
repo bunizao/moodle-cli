@@ -10,7 +10,7 @@ const ESC = String.fromCharCode(27);
 afterEach(() => configureTerminalTables({ color: () => false }));
 
 it("tones a due date inside the grades table instead of leaking half-stripped escape codes", async () => {
-  const data = await createIntentService(fixtureGateway()).run("grades", { unit: "algo-2" });
+  const data = await createIntentService(fixtureGateway()).run("grades", { unit: "algo-2", mode: "all" });
   const plain = renderScreen(data, { width: 120, now: NOW });
   expect(plain).toContain("│ in 4 days · Sat 19 Sep, 15:55 │");
   expect(plain).not.toMatch(/\[2m|\[22m/u);

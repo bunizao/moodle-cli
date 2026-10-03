@@ -58,6 +58,8 @@ export interface AttemptPage {
   attempt: number;
   quiz_id: number;
   name: string;
+  /** "sequential" quizzes move forward only: opening the next page locks the current one for good. */
+  navigation_method: "free" | "sequential";
   page: number;
   pages: number;
   questions: AttemptQuestion[];
@@ -87,17 +89,51 @@ export interface AttemptFinishReceipt {
 
 type Field = [string, string];
 
+/** What starting would do, read from the quiz page before anything is sent. */
+export interface QuizStartPlan {
+  quiz_id: number;
+  name: string;
+  /** Moodle continues an attempt in progress rather than starting another. */
+  action: "start" | "continue";
+  time_limit: string;
+  attempts_allowed: string;
+  attempts_used: number;
+  grading_method: string;
+  url: string;
+}
+
 export interface StartOptions {
   /** Asked once when the quiz has an access password; null means the person declined. */
   password?: () => Promise<string | null>;
 }
 
+/**
+ * Reads what starting would mean, so the person agrees to a time limit or a last attempt
+ * before the CLI clicks through Moodle's own pre-flight form. Sends nothing.
+ */
+export async function planQuizStart(deps: QuizDeps, quizId: number): Promise<QuizStartPlan> {
+  const { viewUrl, viewHtml, root } = await readQuizView(deps, quizId);
+  const start = formWithAction(root, QUIZ_START_PATH);
+  if (!start) throw noAttemptButton(deps, root, viewUrl);
+  const quiz = parseQuizHtml(viewHtml, quizId, deps.baseUrl);
+  const control = start.querySelector("button, input[type=submit]");
+  const button = cleanText(control?.getAttribute("value") ?? control?.textContent);
+  const cards = root.querySelectorAll("table.quizreviewsummary");
+  const inProgress = /continue/iu.test(button) || cards.some(card => /in progress/iu.test(cleanText(card.textContent)));
+  return {
+    quiz_id: quizId,
+    name: quiz.name,
+    action: inProgress ? "continue" : "start",
+    time_limit: quiz.time_limit,
+    attempts_allowed: quiz.attempts_allowed,
+    attempts_used: cards.length,
+    grading_method: infoLine(root, "Grading method:"),
+    url: viewUrl,
+  };
+}
+
 export async function startQuizAttempt(deps: QuizDeps, quizId: number, options: StartOptions = {}): Promise<AttemptPage> {
-  if (!Number.isSafeInteger(quizId) || quizId <= 0) throw deps.usage("The quiz id must be a positive integer.");
-  const viewUrl = `${deps.baseUrl}${QUIZ_VIEW_PATH}?id=${quizId}`;
-  const viewHtml = await pageText(deps, viewUrl);
-  const root = parse(viewHtml);
-  if (/safeexambrowser|Safe Exam Browser/iu.test(viewHtml)) throw deps.usage("This quiz requires the Safe Exam Browser, which the CLI cannot provide.", "Open it in the browser Moodle asks for.");
+  const { viewUrl, root } = await readQuizView(deps, quizId);
   // An attempt already under way shows a "Continue" button that lands on the attempt page directly.
   const resume = formWithAction(root, QUIZ_ATTEMPT_PATH) ?? root.querySelector(`a[href*="${QUIZ_ATTEMPT_PATH}?"]`);
   if (resume) {
@@ -105,13 +141,10 @@ export async function startQuizAttempt(deps: QuizDeps, quizId: number, options: 
       ? `${resolveUrl(deps.baseUrl, resume.getAttribute("action") ?? "")}?${new URLSearchParams(formFields(resume)).toString()}`
       : resolveUrl(deps.baseUrl, resume.getAttribute("href") ?? "");
     const attempt = numberParam(target, "attempt");
-    if (attempt) return getAttemptPage(deps, attempt, quizId, 0);
+    if (attempt) return getAttemptPage(deps, attempt, quizId);
   }
   const start = formWithAction(root, QUIZ_START_PATH);
-  if (!start) {
-    const reason = cleanText(root.querySelector(".quizattempt, .quizinfo")?.textContent) || "the quiz page shows no attempt button";
-    throw deps.usage(`Moodle offers no new attempt: ${reason}`, `See ${viewUrl}`);
-  }
+  if (!start) throw noAttemptButton(deps, root, viewUrl);
   let response = await deps.request(resolveUrl(deps.baseUrl, start.getAttribute("action") ?? ""), postInit(formFields(start)));
   let html = await response.text();
   // A timed or password-protected quiz answers with a pre-flight form instead of the attempt.
@@ -132,8 +165,40 @@ export async function startQuizAttempt(deps: QuizDeps, quizId: number, options: 
   return withoutForm(parseAttemptPage(html, response.url, deps));
 }
 
-export async function getAttemptPage(deps: QuizDeps, attemptId: number, quizId: number, page: number): Promise<AttemptPage> {
+async function readQuizView(deps: QuizDeps, quizId: number): Promise<{ viewUrl: string; viewHtml: string; root: HTMLElement }> {
+  if (!Number.isSafeInteger(quizId) || quizId <= 0) throw deps.usage("The quiz id must be a positive integer.");
+  const viewUrl = `${deps.baseUrl}${QUIZ_VIEW_PATH}?id=${quizId}`;
+  const viewHtml = await pageText(deps, viewUrl);
+  if (/safeexambrowser|Safe Exam Browser/iu.test(viewHtml)) throw deps.usage("This quiz requires the Safe Exam Browser, which the CLI cannot provide.", "Open it in the browser Moodle asks for.");
+  return { viewUrl, viewHtml, root: parse(viewHtml) };
+}
+
+function noAttemptButton(deps: QuizDeps, root: HTMLElement, viewUrl: string): Error {
+  const reason = cleanText(root.querySelector(".quizattempt, .quizinfo")?.textContent) || "the quiz page shows no attempt button";
+  return deps.usage(`Moodle offers no new attempt: ${reason}`, `See ${viewUrl}`);
+}
+
+/**
+ * Shows one page of an attempt; without a page, the one the attempt is on. In a sequential
+ * quiz, opening the next page locks the current one for good, so that happens only when
+ * the caller says `advance`, after the person agreed; any other page is refused.
+ */
+export async function getAttemptPage(deps: QuizDeps, attemptId: number, quizId: number, page?: number, options: { advance?: boolean } = {}): Promise<AttemptPage> {
+  const current = await loadCurrentPage(deps, attemptId, quizId);
+  if (page === undefined || page === current.page) return withoutForm(current);
+  if (current.navigation_method === "sequential") {
+    const hint = `Page ${current.page + 1} is the current page.`;
+    if (page < current.page) throw deps.usage(`Page ${page + 1} is locked: this quiz moves forward only.`, hint);
+    if (page > current.page + 1) throw deps.usage(`This quiz moves forward one page at a time; the next page is ${current.page + 2}.`, hint);
+    if (!options.advance) throw deps.usage(`Opening page ${page + 1} locks page ${current.page + 1} for good: this quiz moves forward only.`, "Confirm moving on first.");
+  }
   return withoutForm(await loadAttemptPage(deps, attemptId, quizId, page));
+}
+
+// Page 0 is always safe to open: a sequential quiz never advances onto it, and Moodle
+// answers a request for a page it has locked with the current page instead.
+async function loadCurrentPage(deps: QuizDeps, attemptId: number, quizId: number): Promise<ParsedAttemptPage> {
+  return loadAttemptPage(deps, attemptId, quizId, 0);
 }
 
 async function loadAttemptPage(deps: QuizDeps, attemptId: number, quizId: number, page: number): Promise<ParsedAttemptPage> {
@@ -161,9 +226,15 @@ export interface AnswerRequest {
 
 /** Saves one answer and returns the page it lives on, re-read after the save. */
 export async function answerQuizQuestion(deps: QuizDeps, request: AnswerRequest): Promise<AttemptPage> {
-  const first = await loadAttemptPage(deps, request.attemptId, request.quizId, 0);
+  const first = await loadCurrentPage(deps, request.attemptId, request.quizId);
   const entry = first.navigation.find(item => item.number === request.question.trim());
   if (!entry) throw deps.usage(`Attempt ${request.attemptId} has no question ${request.question}.`, `Questions: ${first.navigation.map(item => item.number).join(", ")}`);
+  // Answering never moves a sequential quiz on; that is `quiz show --page` with its own consent.
+  if (first.navigation_method === "sequential" && entry.page !== first.page) {
+    throw entry.page < first.page
+      ? deps.usage(`Question ${request.question} is on page ${entry.page + 1}, which this quiz has locked: it moves forward only.`)
+      : deps.usage(`Question ${request.question} is on page ${entry.page + 1}; this quiz moves forward only and is on page ${first.page + 1}.`, `Answer page ${first.page + 1} first, then open page ${first.page + 2} with moodle quiz show ${request.attemptId} ${request.quizId} --page ${first.page + 2}; that locks page ${first.page + 1}.`);
+  }
   const page = entry.page === first.page ? first : await loadAttemptPage(deps, request.attemptId, request.quizId, entry.page);
   const question = page.questions.find(item => item.slot === entry.slot);
   if (!question) throw deps.fail(`Page ${entry.page + 1} does not contain question ${request.question}.`);
@@ -241,7 +312,9 @@ export function parseAttemptPage(html: string, url: string, deps: Pick<QuizDeps,
   const attempt = numberParam(url, "attempt") ?? Number(form.querySelector("input[name=attempt]")?.getAttribute("value"));
   const quizId = numberParam(form.getAttribute("action") ?? "", "cmid") ?? numberParam(url, "cmid") ?? 0;
   const page = Number(form.querySelector("input[name=thispage]")?.getAttribute("value") ?? numberParam(url, "page") ?? 0);
-  const navigation = root.querySelectorAll("a.qnbutton").map(button => {
+  // A sequential quiz renders its buttons as spans, since they cannot be followed.
+  const buttons = root.querySelectorAll(".qnbutton");
+  const navigation = buttons.map(button => {
     const title = button.getAttribute("title") ?? "";
     const match = title.match(/^(?:Question|Information)?\s*(\S+)\s*-\s*(.+)$/u);
     return {
@@ -256,6 +329,7 @@ export function parseAttemptPage(html: string, url: string, deps: Pick<QuizDeps,
     attempt,
     quiz_id: quizId,
     name: pageHeading(root),
+    navigation_method: buttons.some(button => button.classList.contains("sequential")) ? "sequential" : "free",
     page,
     pages: Math.max(page + 1, ...navigation.map(entry => entry.page + 1)),
     questions,
@@ -352,6 +426,14 @@ function encodeAnswer(deps: QuizDeps, form: ParsedForm, question: AttemptQuestio
     ...form.fields.filter(([name]) => !boxNames.has(name)),
     ...options.map((item): Field => [item.field, chosen.has(item.key) ? "1" : "0"]),
   ];
+}
+
+function infoLine(root: HTMLElement, label: string): string {
+  for (const p of root.querySelectorAll(".quizinfo p, .quizattempt p")) {
+    const line = cleanText(p.textContent);
+    if (line.startsWith(label)) return line.slice(label.length).trim();
+  }
+  return "";
 }
 
 export function noticesOf(html: string): string {

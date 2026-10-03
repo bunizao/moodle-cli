@@ -21,6 +21,7 @@ import type {
   Section,
 } from "./models.js";
 import { cleanText, htmlToStructuredContent, resolveUrl } from "./html-utils.js";
+import { parseGradeItem } from "./parsers.js";
 
 export interface MoodlePageError {
   message: string;
@@ -247,7 +248,7 @@ export function parseCourseGradesHtml(html: string, courseId: number, baseUrl: s
       continue;
     }
     const statusIcon = row.querySelector("td.column-grade i[aria-label], td.column-grade i[title]");
-    const item: GradeItem = {
+    const item: GradeItem = parseGradeItem({
       name: title,
       item_type: cleanText(row.querySelector(".item img.itemicon, .courseitem img.itemicon, img.itemicon")?.getAttribute("alt") ?? ""),
       grade: cleanTableCell(row.querySelector("td.column-grade")),
@@ -258,7 +259,7 @@ export function parseCourseGradesHtml(html: string, courseId: number, baseUrl: s
       feedback: cleanTableCell(row.querySelector("td.column-feedback")),
       url: resolveUrl(baseUrl, link.getAttribute("href") ?? ""),
       status: statusIcon?.getAttribute("aria-label") ?? statusIcon?.getAttribute("title") ?? "",
-    };
+    });
     report.items.push(item);
   }
   return report;
@@ -495,6 +496,27 @@ export function parsePageHtml(html: string, pageId: number, baseUrl: string): Pa
     content_text: content ? htmlToStructuredContent(content.innerHTML, baseUrl).text : "",
     url: `${baseUrl.replace(/\/$/, "")}/mod/page/view.php?id=${pageId}`,
   };
+}
+
+// The readable part of a page, or of a book's print view, fit to save as a file. It must
+// read the same on every request, so it drops what Moodle stamps per view: the book's
+// "Printed by <you> · Date <now>" box and the print link. Scripts go too; a page that
+// redirects in the browser would otherwise redirect the saved copy.
+export function parseSavedDocumentHtml(html: string, baseUrl: string): HTMLElement | undefined {
+  const root = parse(html);
+  const content = first(root, [".book", "[role='main']", "#region-main"]);
+  if (!content || !cleanNodeText(content)) return undefined;
+  for (const node of content.querySelectorAll(".book_info, .hidden-print, script, meta, link, noscript")) node.remove();
+  for (const node of content.querySelectorAll("*")) {
+    for (const name of Object.keys(node.attributes)) {
+      if (/^on/iu.test(name)) node.removeAttribute(name);
+    }
+    for (const name of ["href", "src"]) {
+      const value = node.getAttribute(name);
+      if (value && !value.startsWith("#") && !value.startsWith("data:")) node.setAttribute(name, resolveUrl(baseUrl, value));
+    }
+  }
+  return content;
 }
 
 export function parseFolderHtml(html: string, folderId: number, baseUrl: string): Folder {
@@ -765,7 +787,23 @@ function extractSitename(root: HTMLElement): string {
 }
 
 function pageTitle(html: string): string {
-  return cleanNodeText(parse(html).querySelector("h1"));
+  const root = parse(html);
+  const heading = cleanNodeText(root.querySelector("h1"));
+  // Boost puts the activity name in the page's h1; Classic and the themes built on it keep
+  // the course name there and open the main region with the activity's h2. The document
+  // title reads "COURSE: Activity | Site", so the heading that ends later in it is the
+  // activity's, even when a course's full name is also its short name.
+  const main = cleanNodeText(root.querySelector("#region-main h2"));
+  const title = cleanNodeText(root.querySelector("title"));
+  const separator = title.lastIndexOf(" | ");
+  const named = separator < 0 ? title : title.slice(0, separator);
+  if (main && endIn(named, main) > endIn(named, heading)) return main;
+  return heading || main;
+}
+
+function endIn(text: string, part: string): number {
+  const at = part ? text.lastIndexOf(part) : -1;
+  return at < 0 ? -1 : at + part.length;
 }
 
 function activityContext(html: string): { course_id: number; course_name: string; section_name: string } {
@@ -775,14 +813,17 @@ function activityContext(html: string): { course_id: number; course_name: string
   const links = breadcrumbs.length ? breadcrumbs : root.querySelectorAll('a[href*="/course/view.php?id="]');
   for (const link of links) {
     const href = link.getAttribute("href") ?? "";
-    const courseId = numberQueryValue(href, "id");
+    // Moodle 4.4 links a section to /course/section.php?id=SECTION, whose id is not the
+    // course's; only /course/view.php carries the course id.
+    const sectionPage = /\/course\/section\.php\b/u.test(href);
+    const courseId = /\/course\/view\.php\b/u.test(href) ? numberQueryValue(href, "id") : null;
     if (courseId !== null) {
       context.course_id = courseId;
     }
-    if (numberQueryValue(href, "section") === null) {
-      context.course_name ||= cleanNodeText(link);
-    } else {
+    if (sectionPage || numberQueryValue(href, "section") !== null) {
       context.section_name = cleanNodeText(link);
+    } else if (courseId !== null) {
+      context.course_name ||= cleanNodeText(link);
     }
   }
   return context;
@@ -816,7 +857,8 @@ function cleanTableCell(node: HTMLElement | null | undefined): string {
     return "";
   }
   const clone = parse(node.toString());
-  for (const unwanted of clone.querySelectorAll(".action-menu, .dropdown, .hidden, .accesshide, script, style")) {
+  // A user without a picture gets initials in a span; they would run into the name.
+  for (const unwanted of clone.querySelectorAll(".action-menu, .dropdown, .hidden, .accesshide, .userinitials, script, style")) {
     unwanted.remove();
   }
   return cleanText(clone.textContent.replace("( Empty )", "(Empty)"));

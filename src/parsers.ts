@@ -6,6 +6,7 @@ import type {
   ForumDiscussion,
   ForumPost,
   ForumPostAuthor,
+  GradeItem,
   Section,
   TodoItem,
   UserInfo,
@@ -29,6 +30,34 @@ export const ActivitySchema = schema(parseActivity);
 export const SectionSchema = schema(parseSection);
 export const CourseContentsSchema = schema(parseCourseContents);
 export const TodoItemSchema = schema(parseTodoItem);
+
+export function normalizeGradeType(type: string): string {
+  const normalized = type.trim().toLowerCase();
+  return normalized === "assignment" ? "assign" : normalized;
+}
+
+export function parseGradeItem(value: unknown): GradeItem {
+  const data = asRecord(value);
+  const item: GradeItem = {
+    name: stringValue(data.name), item_type: stringValue(data.item_type),
+    modname: normalizeGradeType(stringValue(data.item_type)),
+    grade: stringValue(data.grade), range: stringValue(data.range),
+    percentage: stringValue(data.percentage), weight: stringValue(data.weight),
+    contribution: stringValue(data.contribution), feedback: stringValue(data.feedback),
+    url: stringValue(data.url), status: stringValue(data.status),
+  };
+  // Moodle's icon label is translated; its module URL is stable across locales.
+  try {
+    const url = new URL(item.url);
+    const match = /\/mod\/([^/]+)\/view\.php$/u.exec(url.pathname);
+    if (match) {
+      item.modname = normalizeGradeType(match[1]);
+      const cmid = Number(url.searchParams.get("id"));
+      if (Number.isSafeInteger(cmid) && cmid > 0) item.cmid = cmid;
+    }
+  } catch { /* Manual grade items may have no activity URL. */ }
+  return item;
+}
 
 export function parseUserInfo(value: unknown): UserInfo {
   const data = asRecord(value);

@@ -58,6 +58,7 @@ import {
   formatAttemptPage,
   formatAttemptSummary,
   formatDownloadResult,
+  formatSyncResult,
   formatForumDiscussion,
   formatSubmissionReceipt,
   formatForumDiscussionRefs,
@@ -70,8 +71,9 @@ import {
 } from "./formatters.js";
 import { downloadMoodleFiles } from "./download.js";
 import { chooseDownloadSource } from "./download-source.js";
+import { syncUnits, type SyncResult } from "./sync.js";
 import { submissionReceiptOf, type SubmissionReceipt } from "./moodle-assign-core.js";
-import type { AttemptPage } from "./moodle-quiz-core.js";
+import type { AttemptPage, QuizStartPlan } from "./moodle-quiz-core.js";
 import { resolveSubmissionPath } from "./submit.js";
 import { formatSkillSummary, installSkill, writeGeneratedSkill } from "./skills.js";
 import {
@@ -130,7 +132,7 @@ interface OutputCommandOptions {
 const NOUNS: readonly NounSpec[] = [
   { name: "units", aliases: ["courses"], verbs: ["list", "show"], defaultByArity: { 0: "list", 1: "show" } },
   { name: "activities", verbs: ["list", "show"], defaultByArity: { 0: "list", 1: "list" }, valueFlags: ["--limit", "--section"] },
-  { name: "grades", verbs: ["list"], defaultByArity: { 0: "list", 1: "list" } },
+  { name: "grades", verbs: ["list"], defaultByArity: { 0: "list", 1: "list" }, valueFlags: ["--mode", "--types", "--limit", "--offset"] },
   {
     name: "forums",
     verbs: ["list", "show", "search"],
@@ -329,7 +331,7 @@ export function buildProgram(io: CliIO = {}): Command {
     }
     const unit = parsed.course.id;
     const query = parsed.query;
-    if (["grades", "news", "due"].includes(query)) return execute(query as Intent, { unit, ...(query !== "grades" ? { limit: program.opts().limit } : {}) }, merged, service);
+    if (["grades", "news", "due"].includes(query)) return execute(query as Intent, { unit, limit: program.opts().limit }, merged, service);
     if (query === "files") return execute("find", { query: "*", unit, types: ["resource", "folder"], limit: program.opts().limit }, merged, service);
     if (query === "forums") { const rows = await createMoodleGateway(client).listForums({ courseId: unit }); return runtime.output({ forums: rows.map(f => ({ id: f.id, name: f.name, unit_id: f.course_id })), total: rows.length }, () => formatForumActivities(rows), merged); }
     if (!query) {
@@ -463,12 +465,12 @@ export function buildProgram(io: CliIO = {}): Command {
     return confirm({ summary: `${notice}\n\n${summary}` }, { yes: Boolean(program.opts().yes), dryRun: false, interactive: human() });
   };
   const attemptNext = (page: AttemptPage): string[] => {
-    const open = page.navigation.find(entry => entry.number !== "i" && /not yet|not answered/iu.test(entry.state));
+    const sequential = page.navigation_method === "sequential";
+    // A sequential quiz has locked its earlier pages, so their gaps are no longer the next step.
+    const open = page.navigation.find(entry => entry.number !== "i" && /not yet|not answered/iu.test(entry.state) && (!sequential || entry.page >= page.page));
     if (!open) return [`moodle quiz finish ${page.attempt} ${page.quiz_id}`];
-    return [
-      `moodle quiz answer ${page.attempt} ${page.quiz_id} ${open.number} <answer>`,
-      ...(open.page === page.page ? [] : [`moodle quiz show ${page.attempt} ${page.quiz_id} --page ${open.page + 1}`]),
-    ];
+    if (open.page === page.page) return [`moodle quiz answer ${page.attempt} ${page.quiz_id} ${open.number} <answer>`];
+    return [`moodle quiz show ${page.attempt} ${page.quiz_id} --page ${sequential ? page.page + 2 : open.page + 1}`];
   };
   const showPage = (page: AttemptPage, palette: Theme) => `${palette.tone("warning", "BETA")} ${formatAttemptPage(page)}\n\n${tryLines(attemptNext(page))}`;
   addOutputOptions(mutating(quiz.command("start").description("Start a new attempt, or continue the one in progress, and show its first page.").argument("<ref>", "Quiz id, URL, or UNIT TASK phrase")))
@@ -477,8 +479,11 @@ export function buildProgram(io: CliIO = {}): Command {
       const client = await runtime.getClient();
       const service = createIntentService(createMoodleGateway(client));
       const id = await choose(() => service.resolveItem(ref), id => Promise.resolve(id));
-      if (!program.opts().dryRun && !await quizConsent(`Start or continue an attempt on quiz ${theme().target(String(id))}. Moodle records the attempt and its start time.`)) return;
-      if (program.opts().dryRun) return runtime.output({ planned: "start", quiz_id: id }, () => `Would start an attempt on quiz ${id}.`, options);
+      // Read the quiz first: the consent has to name the time limit and the attempt it uses,
+      // because the start below clicks through Moodle's own pre-flight confirmation.
+      const plan = await client.planQuizStart(id);
+      if (program.opts().dryRun) return runtime.output({ planned: plan }, () => quizStartSummary(plan, theme()), options);
+      if (!await quizConsent(quizStartSummary(plan, theme()))) return;
       // The password is only asked for when Moodle's pre-flight form wants one, so most quizzes never see a prompt.
       const password = async (): Promise<string | null> => {
         if (options.password) return options.password;
@@ -493,7 +498,17 @@ export function buildProgram(io: CliIO = {}): Command {
     .option("--page <n>", "Page number, starting at 1.", parsePositiveInt)
     .action(async (attempt: string, quizId: string, options: OutputCommandOptions & { page?: number }) => {
       const client = await runtime.getClient();
-      const page = await client.getQuizAttemptPage(parsePositiveInt(attempt), parsePositiveInt(quizId), (options.page ?? 1) - 1);
+      const ids = [parsePositiveInt(attempt), parsePositiveInt(quizId)] as const;
+      let page = await client.getQuizAttemptPage(...ids);
+      const wanted = options.page === undefined ? page.page : options.page - 1;
+      if (wanted !== page.page) {
+        // In a sequential quiz, opening the next page is a write: the current page locks for good.
+        const advance = page.navigation_method === "sequential" && wanted === page.page + 1;
+        const lock = `Open page ${wanted + 1}. This quiz moves forward only: page ${page.page + 1} locks and you cannot go back to it.`;
+        if (advance && program.opts().dryRun) return runtime.output({ planned: "advance", attempt: ids[0], quiz_id: ids[1], page: wanted + 1 }, () => `Would ${lock.charAt(0).toLowerCase()}${lock.slice(1)}`, options);
+        if (advance && !await quizConsent(theme().tone("warning", lock))) return;
+        page = await client.getQuizAttemptPage(...ids, wanted, { advance });
+      }
       await runtime.output({ attempt: page }, () => showPage(page, theme()), options);
     });
   addOutputOptions(mutating(quiz.command("answer").description("Save one answer: option letters for a choice question (b, or a,c), the text otherwise.").argument("<attempt>", "Attempt id").argument("<quiz>", "Quiz id").argument("<question>", "Question number as shown").argument("[answer]", "Option letters or answer text")))
@@ -642,10 +657,45 @@ export function buildProgram(io: CliIO = {}): Command {
     }
   });
 
+  addOutputOptions(
+    program
+      .command("sync")
+      .description("Keep one local folder per unit in step with Moodle: new files arrive, changed ones update, and a file you edited is never overwritten.")
+      .summary("Mirror units into local folders")
+      .argument("[unit]", "Unit code, name, id or URL; omit for every unit")
+      .option("--to <directory>", "Folder holding one subfolder per unit; defaults to the current directory."),
+  ).action(async (unit: string | undefined, options: OutputCommandOptions & { to?: string }) => {
+    const cwd = io.cwd ?? process.cwd();
+    const client = await runtime.getClient();
+    let selected = await client.getCourses();
+    if (unit) {
+      const id = await client.resolveCourseReference(unit);
+      selected = selected.filter((course) => course.id === id);
+    }
+    // A whole unit is many requests; a terminal sees which one is moving.
+    const spin = human() ? createUi({ input: io.stdin ?? process.stdin, output: stderr as Writable, interactive: true }).spinner() : undefined;
+    runtime.busy = true;
+    spin?.start("Reading units");
+    let result: SyncResult;
+    try {
+      result = await syncUnits(client, selected, { root: path.resolve(cwd, options.to ?? "."), dryRun: Boolean(program.opts().dryRun), onProgress: (message) => spin?.message(message) });
+    } finally {
+      spin?.clear();
+      runtime.busy = false;
+    }
+    await runtime.output(result, () => formatSyncResult(result, cwd), options, false);
+  });
+
   const grades = program.command("grades").description("Inspect grades.");
-  addOutputOptions(grades.command("list").description("Show grade details for a unit.").argument("[unit]", "Unit code, name, id or URL").option("--graded-only", "Only return graded items.")).action(
-    async (unit: string | undefined, options: OutputCommandOptions & { gradedOnly?: boolean }) => execute("grades", { unit, graded_only: options.gradedOnly }, options),
-  );
+  addOutputOptions(grades.command("list").description("Show marked grades; request summary or all.").argument("[unit]", "Unit code, name, id or URL"))
+    .option("--mode <mode>", "graded (default), summary or all.")
+    .option("--types <types>", "Comma-separated module types (assign, quiz, h5pactivity).")
+    .option("--include-feedback", "Include full grader feedback.")
+    .option("--include-ungraded", "Include ungraded items in graded mode.")
+    .option("--limit <number>", "Maximum returned rows across units.", parsePositiveInt)
+    .option("--offset <number>", "Skip this many matching rows.", value => { const n = Number(value); if (!Number.isInteger(n) || n < 0) throw new UsageError("Expected a nonnegative offset."); return n; })
+    .option("--graded-only", "Alias for --mode graded.")
+    .action(async (unit: string | undefined, options: OutputCommandOptions & { mode?: string; types?: string; includeFeedback?: boolean; includeUngraded?: boolean; limit?: number; offset?: number; gradedOnly?: boolean }) => execute("grades", { unit, mode: options.mode, types: options.types?.split(","), include_feedback: options.includeFeedback, include_ungraded: options.includeUngraded, limit: count("limit", options.limit), offset: options.offset, graded_only: options.gradedOnly }, options));
 
   const threads = program.command("threads").description("Inspect forum discussion threads.");
   addOutputOptions(threads.command("show").description("Show posts in a forum discussion.").argument("<discussion>", "Discussion ID or URL"))
@@ -828,12 +878,14 @@ export function buildProgram(io: CliIO = {}): Command {
     .option("--dry-run", "Preview deployment changes without applying them.")
     .option("--repair", "Repair authentication and managed deployment state.")
     .option("--rotate-key", "Rotate the session encryption key and migrate the active session.")
-    .option("--rotate-token", "Rotate the MCP access token with an overlap window.")
+    .option("--rotate-token", "Rotate the MCP access token. The old token and every connected OAuth client stop working at once; reconnect them after.")
     .option("--rollback", "Restore the previous healthy Worker release.")
-    .action(async (options: OutputCommandOptions & { dryRun?: boolean; repair?: boolean; rotateToken?: boolean; rotateKey?: boolean; rollback?: boolean }) => {
+    .option("--remote-login", "Skip the local Moodle session and integrations; print a link to sign in through the Worker's remote browser. For cloud sessions without a desktop browser.")
+    .action(async (options: OutputCommandOptions & { dryRun?: boolean; repair?: boolean; rotateToken?: boolean; rotateKey?: boolean; rollback?: boolean; remoteLogin?: boolean }) => {
       const dryRun = Boolean(options.dryRun || program.opts().dryRun);
+      const introduction = options.remoteLogin ? ONBOARDING_COPY.remoteIntroduction : ONBOARDING_COPY.introduction;
       if (!dryRun && !await confirm(
-        { summary: [ONBOARDING_COPY.introduction, "", ONBOARDING_COPY.credentials].join("\n") },
+        { summary: [introduction, "", ONBOARDING_COPY.credentials].join("\n") },
         {
           yes: Boolean(program.opts().yes),
           dryRun: false,
@@ -847,6 +899,7 @@ export function buildProgram(io: CliIO = {}): Command {
         rotateKey: Boolean(options.rotateKey),
         rollback: Boolean(options.rollback),
         yes: Boolean(program.opts().yes),
+        remoteLogin: Boolean(options.remoteLogin),
       });
       await outputMcpResult(runtime, result, options);
     });
@@ -893,6 +946,11 @@ export function buildProgram(io: CliIO = {}): Command {
     .option("--all", "Revoke every client, token, pending authorization, and pairing window.")
     .action(async (clientId: string | undefined, options: OutputCommandOptions & { all?: boolean }) => {
       if (Boolean(clientId) === Boolean(options.all)) throw new UsageError("Provide a client ID or --all.");
+      const summary = clientId
+        ? `Revoke OAuth client ${clientId}. It loses access at once and has to pair again to reconnect.`
+        : "Revoke all OAuth access: every client, token, pending authorization, and pairing window. Claude and every other connected client lose access at once and have to pair again.";
+      if (program.opts().dryRun) return runtime.output({ planned: "revoke", client_id: clientId ?? null, all: Boolean(options.all) }, () => summary, options);
+      if (!await confirm({ summary }, { yes: Boolean(program.opts().yes), dryRun: false, interactive: human() })) return;
       await outputMcpResult(runtime, await getMcpService().manageClients({ revoke: true, clientId }), options);
     });
 
@@ -968,7 +1026,7 @@ export function buildProgram(io: CliIO = {}): Command {
 // Grouped the way `gh` does: what a person reaches for daily, then the rest, then what only an agent runs.
 const HELP_SECTIONS: Readonly<Record<string, readonly string[]>> = {
   "Core commands": ["due", "news", "find", "get", "open", "submit", "quiz", "units", "activities", "grades", "threads", "forums"],
-  "Additional commands": ["user", "todo", "alerts", "overview", "download", "auth", "doctor", "completion", "uninstall"],
+  "Additional commands": ["sync", "user", "todo", "alerts", "overview", "download", "auth", "doctor", "completion", "uninstall"],
   "Agent commands": ["mcp", "commands", "skills"],
 };
 
@@ -1123,6 +1181,21 @@ export function redactSesskey(html: string): string {
     .replace(/(["']?sesskey["']?\s*[:=]\s*["']?)[A-Za-z0-9]{8,}/gu, "$1REDACTED");
 }
 
+function quizStartSummary(plan: QuizStartPlan, theme: Theme): string {
+  const lines = [`${theme.dim(plan.action === "continue" ? "Continue" : "   Start")}  ${theme.target(plan.name || `quiz ${plan.quiz_id}`)}`];
+  if (plan.action === "start") {
+    const allowed = Number.parseInt(plan.attempts_allowed, 10);
+    const number = plan.attempts_used + 1;
+    lines.push(`${theme.dim(" Attempt")}  ${number}${Number.isFinite(allowed) ? ` of ${allowed}` : ""}${Number.isFinite(allowed) && number >= allowed ? ` ${theme.tone("danger", "(your last)")}` : ""}`);
+    if (plan.grading_method) lines.push(`${theme.dim(" Grading")}  ${plan.grading_method}`);
+  }
+  lines.push(plan.time_limit
+    ? `${theme.dim("    Time")}  ${plan.time_limit}; ${theme.tone("warning", plan.action === "continue" ? "the clock is already running" : "the timer starts now and does not pause")}`
+    : `${theme.dim("    Time")}  no time limit shown`);
+  lines.push(theme.dim(plan.action === "continue" ? "Moodle reopens the attempt in progress." : "Moodle records the attempt and its start time."));
+  return lines.join("\n");
+}
+
 function submissionSummary(plan: SubmissionReceipt, final: boolean, theme: Theme): string {
   const destination = `${theme.target(plan.name)}${plan.unit_id ? theme.dim(`  unit ${plan.unit_id}`) : ""}`;
   const lines = plan.uploads.length
@@ -1130,9 +1203,13 @@ function submissionSummary(plan: SubmissionReceipt, final: boolean, theme: Theme
     : [`${theme.dim("Submit")}  ${destination}`, `${theme.dim("      ")}  ${theme.subject("the files already there")} for grading`];
   if (plan.removed.length) lines.push(`${theme.dim("Remove")}  ${theme.tone("danger", plan.removed.join(", "))} ${theme.dim("first")}`);
   if (plan.statement) lines.push(`${theme.dim(" Agree")}  "${plan.statement}"`);
-  lines.push(final
-    ? theme.tone("warning", "Then submit for grading. Moodle does not allow undoing this.")
-    : theme.dim("Moodle keeps a draft where the assignment allows drafts; otherwise it submits at once."));
+  if (plan.group) lines.push(`${theme.dim(" Group")}  ${theme.subject(plan.group)} ${theme.dim("shares these files: every change reaches the whole group")}`);
+  // The plan refuses a non-final save unless Moodle showed a draft stage, so each line states a fact.
+  lines.push(!final
+    ? theme.dim("Saved as a draft; nothing is submitted for grading.")
+    : plan.draft_stage === false
+      ? theme.tone("warning", "This assignment has no draft stage: saving submits it for grading. Moodle does not allow undoing this.")
+      : theme.tone("warning", `Then submit ${plan.group ? "the group's work " : ""}for grading. Moodle does not allow undoing this.`));
   return lines.join("\n");
 }
 

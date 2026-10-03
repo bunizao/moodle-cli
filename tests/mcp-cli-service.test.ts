@@ -12,7 +12,7 @@ import type {
   NodeWranglerDeploymentAdapter,
   WorkerReadiness,
 } from "../src/mcp/deployment/index.js";
-import { DeploymentApplyError, DeploymentPlanError } from "../src/mcp/deployment/index.js";
+import { DeploymentApplyError, DeploymentPlanError, WranglerCommandError } from "../src/mcp/deployment/index.js";
 import {
   createMcpCommandService,
   deriveMcpProfile,
@@ -317,6 +317,53 @@ describe("managed MCP CLI service", () => {
     }
   });
 
+  it("signs in to Cloudflare with a device link when there is no terminal", async () => {
+    const root = await mkdtemp(join(tmpdir(), "moodle-cli-cf-device-"));
+    const bundle = join(root, "worker.js");
+    await writeFile(bundle, "export default {};\n");
+    const stderr: string[] = [];
+    const listAccounts = vi.fn(async () => [] as { id: string; name: string }[]);
+    // What Wrangler 4.131 does on a machine that never signed in.
+    listAccounts.mockRejectedValueOnce(new WranglerCommandError(1, '{"loggedIn":false}', "")).mockResolvedValue([{ id: "account-1", name: "Personal" }]);
+    const url = "https://dash.cloudflare.com/oauth2/device/verify?user_code=abCD1234";
+    const wrangler = {
+      listAccounts,
+      login: vi.fn(async () => undefined),
+      loginWithDevice: vi.fn(async (onPrompt: (prompt: { url: string; code: string }) => void) => {
+        onPrompt({ url, code: "abCD1234" });
+      }),
+    } as unknown as NodeWranglerDeploymentAdapter;
+
+    const service = createMcpCommandService({
+      homeDir: root,
+      workerBundlePath: bundle,
+      stdin: { isTTY: false } as NodeJS.ReadStream,
+      stderr: { write: (chunk: string) => { stderr.push(chunk); return true; } } as unknown as NodeJS.WritableStream,
+      configLoader: async () => ({ baseUrl: "https://lms.example.edu" }),
+      receipts: { read: vi.fn(async () => null), write: vi.fn(async () => undefined), delete: vi.fn(async () => undefined) },
+      credentials: credentialStore(),
+      worker: workerClient(),
+      wrangler,
+      createDeployment: () => ({
+        plan: vi.fn(async (intent: DeploymentIntent) => ({
+          intent,
+          operation: "create" as const,
+          uploadCandidate: false,
+          existing: null,
+          receipt: null,
+        })),
+      } as unknown as ManagedMcpDeployment),
+    });
+
+    try {
+      await service.deploy(deployDryRun());
+      expect(wrangler.login).not.toHaveBeenCalled();
+      expect(stderr.join("")).toContain(`Open ${url} and approve with code abCD1234.`);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("offers update, rename, and cancel for a conflicting Worker name", async () => {
     const update = await collisionHarness(["1"]);
     const rename = await collisionHarness(["2", "moodle-school-alt-mcp"]);
@@ -395,7 +442,59 @@ describe("managed MCP CLI service", () => {
     });
     expect(result.text).toContain(`${receipt.productionEndpoint}/mcp`);
     expect(result.text).toContain("ABCD-2345");
+    expect(result.text).toContain("https://moodle-school-mcp.demo.workers.dev/oauth/login?pairing=ABCD2345");
     expect(result.text).not.toContain("sync-private-token");
+  });
+
+  it("ends a remote-login deploy with the sign-in link instead of a local success report", async () => {
+    const root = await mkdtemp(join(tmpdir(), "moodle-cli-remote-login-"));
+    const bundle = join(root, "worker.js");
+    await writeFile(bundle, "export default {};\n");
+    const receipt = deploymentReceipt();
+    const progressChunks: string[] = [];
+    const stderr = { write: (chunk: string) => { progressChunks.push(chunk); return true; } } as unknown as NodeJS.WritableStream;
+    const plan = vi.fn(async (intent: DeploymentIntent) => ({ intent, operation: "create" as const, uploadCandidate: true, existing: null, receipt: null }));
+    const inspect = vi.fn();
+    const deployment = {
+      plan,
+      apply: async function* () {
+        yield { stageId: "validate_moodle_session" as const, stage: 1, total: 8 as const, label: "Validating Moodle session", status: "skipped" as const };
+        yield { stageId: "run_release_checks" as const, stage: 7, total: 8 as const, label: "Running MCP and Moodle checks", status: "completed" as const };
+      },
+      inspect,
+    } as unknown as ManagedMcpDeployment;
+    const worker = workerClient();
+    const service = createMcpCommandService({
+      homeDir: root,
+      workerBundlePath: bundle,
+      configLoader: async () => ({ baseUrl: receipt.moodleOrigin }),
+      receipts: receiptStore(receipt),
+      credentials: credentialStore(),
+      worker,
+      createDeployment: () => deployment,
+      stderr,
+      // The site's public config, asked without a session before the user signs in.
+      fetchImpl: vi.fn<typeof fetch>(async () => Response.json([{ error: false, data: { enablewebservices: 1, enablemobilewebservice: 1, typeoflogin: 2 } }])),
+    });
+
+    try {
+      const result = await service.deploy({ dryRun: false, repair: false, rotateToken: false, rollback: false, yes: true, remoteLogin: true });
+
+      expect(plan).toHaveBeenCalledWith(expect.objectContaining({ remoteLogin: true }));
+      expect(progressChunks.join("")).toContain("- [1/8] Validating Moodle session (skipped)");
+      expect(inspect).not.toHaveBeenCalled();
+      expect(result.data).toMatchObject({
+        endpoint: `${receipt.productionEndpoint}/mcp`,
+        setupUrl: "https://moodle-school-mcp.demo.workers.dev/oauth/login?pairing=ABCD2345",
+        setupExpiresAt: "2026-09-04T00:10:00.000Z",
+        renewalExpected: "mobile_token",
+      });
+      expect(result.text).toContain("Sign in to Moodle to finish.");
+      expect(result.text).toContain("renews itself after this sign-in");
+      expect(result.text).not.toContain("sync-private-token");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 
   it("rejects token reveal outside an interactive TTY at the service boundary", async () => {
@@ -722,6 +821,7 @@ function workerClient(
     getReadiness: vi.fn(async () => readiness),
     touchSession: vi.fn(async () => undefined),
     runSmoke: vi.fn(async () => ({ moodleUser: "Alice Example" })),
+    checkRemoteLogin: vi.fn(async () => undefined),
     manageClients: vi.fn(async () => ({ clients: [] })),
     createPairing: vi.fn(async () => ({
       code: "ABCD2345",

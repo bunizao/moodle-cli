@@ -28,7 +28,7 @@ import {
   URL_VIEW_PATH,
 } from "./constants.js";
 import { submitAssignmentFiles, type SubmissionReceipt, type SubmitAssignmentRequest } from "./moodle-assign-core.js";
-import { answerQuizQuestion, finishQuizAttempt, getAttemptPage, getAttemptSummary, startQuizAttempt, type AnswerRequest, type AttemptFinishReceipt, type AttemptPage, type AttemptSummary, type QuizDeps, type StartOptions } from "./moodle-quiz-core.js";
+import { answerQuizQuestion, finishQuizAttempt, getAttemptPage, getAttemptSummary, planQuizStart, startQuizAttempt, type AnswerRequest, type AttemptFinishReceipt, type AttemptPage, type AttemptSummary, type QuizDeps, type QuizStartPlan, type StartOptions } from "./moodle-quiz-core.js";
 import { ForumModule } from "./moodle-forum-core.js";
 import { searchForumContent as searchForumModule } from "./moodle-forum-search-core.js";
 import type {
@@ -216,7 +216,10 @@ export class MoodleClientCore {
   private writeSessionCache?: (session: MoodleClientSessionSnapshot) => Promise<void>;
   private readonly errors: MoodleClientErrorAdapter;
   private onLoginRequired?: () => Promise<{ cookie: MoodleSessionCookie; pageContext: PageContext }>;
-  private retryingLogin = false;
+  // Reads run in parallel and Moodle rejects them all at once; they must share one
+  // reauthentication. The generation tells a late rejection that a newer session exists.
+  private authGeneration = 0;
+  private reauthInFlight?: Promise<void>;
   private readonly forum: ForumModule;
 
   constructor(baseUrl: string, options: MoodleClientCoreOptions | string) {
@@ -408,26 +411,43 @@ export class MoodleClientCore {
   async getTodo(limit = 20, days?: number, courseId?: number): Promise<TodoItem[]> {
     await this.ensureSession();
     const now = Math.floor(Date.now() / 1000);
+    const window = { timesortfrom: now, timesortto: days ? now + days * 86400 : 0 };
+    const timeline = () => this.readActionEvents(FUNC_GET_ACTION_EVENTS, { ...window, limittononsuspendedevents: true }, limit);
+    const unit = (id: number) => this.readActionEvents(FUNC_GET_ACTION_EVENTS_BY_COURSE, { courseid: id, ...window }, limit);
+    // Each calendar service covers for the other when a site disables it: one unit
+    // prefers the per-course service, every unit the timeline. Neither fallback falls
+    // back again, so a site that disables both reports the refusal instead of looping.
+    if (courseId !== undefined) {
+      try {
+        return await unit(courseId);
+      } catch (error) {
+        if (!this.errors.isApi(error) || error.moodleErrorCode !== "servicenotavailable") throw error;
+      }
+      return (await timeline()).filter((item) => item.course_id === courseId);
+    }
+    try {
+      return await timeline();
+    } catch (error) {
+      if (!this.errors.isApi(error) || error.moodleErrorCode !== "servicenotavailable") throw error;
+    }
+    // Every unit's first `limit` events hold its share of the overall first `limit`.
+    // A unit that fails fails the list: a deadline list missing a unit reads as complete.
+    const perUnit: TodoItem[][] = [];
+    for (const courses of chunks(await this.getCourses(), 4)) {
+      perUnit.push(...await Promise.all(courses.map((course) => unit(course.id))));
+    }
+    const merged = new Map(perUnit.flat().map((item) => [item.id, item]));
+    return [...merged.values()].sort((a, b) => a.due_at - b.due_at || a.id - b.id).slice(0, limit);
+  }
+
+  // Moodle caps a calendar page at 50 events and pages by the last event's id.
+  private async readActionEvents(functionName: string, args: Record<string, unknown>, limit: number): Promise<TodoItem[]> {
     const items: TodoItem[] = [];
-    let aftereventid = 0;
     const seen = new Set<number>();
-    // One unit's deadlines come from the per-course calendar service when the site
-    // offers it; otherwise the whole timeline is read and filtered.
-    const byCourse = courseId !== undefined && !this.unavailable.has(FUNC_GET_ACTION_EVENTS_BY_COURSE);
+    let aftereventid = 0;
     while (items.length < limit) {
       const batchSize = Math.min(50, limit - items.length);
-      const window = { timesortfrom: now, timesortto: days ? now + days * 86400 : 0, aftereventid, limitnum: batchSize };
-      let data: unknown;
-      if (byCourse) {
-        try {
-          data = await this.call(FUNC_GET_ACTION_EVENTS_BY_COURSE, { courseid: courseId, ...window });
-        } catch (error) {
-          if (!this.errors.isApi(error) || error.moodleErrorCode !== "servicenotavailable") throw error;
-          return (await this.getTodo(limit, days)).filter((item) => item.course_id === courseId);
-        }
-      } else {
-        data = await this.call(FUNC_GET_ACTION_EVENTS, { ...window, limittononsuspendedevents: true });
-      }
+      const data = await this.call(functionName, { ...args, aftereventid, limitnum: batchSize });
       const events = isRecord(data) && Array.isArray(data.events) ? data.events : [];
       for (const item of parseTodoItems(events)) if (!seen.has(item.id)) { seen.add(item.id); items.push(item); }
       if (events.length < batchSize) break;
@@ -436,7 +456,7 @@ export class MoodleClientCore {
       if (!next || next === aftereventid) throw this.errors.api("Moodle repeated a calendar page; refine the date window.");
       aftereventid = next;
     }
-    return courseId === undefined ? items : items.filter((item) => item.course_id === courseId);
+    return items;
   }
 
   async getAlerts(limit = 20): Promise<AlertSummary> {
@@ -478,7 +498,7 @@ export class MoodleClientCore {
     const coursesPromise = coursesData?.ok ? Promise.resolve(parseCourses(coursesData.data)) : this.getCourses();
     const todoPromise = todoData?.ok
       ? Promise.resolve(parseTodoPayload(todoData.data))
-      : todoData
+      : todoData && todoData.error.moodleErrorCode !== "servicenotavailable"
         ? Promise.reject(todoData.error)
         : this.getTodo(todoLimit, todoDays);
     const alertResults = [notifications, counts, unread];
@@ -657,12 +677,16 @@ export class MoodleClientCore {
   }
 
   /** Starts a new attempt, or resumes the one already in progress, and returns its first page. */
+  async planQuizStart(quizId: number): Promise<QuizStartPlan> {
+    return planQuizStart(await this.quizDeps(), quizId);
+  }
+
   async startQuizAttempt(quizId: number, options: StartOptions = {}): Promise<AttemptPage> {
     return startQuizAttempt(await this.quizDeps(), quizId, options);
   }
 
-  async getQuizAttemptPage(attemptId: number, quizId: number, page = 0): Promise<AttemptPage> {
-    return getAttemptPage(await this.quizDeps(), attemptId, quizId, page);
+  async getQuizAttemptPage(attemptId: number, quizId: number, page?: number, options: { advance?: boolean } = {}): Promise<AttemptPage> {
+    return getAttemptPage(await this.quizDeps(), attemptId, quizId, page, options);
   }
 
   async getQuizAttemptSummary(attemptId: number, quizId: number): Promise<AttemptSummary> {
@@ -790,6 +814,7 @@ export class MoodleClientCore {
       return results;
     }
     const payload = requests.map((request, index) => ({ index, methodname: request.methodname, args: request.args ?? {} }));
+    const sentGeneration = this.authGeneration;
     const response = await fetchWithSession(`${this.baseUrl}${AJAX_SERVICE_PATH}?sesskey=${encodeURIComponent(this.sesskey ?? "")}&info=${requests.map((request) => request.methodname).join(",")}`, {
       method: "POST",
       headers: {
@@ -799,8 +824,8 @@ export class MoodleClientCore {
       body: JSON.stringify(payload),
     }, this.baseUrl, this.cookie, this.fetchImpl);
     if (response.url.includes("/login/")) {
-      if (this.onLoginRequired && allowRetry && !this.retryingLogin) {
-        await this.reauthenticate();
+      if (this.onLoginRequired && allowRetry) {
+        await this.reauthenticate(sentGeneration);
         return this.callBatchInternal(requests, false);
       }
       throw this.errors.api("Session expired", "servicerequireslogin");
@@ -828,11 +853,10 @@ export class MoodleClientCore {
     if (learned) await this.writeCache();
     if (
       allowRetry &&
-      !this.retryingLogin &&
       this.onLoginRequired &&
       results.some((result) => result !== undefined && !result.ok && this.errors.isLoginRequired(result.error))
     ) {
-      await this.reauthenticate();
+      await this.reauthenticate(sentGeneration);
       return this.callBatchInternal(requests, false);
     }
     return results;
@@ -858,10 +882,11 @@ export class MoodleClientCore {
   }
 
   private async requestAbsoluteInternal(url: string, init: RequestInit, allowRetry: boolean, allowErrorStatus = false): Promise<Response> {
+    const sentGeneration = this.authGeneration;
     const response = await fetchWithSession(url, init, this.baseUrl, this.cookie, this.fetchImpl);
     if (response.url.includes("/login/")) {
-      if (this.onLoginRequired && allowRetry && !this.retryingLogin) {
-        await this.reauthenticate();
+      if (this.onLoginRequired && allowRetry) {
+        await this.reauthenticate(sentGeneration);
         return this.requestAbsoluteInternal(url, init, false, allowErrorStatus);
       }
       throw this.errors.api("Session expired", "servicerequireslogin");
@@ -1005,20 +1030,28 @@ export class MoodleClientCore {
     return sections;
   }
 
-  private async reauthenticate(): Promise<void> {
+  private reauthenticate(sentGeneration: number): Promise<void> {
+    // The request was sent with a session that has since been replaced, so retrying is enough.
+    if (sentGeneration !== this.authGeneration) return Promise.resolve();
+    if (!this.reauthInFlight) {
+      const pending = this.performReauthentication().finally(() => {
+        if (this.reauthInFlight === pending) this.reauthInFlight = undefined;
+      });
+      this.reauthInFlight = pending;
+    }
+    return this.reauthInFlight;
+  }
+
+  private async performReauthentication(): Promise<void> {
     if (!this.onLoginRequired) {
       throw this.errors.api("Session expired", "servicerequireslogin");
     }
-    this.retryingLogin = true;
     await this.clearSessionCache?.();
-    try {
-      const auth = await this.onLoginRequired();
-      this.cookie = auth.cookie;
-      this.applyContext(auth.pageContext);
-      await this.writeCache();
-    } finally {
-      this.retryingLogin = false;
-    }
+    const auth = await this.onLoginRequired();
+    this.cookie = auth.cookie;
+    this.applyContext(auth.pageContext);
+    this.authGeneration += 1;
+    await this.writeCache();
   }
 
   private applyContext(context: PageContext): void {

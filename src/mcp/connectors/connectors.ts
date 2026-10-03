@@ -65,10 +65,11 @@ export class ConfigFileClientConnector implements ClientConnector {
   private readonly registration: string;
   private readonly connection: ConnectorConnection;
   private original: string | null | undefined;
+  private written: string | undefined;
   private lastReceipt: ClientReceipt | null = null;
 
   constructor(
-    private readonly client: SupportedMcpClient,
+    readonly client: SupportedMcpClient,
     private readonly options: ClientConnectorOptions,
     private readonly fileSystem: ConnectorFileSystem,
     private readonly codec: ConnectorCodec,
@@ -102,6 +103,7 @@ export class ConfigFileClientConnector implements ClientConnector {
     const before = await this.readConfig();
     const after = this.codec.update(before ?? "", this.registration, this.connection);
     this.original = before;
+    this.written = after;
     const changed = before !== after;
     const backupPath = before === null ? null : `${this.options.configPath}.moodle-mcp.backup`;
     this.lastReceipt = {
@@ -130,6 +132,11 @@ export class ConfigFileClientConnector implements ClientConnector {
 
   async rollback(): Promise<void> {
     if (!this.lastReceipt?.changed || this.original === undefined) {
+      return;
+    }
+    // Clients rewrite their own config (Claude Code touches ~/.claude.json constantly). Once the
+    // file holds anything but our write, restoring the snapshot would throw away their changes.
+    if (await this.readConfig() !== this.written) {
       return;
     }
     if (this.original === null) {
@@ -165,8 +172,8 @@ export class ConfigFileClientConnector implements ClientConnector {
 }
 
 export class ClientConnectionError extends Error {
-  constructor(public readonly client: SupportedMcpClient) {
-    super(`The MCP server is ready, but ${client} configuration could not be updated`);
+  constructor(public readonly clients: SupportedMcpClient[]) {
+    super(`The MCP server is ready, but the ${clients.join(", ")} configuration could not be updated; fix the file, then run moodle mcp connect ${clients.length === 1 ? clients[0] : "<client>"}`);
     this.name = "ClientConnectionError";
   }
 }
@@ -182,7 +189,7 @@ export async function connectClient(connector: ClientConnector): Promise<ClientR
     return receipt;
   } catch {
     await connector.rollback();
-    throw new ClientConnectionError(detection.client);
+    throw new ClientConnectionError([detection.client]);
   }
 }
 
