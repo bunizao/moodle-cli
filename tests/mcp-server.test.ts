@@ -256,7 +256,7 @@ describe("Moodle MCP server", () => {
         structuredContent: {
           error: {
             type: "MOODLE_AUTH_REQUIRED",
-            message: "The Moodle session has expired. Sign in again.",
+            message: "Moodle is not signed in, or the session has expired. Sign in again.",
             moodleCode: "servicerequireslogin",
           },
         },

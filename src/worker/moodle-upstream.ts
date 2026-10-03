@@ -5,6 +5,7 @@ import type {
   SessionValidationFailure,
   SessionValidationSuccess,
 } from "./session-broker.js";
+import { fetchMobileToken, mintSessionFromMobileToken, readSiteAuthProfile, type MobileToken } from "../mobile-login-core.js";
 
 const DASHBOARD_PATH = "/my/";
 const AJAX_PATH = "/lib/ajax/service.php";
@@ -53,6 +54,25 @@ export class FetchMoodleSessionUpstream implements MoodleSessionUpstream {
       remainingSeconds: null,
       ...(rotatedCookie ? { rotatedCookie } : {}),
     };
+  }
+
+  // Mirrors the CLI: a site that says no is not asked, and one whose public config
+  // cannot be read still gets one launch attempt.
+  async captureMobileToken(cookie: { name: string; value: string }): Promise<MobileToken | null> {
+    // Optional renewal setup must not hold the owner login or OAuth verification queue.
+    const signal = AbortSignal.timeout(30_000);
+    const fetchImpl: typeof fetch = (input, init) => this.fetchImpl(input, { ...init, signal });
+    const profile = await readSiteAuthProfile(this.origin, fetchImpl);
+    signal.throwIfAborted();
+    if (profile && !profile.mobileService) return null;
+    const token = await fetchMobileToken(this.origin, cookie, fetchImpl);
+    signal.throwIfAborted();
+    return token;
+  }
+
+  async mintSession(moodleUserId: number, token: MobileToken): Promise<{ name: string; value: string } | null> {
+    const minted = await mintSessionFromMobileToken(this.origin, moodleUserId, token, this.fetchImpl);
+    return minted ? { name: minted.cookie.name, value: minted.cookie.value } : null;
   }
 
   async touch(session: {

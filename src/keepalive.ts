@@ -16,6 +16,7 @@ import {
   KEEPALIVE_LOG_FILENAME,
 } from "./constants.js";
 import { readCachedSession, writeCachedSession, type CachedSession } from "./session-cache.js";
+import type { SessionRenewal } from "./mobile-login-core.js";
 
 export interface TouchResult {
   alive: boolean | null;
@@ -36,6 +37,9 @@ export interface AuthStatus {
   session_time_remaining_seconds: number | null;
   keepalive_installed: boolean;
   keepalive_plist_path: string;
+  /** The site's mobile web service: null until a sign-in has asked. */
+  mobile_service: boolean | null;
+  renewal: SessionRenewal;
 }
 
 export interface KeepaliveInstallResult {
@@ -226,6 +230,8 @@ export async function getAuthStatus(baseUrl: string, options: KeepaliveOptions =
       session_time_remaining_seconds: null,
       keepalive_installed: keepalive.installed,
       keepalive_plist_path: keepalive.plist_path,
+      mobile_service: null,
+      renewal: "sign_in",
     };
   }
 
@@ -247,6 +253,8 @@ export async function getAuthStatus(baseUrl: string, options: KeepaliveOptions =
     session_time_remaining_seconds: touch.timeRemainingSeconds,
     keepalive_installed: keepalive.installed,
     keepalive_plist_path: keepalive.plist_path,
+    mobile_service: session.mobileServiceEnabled ?? null,
+    renewal: session.mobileToken?.privatetoken ? "mobile_token" : "sign_in",
   };
 }
 

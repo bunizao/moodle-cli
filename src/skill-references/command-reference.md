@@ -7,6 +7,8 @@ Resources, folders and assignments return `files` with names and URLs.
 section (`moodle download "UNIT week 3"` or a section URL). The receipt lists `files`
 with path, byte count and content type, and `skipped` with a reason: `exists` (already
 saved; `--force` replaces it) or `unavailable`. `--dest PATH` names the file when there is one.
+`moodle sync [UNIT] --to DIR` mirrors units (files, plus pages and books as HTML) into one folder each and reruns incrementally;
+it never overwrites a file you edited (the new version lands beside it as a `conflict`).
 `moodle submit "UNIT TASK" FILE... --dry-run` shows the upload plan; without `--dry-run` it
 asks for confirmation (`--yes` skips it) and prints the receipt Moodle shows afterwards.
 `--final` also submits for grading, which Moodle does not let anyone undo.
@@ -20,5 +22,15 @@ search_forums and file; a local server also lists submit, the only tool that wri
 Legacy names remain callable for one minor version and return
 compact v2 envelopes. They are deprecated and omitted from default discovery.
 Unit results contain a section index; supply section for activity details.
+Grades default to marked items, without feedback.
+Use `--mode summary` for counts and course totals or `--mode all` for every item; `--include-ungraded`
+also includes unmarked items in graded mode. Filter with `--types assign,quiz` (Moodle
+module names, independent of the site's language; assignment is accepted as assign). `--include-feedback` opts into full
+feedback; `--graded-only` remains an alias for graded mode. MCP uses the corresponding
+`mode`, `types`, `include_ungraded`, `include_feedback`, `limit` and `offset` arguments.
+Detail modes return at most 20 rows across all units by default. `matched`, `returned`,
+`offset` and `has_more` describe the filtered page; increase offset to read the rest.
+Per-unit counts cover all rows matching types, before grade filtering and pagination;
+course totals remain Moodle's totals. Summary mode does not fetch deadlines or user data.
 List activity URLs follow `{siteurl}/mod/{type}/view.php?id={id}`; use item for the actual URL.
 File content is embedded in MCP resource blocks, limited to 16 MiB. CLI downloads stream to disk.

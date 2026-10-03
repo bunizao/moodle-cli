@@ -24,6 +24,10 @@ export interface DeploymentIntent {
   rotateKey?: boolean;
   repair?: boolean;
   dryRun?: boolean;
+  // No local Moodle session or local integrations: the owner signs in through the
+  // Worker's remote browser instead, which is how a cloud session without a desktop
+  // browser sets this up.
+  remoteLogin?: boolean;
 }
 
 export interface RemoteWorker {
@@ -80,6 +84,8 @@ export interface WorkerReadiness {
   status: "pass" | "warn" | "fail";
   reasonCode: string | null;
   revision: number | null;
+  // How the Worker brings an expired session back: itself, or through a new sign-in.
+  renewal?: "mobile_token" | "sign_in";
   sessionSchemaVersion?: number;
   encryptionKeyId?: string;
   credentialId?: string;
@@ -180,6 +186,15 @@ export interface ManagedWorkerClient {
     expectedEncryptionKeyId?: string;
     expectedCredentialId?: string;
   }): Promise<WorkerSmokeResult>;
+  // What a Worker without a Moodle session can prove: it is live, runs this release,
+  // and can start a remote sign-in.
+  checkRemoteLogin(input: {
+    endpoint: string;
+    sessionSyncToken: string;
+    expectedSessionSchemaVersion?: number;
+    expectedEncryptionKeyId?: string;
+    expectedCredentialId?: string;
+  }): Promise<void>;
   createPairing(input: { endpoint: string; sessionSyncToken: string }): Promise<WorkerPairing>;
   manageClients(input: { endpoint: string; sessionSyncToken: string; revoke?: boolean; clientId?: string }): Promise<unknown>;
 }
@@ -213,7 +228,7 @@ export interface DeploymentEvent {
   stage: number;
   total: 8;
   label: string;
-  status: "started" | "completed" | "failed";
+  status: "started" | "completed" | "skipped" | "failed";
   code?: string;
   moodleUser?: string;
 }
@@ -230,6 +245,7 @@ export interface DeploymentStatus {
   readiness: "pass" | "warn" | "fail" | "unknown";
   readinessReasonCode: string | null;
   sessionRevision: number | null;
+  sessionRenewal?: "mobile_token" | "sign_in";
   // The recovery release serves the session bridge with OAuth switched off, so a deploy that
   // failed after promoting it leaves hosted clients unable to sign in. Say so.
   recoveryActive: boolean;
@@ -323,13 +339,14 @@ export class ManagedMcpDeployment {
     let moodleUser: string | null = null;
 
     try {
-      yield started(activeStage);
-      session = await this.dependencies.sessions.loadValidated(plan.intent.profile, plan.intent.moodleOrigin);
-      session = {
-        ...session,
-        remoteRevision: plan.receipt?.sessionRevision ?? session.remoteRevision,
-      };
-      yield completed(activeStage);
+      if (plan.intent.remoteLogin) {
+        yield skipped(activeStage);
+      } else {
+        yield started(activeStage);
+        const loaded = await this.dependencies.sessions.loadValidated(plan.intent.profile, plan.intent.moodleOrigin);
+        session = { ...loaded, remoteRevision: plan.receipt?.sessionRevision ?? loaded.remoteRevision };
+        yield completed(activeStage);
+      }
 
       activeStage = "check_cloudflare_access";
       yield started(activeStage);
@@ -373,11 +390,15 @@ export class ManagedMcpDeployment {
           });
           promoted = true;
           secretsUploaded = true;
-          const current = await this.dependencies.worker.getReadiness({ endpoint: recovery.productionEndpoint, sessionSyncToken: credentials.sessionSyncToken });
-          const recoveredSession = await this.dependencies.worker.putSession({ endpoint: recovery.productionEndpoint, sessionSyncToken: credentials.sessionSyncToken, session, expectedRevision: current.revision });
-          candidateRevision = recoveredSession.revision;
-          session.remoteRevision = candidateRevision;
-          await this.dependencies.worker.runSmoke({ endpoint: recovery.productionEndpoint, mcpAccessToken: credentials.mcpAccessToken, sessionSyncToken: credentials.sessionSyncToken, expectedSessionSchemaVersion: 2, expectedEncryptionKeyId: prepared.encryptionKeyId, expectedCredentialId: prepared.credentialId });
+          // Without a local session the encrypted one already in the Worker carries over,
+          // since the key does not change (remoteLogin refuses --rotate-key).
+          if (session) {
+            const current = await this.dependencies.worker.getReadiness({ endpoint: recovery.productionEndpoint, sessionSyncToken: credentials.sessionSyncToken });
+            const recoveredSession = await this.dependencies.worker.putSession({ endpoint: recovery.productionEndpoint, sessionSyncToken: credentials.sessionSyncToken, session, expectedRevision: current.revision });
+            candidateRevision = recoveredSession.revision;
+            session.remoteRevision = candidateRevision;
+            await this.dependencies.worker.runSmoke({ endpoint: recovery.productionEndpoint, mcpAccessToken: credentials.mcpAccessToken, sessionSyncToken: credentials.sessionSyncToken, expectedSessionSchemaVersion: 2, expectedEncryptionKeyId: prepared.encryptionKeyId, expectedCredentialId: prepared.credentialId });
+          }
         }
       }
       yield completed(activeStage);
@@ -414,35 +435,38 @@ export class ManagedMcpDeployment {
       yield completed(activeStage);
 
       activeStage = "upload_moodle_session";
-      yield started(activeStage);
-      const sessionEndpoint = candidate?.previewEndpoint ?? candidate?.productionEndpoint ?? plan.existing?.productionEndpoint;
-      if (!sessionEndpoint) {
-        throw new DeploymentApplyError("MISSING_ENDPOINT", "The Worker did not provide a session endpoint");
+      if (!session) {
+        yield skipped(activeStage);
+        candidateRevision = plan.receipt?.sessionRevision ?? 0;
+      } else {
+        yield started(activeStage);
+        const sessionEndpoint = candidate?.previewEndpoint ?? candidate?.productionEndpoint ?? plan.existing?.productionEndpoint;
+        if (!sessionEndpoint) {
+          throw new DeploymentApplyError("MISSING_ENDPOINT", "The Worker did not provide a session endpoint");
+        }
+        const expectedRevision = plan.intent.repair || (plan.intent.replaceExisting && !plan.receipt)
+          ? (await this.dependencies.worker.getReadiness({
+              endpoint: sessionEndpoint,
+              sessionSyncToken: credentials.sessionSyncToken,
+            })).revision
+          : session.remoteRevision;
+        const upload = recovery && candidateRevision !== null ? { revision: candidateRevision } : await this.dependencies.worker.putSession({
+          endpoint: sessionEndpoint,
+          sessionSyncToken: credentials.sessionSyncToken,
+          session,
+          expectedRevision,
+        });
+        candidateRevision = upload.revision;
+        yield completed(activeStage);
       }
-      const expectedRevision = plan.intent.repair || (plan.intent.replaceExisting && !plan.receipt)
-        ? (await this.dependencies.worker.getReadiness({
-            endpoint: sessionEndpoint,
-            sessionSyncToken: credentials.sessionSyncToken,
-          })).revision
-        : session.remoteRevision;
-      const upload = recovery && candidateRevision !== null ? { revision: candidateRevision } : await this.dependencies.worker.putSession({
-        endpoint: sessionEndpoint,
-        sessionSyncToken: credentials.sessionSyncToken,
-        session,
-        expectedRevision,
-      });
-      candidateRevision = upload.revision;
-      yield completed(activeStage);
 
       activeStage = "run_release_checks";
       yield started(activeStage);
       if (candidate?.previewEndpoint) {
         try {
-          await this.dependencies.worker.runSmoke({
-            endpoint: candidate.previewEndpoint,
-            mcpAccessToken: credentials.mcpAccessToken,
-            sessionSyncToken: credentials.sessionSyncToken,
-          });
+          const target = { endpoint: candidate.previewEndpoint, sessionSyncToken: credentials.sessionSyncToken };
+          if (session) await this.dependencies.worker.runSmoke({ ...target, mcpAccessToken: credentials.mcpAccessToken });
+          else await this.dependencies.worker.checkRemoteLogin(target);
         } catch {
           throw new DeploymentApplyError(
             "CANDIDATE_VALIDATION_FAILED",
@@ -463,13 +487,13 @@ export class ManagedMcpDeployment {
         throw new DeploymentApplyError("MISSING_ENDPOINT", "The Worker did not provide a production endpoint");
       }
       try {
-        const smoke = await this.dependencies.worker.runSmoke({
+        const target = {
           endpoint: productionEndpoint,
-          mcpAccessToken: credentials.mcpAccessToken,
           sessionSyncToken: credentials.sessionSyncToken,
           ...(this.dependencies.wrangler.atomicSecrets ? { expectedSessionSchemaVersion: 2, expectedEncryptionKeyId: prepared.encryptionKeyId, expectedCredentialId: prepared.credentialId } : {}),
-        });
-        moodleUser = smoke.moodleUser;
+        };
+        if (session) moodleUser = (await this.dependencies.worker.runSmoke({ ...target, mcpAccessToken: credentials.mcpAccessToken })).moodleUser;
+        else await this.dependencies.worker.checkRemoteLogin(target);
       } catch {
         if (!promoted) {
           throw new DeploymentApplyError("PRODUCTION_VALIDATION_FAILED", "The existing Worker failed validation");
@@ -509,10 +533,16 @@ export class ManagedMcpDeployment {
       yield completed(activeStage, moodleUser ? { moodleUser } : undefined);
 
       activeStage = "install_local_integrations";
-      yield started(activeStage);
-      await this.dependencies.renewal.install(plan.intent.profile);
-      await this.dependencies.clients.install(plan.intent.profile);
-      yield completed(activeStage);
+      if (plan.intent.remoteLogin) {
+        // A cloud sandbox has no cookies to renew from, and a client entry pointing at
+        // its own copy of the CLI would break once the sandbox is gone.
+        yield skipped(activeStage);
+      } else {
+        yield started(activeStage);
+        await this.dependencies.renewal.install(plan.intent.profile);
+        await this.dependencies.clients.install(plan.intent.profile);
+        yield completed(activeStage);
+      }
     } catch (error) {
       if ((plan.intent.rotateToken || plan.intent.rotateKey) && credentialsBefore && !secretsUploaded) {
         await this.dependencies.credentials.write(plan.intent.profile, credentialsBefore);
@@ -584,6 +614,7 @@ export class ManagedMcpDeployment {
     let readiness: DeploymentStatus["readiness"] = "unknown";
     let readinessReasonCode: string | null = null;
     let sessionRevision: number | null = null;
+    let sessionRenewal: DeploymentStatus["sessionRenewal"];
     if (worker && credentials.value) {
       const target = { endpoint: receipt.productionEndpoint, sessionSyncToken: credentials.value.sessionSyncToken };
       await this.dependencies.worker.touchSession(target);
@@ -591,6 +622,7 @@ export class ManagedMcpDeployment {
       readiness = remoteReadiness.status;
       readinessReasonCode = remoteReadiness.reasonCode;
       sessionRevision = remoteReadiness.revision;
+      sessionRenewal = remoteReadiness.renewal;
     }
     // Wrangler's deployments list only exposes deployment-level annotations, so a
     // release promoted without one reads back with an empty digest. The receipt is
@@ -608,6 +640,7 @@ export class ManagedMcpDeployment {
       readiness,
       readinessReasonCode,
       sessionRevision,
+      ...(sessionRenewal ? { sessionRenewal } : {}),
       recoveryActive: receipt.releaseDigest.endsWith("-recovery"),
     };
   }
@@ -765,7 +798,7 @@ export class ManagedMcpDeployment {
   private async rollbackProduction(
     plan: DeploymentPlan,
     credentials: DeploymentCredentials,
-    session: MoodleSessionMaterial,
+    session: MoodleSessionMaterial | null,
     productionEndpoint: string,
     revision: number | null,
     recoveryVersionId?: string,
@@ -775,6 +808,7 @@ export class ManagedMcpDeployment {
       workerName: plan.intent.workerName,
       previousVersionId: recoveryVersionId ?? plan.existing?.productionVersionId ?? null,
     });
+    if (!session) return revision ?? 0;
     const upload = await this.dependencies.worker.putSession({
       endpoint: productionEndpoint,
       sessionSyncToken: credentials.sessionSyncToken,
@@ -819,6 +853,11 @@ function validateIntent(intent: DeploymentIntent): void {
   }
   if (!intent.accountId || !intent.releaseDigest) {
     throw new DeploymentPlanError("INVALID_INTENT", "Cloudflare account and release digest are required");
+  }
+  if (intent.remoteLogin && intent.rotateKey) {
+    // The Worker's session would be encrypted under a key it no longer has, and there
+    // is no local session to upload again.
+    throw new DeploymentPlanError("INVALID_INTENT", "--rotate-key needs a local Moodle session; run it without --remote-login");
   }
 }
 
@@ -908,6 +947,10 @@ function completed(
   details?: Pick<DeploymentEvent, "moodleUser">,
 ): DeploymentEvent {
   return { ...event(stageId, "completed"), ...details };
+}
+
+function skipped(stageId: OnboardingStageId): DeploymentEvent {
+  return event(stageId, "skipped");
 }
 
 function failed(stageId: OnboardingStageId, code: string): DeploymentEvent {

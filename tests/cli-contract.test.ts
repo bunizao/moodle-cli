@@ -103,11 +103,12 @@ describe("shared CLI contract", () => {
       "--repair",
       "--rotate-token",
       "--rollback",
+      "--remote-login",
       "--yes",
       "--json",
     ], { stdout, stderr: buffer(false), mcpService: service })).resolves.toBe(0);
 
-    expect(received).toEqual({ dryRun: true, repair: true, rotateToken: true, rotateKey: false, rollback: true, yes: true });
+    expect(received).toEqual({ dryRun: true, repair: true, rotateToken: true, rotateKey: false, rollback: true, yes: true, remoteLogin: true });
     expect(JSON.parse(stdout.text())).toEqual({ status: "planned" });
   });
 

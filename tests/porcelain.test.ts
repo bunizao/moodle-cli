@@ -10,6 +10,8 @@ function fixtureFetch(label: string, courses = units): typeof fetch {
   return async (input, init) => {
     const url = new URL(String(input));
     if (url.pathname === "/my/") return new Response('<html><script>M.cfg={"sesskey":"fixture","userid":7}</script><span class="userfullname">Alex</span></html>');
+    if (url.pathname === "/course/view.php") return new Response('<h1>Algorithms</h1><li data-key="grades"><a href="/grade/report/user/index.php?id=2">Grades</a></li>', { headers: { "content-type": "text/html" } });
+    if (url.pathname === "/grade/report/user/index.php") return new Response(await readFile(new URL("./fixtures/grades.html", import.meta.url), "utf8"), { headers: { "content-type": "text/html" } });
     if (url.pathname.includes("/pluginfile.php/")) return new Response("slides", { headers: { "content-type": "application/pdf", "content-disposition": 'attachment; filename="slides.pdf"' } });
     if (url.pathname === "/mod/resource/view.php") return new Response('<html><h1>Slides</h1><div class="resourceworkaround"><a href="/pluginfile.php/1/slides.pdf">slides.pdf</a></div></html>', { headers: { "content-type": "text/html" } });
     if (url.pathname === "/lib/ajax/service.php") {
@@ -38,7 +40,7 @@ async function command(args: string[], options: { label?: string; tty?: boolean;
   let stdout = "", stderr = "";
   try {
     const code = await runCli(["node", "moodle", ...args, "--no-cache"], {
-      env: { MOODLE_BASE_URL: siteUser.siteurl, MOODLE_SESSION: "fixture" }, homeDir: home, cwd: options.directory ?? home,
+      env: { MOODLE_BASE_URL: siteUser.siteurl, MOODLE_SESSION: "fixture", MOODLE_NO_UPDATE_CHECK: "1" }, homeDir: home, cwd: options.directory ?? home,
       fetchImpl: fixtureFetch(options.label ?? "Week", options.units), stdin: { isTTY: false } as NodeJS.ReadStream,
       stdout: { isTTY: options.tty ?? false, write: (value: string) => { stdout += value; return true; } } as NodeJS.WriteStream,
       stderr: { write: (value: string) => { stderr += value; return true; } },
@@ -48,6 +50,28 @@ async function command(args: string[], options: { label?: string; tty?: boolean;
 }
 
 describe("porcelain through the real Commander and HTTP boundary", () => {
+  it("defaults grades to marked items and passes detail selectors through CLI normalization", async () => {
+    for (const args of [["grades", "algo-2"], ["algo-2", "grades"], ["https://moodle.example.edu/grade/report/user/index.php?id=2"]]) {
+      const result = await command(args);
+      expect(result.code, result.stderr).toBe(0);
+      const data = JSON.parse(result.stdout);
+      expect(data.mode).toBe("graded");
+      expect(data.grades[0].items).toEqual([expect.objectContaining({ name: "Quiz 1", grade: "8.00" })]);
+      // The cmid already reaches item; a per-row URL was a third of a real graded page.
+      expect(data.grades[0].items[0]).not.toHaveProperty("url");
+    }
+    const explicit = await command(["grades", "algo-2", "--mode", "summary"]);
+    expect(JSON.parse(explicit.stdout)).toMatchObject({ mode: "summary" });
+    expect(JSON.parse(explicit.stdout).grades[0]).not.toHaveProperty("items");
+    for (const args of [
+      ["grades", "--mode", "all", "algo-2", "--types", "quiz", "--include-feedback", "--offset", "0", "--limit", "1"],
+      ["--limit", "1", "grades", "list", "algo-2", "--mode", "all", "--types", "quiz", "--include-feedback"],
+    ]) {
+      const detail = await command(args);
+      expect(detail.code, detail.stderr).toBe(0);
+      expect(JSON.parse(detail.stdout)).toMatchObject({ mode: "all", matched: 1, returned: 1, grades: [{ items: [{ name: "Quiz 1", type: "quiz", feedback: "Good" }] }] });
+    }
+  });
   it.each(["Week", "Topic", "Semana"])("finds section 7 in %s-labelled units", async label => {
     for (const ref of ["algo-2", "Ethics in Computing", "Databases"]) {
       const result = await command([ref, "7"], { label });

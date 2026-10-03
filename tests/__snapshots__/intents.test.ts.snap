@@ -18,10 +18,14 @@ exports[`shared intent contract > pins the home, section, item and grades screen
 https://moodle.example.edu
 
 Due soon
-  DB240  Mini Test  in 4 days · Sat 19 Sep, 15:55  #101
-  algo-2  Mini Test  in 4 days · Sat 19 Sep, 15:55  #201
-  STATS  Mini Test  in 4 days · Sat 19 Sep, 15:55  #301
-  assign  Mini Test  in 4 days · Sat 19 Sep, 15:55  #401
+┌─────┬────────┬────────┬───────────┬───────────────────────────────┐
+│ ID  │ Unit   │ Type   │ Name      │ Due                           │
+├─────┼────────┼────────┼───────────┼───────────────────────────────┤
+│ 101 │ DB240  │ assign │ Mini Test │ in 4 days · Sat 19 Sep, 15:55 │
+│ 201 │ algo-2 │ assign │ Mini Test │ in 4 days · Sat 19 Sep, 15:55 │
+│ 301 │ STATS  │ assign │ Mini Test │ in 4 days · Sat 19 Sep, 15:55 │
+│ 401 │        │ assign │ Mini Test │ in 4 days · Sat 19 Sep, 15:55 │
+└─────┴────────┴────────┴───────────┴───────────────────────────────┘
 
 Unread  nothing
 
@@ -51,8 +55,12 @@ exports[`shared intent contract > pins the home, section, item and grades screen
 Current · Week 7
 
 Week 7
-  resource  Week 7 Lecture slides  #200
-  assign  Mini Test  #201
+┌─────┬──────────┬───────────────────────┐
+│ ID  │ Type     │ Name                  │
+├─────┼──────────┼───────────────────────┤
+│ 200 │ resource │ Week 7 Lecture slides │
+│ 201 │ assign   │ Mini Test             │
+└─────┴──────────┴───────────────────────┘
 
 Try  moodle "algo-2" "TASK"
      moodle dl "UNIT TASK""

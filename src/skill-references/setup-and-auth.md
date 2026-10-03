@@ -86,6 +86,26 @@ moodle mcp remove
 
 `moodle mcp connect` covers clients that read a configuration file. Use `moodle mcp pair` for claude.ai and other hosted clients that authenticate with OAuth: it prints the connector URL and a one-time pairing code that expires in ten minutes, and the Worker refuses every authorization attempt while no pairing window is open. Read the code back to the user; never paste it into a web form yourself.
 
+### Set up from a cloud session
+
+When there is no desktop browser to read a Moodle cookie from (a hosted sandbox or cloud agent), install the CLI and deploy without a local session. The sandbox needs network access to the npm registry, `api.cloudflare.com`, `dash.cloudflare.com` and `*.workers.dev`.
+
+```bash
+npm install -g moodle-cli
+MOODLE_BASE_URL=https://moodle.example.edu moodle mcp deploy --remote-login --yes --json > deploy.json 2> deploy.log &
+```
+
+Run it in the background, because it waits for the user twice:
+
+1. **Cloudflare.** Without a terminal, Wrangler signs in with the OAuth device grant, and `deploy.log` soon shows `Open https://dash.cloudflare.com/oauth2/device/verify?user_code=... and approve with code ...`. Give that link to the user; they approve in their own browser within five minutes. No API token is needed. An existing `CLOUDFLARE_API_TOKEN` is used instead when set.
+2. **Moodle.** When the command exits, `deploy.json` holds `endpoint` and `setupUrl`. Give `setupUrl` to the user as it is: it carries a one-time pairing code valid for ten minutes, so never open it, fetch it, or paste it anywhere else. The user opens it, signs in to Moodle in the remote browser it shows (the Worker never sees what they type), and that Moodle account becomes the Worker's owner. Then they add `endpoint` as a custom connector and approve it, in one click from the same browser or through **Sign in with Moodle** from another. If the link expires first, `moodle mcp pair --json` in the same sandbox returns a new `setupUrl`.
+
+No auth path needs choosing. Where the site enables Moodle's mobile app service, the Worker trades that first sign-in for a mobile token and renews itself from then on; elsewhere its tools answer with the sign-in link when the session expires. `deploy.json` says which one to expect under `renewalExpected` (`mobile_token`, `sign_in`, or `null` when the site could not be asked); tell the user before they sign in. `/readyz` reports which one applies under `renewal`.
+
+The deploy skips the local session, renewal and client integrations.
+
+The connector stays connected without a session. When Moodle is not signed in or the session has expired, tool calls return `MOODLE_AUTH_REQUIRED` with `recovery.url`; pass that link to the user and retry after they sign in. Only the owner's Moodle account is accepted. Each sign-in uses about two minutes of Cloudflare Browser Run time, which the free plan limits to ten minutes a day.
+
 Never print or request the raw Moodle cookie, MCP access token, session sync token, or sesskey. An advanced operator may pipe a cookie directly to `moodle mcp session push --stdin`; do not place it in arguments or shell history.
 
 ### Managing private MCP access

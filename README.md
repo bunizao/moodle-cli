@@ -87,7 +87,7 @@ Ask your agent in plain language or run the matching command:
 | --- | --- |
 | “Give me a quick Moodle dashboard.” | `moodle` |
 | “What is due in the next 14 days?” | `moodle due --days 14` |
-| “Show my grades and feedback for UNIT.” | `moodle grades UNIT` |
+| “Show my grades and feedback for UNIT.” | `moodle grades UNIT --mode graded --include-feedback` |
 | “Find forum posts about the exam in UNIT.” | `moodle forums search "exam" --course UNIT` |
 | “Download the slides from this Moodle link.” | `moodle download '<Moodle URL>' --dest './slides.pdf'` |
 
@@ -102,6 +102,8 @@ moodle dl "UNIT week 7 slides" --to ./downloads
 moodle grades
 moodle news UNIT
 ```
+
+`moodle grades [UNIT]` returns marked items. Use `--mode summary` for per-unit counts and course totals or `--mode all` to add ungraded items, with `--types assign,quiz` to filter by Moodle module type (`assignment` is accepted as `assign`). Feedback is omitted unless `--include-feedback` is set. Details return at most 20 rows across units; `--limit` and `--offset` page through the filtered results. MCP uses the same options with underscores (`include_feedback`, `include_ungraded`); `--graded-only` remains an alias for graded mode.
 
 Ambiguous references list candidates. JSON callers receive `error.code: "ambiguous"`;
 At a terminal you pick the match from a list (arrow keys, or type to filter a long one). A bare number in a section reference matches
@@ -128,6 +130,18 @@ You can paste the same links into your agent and ask it to inspect the page, fin
 - a single `pluginfile.php` link.
 
 With no argument at a terminal, it walks unit → section → item the way the course page does: type to filter, Escape to go back a step. `moodle dl UNIT` starts at that unit's sections. Files land in the current directory or `--to DIR` (created when missing). A file already there is skipped, so rerunning a section after Ctrl+C or a dropped connection fetches only what is missing; `--force` downloads everything again. The same document linked twice is saved once, and two different files with one name get a ` (2)` suffix. `--dest` names the file when there is exactly one. Quote URLs in zsh, whose `?` is a glob.
+
+#### Keep units in sync
+
+`moodle sync` keeps one folder per unit in step with Moodle: resources, folder contents and assignment attachments, laid out by section. Pages and books are saved as single HTML files with their images embedded, so they read the same offline.
+
+```bash
+moodle sync --to ~/Units              # every unit, one subfolder each
+moodle sync UNIT --to ~/Units         # just one
+moodle sync --dry-run                 # what would change, nothing written
+```
+
+Each unit folder holds a `.moodle-sync.json` manifest, so a rerun asks Moodle only whether each file changed and usually downloads nothing. A changed file replaces your copy only when you have not edited it; an edited copy stays put and the new version lands beside it as `name (updated YYYY-MM-DD).ext`. Files removed from Moodle are reported and kept locally, and a file you delete stays deleted until Moodle changes it. Rename or move a unit folder freely: the manifest, not the folder name, says which unit it holds.
 
 #### Submit assignment files
 
@@ -261,6 +275,22 @@ moodle mcp pair
 ```
 
 The command prints the connector URL and a one-time pairing code that is valid for ten minutes and one approval. Add the URL as a custom connector in Claude, sign in when Claude opens the approval page, and enter the code. Claude then keeps a rotating OAuth token instead of your Bearer token, and `/authorize` refuses every request while no pairing window is open.
+
+The approval page also offers **Sign in with Moodle**. It opens Moodle in a remote browser in your own Cloudflare account (Browser Run); signing in there as the Worker's Moodle account approves the connector without a pairing code and renews the Worker's session at the same time. Any other Moodle account is refused.
+
+### Set up without a local browser
+
+From a cloud sandbox or any machine without a signed-in desktop browser:
+
+```bash
+moodle mcp deploy --remote-login --yes
+```
+
+Without a terminal, Cloudflare sign-in uses the OAuth device grant: the command prints a `dash.cloudflare.com` link, you approve it in any browser, and no API token is needed (`CLOUDFLARE_API_TOKEN` still works when set). It then deploys the Worker without a Moodle session and prints a sign-in link valid for ten minutes. Open it, sign in to Moodle in the remote browser, and the Worker is claimed for that account. Then add the printed endpoint as a custom connector: in the same browser the approval page already knows you, and elsewhere **Sign in with Moodle** does the same. If the link expires first, run `moodle mcp pair` on the same machine for a new one.
+
+Until Moodle is signed in, and whenever the session expires, the connector stays connected and its tools answer with the sign-in link instead of data. Each sign-in uses about two minutes of Browser Run time; the Cloudflare free plan allows ten minutes a day.
+
+Where the Moodle site enables its mobile app service, the Worker needs one sign-in only: whenever it receives a session, from the CLI or from a remote sign-in, it also asks Moodle for a mobile app token, keeps it encrypted next to the session, and uses it to open a fresh session whenever the old one expires. `moodle mcp status` and `/readyz` show which path the Worker is on (`renewal: mobile_token` or `sign_in`). Sites with the mobile service off, and site administrators, stay on the sign-in link. You can revoke the token at any time under **Preferences → Security keys** in Moodle.
 
 Version `0.7.0` supports MCP `2026-07-28`, a stateless compatibility lane for `2025-11-25`, and the `2025-06-18` and `2025-03-26` revisions that current hosted clients negotiate.
 

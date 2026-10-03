@@ -16,6 +16,7 @@ import type {
   UserInfo,
 } from "./models.js";
 import type { DownloadResult } from "./download.js";
+import type { SyncResult } from "./sync.js";
 import type { SubmissionReceipt } from "./moodle-assign-core.js";
 import type { AttemptFinishReceipt, AttemptPage, AttemptQuestion, AttemptSummary } from "./moodle-quiz-core.js";
 import type { AuthStatus, KeepaliveRunResult } from "./keepalive.js";
@@ -355,6 +356,8 @@ export function formatAuthStatus(status: AuthStatus): string {
     ["Session alive", status.session_alive === null ? (status.session_cached ? "unknown" : "") : status.session_alive ? "yes" : "no"],
     ["Server timeout in", formatDuration(status.session_time_remaining_seconds)],
     ["Keepalive agent", status.keepalive_installed ? `installed (${status.keepalive_plist_path})` : "not installed"],
+    ["Mobile service", status.mobile_service === null ? "" : status.mobile_service ? "on" : "off"],
+    ["Renewal", status.renewal === "mobile_token" ? "mobile token (no browser needed)" : "browser sign-in"],
   ], { title: "Authentication" });
 }
 
@@ -446,4 +449,43 @@ export function formatAttemptFinish(receipt: AttemptFinishReceipt): string {
     ["Answered", `${receipt.summary.filter(row => !/not yet answered/iu.test(row.state)).length} of ${receipt.summary.length}`],
     ["URL", receipt.url],
   ], { title: "Attempt submitted" });
+}
+
+// One line per unit, then only what changed. A first sync of a whole unit would list
+// hundreds of new files, so a long run of them collapses into a count.
+export function formatSyncResult(result: SyncResult, cwd = process.cwd()): string {
+  const size = (bytes: number) => bytes >= 1024 * 1024 ? `${(bytes / (1024 * 1024)).toFixed(1)} MiB` : bytes >= 1024 ? `${(bytes / 1024).toFixed(1)} KiB` : `${bytes} B`;
+  const shown = (file: string) => {
+    const relative = path.relative(cwd, file);
+    if (!relative) return ".";
+    return !relative.startsWith("..") && !path.isAbsolute(relative) ? `./${relative}` : file;
+  };
+  const lines: string[] = [];
+  for (const unit of result.units) {
+    const of = (status: string) => unit.changes.filter((change) => change.status === status);
+    const [added, updated, conflicts, removed] = [of("new"), of("updated"), of("conflict"), of("removed")];
+    const counts = [
+      added.length ? `${added.length} new` : "",
+      updated.length ? `${updated.length} updated` : "",
+      conflicts.length ? `${conflicts.length} kept your edits` : "",
+      removed.length ? `${removed.length} gone from Moodle` : "",
+      unit.problems.length ? `${unit.problems.length} failed` : "",
+    ].filter(Boolean);
+    const unchanged = unit.unchanged ? ` · ${unit.unchanged} unchanged` : "";
+    lines.push(`${unit.problems.length ? "!" : "✓"} ${unit.unit} → ${shown(unit.directory)} · ${counts.join(", ") || "up to date"}${unchanged}`);
+    const inside = (file: string) => path.relative(unit.directory, file);
+    const bytes = (value?: number) => value === undefined ? "" : ` (${size(value)})`;
+    if (added.length > 15) {
+      lines.push(`  + ${added.length} files${bytes(added.every((change) => change.bytes !== undefined) ? added.reduce((sum, change) => sum + (change.bytes ?? 0), 0) : undefined)}`);
+    } else {
+      for (const change of added) lines.push(`  + ${inside(change.path)}${bytes(change.bytes)}`);
+    }
+    for (const change of updated) lines.push(`  ↻ ${inside(change.path)}${bytes(change.bytes)}`);
+    for (const change of conflicts) lines.push(`  ! ${inside(change.edited ?? change.path)} changed on Moodle; yours is kept, the new one is ${path.basename(change.path)}`);
+    for (const change of removed) lines.push(`  − ${inside(change.path)} is gone from Moodle; your copy stays`);
+    for (const problem of unit.problems) lines.push(`  ✗ ${problem.item}: ${problem.message}`);
+  }
+  if (!result.units.length) lines.push("No units to sync.");
+  if (result.dry_run) lines.push("", "Nothing was written. Re-run without --dry-run to sync.");
+  return sanitizeTerminalText(lines.join("\n"));
 }

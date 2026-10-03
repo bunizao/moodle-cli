@@ -7,6 +7,8 @@ Resources, folders and assignments return `files` with names and URLs.
 section (`moodle download "UNIT week 3"` or a section URL). The receipt lists `files`
 with path, byte count and content type, and `skipped` with a reason: `exists` (already
 saved; `--force` replaces it) or `unavailable`. `--dest PATH` names the file when there is one.
+`moodle sync [UNIT] --to DIR` mirrors units (files, plus pages and books as HTML) into one folder each and reruns incrementally;
+it never overwrites a file you edited (the new version lands beside it as a `conflict`).
 `moodle submit "UNIT TASK" FILE... --dry-run` shows the upload plan; without `--dry-run` it
 asks for confirmation (`--yes` skips it) and prints the receipt Moodle shows afterwards.
 `--final` also submits for grading, which Moodle does not let anyone undo.
@@ -36,12 +38,12 @@ asks for confirmation (`--yes` skips it) and prints the receipt Moodle shows aft
 | moodle forums search | Search forum discussion titles and post text. | <query> | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required)<br>--unit (value required)<br>--course (value required)<br>--forum (value required)<br>--titles-only<br>--unread-only<br>--recent<br>--limit-forums (value required)<br>--limit-discussions (value required)<br>--limit (value required) |
 | moodle forums show | List discussions from a forum. | <forum> | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required)<br>--limit (value required)<br>--query (value required) |
 | moodle grades | Inspect grades. |  |  |
-| moodle grades list | Show grade details for a unit. | [unit] | --graded-only<br>--pretty<br>--json<br>--yaml<br>--table<br>--fields (value required) |
+| moodle grades list | Show marked grades; request summary or all. | [unit] | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required)<br>--mode (value required)<br>--types (value required)<br>--include-feedback<br>--include-ungraded<br>--limit (value required)<br>--offset (value required)<br>--graded-only |
 | moodle mcp | Deploy a private MCP Worker on Cloudflare; encrypted session storage and local renewal. Free-tier limits apply. |  |  |
 | moodle mcp bridge | Bridge a stdio MCP client to the managed remote server. |  | --profile (value required) |
 | moodle mcp clients | List pending and approved OAuth clients. |  | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required) |
 | moodle mcp connect | Connect a supported MCP client. | [client] | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required)<br>--mode (value required)<br>--show-token |
-| moodle mcp deploy | Deploy or update the managed Moodle MCP server. |  | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required)<br>--dry-run<br>--repair<br>--rotate-key<br>--rotate-token<br>--rollback |
+| moodle mcp deploy | Deploy or update the managed Moodle MCP server. |  | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required)<br>--dry-run<br>--repair<br>--rotate-key<br>--rotate-token<br>--rollback<br>--remote-login |
 | moodle mcp login | Acquire and upload a fresh Moodle session. |  | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required) |
 | moodle mcp pair | Open a pairing window so Claude can connect to the remote MCP server. |  | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required) |
 | moodle mcp remove | Remove one managed Moodle MCP deployment. |  | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required) |
@@ -64,6 +66,7 @@ asks for confirmation (`--yes` skips it) and prints the receipt Moodle shows aft
 | moodle skills add | Install the published skill through npx skills add. |  |  |
 | moodle skills generate | Regenerate the agent skill bundle from the CLI command tree. |  |  |
 | moodle submit | Upload local files into an assignment; returns the receipt Moodle shows afterwards. | <ref> [files...] | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required)<br>--final<br>--replace<br>--accept-statement |
+| moodle sync | Keep one local folder per unit in step with Moodle: new files arrive, changed ones update, and a file you edited is never overwritten. | [unit] | --to (value required)<br>--pretty<br>--json<br>--yaml<br>--table<br>--fields (value required) |
 | moodle threads | Inspect forum discussion threads. |  |  |
 | moodle threads show | Show posts in a forum discussion. | <discussion> | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required)<br>--limit (value required)<br>--offset (value required)<br>--post (value required)<br>--body |
 | moodle todo | List upcoming actionable timeline items. |  | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required)<br>--limit (value required)<br>--days (value required) |
@@ -100,5 +103,15 @@ search_forums and file; a local server also lists submit, the only tool that wri
 Legacy names remain callable for one minor version and return
 compact v2 envelopes. They are deprecated and omitted from default discovery.
 Unit results contain a section index; supply section for activity details.
+Grades default to marked items, without feedback.
+Use `--mode summary` for counts and course totals or `--mode all` for every item; `--include-ungraded`
+also includes unmarked items in graded mode. Filter with `--types assign,quiz` (Moodle
+module names, independent of the site's language; assignment is accepted as assign). `--include-feedback` opts into full
+feedback; `--graded-only` remains an alias for graded mode. MCP uses the corresponding
+`mode`, `types`, `include_ungraded`, `include_feedback`, `limit` and `offset` arguments.
+Detail modes return at most 20 rows across all units by default. `matched`, `returned`,
+`offset` and `has_more` describe the filtered page; increase offset to read the rest.
+Per-unit counts cover all rows matching types, before grade filtering and pagination;
+course totals remain Moodle's totals. Summary mode does not fetch deadlines or user data.
 List activity URLs follow `{siteurl}/mod/{type}/view.php?id={id}`; use item for the actual URL.
 File content is embedded in MCP resource blocks, limited to 16 MiB. CLI downloads stream to disk.

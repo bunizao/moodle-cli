@@ -58,6 +58,7 @@ import {
   formatAttemptPage,
   formatAttemptSummary,
   formatDownloadResult,
+  formatSyncResult,
   formatForumDiscussion,
   formatSubmissionReceipt,
   formatForumDiscussionRefs,
@@ -70,6 +71,7 @@ import {
 } from "./formatters.js";
 import { downloadMoodleFiles } from "./download.js";
 import { chooseDownloadSource } from "./download-source.js";
+import { syncUnits, type SyncResult } from "./sync.js";
 import { submissionReceiptOf, type SubmissionReceipt } from "./moodle-assign-core.js";
 import type { AttemptPage, QuizStartPlan } from "./moodle-quiz-core.js";
 import { resolveSubmissionPath } from "./submit.js";
@@ -130,7 +132,7 @@ interface OutputCommandOptions {
 const NOUNS: readonly NounSpec[] = [
   { name: "units", aliases: ["courses"], verbs: ["list", "show"], defaultByArity: { 0: "list", 1: "show" } },
   { name: "activities", verbs: ["list", "show"], defaultByArity: { 0: "list", 1: "list" }, valueFlags: ["--limit", "--section"] },
-  { name: "grades", verbs: ["list"], defaultByArity: { 0: "list", 1: "list" } },
+  { name: "grades", verbs: ["list"], defaultByArity: { 0: "list", 1: "list" }, valueFlags: ["--mode", "--types", "--limit", "--offset"] },
   {
     name: "forums",
     verbs: ["list", "show", "search"],
@@ -329,7 +331,7 @@ export function buildProgram(io: CliIO = {}): Command {
     }
     const unit = parsed.course.id;
     const query = parsed.query;
-    if (["grades", "news", "due"].includes(query)) return execute(query as Intent, { unit, ...(query !== "grades" ? { limit: program.opts().limit } : {}) }, merged, service);
+    if (["grades", "news", "due"].includes(query)) return execute(query as Intent, { unit, limit: program.opts().limit }, merged, service);
     if (query === "files") return execute("find", { query: "*", unit, types: ["resource", "folder"], limit: program.opts().limit }, merged, service);
     if (query === "forums") { const rows = await createMoodleGateway(client).listForums({ courseId: unit }); return runtime.output({ forums: rows.map(f => ({ id: f.id, name: f.name, unit_id: f.course_id })), total: rows.length }, () => formatForumActivities(rows), merged); }
     if (!query) {
@@ -655,10 +657,45 @@ export function buildProgram(io: CliIO = {}): Command {
     }
   });
 
+  addOutputOptions(
+    program
+      .command("sync")
+      .description("Keep one local folder per unit in step with Moodle: new files arrive, changed ones update, and a file you edited is never overwritten.")
+      .summary("Mirror units into local folders")
+      .argument("[unit]", "Unit code, name, id or URL; omit for every unit")
+      .option("--to <directory>", "Folder holding one subfolder per unit; defaults to the current directory."),
+  ).action(async (unit: string | undefined, options: OutputCommandOptions & { to?: string }) => {
+    const cwd = io.cwd ?? process.cwd();
+    const client = await runtime.getClient();
+    let selected = await client.getCourses();
+    if (unit) {
+      const id = await client.resolveCourseReference(unit);
+      selected = selected.filter((course) => course.id === id);
+    }
+    // A whole unit is many requests; a terminal sees which one is moving.
+    const spin = human() ? createUi({ input: io.stdin ?? process.stdin, output: stderr as Writable, interactive: true }).spinner() : undefined;
+    runtime.busy = true;
+    spin?.start("Reading units");
+    let result: SyncResult;
+    try {
+      result = await syncUnits(client, selected, { root: path.resolve(cwd, options.to ?? "."), dryRun: Boolean(program.opts().dryRun), onProgress: (message) => spin?.message(message) });
+    } finally {
+      spin?.clear();
+      runtime.busy = false;
+    }
+    await runtime.output(result, () => formatSyncResult(result, cwd), options, false);
+  });
+
   const grades = program.command("grades").description("Inspect grades.");
-  addOutputOptions(grades.command("list").description("Show grade details for a unit.").argument("[unit]", "Unit code, name, id or URL").option("--graded-only", "Only return graded items.")).action(
-    async (unit: string | undefined, options: OutputCommandOptions & { gradedOnly?: boolean }) => execute("grades", { unit, graded_only: options.gradedOnly }, options),
-  );
+  addOutputOptions(grades.command("list").description("Show marked grades; request summary or all.").argument("[unit]", "Unit code, name, id or URL"))
+    .option("--mode <mode>", "graded (default), summary or all.")
+    .option("--types <types>", "Comma-separated module types (assign, quiz, h5pactivity).")
+    .option("--include-feedback", "Include full grader feedback.")
+    .option("--include-ungraded", "Include ungraded items in graded mode.")
+    .option("--limit <number>", "Maximum returned rows across units.", parsePositiveInt)
+    .option("--offset <number>", "Skip this many matching rows.", value => { const n = Number(value); if (!Number.isInteger(n) || n < 0) throw new UsageError("Expected a nonnegative offset."); return n; })
+    .option("--graded-only", "Alias for --mode graded.")
+    .action(async (unit: string | undefined, options: OutputCommandOptions & { mode?: string; types?: string; includeFeedback?: boolean; includeUngraded?: boolean; limit?: number; offset?: number; gradedOnly?: boolean }) => execute("grades", { unit, mode: options.mode, types: options.types?.split(","), include_feedback: options.includeFeedback, include_ungraded: options.includeUngraded, limit: count("limit", options.limit), offset: options.offset, graded_only: options.gradedOnly }, options));
 
   const threads = program.command("threads").description("Inspect forum discussion threads.");
   addOutputOptions(threads.command("show").description("Show posts in a forum discussion.").argument("<discussion>", "Discussion ID or URL"))
@@ -843,10 +880,12 @@ export function buildProgram(io: CliIO = {}): Command {
     .option("--rotate-key", "Rotate the session encryption key and migrate the active session.")
     .option("--rotate-token", "Rotate the MCP access token. The old token and every connected OAuth client stop working at once; reconnect them after.")
     .option("--rollback", "Restore the previous healthy Worker release.")
-    .action(async (options: OutputCommandOptions & { dryRun?: boolean; repair?: boolean; rotateToken?: boolean; rotateKey?: boolean; rollback?: boolean }) => {
+    .option("--remote-login", "Skip the local Moodle session and integrations; print a link to sign in through the Worker's remote browser. For cloud sessions without a desktop browser.")
+    .action(async (options: OutputCommandOptions & { dryRun?: boolean; repair?: boolean; rotateToken?: boolean; rotateKey?: boolean; rollback?: boolean; remoteLogin?: boolean }) => {
       const dryRun = Boolean(options.dryRun || program.opts().dryRun);
+      const introduction = options.remoteLogin ? ONBOARDING_COPY.remoteIntroduction : ONBOARDING_COPY.introduction;
       if (!dryRun && !await confirm(
-        { summary: [ONBOARDING_COPY.introduction, "", ONBOARDING_COPY.credentials].join("\n") },
+        { summary: [introduction, "", ONBOARDING_COPY.credentials].join("\n") },
         {
           yes: Boolean(program.opts().yes),
           dryRun: false,
@@ -860,6 +899,7 @@ export function buildProgram(io: CliIO = {}): Command {
         rotateKey: Boolean(options.rotateKey),
         rollback: Boolean(options.rollback),
         yes: Boolean(program.opts().yes),
+        remoteLogin: Boolean(options.remoteLogin),
       });
       await outputMcpResult(runtime, result, options);
     });
@@ -986,7 +1026,7 @@ export function buildProgram(io: CliIO = {}): Command {
 // Grouped the way `gh` does: what a person reaches for daily, then the rest, then what only an agent runs.
 const HELP_SECTIONS: Readonly<Record<string, readonly string[]>> = {
   "Core commands": ["due", "news", "find", "get", "open", "submit", "quiz", "units", "activities", "grades", "threads", "forums"],
-  "Additional commands": ["user", "todo", "alerts", "overview", "download", "auth", "doctor", "completion", "uninstall"],
+  "Additional commands": ["sync", "user", "todo", "alerts", "overview", "download", "auth", "doctor", "completion", "uninstall"],
   "Agent commands": ["mcp", "commands", "skills"],
 };
 

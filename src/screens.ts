@@ -49,16 +49,20 @@ export function renderScreen(data: Record<string, unknown>, options: { width?: n
       : `${opens ? "opens " : ""}${days === 0 ? "today" : days === 1 ? "tomorrow" : `in ${days} days`}`;
     return { text: `${when} · ${moment(row.due, now)}`, tone: opens ? "muted" : at < now ? "danger" : days <= 2 ? "warning" : "muted" };
   };
-  const dueText = (row: Record<string, unknown>) => {
-    if (!row.due_at) return theme.status(text(row.status || row.submission_status));
-    const { text: value, tone } = due(row);
-    return theme.tone(tone, value);
-  };
-  const rows = (items: Record<string, unknown>[], title: string) => {
+  type Column = [TerminalTableColumn, (r: Record<string, unknown>) => TerminalTableCell];
+  const table = (columns: Column[], items: Record<string, unknown>[]) =>
+    renderTerminalTable(columns.map(([c]) => c), items.map(r => columns.map(([, cell]) => cell(r))), { width: options.width });
+  // Columns appear only when some row fills them; a unit screen drops the Unit column its header already names.
+  const rows = (items: Record<string, unknown>[], title: string, unitColumn = true) => {
     lines.push(theme.subject(title));
-    if (!items.length) lines.push(theme.dim("  None"));
+    if (!items.length) { lines.push(theme.dim("  None")); return; }
     // A due row's own id is the calendar event's; the activity id is the one commands take.
-    for (const r of items) { const id = r.activity_id ?? r.id; lines.push(`  ${theme.key(text(r.unit_code || r.type))}  ${text(r.name)}${r.due_at ? `  ${dueText(r)}` : ""}${id ? `  ${theme.dim(`#${id}`)}` : ""}`); }
+    const columns: Column[] = [[{ label: "ID" }, r => text(r.activity_id ?? r.id)]];
+    if (unitColumn && items.some(r => r.unit_code)) columns.push([{ label: "Unit" }, r => text(r.unit_code)]);
+    if (items.some(r => r.type)) columns.push([{ label: "Type" }, r => text(r.type)]);
+    columns.push([{ label: "Name", flex: true }, r => text(r.name)]);
+    if (items.some(r => r.due_at || r.status || r.submission_status)) columns.push([{ label: "Due" }, r => r.due_at ? due(r) : text(r.status || r.submission_status)]);
+    lines.push(table(columns, items));
   };
   let next = ["moodle due --days 30", "moodle grades"];
   if (data.home) {
@@ -71,23 +75,33 @@ export function renderScreen(data: Record<string, unknown>, options: { width?: n
     if (Number(h.total) > array(h.due).length) lines.push(`${h.total} due items in this window; showing ${array(h.due).length}.`);
   } else if (data.unit) {
     const u = record(data.unit); const c = record(u.current_section);
-    lines.push(`${text(u.code)} · ${text(u.name)}`);
+    lines.push(`${theme.key(text(u.code))} · ${text(u.name)}`);
     if (c.id) lines.push(`Current · ${text(c.name)}`);
-    for (const s of array(data.sections)) { lines.push(""); if (s.activities) rows(array(s.activities), `${text(s.name)}${s.positional ? " (positional index)" : ""}`); else lines.push(`${text(s.name)}  ${s.activity_count} activities`); }
-    if (data.due) { lines.push(""); rows(array(data.due), "Due in this unit"); }
-    if (data.news) { lines.push(""); rows(array(data.news), "Latest news"); }
+    const sections = array(data.sections);
+    for (const s of sections.filter(s => s.activities)) { lines.push(""); rows(array(s.activities), `${text(s.name)}${s.positional ? " (positional index)" : ""}`, false); }
+    const index = sections.filter(s => !s.activities);
+    if (index.length) lines.push("", table([[{ label: "Section", flex: true }, s => text(s.name)], [{ label: "Activities" }, s => text(s.activity_count)]], index));
+    if (data.due) { lines.push(""); rows(array(data.due), "Due in this unit", false); }
+    if (data.news) { lines.push(""); rows(array(data.news), "Latest news", false); }
     const unit = JSON.stringify(u.code || u.name);
     next = array(data.sections).some(s => s.activities) ? [`moodle ${unit} "TASK"`, `moodle dl "UNIT TASK"`] : [`moodle ${unit} SECTION`, `moodle ${unit} grades`];
   } else if (data.grades) {
     for (const g of array(data.grades)) {
       lines.push(`${text(g.code)} · ${g.graded} of ${g.total} graded`);
+      if (g.total_grade || g.total_percentage) lines.push(`Total  ${[g.total_grade, g.total_range, g.total_percentage].map(text).filter(Boolean).join(" · ")}`);
+      if (data.mode === "summary") continue;
       const items = array(g.items);
       // Due and Feedback only appear when some row fills them, so a unit with neither keeps a narrow table.
-      type Column = [TerminalTableColumn, (i: Record<string, unknown>) => TerminalTableCell];
       const columns: Column[] = [[{ label: "Name", flex: true }, i => text(i.name)], [{ label: "Grade" }, i => text(i.grade)], [{ label: "Range" }, i => text(i.range)]];
       if (items.some(i => i.due_at)) columns.push([{ label: "Due" }, i => i.due_at ? due(i) : ""]);
       if (items.some(i => i.feedback)) columns.push([{ label: "Feedback", flex: true }, i => text(i.feedback)]);
-      lines.push(renderTerminalTable(columns.map(([c]) => c), items.map(i => columns.map(([, cell]) => cell(i))), { width: options.width }));
+      lines.push(table(columns, items));
+    }
+    if (data.mode === "summary") next = ["moodle grades --mode graded", "moodle grades UNIT --mode all"];
+    else if (data.has_more) {
+      lines.push(`Showing ${data.returned} of ${data.matched} matching rows (offset ${data.offset}).`);
+      lines.push(`Continue with --offset ${Number(data.offset) + Number(data.returned)}, keeping the same filters.`);
+      next = [];
     }
   } else if (data.item) {
     const i = record(data.item); lines.push(`${text(i.name)} · ${text(i.type)} · #${i.id}`);
