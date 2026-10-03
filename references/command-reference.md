@@ -7,6 +7,8 @@ Resources, folders and assignments return `files` with names and URLs.
 section (`moodle download "UNIT week 3"` or a section URL). The receipt lists `files`
 with path, byte count and content type, and `skipped` with a reason: `exists` (already
 saved; `--force` replaces it) or `unavailable`. `--dest PATH` names the file when there is one.
+`moodle sync [UNIT] --to DIR` mirrors units (files, plus pages and books as HTML) into one folder each and reruns incrementally;
+it never overwrites a file you edited (the new version lands beside it as a `conflict`).
 `moodle submit "UNIT TASK" FILE... --dry-run` shows the upload plan; without `--dry-run` it
 asks for confirmation (`--yes` skips it) and prints the receipt Moodle shows afterwards.
 `--final` also submits for grading, which Moodle does not let anyone undo.
@@ -65,6 +67,7 @@ asks for confirmation (`--yes` skips it) and prints the receipt Moodle shows aft
 | moodle skills add | Install the published skill through npx skills add. |  |  |
 | moodle skills generate | Regenerate the agent skill bundle from the CLI command tree. |  |  |
 | moodle submit | Upload local files into an assignment; returns the receipt Moodle shows afterwards. | <ref> [files...] | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required)<br>--final<br>--replace<br>--accept-statement |
+| moodle sync | Keep one local folder per unit in step with Moodle: new files arrive, changed ones update, and a file you edited is never overwritten. | [unit] | --to (value required)<br>--pretty<br>--json<br>--yaml<br>--table<br>--fields (value required) |
 | moodle threads | Inspect forum discussion threads. |  |  |
 | moodle threads show | Show posts in a forum discussion. | <discussion> | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required)<br>--limit (value required)<br>--offset (value required)<br>--post (value required)<br>--body |
 | moodle todo | List upcoming actionable timeline items. |  | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required)<br>--limit (value required)<br>--days (value required) |

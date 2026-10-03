@@ -413,26 +413,43 @@ export class MoodleClientCore {
   async getTodo(limit = 20, days?: number, courseId?: number): Promise<TodoItem[]> {
     await this.ensureSession();
     const now = Math.floor(Date.now() / 1000);
+    const window = { timesortfrom: now, timesortto: days ? now + days * 86400 : 0 };
+    const timeline = () => this.readActionEvents(FUNC_GET_ACTION_EVENTS, { ...window, limittononsuspendedevents: true }, limit);
+    const unit = (id: number) => this.readActionEvents(FUNC_GET_ACTION_EVENTS_BY_COURSE, { courseid: id, ...window }, limit);
+    // Each calendar service covers for the other when a site disables it: one unit
+    // prefers the per-course service, every unit the timeline. Neither fallback falls
+    // back again, so a site that disables both reports the refusal instead of looping.
+    if (courseId !== undefined) {
+      try {
+        return await unit(courseId);
+      } catch (error) {
+        if (!this.errors.isApi(error) || error.moodleErrorCode !== "servicenotavailable") throw error;
+      }
+      return (await timeline()).filter((item) => item.course_id === courseId);
+    }
+    try {
+      return await timeline();
+    } catch (error) {
+      if (!this.errors.isApi(error) || error.moodleErrorCode !== "servicenotavailable") throw error;
+    }
+    // Every unit's first `limit` events hold its share of the overall first `limit`.
+    // A unit that fails fails the list: a deadline list missing a unit reads as complete.
+    const perUnit: TodoItem[][] = [];
+    for (const courses of chunks(await this.getCourses(), 4)) {
+      perUnit.push(...await Promise.all(courses.map((course) => unit(course.id))));
+    }
+    const merged = new Map(perUnit.flat().map((item) => [item.id, item]));
+    return [...merged.values()].sort((a, b) => a.due_at - b.due_at || a.id - b.id).slice(0, limit);
+  }
+
+  // Moodle caps a calendar page at 50 events and pages by the last event's id.
+  private async readActionEvents(functionName: string, args: Record<string, unknown>, limit: number): Promise<TodoItem[]> {
     const items: TodoItem[] = [];
-    let aftereventid = 0;
     const seen = new Set<number>();
-    // One unit's deadlines come from the per-course calendar service when the site
-    // offers it; otherwise the whole timeline is read and filtered.
-    const byCourse = courseId !== undefined && !this.noteIfUnavailable(FUNC_GET_ACTION_EVENTS_BY_COURSE);
+    let aftereventid = 0;
     while (items.length < limit) {
       const batchSize = Math.min(50, limit - items.length);
-      const window = { timesortfrom: now, timesortto: days ? now + days * 86400 : 0, aftereventid, limitnum: batchSize };
-      let data: unknown;
-      if (byCourse) {
-        try {
-          data = await this.call(FUNC_GET_ACTION_EVENTS_BY_COURSE, { courseid: courseId, ...window });
-        } catch (error) {
-          if (!this.errors.isApi(error) || error.moodleErrorCode !== "servicenotavailable") throw error;
-          return (await this.getTodo(limit, days)).filter((item) => item.course_id === courseId);
-        }
-      } else {
-        data = await this.call(FUNC_GET_ACTION_EVENTS, { ...window, limittononsuspendedevents: true });
-      }
+      const data = await this.call(functionName, { ...args, aftereventid, limitnum: batchSize });
       const events = isRecord(data) && Array.isArray(data.events) ? data.events : [];
       for (const item of parseTodoItems(events)) if (!seen.has(item.id)) { seen.add(item.id); items.push(item); }
       if (events.length < batchSize) break;
@@ -441,7 +458,7 @@ export class MoodleClientCore {
       if (!next || next === aftereventid) throw this.errors.api("Moodle repeated a calendar page; refine the date window.");
       aftereventid = next;
     }
-    return courseId === undefined ? items : items.filter((item) => item.course_id === courseId);
+    return items;
   }
 
   async getAlerts(limit = 20): Promise<AlertSummary> {
@@ -483,7 +500,7 @@ export class MoodleClientCore {
     const coursesPromise = coursesData?.ok ? Promise.resolve(parseCourses(coursesData.data)) : this.getCourses();
     const todoPromise = todoData?.ok
       ? Promise.resolve(parseTodoPayload(todoData.data))
-      : todoData
+      : todoData && todoData.error.moodleErrorCode !== "servicenotavailable"
         ? Promise.reject(todoData.error)
         : this.getTodo(todoLimit, todoDays);
     const alertResults = [notifications, counts, unread];

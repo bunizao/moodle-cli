@@ -64,6 +64,7 @@ import {
   formatAttemptPage,
   formatAttemptSummary,
   formatDownloadResult,
+  formatSyncResult,
   formatForumDiscussion,
   formatSubmissionReceipt,
   formatForumDiscussionRefs,
@@ -76,6 +77,7 @@ import {
 } from "./formatters.js";
 import { downloadMoodleFiles } from "./download.js";
 import { chooseDownloadSource } from "./download-source.js";
+import { syncUnits, type SyncResult } from "./sync.js";
 import { submissionReceiptOf, type SubmissionReceipt } from "./moodle-assign-core.js";
 import type { AttemptPage, QuizStartPlan } from "./moodle-quiz-core.js";
 import { resolveSubmissionPath } from "./submit.js";
@@ -661,6 +663,35 @@ export function buildProgram(io: CliIO = {}): Command {
     }
   });
 
+  addOutputOptions(
+    program
+      .command("sync")
+      .description("Keep one local folder per unit in step with Moodle: new files arrive, changed ones update, and a file you edited is never overwritten.")
+      .summary("Mirror units into local folders")
+      .argument("[unit]", "Unit code, name, id or URL; omit for every unit")
+      .option("--to <directory>", "Folder holding one subfolder per unit; defaults to the current directory."),
+  ).action(async (unit: string | undefined, options: OutputCommandOptions & { to?: string }) => {
+    const cwd = io.cwd ?? process.cwd();
+    const client = await runtime.getClient();
+    let selected = await client.getCourses();
+    if (unit) {
+      const id = await client.resolveCourseReference(unit);
+      selected = selected.filter((course) => course.id === id);
+    }
+    // A whole unit is many requests; a terminal sees which one is moving.
+    const spin = human() ? createUi({ input: io.stdin ?? process.stdin, output: stderr as Writable, interactive: true }).spinner() : undefined;
+    runtime.busy = true;
+    spin?.start("Reading units");
+    let result: SyncResult;
+    try {
+      result = await syncUnits(client, selected, { root: path.resolve(cwd, options.to ?? "."), dryRun: Boolean(program.opts().dryRun), onProgress: (message) => spin?.message(message) });
+    } finally {
+      spin?.clear();
+      runtime.busy = false;
+    }
+    await runtime.output(result, () => formatSyncResult(result, cwd), options, false);
+  });
+
   const grades = program.command("grades").description("Inspect grades.");
   addOutputOptions(grades.command("list").description("Show marked grades; request summary or all.").argument("[unit]", "Unit code, name, id or URL"))
     .option("--mode <mode>", "graded (default), summary or all.")
@@ -1029,7 +1060,7 @@ export function buildProgram(io: CliIO = {}): Command {
 // Grouped the way `gh` does: what a person reaches for daily, then the rest, then what only an agent runs.
 const HELP_SECTIONS: Readonly<Record<string, readonly string[]>> = {
   "Core commands": ["due", "news", "find", "get", "open", "submit", "quiz", "units", "activities", "grades", "threads", "forums"],
-  "Additional commands": ["user", "todo", "alerts", "overview", "download", "auth", "doctor", "coverage", "completion", "uninstall"],
+  "Additional commands": ["sync", "user", "todo", "alerts", "overview", "download", "auth", "doctor", "coverage", "completion", "uninstall"],
   "Agent commands": ["mcp", "commands", "skills"],
 };
 
