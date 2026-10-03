@@ -1,6 +1,8 @@
 import { activitySchema } from "./intent-contract.js";
 import { activityRow, itemRow, postRow, stripEmpty } from "./results.js";
 import { doctor, ownedJobs } from "./doctor.js";
+import { COVERAGE_FAILURES, coverageReport } from "./coverage.js";
+import { createProgressReporter } from "./mcp/deployment/progress.js";
 import { readFile, rm, readdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import { DefaultRenewalIntegration } from "./mcp/renewal/index.js";
@@ -52,6 +54,10 @@ import {
   formatActivityList,
   formatAlerts,
   formatAuthStatus,
+  formatCoverageCheck,
+  formatCoverageCli,
+  formatCoverageSite,
+  formatCoverageSummary,
   formatCourseSections,
   formatCourses,
   formatAttemptFinish,
@@ -746,6 +752,34 @@ export function buildProgram(io: CliIO = {}): Command {
     // A health check that always succeeds cannot be scripted against.
     if (result.checks.some(c => c.status === "fail")) process.exitCode = 3;
   });
+  addOutputOptions(program.command("coverage").description("Check each command against this Moodle site with the signed-in session, one live read at a time. Nothing is created.").summary("Check which commands work on this site")).action(async (options: OutputCommandOptions) => {
+    // Asked live rather than from the daily cache: a report is only useful with the release that produced it.
+    const [client, latest] = await Promise.all([runtime.getClient(), refreshLatestVersion({ homeDir: io.homeDir, env: io.env, fetchImpl: io.fetchImpl })]);
+    const cli = { version: VERSION, latest, runtime: `${process.versions.bun ? "bun" : "node"} ${process.versions.bun ?? process.versions.node}` };
+    const merged = { ...program.opts(), ...options } as OutputCommandOptions;
+    // A person watches the lines arrive; anything else reads the finished report.
+    const live = outputFormat(merged, stdout) === "table" && !merged.output;
+    const paint = createTheme(live && colorEnabled(stdout as { isTTY?: boolean }, io.env) && program.opts().color !== false);
+    const progress = createProgressReporter({ stream: stderr as NodeJS.WritableStream, interactive: live && Boolean("isTTY" in stderr && stderr.isTTY) });
+    const lines: string[] = [];
+    const emit = (line: string) => { lines.push(line); if (live) { progress.clear(); stdout.write(`${line}\n`); } };
+    runtime.busy = true;
+    try {
+      emit(formatCoverageCli(cli, paint));
+      const report = await coverageReport(client, cli, {
+        fetchImpl: io.fetchImpl,
+        onSite: site => emit(formatCoverageSite(site, paint)),
+        onStart: (name, target) => progress.begin(`Checking ${target ? `${name} (${target})` : name}`),
+        onCheck: check => emit(formatCoverageCheck(check, paint)),
+      });
+      const summary = `${formatCoverageSummary(report, paint)}\n\n${tryLines(["moodle coverage --json > coverage.json"])}`;
+      await runtime.output(report, () => live ? `\n${summary}` : [...lines, "", summary].join("\n"), options);
+      if (report.checks.some(check => COVERAGE_FAILURES.includes(check.status))) process.exitCode = 3;
+    } finally {
+      progress.clear();
+      runtime.busy = false;
+    }
+  });
   program.command("completion").description("Print shell completion for zsh, bash or fish.").addArgument(program.createArgument("<shell>", "Shell to target").choices(["zsh", "bash", "fish"])).action((shell: string) => {
     const names = program.commands.filter(c => c.name() !== "help").flatMap(c => [c.name(), ...c.aliases()]);
     if (shell === "bash") stdout.write(`complete -W '${names.join(" ")}' moodle\n`);
@@ -1026,7 +1060,7 @@ export function buildProgram(io: CliIO = {}): Command {
 // Grouped the way `gh` does: what a person reaches for daily, then the rest, then what only an agent runs.
 const HELP_SECTIONS: Readonly<Record<string, readonly string[]>> = {
   "Core commands": ["due", "news", "find", "get", "open", "submit", "quiz", "units", "activities", "grades", "threads", "forums"],
-  "Additional commands": ["sync", "user", "todo", "alerts", "overview", "download", "auth", "doctor", "completion", "uninstall"],
+  "Additional commands": ["sync", "user", "todo", "alerts", "overview", "download", "auth", "doctor", "coverage", "completion", "uninstall"],
   "Agent commands": ["mcp", "commands", "skills"],
 };
 

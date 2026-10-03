@@ -20,6 +20,10 @@ import type { SyncResult } from "./sync.js";
 import type { SubmissionReceipt } from "./moodle-assign-core.js";
 import type { AttemptFinishReceipt, AttemptPage, AttemptQuestion, AttemptSummary } from "./moodle-quiz-core.js";
 import type { AuthStatus, KeepaliveRunResult } from "./keepalive.js";
+import { STOCK_AJAX_UNAVAILABLE } from "./constants.js";
+import type { CoverageCheck, CoverageCli, CoverageReport, CoverageSite, CoverageStatus } from "./coverage.js";
+import { isNewerVersion } from "./update-core.js";
+import type { Theme, Tone } from "@bunizao/cli-kit";
 import { renderKeyValueTable, renderTerminalTable, sanitizeTerminalText } from "./terminal-table.js";
 
 export function formatUser(user: UserInfo): string {
@@ -449,6 +453,57 @@ export function formatAttemptFinish(receipt: AttemptFinishReceipt): string {
     ["Answered", `${receipt.summary.filter(row => !/not yet answered/iu.test(row.state)).length} of ${receipt.summary.length}`],
     ["URL", receipt.url],
   ], { title: "Attempt submitted" });
+}
+
+const COVERAGE_MARKS: Record<CoverageStatus, readonly [string, Tone]> = {
+  ok: ["✓", "success"],
+  fallback: ["↷", "info"],
+  partial: ["!", "warning"],
+  empty: ["?", "warning"],
+  mismatch: ["≠", "danger"],
+  fail: ["✗", "danger"],
+  skip: ["–", "muted"],
+  untested: ["·", "muted"],
+};
+
+export function formatCoverageCli(cli: CoverageCli, theme: Theme): string {
+  const release = cli.latest === null
+    ? theme.tone("warning", "latest release unknown")
+    : isNewerVersion(cli.latest, cli.version)
+      ? theme.tone("warning", `${cli.latest} is out; run moodle update before reporting a failure`)
+      : theme.dim("latest");
+  return `moodle-cli ${theme.key(cli.version)} ${theme.dim("·")} ${release} ${theme.dim(`· ${cli.runtime}`)}`;
+}
+
+export function formatCoverageSite(site: CoverageSite, theme: Theme): string {
+  const facts = [
+    site.release && `Moodle ${site.release}`,
+    site.theme && `theme ${site.theme}`,
+    site.mobile_service !== undefined && `mobile app service ${site.mobile_service ? "on" : "off"}`,
+  ].filter(Boolean).join(" · ");
+  return `Checking ${theme.target(sanitizeTerminalText(site.url))}${facts ? `\n${theme.dim(sanitizeTerminalText(facts))}` : ""}\n`;
+}
+
+/** One line per check, so a person watches the site's coverage fill in as it is measured. */
+export function formatCoverageCheck(check: CoverageCheck, theme: Theme): string {
+  const [mark, tone] = COVERAGE_MARKS[check.status];
+  const label = check.target ? `${check.name} (${check.target})` : check.name;
+  const checked = check.verified?.length ? theme.dim(` · checked against ${check.verified.join(", ")}`) : "";
+  // Stock Moodle refuses these to every AJAX caller; naming them on each line is noise.
+  const unusual = check.disabled?.filter(service => !STOCK_AJAX_UNAVAILABLE.has(service)) ?? [];
+  const around = unusual.length ? theme.dim(` · went around ${unusual.join(", ")}`) : "";
+  const retried = check.retried ? theme.dim(" · after one retry") : "";
+  return `  ${theme.tone(tone, mark)} ${label.padEnd(15)} ${sanitizeTerminalText(check.detail).replace(/\n/gu, " ")}${checked}${around}${retried}`;
+}
+
+export function formatCoverageSummary(report: Pick<CoverageReport, "summary" | "disabled_services">, theme: Theme): string {
+  const counts = (Object.keys(COVERAGE_MARKS) as CoverageStatus[])
+    .filter(status => report.summary[status])
+    .map(status => theme.tone(COVERAGE_MARKS[status][1], `${report.summary[status]} ${{ fail: "failed", skip: "skipped" }[status as string] ?? status}`));
+  const lines = [counts.join(" · ")];
+  const unusual = report.disabled_services.filter(service => !STOCK_AJAX_UNAVAILABLE.has(service));
+  if (unusual.length) lines.push(theme.dim(`Disabled on this site: ${unusual.join(", ")}. Commands that need them take a fallback.`));
+  return lines.join("\n");
 }
 
 // One line per unit, then only what changed. A first sync of a whole unit would list

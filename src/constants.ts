@@ -51,6 +51,7 @@ export const FUNC_GET_POPUP_NOTIFICATIONS = "message_popup_get_popup_notificatio
 export const FUNC_GET_CONVERSATION_COUNTS = "core_message_get_conversation_counts";
 export const FUNC_GET_UNREAD_CONVERSATION_COUNTS = "core_message_get_unread_conversation_counts";
 export const FUNC_GET_DISCUSSION_POSTS = "mod_forum_get_discussion_posts";
+export const FUNC_GET_STRINGS = "core_get_strings";
 export const FUNC_SESSION_TOUCH = "core_session_touch";
 export const FUNC_SESSION_TIME_REMAINING = "core_session_time_remaining";
 
@@ -77,3 +78,14 @@ export const ENV_MOODLE_TOKEN = "MOODLE_TOKEN";
 export const MOODLE_SESSION_COOKIE_PREFIX = "MoodleSession";
 
 export const WRANGLER_VERSION = "4.145.0";
+
+// Functions the CLI tries first that stock Moodle does not let the AJAX endpoint call (none
+// sets 'ajax' => true in Moodle 5.0's db/services.php). Going around them is the normal path
+// on every site, so it is not reported as a fallback; a site that allows them is faster.
+export const STOCK_AJAX_UNAVAILABLE: ReadonlySet<string> = new Set([
+  "core_course_get_contents",
+  "core_course_get_course_module",
+  "core_enrol_get_users_courses",
+  "core_webservice_get_site_info",
+  "mod_forum_get_forums_by_courses",
+]);
