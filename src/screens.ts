@@ -81,6 +81,8 @@ export function renderScreen(data: Record<string, unknown>, options: { width?: n
   } else if (data.grades) {
     for (const g of array(data.grades)) {
       lines.push(`${text(g.code)} · ${g.graded} of ${g.total} graded`);
+      if (g.total_grade || g.total_percentage) lines.push(`Total  ${[g.total_grade, g.total_range, g.total_percentage].map(text).filter(Boolean).join(" · ")}`);
+      if (data.mode === "summary") continue;
       const items = array(g.items);
       // Due and Feedback only appear when some row fills them, so a unit with neither keeps a narrow table.
       type Column = [TerminalTableColumn, (i: Record<string, unknown>) => TerminalTableCell];
@@ -88,6 +90,12 @@ export function renderScreen(data: Record<string, unknown>, options: { width?: n
       if (items.some(i => i.due_at)) columns.push([{ label: "Due" }, i => i.due_at ? due(i) : ""]);
       if (items.some(i => i.feedback)) columns.push([{ label: "Feedback", flex: true }, i => text(i.feedback)]);
       lines.push(renderTerminalTable(columns.map(([c]) => c), items.map(i => columns.map(([, cell]) => cell(i))), { width: options.width }));
+    }
+    if (data.mode === "summary") next = ["moodle grades --mode graded", "moodle grades UNIT --mode all"];
+    else if (data.has_more) {
+      lines.push(`Showing ${data.returned} of ${data.matched} matching rows (offset ${data.offset}).`);
+      lines.push(`Continue with --offset ${Number(data.offset) + Number(data.returned)}, keeping the same filters.`);
+      next = [];
     }
   } else if (data.item) {
     const i = record(data.item); lines.push(`${text(i.name)} · ${text(i.type)} · #${i.id}`);

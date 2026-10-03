@@ -91,7 +91,7 @@ describe("shared intent contract", () => {
     expect((await call("units", {}, gateway)).structuredContent).toEqual({ total: 0 });
   });
   it.each([60, 80, 100, 120])("renders grades at %i columns with complete grade values", async width => {
-    const data = await createIntentService(fixtureGateway()).run("grades", {});
+    const data = await createIntentService(fixtureGateway()).run("grades", { mode: "all" });
     const screen = renderScreen(data, { width });
     expect(screen).toContain("0–10");
     expect(screen).toContain("Try  ");
@@ -99,7 +99,7 @@ describe("shared intent contract", () => {
   });
   it("pins the home, section, item and grades screens at 80 columns", async () => {
     const service = createIntentService(fixtureGateway(), () => Date.UTC(2026, 8, 15));
-    for (const [name, args] of [["home", {}], ["unit", { unit: "algo-2", section: 7 }], ["item", { ref: 201 }], ["grades", { unit: "algo-2" }]] as const) {
+    for (const [name, args] of [["home", {}], ["unit", { unit: "algo-2", section: 7 }], ["item", { ref: 201 }], ["grades", { unit: "algo-2", mode: "all", include_feedback: true }]] as const) {
       const screen = renderScreen(await service.run(name, args), { width: 80, now: Date.UTC(2026, 8, 15) });
       expect(screen).toMatchSnapshot(name);
       expect(Math.max(...screen.split("\n").map(line => Array.from(line).length))).toBeLessThanOrEqual(80);

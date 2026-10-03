@@ -59,9 +59,15 @@ export class FetchMoodleSessionUpstream implements MoodleSessionUpstream {
   // Mirrors the CLI: a site that says no is not asked, and one whose public config
   // cannot be read still gets one launch attempt.
   async captureMobileToken(cookie: { name: string; value: string }): Promise<MobileToken | null> {
-    const profile = await readSiteAuthProfile(this.origin, this.fetchImpl);
+    // Optional renewal setup must not hold the owner login or OAuth verification queue.
+    const signal = AbortSignal.timeout(30_000);
+    const fetchImpl: typeof fetch = (input, init) => this.fetchImpl(input, { ...init, signal });
+    const profile = await readSiteAuthProfile(this.origin, fetchImpl);
+    signal.throwIfAborted();
     if (profile && !profile.mobileService) return null;
-    return fetchMobileToken(this.origin, cookie, this.fetchImpl);
+    const token = await fetchMobileToken(this.origin, cookie, fetchImpl);
+    signal.throwIfAborted();
+    return token;
   }
 
   async mintSession(moodleUserId: number, token: MobileToken): Promise<{ name: string; value: string } | null> {

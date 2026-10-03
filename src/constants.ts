@@ -77,7 +77,7 @@ export const ENV_MOODLE_TOKEN = "MOODLE_TOKEN";
 
 export const MOODLE_SESSION_COOKIE_PREFIX = "MoodleSession";
 
-export const WRANGLER_VERSION = "4.131.0";
+export const WRANGLER_VERSION = "4.145.0";
 
 // Functions the CLI tries first that stock Moodle does not let the AJAX endpoint call (none
 // sets 'ajax' => true in Moodle 5.0's db/services.php). Going around them is the normal path

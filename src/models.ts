@@ -101,6 +101,8 @@ export interface Overview {
 export interface GradeItem {
   name: string;
   item_type: string;
+  modname: string;
+  cmid?: number;
   grade: string;
   range: string;
   percentage: string;

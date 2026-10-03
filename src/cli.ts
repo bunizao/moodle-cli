@@ -136,7 +136,7 @@ interface OutputCommandOptions {
 const NOUNS: readonly NounSpec[] = [
   { name: "units", aliases: ["courses"], verbs: ["list", "show"], defaultByArity: { 0: "list", 1: "show" } },
   { name: "activities", verbs: ["list", "show"], defaultByArity: { 0: "list", 1: "list" }, valueFlags: ["--limit", "--section"] },
-  { name: "grades", verbs: ["list"], defaultByArity: { 0: "list", 1: "list" } },
+  { name: "grades", verbs: ["list"], defaultByArity: { 0: "list", 1: "list" }, valueFlags: ["--mode", "--types", "--limit", "--offset"] },
   {
     name: "forums",
     verbs: ["list", "show", "search"],
@@ -335,7 +335,7 @@ export function buildProgram(io: CliIO = {}): Command {
     }
     const unit = parsed.course.id;
     const query = parsed.query;
-    if (["grades", "news", "due"].includes(query)) return execute(query as Intent, { unit, ...(query !== "grades" ? { limit: program.opts().limit } : {}) }, merged, service);
+    if (["grades", "news", "due"].includes(query)) return execute(query as Intent, { unit, limit: program.opts().limit }, merged, service);
     if (query === "files") return execute("find", { query: "*", unit, types: ["resource", "folder"], limit: program.opts().limit }, merged, service);
     if (query === "forums") { const rows = await createMoodleGateway(client).listForums({ courseId: unit }); return runtime.output({ forums: rows.map(f => ({ id: f.id, name: f.name, unit_id: f.course_id })), total: rows.length }, () => formatForumActivities(rows), merged); }
     if (!query) {
@@ -662,9 +662,15 @@ export function buildProgram(io: CliIO = {}): Command {
   });
 
   const grades = program.command("grades").description("Inspect grades.");
-  addOutputOptions(grades.command("list").description("Show grade details for a unit.").argument("[unit]", "Unit code, name, id or URL").option("--graded-only", "Only return graded items.")).action(
-    async (unit: string | undefined, options: OutputCommandOptions & { gradedOnly?: boolean }) => execute("grades", { unit, graded_only: options.gradedOnly }, options),
-  );
+  addOutputOptions(grades.command("list").description("Show marked grades; request summary or all.").argument("[unit]", "Unit code, name, id or URL"))
+    .option("--mode <mode>", "graded (default), summary or all.")
+    .option("--types <types>", "Comma-separated module types (assign, quiz, h5pactivity).")
+    .option("--include-feedback", "Include full grader feedback.")
+    .option("--include-ungraded", "Include ungraded items in graded mode.")
+    .option("--limit <number>", "Maximum returned rows across units.", parsePositiveInt)
+    .option("--offset <number>", "Skip this many matching rows.", value => { const n = Number(value); if (!Number.isInteger(n) || n < 0) throw new UsageError("Expected a nonnegative offset."); return n; })
+    .option("--graded-only", "Alias for --mode graded.")
+    .action(async (unit: string | undefined, options: OutputCommandOptions & { mode?: string; types?: string; includeFeedback?: boolean; includeUngraded?: boolean; limit?: number; offset?: number; gradedOnly?: boolean }) => execute("grades", { unit, mode: options.mode, types: options.types?.split(","), include_feedback: options.includeFeedback, include_ungraded: options.includeUngraded, limit: count("limit", options.limit), offset: options.offset, graded_only: options.gradedOnly }, options));
 
   const threads = program.command("threads").description("Inspect forum discussion threads.");
   addOutputOptions(threads.command("show").description("Show posts in a forum discussion.").argument("<discussion>", "Discussion ID or URL"))

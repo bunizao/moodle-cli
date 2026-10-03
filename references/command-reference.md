@@ -37,7 +37,7 @@ asks for confirmation (`--yes` skips it) and prints the receipt Moodle shows aft
 | moodle forums search | Search forum discussion titles and post text. | <query> | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required)<br>--unit (value required)<br>--course (value required)<br>--forum (value required)<br>--titles-only<br>--unread-only<br>--recent<br>--limit-forums (value required)<br>--limit-discussions (value required)<br>--limit (value required) |
 | moodle forums show | List discussions from a forum. | <forum> | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required)<br>--limit (value required)<br>--query (value required) |
 | moodle grades | Inspect grades. |  |  |
-| moodle grades list | Show grade details for a unit. | [unit] | --graded-only<br>--pretty<br>--json<br>--yaml<br>--table<br>--fields (value required) |
+| moodle grades list | Show marked grades; request summary or all. | [unit] | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required)<br>--mode (value required)<br>--types (value required)<br>--include-feedback<br>--include-ungraded<br>--limit (value required)<br>--offset (value required)<br>--graded-only |
 | moodle mcp | Deploy a private MCP Worker on Cloudflare; encrypted session storage and local renewal. Free-tier limits apply. |  |  |
 | moodle mcp bridge | Bridge a stdio MCP client to the managed remote server. |  | --profile (value required) |
 | moodle mcp clients | List pending and approved OAuth clients. |  | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required) |
@@ -101,5 +101,15 @@ search_forums and file; a local server also lists submit, the only tool that wri
 Legacy names remain callable for one minor version and return
 compact v2 envelopes. They are deprecated and omitted from default discovery.
 Unit results contain a section index; supply section for activity details.
+Grades default to marked items, without feedback.
+Use `--mode summary` for counts and course totals or `--mode all` for every item; `--include-ungraded`
+also includes unmarked items in graded mode. Filter with `--types assign,quiz` (Moodle
+module names, independent of the site's language; assignment is accepted as assign). `--include-feedback` opts into full
+feedback; `--graded-only` remains an alias for graded mode. MCP uses the corresponding
+`mode`, `types`, `include_ungraded`, `include_feedback`, `limit` and `offset` arguments.
+Detail modes return at most 20 rows across all units by default. `matched`, `returned`,
+`offset` and `has_more` describe the filtered page; increase offset to read the rest.
+Per-unit counts cover all rows matching types, before grade filtering and pagination;
+course totals remain Moodle's totals. Summary mode does not fetch deadlines or user data.
 List activity URLs follow `{siteurl}/mod/{type}/view.php?id={id}`; use item for the actual URL.
 File content is embedded in MCP resource blocks, limited to 16 MiB. CLI downloads stream to disk.

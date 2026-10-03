@@ -22,6 +22,7 @@ import type {
   Section,
 } from "./models.js";
 import { cleanText, htmlToStructuredContent, resolveUrl } from "./html-utils.js";
+import { parseGradeItem } from "./parsers.js";
 
 export interface MoodlePageError {
   message: string;
@@ -248,7 +249,7 @@ export function parseCourseGradesHtml(html: string, courseId: number, baseUrl: s
       continue;
     }
     const statusIcon = row.querySelector("td.column-grade i[aria-label], td.column-grade i[title]");
-    const item: GradeItem = {
+    const item: GradeItem = parseGradeItem({
       name: title,
       item_type: cleanText(row.querySelector(".item img.itemicon, .courseitem img.itemicon, img.itemicon")?.getAttribute("alt") ?? ""),
       grade: cleanTableCell(row.querySelector("td.column-grade")),
@@ -259,7 +260,7 @@ export function parseCourseGradesHtml(html: string, courseId: number, baseUrl: s
       feedback: cleanTableCell(row.querySelector("td.column-feedback")),
       url: resolveUrl(baseUrl, link.getAttribute("href") ?? ""),
       status: statusIcon?.getAttribute("aria-label") ?? statusIcon?.getAttribute("title") ?? "",
-    };
+    });
     report.items.push(item);
   }
   return report;
