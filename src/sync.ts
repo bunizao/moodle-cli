@@ -142,7 +142,15 @@ async function syncUnit(client: MoodleClient, course: Course, root: string, opti
   };
 
   options.onProgress?.(`Reading ${label}`);
-  const sections = await client.getCourseContents(course.id);
+  let sections: Section[];
+  try {
+    sections = await client.getCourseContents(course.id);
+  } catch (error) {
+    rethrowFatal(error);
+    // One unreadable unit costs only that unit; its folder and manifest stay as they were.
+    run.result.problems.push({ item: label, message: problemMessage(error) });
+    return run.result;
+  }
   const dirs = sectionDirectories(sections);
   const activities = syncableActivities(sections);
   let done = 0;

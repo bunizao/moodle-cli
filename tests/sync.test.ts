@@ -310,6 +310,27 @@ describe("moodle sync", () => {
     expect(next.units[0].changes).toEqual([{ status: "updated", path: lecture(base), bytes: 9 }]);
     await expect(readdir(join(unitDir(base), "Week 1", "Real-time"))).resolves.toEqual(expect.not.arrayContaining([expect.stringContaining("(updated")]));
   });
+
+  it("reports a unit it cannot read and goes on to the next", async () => {
+    const moodle = site();
+    const base = await root();
+    const other = { ...COURSE, id: 200, shortname: "UNIT2002" };
+    const getCourseContents = moodle.client.getCourseContents.bind(moodle.client);
+    moodle.client.getCourseContents = async (id: number) => {
+      if (id === COURSE.id) throw new CliError("upstream", "Moodle answered HTTP 503.");
+      return getCourseContents(id);
+    };
+
+    const result = await syncUnits(moodle.client, [COURSE, other], { root: base, now: NOW });
+
+    expect(result.units[0]).toMatchObject({ unit: "UNIT1001", changes: [], problems: [{ item: "UNIT1001", message: "Moodle answered HTTP 503." }] });
+    expect(result.units[1].changes).toHaveLength(3);
+
+    moodle.client.getCourseContents = async () => {
+      throw new CliError("auth", "Session expired.");
+    };
+    await expect(syncUnits(moodle.client, [COURSE, other], { root: base, now: NOW })).rejects.toMatchObject({ code: "auth" });
+  });
 });
 
 describe("sync paths", () => {
