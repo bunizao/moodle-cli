@@ -784,7 +784,7 @@ describe("MoodleClient course/activity modules", () => {
       (request) => (request.url === `${BASE_URL}/mod/assign/view.php?id=31` ? htmlResponse(fixture("assign.html")) : undefined),
       (request) => (request.url === `${BASE_URL}/mod/quiz/view.php?id=32` ? htmlResponse(fixture("quiz.html")) : undefined),
       (request) => (request.url === `${BASE_URL}/mod/resource/view.php?id=33` ? htmlResponse(fixture("resource.html")) : undefined),
-      (request) => (request.url === `${BASE_URL}/mod/url/view.php?id=34` ? htmlResponse(fixture("link.html")) : undefined),
+      (request) => (request.url === `${BASE_URL}/mod/url/view.php?id=34&forceview=1` ? htmlResponse(fixture("link.html")) : undefined),
       (request) => (request.url === `${BASE_URL}/mod/page/view.php?id=35` ? htmlResponse(fixture("page.html")) : undefined),
       (request) => (request.url === `${BASE_URL}/mod/folder/view.php?id=36` ? htmlResponse(fixture("folder.html")) : undefined),
     ]);

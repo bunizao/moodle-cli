@@ -66,6 +66,7 @@ import {
 } from "./parsers.js";
 import {
   hasCourseGradesHtml,
+  isOtherMoodlePage,
   parseAssignmentHtml,
   parseCourseContentsHtml,
   parseCourseGradesHtml,
@@ -81,6 +82,7 @@ import {
   parseQuizHtml,
   parseQuizReviewHtml,
   parseResourceHtml,
+  parseUnavailableNotice,
 } from "./scraper.js";
 
 // Moodle's own activity modules. Anything else without a reader may be an alias whose
@@ -597,12 +599,12 @@ export class MoodleClientCore {
   }
 
   async getAssignment(id: number): Promise<Assignment> {
-    const [html, labels] = await Promise.all([this.get(ASSIGN_VIEW_PATH, { id }), this.siteLabels()]);
+    const [html, labels] = await Promise.all([this.getActivityPage(ASSIGN_VIEW_PATH, "assign", id), this.siteLabels()]);
     return parseAssignmentHtml(html, id, this.baseUrl, labels);
   }
 
   async getQuiz(id: number): Promise<Quiz> {
-    const [html, labels] = await Promise.all([this.get(QUIZ_VIEW_PATH, { id }), this.siteLabels()]);
+    const [html, labels] = await Promise.all([this.getActivityPage(QUIZ_VIEW_PATH, "quiz", id), this.siteLabels()]);
     return parseQuizHtml(html, id, this.baseUrl, labels);
   }
 
@@ -647,7 +649,9 @@ export class MoodleClientCore {
       await response.body?.cancel();
       return { id, name: filename, course_id: 0, course_name: "", section_name: "", target_name: filename, target_url: url, file_entries: [{ name: filename, url, requires_authentication: true }], url };
     }
-    const resource = parseResourceHtml(await response.text(), id, this.baseUrl);
+    const html = await response.text();
+    this.assertActivityPage(html, "resource", id);
+    const resource = parseResourceHtml(html, id, this.baseUrl);
     if (!resource.name) {
       const activity = await this.findActivity(id);
       resource.name = activity.name;
@@ -657,15 +661,30 @@ export class MoodleClientCore {
   }
 
   async getLink(id: number): Promise<Link> {
-    return parseLinkHtml(await this.get(URL_VIEW_PATH, { id }), id, this.baseUrl);
+    // Without forceview a link set to open directly redirects to its target, which may be
+    // another Moodle page, and the link's own page with the target is never seen.
+    return parseLinkHtml(await this.getActivityPage(URL_VIEW_PATH, "url", id, { forceview: 1 }), id, this.baseUrl);
   }
 
   async getPage(id: number): Promise<Page> {
-    return parsePageHtml(await this.get(PAGE_VIEW_PATH, { id }), id, this.baseUrl);
+    return parsePageHtml(await this.getActivityPage(PAGE_VIEW_PATH, "page", id), id, this.baseUrl);
   }
 
   async getFolder(id: number): Promise<Folder> {
-    return parseFolderHtml(await this.get(FOLDER_VIEW_PATH, { id }), id, this.baseUrl);
+    return parseFolderHtml(await this.getActivityPage(FOLDER_VIEW_PATH, "folder", id), id, this.baseUrl);
+  }
+
+  private async getActivityPage(pathname: string, type: string, id: number, params: Record<string, number> = {}): Promise<string> {
+    const html = await this.get(pathname, { id, ...params });
+    this.assertActivityPage(html, type, id);
+    return html;
+  }
+
+  // requireloginerror is what Moodle's own services raise for the same refusal.
+  private assertActivityPage(html: string, type: string, id: number): void {
+    if (!isOtherMoodlePage(html, type, id)) return;
+    const reason = parseUnavailableNotice(html);
+    throw this.errors.api(`Activity ${id} is not available to you${reason ? `. ${reason}` : "."}`, "requireloginerror");
   }
 
   async requestAbsolute(url: string, init: RequestInit = {}, options: { allowErrorStatus?: boolean } = {}): Promise<Response> {
