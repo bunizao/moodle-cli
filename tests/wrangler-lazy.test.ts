@@ -53,3 +53,8 @@ it("pins the tool directory with a package.json and reports the installer output
     expect(JSON.parse(await readFile(join(root, "package.json"), "utf8"))).toEqual({ private: true });
   } finally { await rm(home, { recursive: true, force: true }); }
 });
+
+it("uses the Wrangler release validated with the CLI", async () => {
+  const pkg = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
+  expect(pkg.devDependencies.wrangler).toBe(`^${WRANGLER_VERSION}`);
+});
