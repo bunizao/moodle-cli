@@ -23,20 +23,24 @@ function tokenMatches(text: string, token: string): boolean {
   return short !== null && new RegExp(`(?:^|[^\\p{L}])${short[1]}\\p{L}*[\\s:.#-]*0*${Number(short[2])}(?!\\d)`, "u").test(text);
 }
 
+const named = (course: Course, raw: string): boolean => [course.shortname, course.fullname].some(name => normalize(name) === raw);
+
 export function resolveUnit(value: string | number, courses: readonly Course[]): Course {
   if (typeof value === "number") { const byId = courses.find(c => c.id === value); if (byId) return byId; throw unitError("not_found", value, courses); }
   const raw = normalize(String(value));
-  const exact = courses.filter(c => [c.shortname, c.fullname].some(name => normalize(name) === raw));
-  const matches = exact.length ? exact : courses.filter(c => [c.shortname, c.fullname].some(name => normalize(name).includes(raw)));
-  if (raw && matches.length === 1) return matches[0];
+  const exact = courses.filter(c => named(c, raw));
+  if (raw && exact.length === 1) return exact[0];
 
   let id = /^\d+$/u.test(raw) ? Number(raw) : undefined;
   try {
     const url = new URL(String(value));
     if (url.pathname.endsWith("/course/view.php")) id = Number(url.searchParams.get("id"));
   } catch { /* Names are not URLs. */ }
+  // An id is exact, so it beats a code that merely contains the number: 16 is unit 16, not LAB160.
   const course = courses.find(c => c.id === id);
   if (course) return course;
+  const matches = exact.length ? exact : courses.filter(c => [c.shortname, c.fullname].some(name => normalize(name).includes(raw)));
+  if (raw && matches.length === 1) return matches[0];
   if (raw && matches.length > 1) throw unitError("ambiguous", value, matches);
   throw unitError("not_found", value, courses);
 }
@@ -154,6 +158,10 @@ export function withChildSections(section: Section, sections: readonly Section[]
 
 export function splitUnitPhrase(phrase: string, courses: readonly Course[]): { course: Course; query: string } | undefined {
   const words = phrase.trim().split(/\s+/u);
+  // A lone number names a unit only by its id or its whole code. Anything looser reads
+  // activity 101, the id every screen prints, as the unit coded LAB101.
+  const lone = words.length === 1 && /^\d+$/u.test(words[0]);
+  if (lone && !courses.some(c => c.id === Number(words[0]) || named(c, words[0]))) return undefined;
   for (let count = words.length; count > 0; count--) {
     try { return { course: resolveUnit(words.slice(0, count).join(" "), courses), query: words.slice(count).join(" ") }; }
     catch (error) { if (!(error instanceof ReferenceError) || error.code === "ambiguous") throw error; }

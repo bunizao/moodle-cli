@@ -6,7 +6,7 @@ import { runCli } from "../src/cli.js";
 import { siteUser, units, sections } from "./fixtures/intent-site.js";
 
 const calls: string[] = [];
-function fixtureFetch(label: string): typeof fetch {
+function fixtureFetch(label: string, courses = units): typeof fetch {
   return async (input, init) => {
     const url = new URL(String(input));
     if (url.pathname === "/my/") return new Response('<html><script>M.cfg={"sesskey":"fixture","userid":7}</script><span class="userfullname">Alex</span></html>');
@@ -21,7 +21,7 @@ function fixtureFetch(label: string): typeof fetch {
         let data: unknown;
         switch (c.methodname) {
           case "core_webservice_get_site_info": data = siteUser; break;
-          case "core_enrol_get_users_courses": data = units; break;
+          case "core_enrol_get_users_courses": data = courses; break;
           case "core_course_get_contents": data = sections(label, c.args.courseid).map(s => ({ ...s, modules: s.activities })); break;
           case "core_calendar_get_action_events_by_timesort": data = { events: [] }; break;
           case "core_course_get_course_module": data = { cm: { id: c.args.cmid, course: 2, modname: "resource" } }; break;
@@ -34,14 +34,14 @@ function fixtureFetch(label: string): typeof fetch {
     throw new Error(`Unexpected fixture path ${url.pathname}`);
   };
 }
-async function command(args: string[], options: { label?: string; tty?: boolean; directory?: string } = {}) {
+async function command(args: string[], options: { label?: string; tty?: boolean; directory?: string; units?: typeof units } = {}) {
   calls.length = 0;
   const home = await mkdtemp(join(tmpdir(), "moodle-porcelain-"));
   let stdout = "", stderr = "";
   try {
     const code = await runCli(["node", "moodle", ...args, "--no-cache"], {
       env: { MOODLE_BASE_URL: siteUser.siteurl, MOODLE_SESSION: "fixture", MOODLE_NO_UPDATE_CHECK: "1" }, homeDir: home, cwd: options.directory ?? home,
-      fetchImpl: fixtureFetch(options.label ?? "Week"), stdin: { isTTY: false } as NodeJS.ReadStream,
+      fetchImpl: fixtureFetch(options.label ?? "Week", options.units), stdin: { isTTY: false } as NodeJS.ReadStream,
       stdout: { isTTY: options.tty ?? false, write: (value: string) => { stdout += value; return true; } } as NodeJS.WriteStream,
       stderr: { write: (value: string) => { stderr += value; return true; } },
     });
@@ -120,6 +120,14 @@ describe("porcelain through the real Commander and HTTP boundary", () => {
     const byId = await command(["201"]);
     expect(byId.code, byId.stderr).toBe(0);
     expect(JSON.parse(byId.stdout)).toHaveProperty("item.id", 201);
+    // A code that merely contains the number is not the unit the number names.
+    const labs = [{ ...units[0], id: 16, shortname: "LAB101", fullname: "Lab One" }, { ...units[0], id: 17, shortname: "LAB202", fullname: "Lab Two" }];
+    const activity = await command(["101", "--json"], { units: labs });
+    expect(activity.code, activity.stderr).toBe(0);
+    expect(JSON.parse(activity.stdout)).toHaveProperty("item.id", 101);
+    const unit = await command(["16", "--json"], { units: labs });
+    expect(unit.code, unit.stderr).toBe(0);
+    expect(JSON.parse(unit.stdout)).toHaveProperty("unit.id", 16);
     const phrase = await command(["algo-2", "slides 7"]);
     expect(phrase.code, phrase.stderr).toBe(0);
     expect(JSON.parse(phrase.stdout)).not.toHaveProperty("sections");
