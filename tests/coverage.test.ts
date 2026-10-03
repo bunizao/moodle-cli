@@ -112,7 +112,7 @@ describe("coverage catches injected faults", () => {
       getQuizAttempt: async attemptId => ({ ...await base.getQuizAttempt!(attemptId), quiz_id: QUIZ, course_id: 1, grade: "5.00 out of 10.00 (50%)" }),
       getGrades: async input => {
         const grades = await base.getGrades(input);
-        return { ...grades, items: [...grades.items, { name: "Quiz One", item_type: "quiz", grade: "5.00", range: "0–10", percentage: "50.00 %", weight: "", contribution: "", feedback: "", url: "", status: "" }] };
+        return { ...grades, items: [...grades.items, { name: "Quiz One", item_type: "quiz", modname: "quiz", grade: "5.00", range: "0–10", percentage: "50.00 %", weight: "", contribution: "", feedback: "", url: "", status: "" }] };
       },
     };
   };
