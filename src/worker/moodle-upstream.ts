@@ -11,6 +11,7 @@ const DASHBOARD_PATH = "/my/";
 const AJAX_PATH = "/lib/ajax/service.php";
 const SESSION_TOUCH = "core_session_touch";
 const SESSION_TIME_REMAINING = "core_session_time_remaining";
+const MINT_DEADLINE_MS = 30_000;
 
 export class FetchMoodleSessionUpstream implements MoodleSessionUpstream {
   private readonly origin: string;
@@ -70,8 +71,13 @@ export class FetchMoodleSessionUpstream implements MoodleSessionUpstream {
     return token;
   }
 
+  // One deadline for both requests: every tool call waits on a renewal in flight, so a
+  // Moodle that stops answering must not hold them past it. Throws on the deadline and
+  // other transport failures, which leave the token in place.
   async mintSession(moodleUserId: number, token: MobileToken): Promise<{ name: string; value: string } | null> {
-    const minted = await mintSessionFromMobileToken(this.origin, moodleUserId, token, this.fetchImpl);
+    const signal = AbortSignal.timeout(MINT_DEADLINE_MS);
+    const fetchImpl: typeof fetch = (input, init) => this.fetchImpl(input, { ...init, signal });
+    const minted = await mintSessionFromMobileToken(this.origin, moodleUserId, token, fetchImpl);
     return minted ? { name: minted.cookie.name, value: minted.cookie.value } : null;
   }
 
