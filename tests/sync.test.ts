@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, readdir, readFile, rename, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, sep } from "node:path";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -363,6 +363,29 @@ describe("moodle sync", () => {
     await expect(readFile(join(unitDir(base), "Week 1", "Real-time", "slides (2).pdf"), "utf8")).resolves.toBe("slides v1");
     expect((await readdir(unitDir(base), { recursive: true })).filter((name) => name.endsWith(".tmp"))).toEqual([]);
   });
+
+  it("keeps hostile and reserved names inside the unit folder", async () => {
+    const moodle = site();
+    const base = await root();
+    moodle.state.activities = [activity(2, "folder", "AUX"), activity(3, "assign", "../../Assignment")];
+    moodle.client.getFolder = async () => ({
+      file_entries: [
+        { name: "../../escape.csv", url: `${BASE_URL}/pluginfile.php/12/mod_folder/content/0/..%2F..%2Fout/escape.csv`, requires_authentication: true },
+        { name: "CON.csv", url: `${BASE_URL}/pluginfile.php/12/mod_folder/content/0/nul/CON.csv`, requires_authentication: true },
+      ],
+    }) as never;
+    moodle.client.getAssignment = async () => ({ file_entries: [{ name: "..", url: `${BASE_URL}/pluginfile.php/13/mod_assign/introattachment/0/..%2Fbrief.pdf`, requires_authentication: true }] }) as never;
+    for (const entry of [...(await moodle.client.getFolder(2)).file_entries, ...(await moodle.client.getAssignment(3)).file_entries]) moodle.put(entry.url, entry.name);
+
+    const result = await syncUnits(moodle.client, [COURSE], { root: base, now: NOW });
+
+    expect(result.units[0].problems).toEqual([]);
+    expect(result.units[0].changes).toHaveLength(3);
+    for (const change of result.units[0].changes) expect(change.path.startsWith(unitDir(base) + sep)).toBe(true);
+    expect(await readdir(base)).toEqual(["UNIT1001"]);
+    const written = (await readdir(unitDir(base), { recursive: true })).flatMap((name) => name.split(sep));
+    expect(written.filter((segment) => /^(con|prn|aux|nul|com\d|lpt\d)(\.|$)/iu.test(segment))).toEqual([]);
+  });
 });
 
 describe("sync paths", () => {
@@ -376,6 +399,7 @@ describe("sync paths", () => {
     expect(pathSegment("Week 1: Logic / Linux")).toBe("Week 1 Logic - Linux");
     expect(pathSegment(".hidden.")).toBe("hidden");
     expect(pathSegment("")).toBe("_");
+    expect(["CON", "nul", "Aux.notes", "COM1", "lpt9.x", "CONSOLE", "COM0"].map(pathSegment)).toEqual(["CON_", "nul_", "Aux_.notes", "COM1_", "lpt9_.x", "CONSOLE", "COM0"]);
   });
 
   it("nests child sections under their parent", () => {

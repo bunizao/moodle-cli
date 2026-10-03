@@ -676,7 +676,8 @@ function decodeSegment(value: string): string {
 }
 
 // Section and activity names become folder names: no separators, nothing Windows rejects,
-// no leading dot that would hide the folder.
+// no leading dot that would hide the folder. Windows also refuses device names like "CON"
+// or "nul.txt" whatever their extension, so those gain a suffix.
 export function pathSegment(name: string): string {
   const cleaned = name
     .replace(/[\u0000-\u001f\u007f]/gu, "")
@@ -686,7 +687,8 @@ export function pathSegment(name: string): string {
     .trim()
     .replace(/^\.+/u, "")
     .replace(/[. ]+$/u, "");
-  return (cleaned.length > 100 ? cleaned.slice(0, 100).trimEnd() : cleaned) || "_";
+  const short = (cleaned.length > 100 ? cleaned.slice(0, 100).trimEnd() : cleaned) || "_";
+  return short.replace(/^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?=\.|$)/iu, "$1_");
 }
 
 function safeFileName(name: string): string {
