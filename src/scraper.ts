@@ -478,6 +478,27 @@ export function parsePageHtml(html: string, pageId: number, baseUrl: string): Pa
   };
 }
 
+// The readable part of a page, or of a book's print view, fit to save as a file. It must
+// read the same on every request, so it drops what Moodle stamps per view: the book's
+// "Printed by <you> · Date <now>" box and the print link. Scripts go too; a page that
+// redirects in the browser would otherwise redirect the saved copy.
+export function parseSavedDocumentHtml(html: string, baseUrl: string): HTMLElement | undefined {
+  const root = parse(html);
+  const content = first(root, [".book", "[role='main']", "#region-main"]);
+  if (!content || !cleanNodeText(content)) return undefined;
+  for (const node of content.querySelectorAll(".book_info, .hidden-print, script, meta, link, noscript")) node.remove();
+  for (const node of content.querySelectorAll("*")) {
+    for (const name of Object.keys(node.attributes)) {
+      if (/^on/iu.test(name)) node.removeAttribute(name);
+    }
+    for (const name of ["href", "src"]) {
+      const value = node.getAttribute(name);
+      if (value && !value.startsWith("#") && !value.startsWith("data:")) node.setAttribute(name, resolveUrl(baseUrl, value));
+    }
+  }
+  return content;
+}
+
 export function parseFolderHtml(html: string, folderId: number, baseUrl: string): Folder {
   const root = parse(html);
   const fileEntries = root.querySelectorAll(".foldertree a[href], .fp-filename-icon a[href]")

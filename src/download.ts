@@ -50,7 +50,7 @@ export interface DownloadResult {
   dry_run?: true;
 }
 
-interface ResolvedDownload {
+export interface ResolvedDownload {
   response: Response;
   sourceUrl: string;
   requestUrl: string;
@@ -369,7 +369,7 @@ async function responseOrWrapper(
   };
 }
 
-function resourceLinks(html: string, baseUrl: string): Array<{ name: string; url: string }> {
+export function resourceLinks(html: string, baseUrl: string): Array<{ name: string; url: string }> {
   const root = parse(html);
   const entries = root
     .querySelectorAll(".resourceworkaround a[href], .resourcecontent a[href], a.resourceworkaround[href]")
@@ -381,7 +381,7 @@ function resourceLinks(html: string, baseUrl: string): Array<{ name: string; url
   return entries.filter((entry, index) => entries.findIndex((candidate) => candidate.url === entry.url) === index);
 }
 
-function isHtmlWrapper(response: Response): boolean {
+export function isHtmlWrapper(response: Response): boolean {
   const disposition = response.headers.get("content-disposition") ?? "";
   if (/\battachment\b/iu.test(disposition)) {
     return false;
@@ -390,13 +390,13 @@ function isHtmlWrapper(response: Response): boolean {
   return type.includes("text/html") || type.includes("application/xhtml+xml");
 }
 
-function looksLikeLoginPage(html: string): boolean {
+export function looksLikeLoginPage(html: string): boolean {
   const root = parse(html);
   return root.querySelector('form[action*="/login/"], input[name="password"], #page-login-index') !== null
     || /<title>\s*(?:log in|login)/iu.test(html);
 }
 
-function chooseUpstreamFilename(resolved: ResolvedDownload): string {
+export function chooseUpstreamFilename(resolved: ResolvedDownload): string {
   const candidates = [
     contentDispositionFilename(resolved.response.headers.get("content-disposition")),
     resolved.targetName,
@@ -518,7 +518,7 @@ function contentType(response: Response): string {
   return (response.headers.get("content-type") ?? "").split(";", 1)[0].trim();
 }
 
-function publicUrl(value: string): string {
+export function publicUrl(value: string): string {
   try {
     const url = new URL(value);
     url.username = "";
