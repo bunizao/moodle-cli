@@ -87,7 +87,7 @@ Ask your agent in plain language or run the matching command:
 | --- | --- |
 | “Give me a quick Moodle dashboard.” | `moodle` |
 | “What is due in the next 14 days?” | `moodle due --days 14` |
-| “Show my grades and feedback for UNIT.” | `moodle grades UNIT` |
+| “Show my grades and feedback for UNIT.” | `moodle grades UNIT --mode graded --include-feedback` |
 | “Find forum posts about the exam in UNIT.” | `moodle forums search "exam" --course UNIT` |
 | “Download the slides from this Moodle link.” | `moodle download '<Moodle URL>' --dest './slides.pdf'` |
 
@@ -102,6 +102,8 @@ moodle dl "UNIT week 7 slides" --to ./downloads
 moodle grades
 moodle news UNIT
 ```
+
+`moodle grades [UNIT]` returns marked items. Use `--mode summary` for per-unit counts and course totals or `--mode all` to add ungraded items, with `--types assign,quiz` to filter by Moodle module type (`assignment` is accepted as `assign`). Feedback is omitted unless `--include-feedback` is set. Details return at most 20 rows across units; `--limit` and `--offset` page through the filtered results. MCP uses the same options with underscores (`include_feedback`, `include_ungraded`); `--graded-only` remains an alias for graded mode.
 
 Ambiguous references list candidates. JSON callers receive `error.code: "ambiguous"`;
 At a terminal you pick the match from a list (arrow keys, or type to filter a long one). A bare number in a section reference matches
