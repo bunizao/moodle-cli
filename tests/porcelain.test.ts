@@ -57,6 +57,8 @@ describe("porcelain through the real Commander and HTTP boundary", () => {
       const data = JSON.parse(result.stdout);
       expect(data.mode).toBe("graded");
       expect(data.grades[0].items).toEqual([expect.objectContaining({ name: "Quiz 1", grade: "8.00" })]);
+      // The cmid already reaches item; a per-row URL was a third of a real graded page.
+      expect(data.grades[0].items[0]).not.toHaveProperty("url");
     }
     const explicit = await command(["grades", "algo-2", "--mode", "summary"]);
     expect(JSON.parse(explicit.stdout)).toMatchObject({ mode: "summary" });

@@ -259,7 +259,7 @@ export function buildProgram(io: CliIO = {}): Command {
 
   const execute = async (name: Intent, args: Record<string, unknown>, options: OutputCommandOptions = {}, service?: IntentService) => {
     const runner = service ?? createIntentService(createMoodleGateway(await runtime.getClient()));
-    const result = await runner.run(name, name === "grades" ? { ...args, mode: args.mode ?? "graded" } : args);
+    const result = await runner.run(name, args);
     await runtime.output(result, () => screen(result, options, name), options);
   };
 
@@ -329,7 +329,9 @@ export function buildProgram(io: CliIO = {}): Command {
     }
     const unit = parsed.course.id;
     const query = parsed.query;
-    if (["grades", "news", "due"].includes(query)) return execute(query as Intent, { unit, limit: program.opts().limit }, merged, service);
+    // A person at a terminal wants marks; MCP keeps the contract's summary default.
+    if (query === "grades") return execute("grades", { unit, mode: "graded", limit: program.opts().limit }, merged, service);
+    if (["news", "due"].includes(query)) return execute(query as Intent, { unit, limit: program.opts().limit }, merged, service);
     if (query === "files") return execute("find", { query: "*", unit, types: ["resource", "folder"], limit: program.opts().limit }, merged, service);
     if (query === "forums") { const rows = await createMoodleGateway(client).listForums({ courseId: unit }); return runtime.output({ forums: rows.map(f => ({ id: f.id, name: f.name, unit_id: f.course_id })), total: rows.length }, () => formatForumActivities(rows), merged); }
     if (!query) {
@@ -657,7 +659,7 @@ export function buildProgram(io: CliIO = {}): Command {
 
   const grades = program.command("grades").description("Inspect grades.");
   addOutputOptions(grades.command("list").description("Show marked grades; request summary or all.").argument("[unit]", "Unit code, name, id or URL"))
-    .option("--mode <mode>", "summary, graded or all.")
+    .option("--mode <mode>", "summary, graded or all.", "graded")
     .option("--types <types>", "Comma-separated module types (assign, quiz, h5pactivity).")
     .option("--include-feedback", "Include full grader feedback.")
     .option("--include-ungraded", "Include ungraded items in graded mode.")
