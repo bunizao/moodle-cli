@@ -1,3 +1,4 @@
+import { labelKey, labelTexts, type SiteLabels } from "./site-labels.js";
 import { HTMLElement, parse } from "node-html-parser";
 import type {
   FeedbackCriterion,
@@ -82,6 +83,7 @@ export function parsePageContext(html: string, baseUrl: string): PageContext {
   const root = parse(html);
   const config = parseMoodleConfig(html);
   const sesskey = stringValue(config.sesskey).trim();
+  const timezone = moodleTimezone(config.usertimezone || config.timezone);
   const userid = numberValue(config.userId) || numberValue(root.querySelector("[data-user-id]")?.getAttribute("data-user-id"));
   if (!sesskey || !userid) {
     throw new Error("Session appears invalid: could not load authenticated Moodle context");
@@ -94,10 +96,25 @@ export function parsePageContext(html: string, baseUrl: string): PageContext {
       fullname: cleanNodeText(root.querySelector(".userfullname")),
       sitename: extractSitename(root),
       siteurl: baseUrl,
-      ...(config.timezone ? { timezone: stringValue(config.timezone) } : {}),
+      ...(timezone ? { timezone } : {}),
       lang: stringValue(config.language) || root.querySelector("html")?.getAttribute("lang") || "",
     },
   };
+}
+
+// Moodle translates the continent in its display timezone ("Europa/London").
+// Resolve a unique IANA city suffix before passing it to Intl.
+function moodleTimezone(value: unknown): string | undefined {
+  const name = stringValue(value);
+  if (!name) return undefined;
+  try { new Intl.DateTimeFormat("en", { timeZone: name }); return name; }
+  catch {
+    const slash = name.indexOf("/");
+    if (slash < 0) return undefined;
+    const suffix = name.slice(slash);
+    const matches = Intl.supportedValuesOf("timeZone").filter(zone => zone.slice(zone.indexOf("/")) === suffix);
+    return matches.length === 1 ? matches[0] : undefined;
+  }
 }
 
 export function parseCourseContentsHtml(html: string, baseUrl: string): Section[] {
@@ -148,7 +165,11 @@ export function parseCourseContentsHtml(html: string, baseUrl: string): Section[
         name,
         modname,
         url: href ? resolveUrl(baseUrl, href) : "",
-        visible: !classes.some((item) => ["hidden", "stealth", "dimmed"].includes(item)),
+        // An activity the account cannot open yet is listed without a link and with the
+        // restriction beside it. Labels and subsections have no link either but can be read.
+        // The contents service calls this uservisible.
+        visible: !classes.some((item) => ["hidden", "stealth", "dimmed"].includes(item))
+          && (Boolean(href) || !activityElement.querySelector(".availabilityinfo")),
         description: cleanNodeText(first(activityElement, ["[data-region='activity-description']", ".contentafterlink", ".description"])),
       });
     }
@@ -291,21 +312,21 @@ export function parseGradeOverviewRows(html: string, baseUrl: string): Record<nu
   return rows;
 }
 
-export function parseAssignmentHtml(html: string, assignmentId: number, baseUrl: string): Assignment {
+export function parseAssignmentHtml(html: string, assignmentId: number, baseUrl: string, labels?: SiteLabels): Assignment {
   const root = parse(html);
   const feedback = root.querySelector(".feedback");
   return {
     id: assignmentId,
     name: pageTitle(html),
     ...activityContext(html),
-    due_pretty: extractLabeledText(html, "Due:"),
-    submission_status: findTableValue(html, "Submission status"),
-    grading_status: findTableValue(html, "Grading status"),
-    time_remaining: findTableValue(html, "Time remaining"),
-    grade: findTableValue(html, "Grade"),
-    graded_on: feedback ? findTableValue(feedback.toString(), "Graded on") : "",
-    graded_by: feedback ? findTableValue(feedback.toString(), "Graded by") : "",
-    feedback_comments: feedback ? findTableValue(feedback.toString(), "Feedback comments") : "",
+    due_pretty: extractLabeledText(html, "Due:", labels),
+    submission_status: findTableValue(html, "Submission status", labels),
+    grading_status: findTableValue(html, "Grading status", labels),
+    time_remaining: findTableValue(html, "Time remaining", labels),
+    grade: findTableValue(html, "Grade", labels),
+    graded_on: feedback ? findTableValue(feedback.toString(), "Graded on", labels) : "",
+    graded_by: feedback ? findTableValue(feedback.toString(), "Graded by", labels) : "",
+    feedback_comments: feedback ? findTableValue(feedback.toString(), "Feedback comments", labels) : "",
     criteria: feedback ? parseFeedbackCriteria(feedback) : [],
     file_entries: [...parseIntroAttachments(root, baseUrl), ...(feedback ? parseFeedbackFiles(feedback, baseUrl) : [])],
     url: `${baseUrl.replace(/\/$/, "")}/mod/assign/view.php?id=${assignmentId}`,
@@ -355,35 +376,38 @@ function parseFeedbackFiles(feedback: HTMLElement, baseUrl: string): FileEntry[]
   return entries;
 }
 
-export function parseQuizHtml(html: string, quizId: number, baseUrl: string): Quiz {
+export function parseQuizHtml(html: string, quizId: number, baseUrl: string, labels?: SiteLabels): Quiz {
   const root = parse(html);
   return {
     id: quizId,
     name: pageTitle(html),
     ...activityContext(html),
-    opens_pretty: extractLabeledText(html, "Opens:"),
-    closes_pretty: extractLabeledText(html, "Closes:"),
-    attempts_allowed: labeledParagraph(root, "Attempts allowed:"),
-    time_limit: labeledParagraph(root, "Time limit:"),
+    opens_pretty: extractLabeledText(html, "Opens:", labels),
+    closes_pretty: extractLabeledText(html, "Closes:", labels),
+    attempts_allowed: labeledParagraph(root, "Attempts allowed:", labels),
+    time_limit: labeledParagraph(root, "Time limit:", labels),
     availability: cleanText(root.textContent.match(/This quiz is currently[^\n]+/i)?.[0] ?? ""),
-    grade: findTableValue(html, "Grade"),
-    attempts: parseQuizAttempts(root, baseUrl),
+    grade: findTableValue(html, "Grade", labels),
+    attempts: parseQuizAttempts(root, baseUrl, labels),
     url: `${baseUrl.replace(/\/$/, "")}/mod/quiz/view.php?id=${quizId}`,
   };
 }
 
 // Quiz info lines are sibling paragraphs, so whole-page text runs them together.
-function labeledParagraph(root: HTMLElement, label: string): string {
+function labeledParagraph(root: HTMLElement, label: string, labels?: SiteLabels): string {
+  const prefixes = labelTexts(label, labels).map(text => text.replace(/\s*[:：]$/u, ""));
   for (const p of root.querySelectorAll("p")) {
     const line = cleanNodeText(p);
-    if (line.startsWith(label)) return cleanText(line.slice(label.length));
+    for (const prefix of prefixes) {
+      if (line.toLowerCase().startsWith(prefix.toLowerCase())) return cleanText(line.slice(prefix.length).replace(/^\s*[:：]/u, ""));
+    }
   }
   return "";
 }
 
 // Each attempt is a card holding a summary table and a Review link; the attempt id
 // only exists in that link, so cards without one (an attempt still in progress) are skipped.
-function parseQuizAttempts(root: HTMLElement, baseUrl: string): QuizAttempt[] {
+function parseQuizAttempts(root: HTMLElement, baseUrl: string, labels?: SiteLabels): QuizAttempt[] {
   const attempts: QuizAttempt[] = [];
   for (const table of root.querySelectorAll("table.quizreviewsummary")) {
     const card = table.closest(".card") ?? table.parentNode;
@@ -391,28 +415,28 @@ function parseQuizAttempts(root: HTMLElement, baseUrl: string): QuizAttempt[] {
     const reviewUrl = link ? resolveUrl(baseUrl, link.getAttribute("href") ?? "") : "";
     const id = numberQueryValue(reviewUrl, "attempt");
     if (!link || id === null) continue;
-    const summary = tableValues(table);
+    const summary = labelled(tableValues(table), labels);
     const number = Number(cleanNodeText(card?.querySelector(".card-title")).match(/\d+/)?.[0] ?? attempts.length + 1);
-    attempts.push({ id, number, status: summary.Status ?? "", started: summary.Started ?? "", completed: summary.Completed ?? "", duration: summary.Duration ?? "", marks: summary.Marks ?? "", grade: summary.Grade ?? "", review_url: reviewUrl });
+    attempts.push({ id, number, status: summary("Status"), started: summary("Started"), completed: summary("Completed"), duration: summary("Duration"), marks: summary("Marks"), grade: summary("Grade"), review_url: reviewUrl });
   }
   return attempts;
 }
 
-export function parseQuizReviewHtml(html: string, attemptId: number, baseUrl: string): QuizAttemptReview {
+export function parseQuizReviewHtml(html: string, attemptId: number, baseUrl: string, labels?: SiteLabels): QuizAttemptReview {
   const root = parse(html);
-  const summary = tableValues(root.querySelector("table.quizreviewsummary"));
+  const summary = labelled(tableValues(root.querySelector("table.quizreviewsummary")), labels);
   const form = root.querySelector("form.questionflagsaveform");
   const url = `${baseUrl.replace(/\/$/, "")}/mod/quiz/review.php?attempt=${attemptId}`;
   return {
     id: attemptId,
     quiz_id: numberQueryValue(form?.getAttribute("action") ?? "", "cmid") ?? 0,
     course_id: parseCourseIdFromPageHtml(html) ?? 0,
-    status: summary.Status ?? "",
-    started: summary.Started ?? "",
-    completed: summary.Completed ?? "",
-    duration: summary.Duration ?? "",
-    marks: summary.Marks ?? "",
-    grade: summary.Grade ?? "",
+    status: summary("Status"),
+    started: summary("Started"),
+    completed: summary("Completed"),
+    duration: summary("Duration"),
+    marks: summary("Marks"),
+    grade: summary("Grade"),
     questions: root.querySelectorAll("div.que").map(parseQuizQuestion),
     url,
   };
@@ -445,6 +469,12 @@ function parseQuizQuestion(que: HTMLElement): QuizQuestion {
 export function blockText(node: HTMLElement | null | undefined): string {
   if (!node) return "";
   return cleanTableCell(parse(node.toString().replace(/<br\s*\/?>|<\/(?:p|div|li|h\d|tr)>/giu, "$& ")));
+}
+
+/** Looks a summary row up by its English label or the site's own text for it. */
+function labelled(values: Record<string, string>, labels?: SiteLabels): (label: string) => string {
+  const byKey = new Map(Object.entries(values).map(([key, value]) => [labelKey(key), value]));
+  return label => labelTexts(label, labels).map(text => byKey.get(labelKey(text))).find(value => value !== undefined) ?? "";
 }
 
 function tableValues(table: HTMLElement | null | undefined): Record<string, string> {
@@ -769,6 +799,11 @@ function numericQueryValue(url: URL, key: string): number | null {
   return Number(value);
 }
 
+/** The theme decides the markup every scraper reads, so a support report names it. */
+export function parseSiteTheme(html: string): string | undefined {
+  return stringValue(parseMoodleConfig(html).theme) || undefined;
+}
+
 function parseMoodleConfig(html: string): Record<string, unknown> {
   const match = html.match(/M\.cfg\s*=\s*({[\s\S]*?});/);
   if (!match) {
@@ -829,23 +864,26 @@ function activityContext(html: string): { course_id: number; course_name: string
   return context;
 }
 
-function extractLabeledText(html: string, label: string): string {
+function extractLabeledText(html: string, label: string, labels?: SiteLabels): string {
   const root = parse(html);
+  const wanted = new Set(labelTexts(label, labels).map(labelKey));
   for (const node of root.querySelectorAll("strong, b")) {
-    if (cleanNodeText(node) !== label) {
+    const text = cleanNodeText(node);
+    if (!wanted.has(labelKey(text))) {
       continue;
     }
     const parent = node.parentNode as HTMLElement | null;
-    return cleanText(parent?.textContent.replace(label, "") ?? "");
+    return cleanText(parent?.textContent.replace(text, "") ?? "");
   }
   return "";
 }
 
-function findTableValue(html: string, label: string): string {
+function findTableValue(html: string, label: string, labels?: SiteLabels): string {
   const root = parse(html);
+  const wanted = new Set(labelTexts(label, labels).map(labelKey));
   for (const row of root.querySelectorAll("tr")) {
     const cells = row.querySelectorAll("th, td");
-    if (cleanNodeText(cells[0]) === label) {
+    if (wanted.has(labelKey(cleanNodeText(cells[0])))) {
       return cleanTableCell(cells[1]);
     }
   }

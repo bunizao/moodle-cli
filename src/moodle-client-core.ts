@@ -17,6 +17,7 @@ import {
   FUNC_GET_COURSES_BY_TIMELINE,
   FUNC_GET_POPUP_NOTIFICATIONS,
   FUNC_GET_SITE_INFO,
+  FUNC_GET_STRINGS,
   FUNC_GET_UNREAD_CONVERSATION_COUNTS,
   GRADE_REPORT_INDEX_PATH,
   GRADE_REPORT_OVERVIEW_PATH,
@@ -30,6 +31,7 @@ import {
 import { submitAssignmentFiles, type SubmissionReceipt, type SubmitAssignmentRequest } from "./moodle-assign-core.js";
 import { answerQuizQuestion, finishQuizAttempt, getAttemptPage, getAttemptSummary, planQuizStart, startQuizAttempt, type AnswerRequest, type AttemptFinishReceipt, type AttemptPage, type AttemptSummary, type QuizDeps, type QuizStartPlan, type StartOptions } from "./moodle-quiz-core.js";
 import { ForumModule } from "./moodle-forum-core.js";
+import { labelRequests, siteLabelsFrom, type SiteLabels } from "./site-labels.js";
 import { searchForumContent as searchForumModule } from "./moodle-forum-search-core.js";
 import type {
   Activity,
@@ -207,6 +209,7 @@ export class MoodleClientCore {
   private coursesCache?: { at: number; courses: Promise<Course[]> };
   private readonly contentsCache = new Map<number, Promise<Section[]>>();
   private readonly unavailable: Set<string>;
+  private readonly unavailableListeners = new Set<(name: string) => void>();
   private fetchImpl: typeof fetch;
   private cookie: MoodleSessionCookie;
   private sesskey: string | null;
@@ -221,6 +224,7 @@ export class MoodleClientCore {
   private authGeneration = 0;
   private reauthInFlight?: Promise<void>;
   private readonly forum: ForumModule;
+  private labels?: Promise<SiteLabels>;
 
   constructor(baseUrl: string, options: MoodleClientCoreOptions | string) {
     this.baseUrl = baseUrl.replace(/\/$/, "");
@@ -254,7 +258,7 @@ export class MoodleClientCore {
   async getSiteInfo(): Promise<UserInfo> {
     await this.ensureSession();
     try {
-      if (this.unavailable.has(FUNC_GET_SITE_INFO) && this.userInfo?.fullname) return this.userInfo;
+      if (this.noteIfUnavailable(FUNC_GET_SITE_INFO) && this.userInfo?.fullname) return this.userInfo;
       const data = await this.call(FUNC_GET_SITE_INFO);
       if (isRecord(data) && "userid" in data) {
         const info = parseUserInfo(data);
@@ -595,17 +599,39 @@ export class MoodleClientCore {
   }
 
   async getAssignment(id: number): Promise<Assignment> {
-    return parseAssignmentHtml(await this.getActivityPage(ASSIGN_VIEW_PATH, "assign", id), id, this.baseUrl);
+    const [html, labels] = await Promise.all([this.getActivityPage(ASSIGN_VIEW_PATH, "assign", id), this.siteLabels()]);
+    return parseAssignmentHtml(html, id, this.baseUrl, labels);
   }
 
   async getQuiz(id: number): Promise<Quiz> {
-    return parseQuizHtml(await this.getActivityPage(QUIZ_VIEW_PATH, "quiz", id), id, this.baseUrl);
+    const [html, labels] = await Promise.all([this.getActivityPage(QUIZ_VIEW_PATH, "quiz", id), this.siteLabels()]);
+    return parseQuizHtml(html, id, this.baseUrl, labels);
+  }
+
+  /**
+   * The site's own text for the labels the page readers look for, in the session's
+   * language and with any strings the site customised. One call per client; a site that
+   * refuses it leaves the readers on the English labels. A request that failed before
+   * Moodle answered reads this page in English and asks again for the next one, so one
+   * dropped request does not fix a long-lived client on English.
+   */
+  private siteLabels(): Promise<SiteLabels> {
+    this.labels ??= (async () => {
+      await this.ensureSession();
+      return siteLabelsFrom(await this.call(FUNC_GET_STRINGS, { strings: labelRequests() }));
+    })().catch(error => {
+      if (this.errors.isLoginRequired(error)) { this.labels = undefined; throw error; }
+      if (!this.errors.isApi(error) || !error.moodleErrorCode) this.labels = undefined;
+      return {};
+    });
+    return this.labels;
   }
 
   async getQuizAttempt(attemptId: number): Promise<QuizAttemptReview> {
     await this.ensureSession();
     // Without showall Moodle pages a long review and the later questions would be silently missing.
-    return parseQuizReviewHtml(await this.get(QUIZ_REVIEW_PATH, { attempt: attemptId, showall: 1 }), attemptId, this.baseUrl);
+    const [html, labels] = await Promise.all([this.get(QUIZ_REVIEW_PATH, { attempt: attemptId, showall: 1 }), this.siteLabels()]);
+    return parseQuizReviewHtml(html, attemptId, this.baseUrl, labels);
   }
 
   async getResource(id: number): Promise<Resource> {
@@ -773,6 +799,21 @@ export class MoodleClientCore {
     return searchForumModule(this.forum, query, { ...searchOptions, baseUrl: this.baseUrl });
   }
 
+  /**
+   * Hears every call the site refuses as disabled, whether it says so now or said so
+   * earlier, so a caller can tell which fallback a command took.
+   */
+  onServiceUnavailable(listener: (name: string) => void): () => void {
+    this.unavailableListeners.add(listener);
+    return () => this.unavailableListeners.delete(listener);
+  }
+
+  /** Forgets which services earlier sessions found disabled, so the next calls ask the site again. */
+  async forgetUnavailableServices(): Promise<void> {
+    this.unavailable.clear();
+    await this.writeCache();
+  }
+
   async callBatch(requests: AjaxCall[]): Promise<OptionalAjaxBatchResult[]> {
     await this.ensureSession();
     return this.callBatchInternal(requests, true);
@@ -805,7 +846,9 @@ export class MoodleClientCore {
     if (live.length < requests.length) {
       const results = Array<OptionalAjaxBatchResult>(requests.length).fill(undefined);
       for (const [index, request] of requests.entries()) {
-        if (!live.some((entry) => entry.index === index)) results[index] = { ok: false, error: this.errors.api(`${request.methodname} is disabled on this site.`, "servicenotavailable") };
+        if (live.some((entry) => entry.index === index)) continue;
+        this.noteIfUnavailable(request.methodname);
+        results[index] = { ok: false, error: this.errors.api(`${request.methodname} is disabled on this site.`, "servicenotavailable") };
       }
       if (live.length) {
         const sent = await this.callBatchInternal(live.map(({ request }) => request), allowRetry);
@@ -846,7 +889,9 @@ export class MoodleClientCore {
     let learned = false;
     for (const [position, item] of envelope.entries()) {
       const name = requests[item.index ?? position]?.methodname;
-      if (!name || !item.error || item.exception?.errorcode !== "servicenotavailable" || this.unavailable.has(name)) continue;
+      if (!name || !item.error || item.exception?.errorcode !== "servicenotavailable") continue;
+      for (const listener of this.unavailableListeners) listener(name);
+      if (this.unavailable.has(name)) continue;
       this.unavailable.add(name);
       learned = true;
     }
@@ -860,6 +905,13 @@ export class MoodleClientCore {
       return this.callBatchInternal(requests, false);
     }
     return results;
+  }
+
+  /** Whether the site is known to refuse name; telling the listeners it was gone around. */
+  private noteIfUnavailable(name: string): boolean {
+    if (!this.unavailable.has(name)) return false;
+    for (const listener of this.unavailableListeners) listener(name);
+    return true;
   }
 
   private async ensureSession(): Promise<void> {
@@ -1015,11 +1067,13 @@ export class MoodleClientCore {
         pages.push(await this.get(COURSE_PATH, { id: courseId, section }));
       }
     }
-    const seen = new Set<number>();
+    const seen = new Set<string>();
     const sections: Section[] = [];
     for (const html of pages) {
       for (const section of parseCourseContentsHtml(html, this.baseUrl)) {
-        const key = section.section || section.id;
+        // Section 0 has no number to key on; its id and another section's number are
+        // different namespaces, and on a young site they collide (id 1, section 1).
+        const key = section.id ? `id:${section.id}` : `number:${section.section}`;
         if (seen.has(key)) {
           continue;
         }

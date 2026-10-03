@@ -36,6 +36,8 @@ Run the CLI from source with `node --experimental-strip-types src/cli.ts`, or `n
 
 `prepublishOnly` runs test + build + pack:check, so a release fails early rather than shipping a broken tarball.
 
+`scripts/lab/` builds a real Moodle 5.0 with known contents and runs `moodle coverage` against it under each theme, language and service variant (`scripts/lab/README.md`). Use it when a change touches a page reader or coverage; unit tests cannot show what a real site renders.
+
 ## Architecture
 
 Two deliverables live in one repo:
