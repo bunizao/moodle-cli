@@ -111,4 +111,33 @@ describe("Worker Moodle session upstream", () => {
     expect(signals[0]).toBeInstanceOf(AbortSignal);
     expect(signals[1]).toBe(signals[0]);
   });
+
+  it.each(["config", "launch"])("bounds token capture when %s stops answering", async stage => {
+    const controller = new AbortController();
+    const timeout = vi.spyOn(AbortSignal, "timeout").mockReturnValue(controller.signal);
+    let started!: () => void;
+    const pending = new Promise<void>(resolve => { started = resolve; });
+    const fetchImpl = vi.fn<typeof fetch>(async (input, init) => {
+      if (stage === "launch" && String(input).includes("service-nologin.php")) {
+        return Response.json([{ data: { enablemobilewebservice: 1 } }]);
+      }
+      started();
+      return new Promise<Response>((_resolve, reject) => {
+        controller.signal.addEventListener("abort", () => reject(controller.signal.reason), { once: true });
+      });
+    });
+    try {
+      const upstream = new FetchMoodleSessionUpstream(ORIGIN, fetchImpl);
+      const captured = upstream.captureMobileToken({ name: "MoodleSession", value: "fixture" });
+      await pending;
+      const assertion = expect(captured).rejects.toThrow("fixture timeout");
+      controller.abort(new Error("fixture timeout"));
+      await assertion;
+      expect(timeout).toHaveBeenCalledExactlyOnceWith(30_000);
+      expect(fetchImpl.mock.calls.every(([, init]) => init?.signal === controller.signal)).toBe(true);
+    } finally {
+      controller.abort();
+      timeout.mockRestore();
+    }
+  });
 });
