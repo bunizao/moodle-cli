@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, readdir, readFile, rename, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, sep } from "node:path";
 
@@ -298,6 +298,22 @@ describe("moodle sync", () => {
 
     expect(result.units[0]).toMatchObject({ directory: join(base, "Theory"), changes: [], unchanged: 3 });
     await expect(readdir(base)).resolves.toEqual(["Theory"]);
+  });
+
+  it("leaves a file you deleted alone until Moodle changes it", async () => {
+    const moodle = site();
+    const base = await root();
+    await syncUnits(moodle.client, [COURSE], { root: base, now: NOW });
+    await unlink(lecture(base));
+
+    const unchanged = await syncUnits(moodle.client, [COURSE], { root: base, now: NOW });
+    expect(unchanged.units[0]).toMatchObject({ changes: [], unchanged: 3, problems: [] });
+    await expect(readdir(join(unitDir(base), "Week 1", "Real-time"))).resolves.not.toContain("slides.pdf");
+
+    moodle.put(moodle.state.resourceFile, "slides v2");
+    const changed = await syncUnits(moodle.client, [COURSE], { root: base, now: NOW });
+    expect(changed.units[0].changes).toEqual([{ status: "updated", path: lecture(base), bytes: 9 }]);
+    await expect(readFile(lecture(base), "utf8")).resolves.toBe("slides v2");
   });
 
   it("records files already replaced when a run stops on a fatal error", async () => {
