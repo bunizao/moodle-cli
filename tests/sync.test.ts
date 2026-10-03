@@ -1,14 +1,31 @@
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, readdir, readFile, rename, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, sep } from "node:path";
 
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { MoodleClient } from "../src/client.js";
+import { CliError } from "../src/errors.js";
 import { formatSyncResult } from "../src/formatters.js";
 import type { Activity, Course, Section } from "../src/models.js";
 import { MANIFEST_NAME, pathSegment, sectionDirectories, storedPath, syncUnits } from "../src/sync.js";
+
+// exFAT/FAT drives and some network shares refuse hard links; a test can switch that on.
+const disk = vi.hoisted(() => ({ hardLinks: true }));
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs/promises")>();
+  return {
+    ...actual,
+    link: async (...args: Parameters<typeof actual.link>) => {
+      if (!disk.hardLinks) throw Object.assign(new Error("operation not permitted"), { code: "EPERM" });
+      return actual.link(...args);
+    },
+  };
+});
+afterEach(() => {
+  disk.hardLinks = true;
+});
 
 const BASE_URL = "https://school.example.edu";
 const COURSE: Course = { id: 100, shortname: "UNIT1001", fullname: "Unit One", category: 1, visible: true, startdate: 0 };
@@ -282,6 +299,109 @@ describe("moodle sync", () => {
     expect(result.units[0]).toMatchObject({ directory: join(base, "Theory"), changes: [], unchanged: 3 });
     await expect(readdir(base)).resolves.toEqual(["Theory"]);
   });
+
+  it("leaves a file you deleted alone until Moodle changes it", async () => {
+    const moodle = site();
+    const base = await root();
+    await syncUnits(moodle.client, [COURSE], { root: base, now: NOW });
+    await unlink(lecture(base));
+
+    const unchanged = await syncUnits(moodle.client, [COURSE], { root: base, now: NOW });
+    expect(unchanged.units[0]).toMatchObject({ changes: [], unchanged: 3, problems: [] });
+    await expect(readdir(join(unitDir(base), "Week 1", "Real-time"))).resolves.not.toContain("slides.pdf");
+
+    moodle.put(moodle.state.resourceFile, "slides v2");
+    const changed = await syncUnits(moodle.client, [COURSE], { root: base, now: NOW });
+    expect(changed.units[0].changes).toEqual([{ status: "updated", path: lecture(base), bytes: 9 }]);
+    await expect(readFile(lecture(base), "utf8")).resolves.toBe("slides v2");
+  });
+
+  it("records files already replaced when a run stops on a fatal error", async () => {
+    const moodle = site();
+    const base = await root();
+    await syncUnits(moodle.client, [COURSE], { root: base, now: NOW });
+
+    moodle.put(moodle.state.resourceFile, "slides v2");
+    const request = moodle.client.requestAbsolute.bind(moodle.client);
+    // The resource is still downloading when the folder finds the session gone.
+    moodle.client.requestAbsolute = async (url, init, options) => {
+      if (url === moodle.state.resourceFile) await new Promise((resolve) => setTimeout(resolve, 20));
+      return request(url, init, options);
+    };
+    const getFolder = moodle.client.getFolder;
+    moodle.client.getFolder = async () => {
+      throw new CliError("auth", "Session expired.");
+    };
+    await expect(syncUnits(moodle.client, [COURSE], { root: base, now: NOW })).rejects.toMatchObject({ code: "auth" });
+    await expect(readFile(lecture(base), "utf8")).resolves.toBe("slides v2");
+
+    // The replaced copy is still pristine, so the next version replaces it again.
+    moodle.client.getFolder = getFolder;
+    moodle.put(moodle.state.resourceFile, "slides v3");
+    const next = await syncUnits(moodle.client, [COURSE], { root: base, now: NOW });
+    expect(next.units[0].changes).toEqual([{ status: "updated", path: lecture(base), bytes: 9 }]);
+    await expect(readdir(join(unitDir(base), "Week 1", "Real-time"))).resolves.toEqual(expect.not.arrayContaining([expect.stringContaining("(updated")]));
+  });
+
+  it("reports a unit it cannot read and goes on to the next", async () => {
+    const moodle = site();
+    const base = await root();
+    const other = { ...COURSE, id: 200, shortname: "UNIT2002" };
+    const getCourseContents = moodle.client.getCourseContents.bind(moodle.client);
+    moodle.client.getCourseContents = async (id: number) => {
+      if (id === COURSE.id) throw new CliError("upstream", "Moodle answered HTTP 503.");
+      return getCourseContents(id);
+    };
+
+    const result = await syncUnits(moodle.client, [COURSE, other], { root: base, now: NOW });
+
+    expect(result.units[0]).toMatchObject({ unit: "UNIT1001", changes: [], problems: [{ item: "UNIT1001", message: "Moodle answered HTTP 503." }] });
+    expect(result.units[1].changes).toHaveLength(3);
+
+    moodle.client.getCourseContents = async () => {
+      throw new CliError("auth", "Session expired.");
+    };
+    await expect(syncUnits(moodle.client, [COURSE, other], { root: base, now: NOW })).rejects.toMatchObject({ code: "auth" });
+  });
+
+  it("copies instead of linking on a disk without hard links, still never over an existing file", async () => {
+    const moodle = site();
+    const base = await root();
+    disk.hardLinks = false;
+    await mkdir(join(unitDir(base), "Week 1", "Real-time"), { recursive: true });
+    await writeFile(lecture(base), "someone else's slides");
+
+    const result = await syncUnits(moodle.client, [COURSE], { root: base, now: NOW });
+
+    expect(result.units[0]).toMatchObject({ problems: [] });
+    expect(result.units[0].changes.map((change) => change.status)).toEqual(["new", "new", "new"]);
+    await expect(readFile(lecture(base), "utf8")).resolves.toBe("someone else's slides");
+    await expect(readFile(join(unitDir(base), "Week 1", "Real-time", "slides (2).pdf"), "utf8")).resolves.toBe("slides v1");
+    expect((await readdir(unitDir(base), { recursive: true })).filter((name) => name.endsWith(".tmp"))).toEqual([]);
+  });
+
+  it("keeps hostile and reserved names inside the unit folder", async () => {
+    const moodle = site();
+    const base = await root();
+    moodle.state.activities = [activity(2, "folder", "AUX"), activity(3, "assign", "../../Assignment")];
+    moodle.client.getFolder = async () => ({
+      file_entries: [
+        { name: "../../escape.csv", url: `${BASE_URL}/pluginfile.php/12/mod_folder/content/0/..%2F..%2Fout/escape.csv`, requires_authentication: true },
+        { name: "CON.csv", url: `${BASE_URL}/pluginfile.php/12/mod_folder/content/0/nul/CON.csv`, requires_authentication: true },
+      ],
+    }) as never;
+    moodle.client.getAssignment = async () => ({ file_entries: [{ name: "..", url: `${BASE_URL}/pluginfile.php/13/mod_assign/introattachment/0/..%2Fbrief.pdf`, requires_authentication: true }] }) as never;
+    for (const entry of [...(await moodle.client.getFolder(2)).file_entries, ...(await moodle.client.getAssignment(3)).file_entries]) moodle.put(entry.url, entry.name);
+
+    const result = await syncUnits(moodle.client, [COURSE], { root: base, now: NOW });
+
+    expect(result.units[0].problems).toEqual([]);
+    expect(result.units[0].changes).toHaveLength(3);
+    for (const change of result.units[0].changes) expect(change.path.startsWith(unitDir(base) + sep)).toBe(true);
+    expect(await readdir(base)).toEqual(["UNIT1001"]);
+    const written = (await readdir(unitDir(base), { recursive: true })).flatMap((name) => name.split(sep));
+    expect(written.filter((segment) => /^(con|prn|aux|nul|com\d|lpt\d)(\.|$)/iu.test(segment))).toEqual([]);
+  });
 });
 
 describe("sync paths", () => {
@@ -295,6 +415,7 @@ describe("sync paths", () => {
     expect(pathSegment("Week 1: Logic / Linux")).toBe("Week 1 Logic - Linux");
     expect(pathSegment(".hidden.")).toBe("hidden");
     expect(pathSegment("")).toBe("_");
+    expect(["CON", "nul", "Aux.notes", "COM1", "lpt9.x", "CONSOLE", "COM0"].map(pathSegment)).toEqual(["CON_", "nul_", "Aux_.notes", "COM1_", "lpt9_.x", "CONSOLE", "COM0"]);
   });
 
   it("nests child sections under their parent", () => {

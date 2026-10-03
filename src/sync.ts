@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { createReadStream, createWriteStream } from "node:fs";
-import { link, mkdir, readdir, readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
+import { link, mkdir, open, readdir, readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { Readable, Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
@@ -142,30 +142,44 @@ async function syncUnit(client: MoodleClient, course: Course, root: string, opti
   };
 
   options.onProgress?.(`Reading ${label}`);
-  const sections = await client.getCourseContents(course.id);
+  let sections: Section[];
+  try {
+    sections = await client.getCourseContents(course.id);
+  } catch (error) {
+    rethrowFatal(error);
+    // One unreadable unit costs only that unit; its folder and manifest stay as they were.
+    run.result.problems.push({ item: label, message: problemMessage(error) });
+    return run.result;
+  }
   const dirs = sectionDirectories(sections);
   const activities = syncableActivities(sections);
   let done = 0;
-  await eachLimit(activities, WORKERS, async ({ activity, sectionId }) => {
-    throwIfCancelled(options.signal);
-    let items: SyncItem[] = [];
-    try {
-      items = await listActivity(run, activity, dirs.get(sectionId) ?? "");
-    } catch (error) {
-      rethrowFatal(error);
-      run.failedSources.add(`cm:${activity.id}`);
-      run.result.problems.push({ item: activity.name, message: problemMessage(error) });
-    }
-    for (const item of items) {
+  try {
+    await eachLimit(activities, WORKERS, async ({ activity, sectionId }) => {
+      throwIfCancelled(options.signal);
+      let items: SyncItem[] = [];
       try {
-        await syncItem(run, item);
+        items = await listActivity(run, activity, dirs.get(sectionId) ?? "");
       } catch (error) {
         rethrowFatal(error);
-        run.result.problems.push({ item: item.name || item.label, message: problemMessage(error) });
+        run.failedSources.add(`cm:${activity.id}`);
+        run.result.problems.push({ item: activity.name, message: problemMessage(error) });
       }
-    }
-    options.onProgress?.(`Syncing ${label} · ${++done}/${activities.length}`);
-  });
+      for (const item of items) {
+        try {
+          await syncItem(run, item);
+        } catch (error) {
+          rethrowFatal(error);
+          run.result.problems.push({ item: item.name || item.label, message: problemMessage(error) });
+        }
+      }
+      options.onProgress?.(`Syncing ${label} · ${++done}/${activities.length}`);
+    });
+  } catch (error) {
+    // Files already replaced must be on record, or the next run takes them for your edits.
+    await saveManifest(run).catch(() => undefined);
+    throw error;
+  }
 
   for (const [key, file] of Object.entries(manifest.files)) {
     if (run.seen.has(key) || run.failedSources.has(key.split("/")[0])) continue;
@@ -176,9 +190,7 @@ async function syncUnit(client: MoodleClient, course: Course, root: string, opti
   }
   // Workers finish in any order; the report reads in folder order.
   run.result.changes.sort((a, b) => a.path.localeCompare(b.path));
-  if (!run.dryRun && (Object.keys(manifest.files).length || await exists(directory))) {
-    await writeManifest(directory, manifest);
-  }
+  await saveManifest(run);
   return run.result;
 }
 
@@ -539,12 +551,30 @@ async function place(run: UnitRun, temporary: TemporaryFile, relative: string, a
     run.claimed.add(candidate.toLowerCase());
     const absolute = path.join(run.directory, candidate);
     try {
-      await link(temporary.path, absolute);
+      await linkOrCopy(temporary.path, absolute);
       return { relative: candidate, adopted: false };
     } catch (error) {
       if (!isNodeError(error, "EEXIST")) throw new ConfigError(`Cannot write local file '${absolute}'.`);
       if (adopt && await fileSha1(absolute).catch(() => "") === temporary.sha1) return { relative: candidate, adopted: true };
     }
+  }
+}
+
+// A hard link is instant, but exFAT/FAT drives and some network shares have none. The copy
+// still creates its file exclusively, so neither path ever replaces an existing one.
+async function linkOrCopy(source: string, destination: string): Promise<void> {
+  try {
+    return await link(source, destination);
+  } catch (error) {
+    if (isNodeError(error, "EEXIST")) throw error;
+  }
+  const handle = await open(destination, "wx");
+  try {
+    await pipeline(createReadStream(source), handle.createWriteStream());
+  } catch (error) {
+    await handle.close().catch(() => undefined);
+    await unlink(destination).catch(() => undefined);
+    throw error;
   }
 }
 
@@ -583,6 +613,11 @@ async function unitDirectory(root: string, course: Course, site: string): Promis
     // A manifest belonging to another unit or site reserves the folder's name.
     if (!await exists(path.join(directory, MANIFEST_NAME))) return directory;
   }
+}
+
+async function saveManifest(run: UnitRun): Promise<void> {
+  if (run.dryRun || (!Object.keys(run.manifest.files).length && !await exists(run.directory))) return;
+  await writeManifest(run.directory, run.manifest);
 }
 
 async function readManifest(directory: string, unitId: number, site: string): Promise<Manifest> {
@@ -641,7 +676,8 @@ function decodeSegment(value: string): string {
 }
 
 // Section and activity names become folder names: no separators, nothing Windows rejects,
-// no leading dot that would hide the folder.
+// no leading dot that would hide the folder. Windows also refuses device names like "CON"
+// or "nul.txt" whatever their extension, so those gain a suffix.
 export function pathSegment(name: string): string {
   const cleaned = name
     .replace(/[\u0000-\u001f\u007f]/gu, "")
@@ -651,7 +687,8 @@ export function pathSegment(name: string): string {
     .trim()
     .replace(/^\.+/u, "")
     .replace(/[. ]+$/u, "");
-  return (cleaned.length > 100 ? cleaned.slice(0, 100).trimEnd() : cleaned) || "_";
+  const short = (cleaned.length > 100 ? cleaned.slice(0, 100).trimEnd() : cleaned) || "_";
+  return short.replace(/^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?=\.|$)/iu, "$1_");
 }
 
 function safeFileName(name: string): string {
@@ -671,12 +708,22 @@ function localDate(date: Date): string {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
 }
 
+// The first failure stops new work, but waits for the work in flight: a file being placed
+// must reach the manifest before anyone writes it.
 async function eachLimit<T>(items: readonly T[], limit: number, work: (item: T) => Promise<void>): Promise<void> {
   let next = 0;
+  let failure: { error: unknown } | undefined;
   const worker = async () => {
-    while (next < items.length) await work(items[next++]);
+    while (!failure && next < items.length) {
+      try {
+        await work(items[next++]);
+      } catch (error) {
+        failure ??= { error };
+      }
+    }
   };
   await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  if (failure) throw failure.error;
 }
 
 // A lost session or a cancel ends the whole run; anything else costs one item.
