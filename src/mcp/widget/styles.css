@@ -16,6 +16,16 @@
   --bad: #f87171;
   --meter: #6da7ec;
   color-scheme: dark;
+  /* Only for hosts that send a dark theme without variables; host values are set
+     inline on the root and win over these. */
+  --color-background-primary: #262624;
+  --color-background-secondary: #30302e;
+  --color-background-tertiary: #3a3a37;
+  --color-text-primary: #f5f4ef;
+  --color-text-secondary: #b7b5a9;
+  --color-text-tertiary: #8a887f;
+  --color-border-primary: rgba(255, 255, 255, .14);
+  --color-border-secondary: rgba(255, 255, 255, .08);
 }
 
 * { box-sizing: border-box; }
@@ -48,7 +58,7 @@ body {
 .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
 
 .meta { font-size: var(--font-text-xs-size, 12px); color: var(--color-text-secondary, #666); }
-.indent { padding-left: 52px; }
+.indent { padding-left: 68px; }
 .empty { margin: 12px 0 4px; color: var(--color-text-secondary, #666); font-size: var(--font-text-sm-size, 13px); }
 .loading { color: var(--color-text-secondary, #888); font-size: var(--font-text-sm-size, 13px); padding: 6px 0; }
 .excerpt { margin: 6px 0 0; font-size: var(--font-text-sm-size, 13px); line-height: 1.5; white-space: pre-line; }
@@ -66,7 +76,7 @@ body {
 .rank-row[role="button"]:hover, .rank-row.selected { background: var(--color-background-secondary, #f5f5f5); }
 .rank-top { display: flex; align-items: baseline; gap: 8px; font-size: var(--font-text-sm-size, 13px); min-width: 0; }
 .rank-top .t { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: var(--font-weight-medium, 500); }
-.when { flex: none; width: 44px; color: var(--color-text-secondary, #666); font-variant-numeric: tabular-nums; }
+.when { flex: none; width: 60px; white-space: nowrap; color: var(--color-text-secondary, #666); font-variant-numeric: tabular-nums; }
 .flag { flex: none; font-size: var(--font-text-xs-size, 12px); color: var(--bad); font-weight: var(--font-weight-semibold, 600); }
 
 /* Grades: one meter per marked item, grouped by unit. */
@@ -116,6 +126,7 @@ body {
 .section .m { color: var(--color-text-secondary, #666); font-size: var(--font-text-xs-size, 12px); font-variant-numeric: tabular-nums; }
 .caret { width: 12px; flex: none; color: var(--color-text-secondary, #666); }
 .activity { padding-left: 28px; }
+.outline .indent { padding-left: 20px; }
 .activity .type { flex: none; width: 76px; color: var(--color-text-secondary, #666); font-size: var(--font-text-xs-size, 12px); }
 .muted .t { color: var(--color-text-tertiary, #999); }
 
