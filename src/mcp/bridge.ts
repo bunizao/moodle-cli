@@ -1,4 +1,4 @@
-import { jsonRpcFailure, MODERN_PROTOCOL_VERSION, type JsonRpcId } from "./protocol.js";
+import { jsonRpcFailure, mirroredName, MODERN_PROTOCOL_VERSION, type JsonRpcId } from "./protocol.js";
 
 export interface RemoteMcpBridgeInput extends AsyncIterable<string | Uint8Array> {}
 
@@ -55,9 +55,8 @@ export async function bridgeRemoteMcp(options: RemoteMcpBridgeOptions): Promise<
       "mcp-protocol-version": protocolVersion(request, negotiatedProtocolVersion),
       "mcp-method": request.method,
     });
-    if (request.method === "tools/call" && typeof request.params?.name === "string") {
-      headers.set("mcp-name", request.params.name);
-    }
+    const name = ["tools/call", "resources/read", "prompts/get"].includes(request.method) ? mirroredName(request.method, request.params) : undefined;
+    if (name !== undefined) headers.set("mcp-name", name);
     let response: Response;
     try {
       response = await fetchImpl(endpoint, {

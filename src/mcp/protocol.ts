@@ -133,10 +133,16 @@ export function assertRequestMetadata(
   if (context.method && context.method !== request.method) {
     throw new RequestMetadataMismatchError("method", context.method, request.method);
   }
-  const toolName = typeof request.params?.name === "string" ? request.params.name : undefined;
-  if (context.toolName && context.toolName !== toolName) {
-    throw new RequestMetadataMismatchError("name", context.toolName, toolName);
+  const name = mirroredName(request.method, request.params);
+  if (context.toolName && context.toolName !== name) {
+    throw new RequestMetadataMismatchError("name", context.toolName, name);
   }
+}
+
+// Mcp-Name mirrors params.uri for resources/read and params.name everywhere else.
+export function mirroredName(method: string, params: Record<string, unknown> | undefined): string | undefined {
+  const value = method === "resources/read" ? params?.uri : params?.name;
+  return typeof value === "string" ? value : undefined;
 }
 
 export function isSupportedProtocolVersion(value: string): value is McpProtocolVersion {
