@@ -6,6 +6,8 @@ import { z, ZodError } from "zod";
 
 import { VERSION } from "../version.js";
 import { MoodleGatewayError, type MoodleFile, type MoodleGateway } from "./gateway.js";
+import { WIDGET_HTML } from "./widget-html.generated.js";
+import { buildWidget, isWidgetTool, WIDGET_INSTRUCTIONS, WIDGET_MIME_TYPE, WIDGET_URI, WIDGET_VIEW_KEY, widgetContracts } from "./widgets.js";
 import {
   jsonRpcFailure,
   jsonRpcSuccess,
@@ -44,9 +46,19 @@ export const TOOL_CATALOG = Object.entries(intentContracts).map(([name, contract
   inputSchema: compactSchema(z.toJSONSchema(contract.input, { io: "input" })), annotations: WRITE_TOOLS.has(name) ? WRITE_ANNOTATIONS : READ_ONLY_ANNOTATIONS,
 }));
 
+// Kept apart from TOOL_CATALOG so a host without MCP Apps can be served without them.
+export const WIDGET_CATALOG = Object.entries(widgetContracts).map(([name, contract]) => ({
+  name, title: contract.title, description: contract.description,
+  inputSchema: compactSchema(z.toJSONSchema(contract.input, { io: "input" })), annotations: READ_ONLY_ANNOTATIONS,
+  // ui.resourceUri is the current key; hosts that predate it read the flat one.
+  _meta: { ui: { resourceUri: WIDGET_URI }, "ui/resourceUri": WIDGET_URI },
+}));
+const WIDGET_RESOURCE = { uri: WIDGET_URI, name: "moodle-widget", title: "Moodle views", description: "Interactive views for the show_* tools.", mimeType: WIDGET_MIME_TYPE };
+
 // The remote Worker has no filesystem, so it never lists the upload tool.
-function toolsFor(gateway: MoodleGateway) {
-  return gateway.submitAssignment ? TOOL_CATALOG : TOOL_CATALOG.filter(tool => !WRITE_TOOLS.has(tool.name));
+function toolsFor(gateway: MoodleGateway, widgets: boolean) {
+  const tools = gateway.submitAssignment ? TOOL_CATALOG : TOOL_CATALOG.filter(tool => !WRITE_TOOLS.has(tool.name));
+  return widgets ? [...tools, ...WIDGET_CATALOG] : tools;
 }
 
 // Results are parsed against the contract before they are sent, so publishing the
@@ -66,6 +78,8 @@ export interface MoodleMcpServerOptions {
   instructions?: string[];
   /** Where a remote owner signs in to Moodle; auth errors point here instead of the CLI. */
   signInUrl?: string;
+  /** List the interactive show_* tools and their MCP Apps view; defaults to true. */
+  widgets?: boolean;
 }
 
 export interface MoodleMcpServer {
@@ -80,6 +94,8 @@ export function createMoodleMcpServer(
     name: options.name ?? "moodle",
     version: options.version ?? VERSION,
   };
+  const widgets = options.widgets !== false;
+  const capabilities = { tools: { listChanged: false }, ...(widgets ? { resources: {} } : {}) };
 
   return {
     async handle(input, context = {}) {
@@ -96,7 +112,7 @@ export function createMoodleMcpServer(
           return jsonRpcSuccess(id, {
             supportedVersions: [...SUPPORTED_PROTOCOL_VERSIONS],
             protocolVersion,
-            capabilities: { tools: { listChanged: false } },
+            capabilities,
             serverInfo,
             resultType: "complete",
             _meta: RESULT_META,
@@ -105,12 +121,13 @@ export function createMoodleMcpServer(
         if (request.method === "initialize" && usesLegacyInitialize(protocolVersion)) {
           return jsonRpcSuccess(id, {
             protocolVersion,
-            capabilities: { tools: { listChanged: false } },
+            capabilities,
             serverInfo,
             instructions: [
               gateway.submitAssignment
                 ? "Access to the authenticated user's Moodle data. Only submit writes; it defaults to a dry run."
                 : "Read-only access to the authenticated user's Moodle data.",
+              ...(widgets ? [WIDGET_INSTRUCTIONS] : []),
               ...(options.instructions ?? []),
             ].join(" "),
           });
@@ -120,13 +137,24 @@ export function createMoodleMcpServer(
         }
         if (request.method === "tools/list") {
           return jsonRpcSuccess(id, {
-            tools: toolsFor(gateway),
+            tools: toolsFor(gateway, widgets),
             resultType: "complete",
             _meta: RESULT_META,
           });
         }
         if (request.method === "tools/call") {
-          return jsonRpcSuccess(id, await callTool(gateway, request.params, options.signInUrl));
+          return jsonRpcSuccess(id, await callTool(gateway, request.params, options.signInUrl, widgets));
+        }
+        if (widgets && request.method === "resources/list") {
+          return jsonRpcSuccess(id, { resources: [WIDGET_RESOURCE], resultType: "complete", _meta: RESULT_META });
+        }
+        if (widgets && request.method === "resources/templates/list") {
+          return jsonRpcSuccess(id, { resourceTemplates: [], resultType: "complete", _meta: RESULT_META });
+        }
+        if (widgets && request.method === "resources/read") {
+          if (request.params?.uri !== WIDGET_URI) return jsonRpcFailure(id, { code: -32002, message: "Resource not found", data: { uri: request.params?.uri } });
+          // No ui.csp: the view fetches nothing, so the host's default no-network sandbox fits.
+          return jsonRpcSuccess(id, { contents: [{ uri: WIDGET_URI, mimeType: WIDGET_MIME_TYPE, text: WIDGET_HTML }], resultType: "complete", _meta: RESULT_META });
         }
         return jsonRpcFailure(id, { code: -32601, message: `Method not found: ${request.method}` });
       } catch (error) {
@@ -173,10 +201,11 @@ export function createMoodleMcpServer(
   };
 }
 
-async function callTool(gateway: MoodleGateway, params: Record<string, unknown> | undefined, signInUrl?: string): Promise<Record<string, unknown>> {
+async function callTool(gateway: MoodleGateway, params: Record<string, unknown> | undefined, signInUrl?: string, widgets = true): Promise<Record<string, unknown>> {
   const requested = typeof params?.name === "string" ? params.name : "";
   const name = Object.hasOwn(aliases, requested) ? aliases[requested]! : requested;
-  if (!Object.hasOwn(intentContracts, name) && !["get_user", "list_activities", "list_forums"].includes(name)) throw new McpCallError("TOOL_NOT_FOUND", `Unknown Moodle tool: ${requested || "<missing>"}`);
+  const widget = widgets && isWidgetTool(name) ? name : undefined;
+  if (!widget && !Object.hasOwn(intentContracts, name) && !["get_user", "list_activities", "list_forums"].includes(name)) throw new McpCallError("TOOL_NOT_FOUND", `Unknown Moodle tool: ${requested || "<missing>"}`);
   if (WRITE_TOOLS.has(name) && !gateway.submitAssignment) throw new McpCallError("TOOL_NOT_FOUND", `${requested} is only available on a local MCP server with access to the files.`);
   const raw = params?.arguments ?? {};
   if (!isRecord(raw)) throw new McpCallError("INVALID_TOOL_ARGUMENTS", "Tool arguments must be an object.");
@@ -186,13 +215,17 @@ async function callTool(gateway: MoodleGateway, params: Record<string, unknown> 
     for (const [old, key] of Object.entries(renames)) if (old in args) { args[key] = args[old]; delete args[old]; }
     delete args.alertsLimit; delete args.todoLimit;
   }
-  const contract = intentContracts[name as ToolName];
+  const contract = widget ? widgetContracts[widget] : intentContracts[name as ToolName];
   if (contract) {
     const checked = contract.input.safeParse(args);
     if (!checked.success) throw new McpCallError("INVALID_TOOL_ARGUMENTS", `Invalid arguments for ${requested}.`, checked.error.issues);
   }
   try {
     const service = createIntentService(gateway);
+    if (widget) {
+      const { view, text } = await buildWidget(service, widget, args);
+      return { content: [{ type: "text", text }], _meta: { ...RESULT_META, [WIDGET_VIEW_KEY]: view }, resultType: "complete" };
+    }
     let structuredContent: Record<string, unknown>;
     let payload: unknown;
     if (name === "file") {
