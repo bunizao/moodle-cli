@@ -6,6 +6,7 @@ import { z, ZodError } from "zod";
 
 import { VERSION } from "../version.js";
 import { MoodleGatewayError, type MoodleFile, type MoodleGateway } from "./gateway.js";
+import { SERVER_ICONS, TOOL_ICONS } from "./icons.js";
 import {
   jsonRpcFailure,
   jsonRpcSuccess,
@@ -44,9 +45,13 @@ export const TOOL_CATALOG = Object.entries(intentContracts).map(([name, contract
   inputSchema: compactSchema(z.toJSONSchema(contract.input, { io: "input" })), annotations: WRITE_TOOLS.has(name) ? WRITE_ANNOTATIONS : READ_ONLY_ANNOTATIONS,
 }));
 
+// Hosts draw icons in their own UI and never pass them to the model, so they stay
+// out of TOOL_CATALOG and its byte budget.
+const LISTED_TOOLS = TOOL_CATALOG.map(tool => ({ ...tool, icons: TOOL_ICONS[tool.name as ToolName] }));
+
 // The remote Worker has no filesystem, so it never lists the upload tool.
 function toolsFor(gateway: MoodleGateway) {
-  return gateway.submitAssignment ? TOOL_CATALOG : TOOL_CATALOG.filter(tool => !WRITE_TOOLS.has(tool.name));
+  return gateway.submitAssignment ? LISTED_TOOLS : LISTED_TOOLS.filter(tool => !WRITE_TOOLS.has(tool.name));
 }
 
 // Results are parsed against the contract before they are sent, so publishing the
@@ -78,7 +83,10 @@ export function createMoodleMcpServer(
 ): MoodleMcpServer {
   const serverInfo = {
     name: options.name ?? "moodle",
+    title: "Moodle",
     version: options.version ?? VERSION,
+    websiteUrl: "https://github.com/bunizao/moodle-cli",
+    icons: SERVER_ICONS,
   };
 
   return {

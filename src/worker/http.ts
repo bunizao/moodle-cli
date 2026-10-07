@@ -2,6 +2,7 @@ import { hasQueryCredential, readBearerToken, verifyBearerToken } from "./auth.j
 import { createAuthBrokerApi, isOAuthRoute, parseAllowedRedirectHosts, type AuthBrokerApi } from "./auth-broker.js";
 import { AUTHORIZE_PATH, DEFAULT_CLIENT_HOSTS, LOGIN_PATH, matchesAllowedHost, PROTECTED_RESOURCE_METADATA_PATH } from "./oauth.js";
 import { problemResponse } from "./problems.js";
+import { BRAND_PNG_BASE64, BRAND_SVG } from "../mcp/icons.js";
 import { MODERN_PROTOCOL_VERSION, SUPPORTED_PROTOCOL_VERSIONS } from "../mcp/protocol.js";
 import { VERSION } from "../version.js";
 
@@ -86,6 +87,11 @@ export function createWorkerHandler(dependencies: WorkerDependencies): WorkerHan
             { status: "pass", serviceId: WORKER_SERVICE_ID, version: WORKER_SERVICE_VERSION },
             { headers: { "content-type": "application/health+json; charset=utf-8" } },
           );
+        }
+
+        // Public: connector lists show the server's favicon before anyone signs in.
+        if ((url.pathname === "/favicon.svg" || url.pathname === "/favicon.ico") && request.method === "GET") {
+          return faviconResponse(url.pathname);
         }
 
         if (url.pathname === MCP_PATH && request.method !== "POST") {
@@ -245,6 +251,21 @@ function resolveBroker(dependencies: WorkerDependencies, env: WorkerEnv): Sessio
   if (dependencies.broker) return dependencies.broker(env);
   if (env.SESSION_BROKER) return createDurableObjectBrokerApi(env.SESSION_BROKER);
   return problemResponse(503, "SESSION_BROKER_UNAVAILABLE", "Service Unavailable", "The session broker is unavailable.");
+}
+
+const FAVICON_PNG = Uint8Array.from(atob(BRAND_PNG_BASE64), (char) => char.charCodeAt(0));
+
+function faviconResponse(pathname: string): Response {
+  const svg = pathname === "/favicon.svg";
+  return new Response(svg ? BRAND_SVG : FAVICON_PNG, {
+    headers: {
+      // /favicon.ico serves PNG bytes; every browser and favicon fetcher accepts that.
+      "content-type": svg ? "image/svg+xml" : "image/png",
+      "cache-control": "public, max-age=86400",
+      "content-security-policy": "default-src 'none'",
+      "x-content-type-options": "nosniff",
+    },
+  });
 }
 
 function validateRequestAuthority(request: Request, url: URL, env: WorkerEnv): Response | null {
