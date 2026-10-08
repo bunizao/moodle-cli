@@ -1,3 +1,5 @@
+<p align="center"><a href="https://unicorn.tuuhub.com"><img src=".github/assets/hero.jpg" alt="moodle-cli: Moodle from your terminal, scripts and AI agent, part of unicorn" width="100%"></a></p>
+
 # moodle-cli
 
 **Give your AI agent access to Moodle.**
@@ -9,6 +11,8 @@ Let it keep up with deadlines and grades, fetch course files, and search forum d
 [![Node.js 22.13+](https://img.shields.io/badge/Node.js-22.13%2B-339933?logo=nodedotjs&logoColor=white)](https://nodejs.org/)
 [![Bun](https://img.shields.io/badge/Bun-supported-fbf0df?logo=bun&logoColor=black)](https://bun.sh/)
 [![MIT License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
+> The live layer of [unicorn](https://unicorn.tuuhub.com): live tools answer what is there now, unicorn answers what changed. Docs: [unicorn.tuuhub.com/docs/moodle](https://unicorn.tuuhub.com/docs/moodle).
 
 ## Quick links
 
@@ -409,6 +413,20 @@ measurement scope and remaining budget differences.
 ## Contributing
 
 Bug reports from real Moodle sites help most: run `moodle coverage --json` and attach the output. See [CONTRIBUTING.md](CONTRIBUTING.md) before opening a pull request, and [SECURITY.md](SECURITY.md) for vulnerabilities. Everyone taking part follows the [Code of Conduct](CODE_OF_CONDUCT.md).
+
+## Part of unicorn
+
+unicorn is one project in two layers. The live tools answer what is there now; unicorn answers what changed.
+
+| Project | Layer | What it does | Repo |
+| --- | --- | --- | --- |
+| unicorn | Memory | A Cloudflare Worker on your own account. Reads Moodle, Ed, Canvas, Gmail and feeds every hour, remembers what each said, and tells your AI agent what changed. | [TuuHub/unicorn](https://github.com/TuuHub/unicorn) |
+| **moodle-cli** (you are here) | **Live** | **Moodle from the terminal and MCP: units, deadlines, grades, forums, files, submissions.** | [bunizao/moodle-cli](https://github.com/bunizao/moodle-cli) |
+| edstem-cli | Live | Ed Discussion from the terminal and MCP: units, threads, lessons, files, posting. | [bunizao/edstem-cli](https://github.com/bunizao/edstem-cli) |
+| ontrack | Live | OnTrack / Doubtfire from the terminal: units, tasks, chats, submissions. CLI only, no MCP server. | [bunizao/ontrack-cli](https://github.com/bunizao/ontrack-cli) |
+
+The three live tools share one command contract through [@bunizao/cli-kit](https://github.com/bunizao/cli-kit).
+Docs for everything: [unicorn.tuuhub.com/docs](https://unicorn.tuuhub.com/docs). This project: [unicorn.tuuhub.com/docs/moodle](https://unicorn.tuuhub.com/docs/moodle). CLIs overview: [unicorn.tuuhub.com/cli](https://unicorn.tuuhub.com/cli).
 
 ## License
 
