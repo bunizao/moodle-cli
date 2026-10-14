@@ -46,6 +46,10 @@ export function userConfigPath(homeDir = homedir()): string {
   return join(homeDir, CONFIG_DIR_NAME, CONFIG_FILENAME);
 }
 
+// A path that names a page rather than an install directory: the two landmarks users
+// paste by mistake, plus anything ending in a file extension.
+const PAGE_LIKE_PATH = /(?:\/(?:login|my)|\.(?:php|html?|aspx?|jspx?|cgi))$/iu;
+
 export function normalizeBaseUrl(value: string): string {
   const raw = value.trim();
   if (!raw) {
@@ -71,13 +75,16 @@ export function normalizeBaseUrl(value: string): string {
   if (parsed.search || parsed.hash) {
     throw new ConfigError("Base URL must not include query parameters or fragments");
   }
-  if (parsed.pathname !== "/" && parsed.pathname !== "") {
+  // Moodle is often installed in a subdirectory (https://host/moodle), so a path is
+  // allowed; only a page URL, which is what users paste by mistake, is rejected.
+  const installPath = parsed.pathname.replace(/\/+$/u, "");
+  if (PAGE_LIKE_PATH.test(installPath)) {
     throw new ConfigError(
-      "Base URL must be the site root, for example https://school.example.edu. Do not include paths like /login/index.php or /my/.",
+      "Base URL must be the Moodle install root, for example https://school.example.edu or https://school.example.edu/moodle. Do not include pages like /login/index.php or /my/.",
     );
   }
 
-  return parsed.origin;
+  return `${parsed.origin}${installPath}`;
 }
 
 export async function loadConfig(options: ConfigOptions = {}): Promise<MoodleConfig> {
@@ -178,7 +185,8 @@ export function missingBaseUrlMessage(configPath: string | null, options: Config
     `Add base_url to ${targetPath} or set MOODLE_BASE_URL.`,
     "Required format:",
     "  base_url: https://school.example.edu",
-    "Use the site root only. Do not include paths like /login/index.php or /my/.",
+    "Add the install subdirectory when the site has one, for example https://school.example.edu/moodle.",
+    "Do not include pages like /login/index.php or /my/.",
   ].join("\n");
 }
 

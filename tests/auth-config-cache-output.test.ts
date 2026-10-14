@@ -393,8 +393,8 @@ describe("config and session cache", () => {
     expect(loadSessionFromEnv({ [ENV_MOODLE_TOKEN]: "canonical", [ENV_MOODLE_SESSION]: "legacy" })?.value).toBe("canonical");
   });
 
-  it("rejects non-root URLs and non-TTY missing config", async () => {
-    expect(() => normalizeBaseUrl(`${BASE_URL}/login/index.php`)).toThrow(/site root/);
+  it("rejects page URLs and non-TTY missing config", async () => {
+    expect(() => normalizeBaseUrl(`${BASE_URL}/login/index.php`)).toThrow(/install root/u);
     await expect(loadConfig({ cwd: await mkdtemp(join(tmpdir(), "moodle-cli-empty-")), homeDir: await mkdtemp(join(tmpdir(), "moodle-cli-home-")), env: {}, stdin: { isTTY: false } })).rejects.toThrow(/MOODLE_BASE_URL/);
   });
 

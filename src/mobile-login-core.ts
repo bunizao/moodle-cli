@@ -86,7 +86,7 @@ export async function readSiteAuthProfile(
   baseUrl: string,
   fetchImpl: Fetcher = fetch,
 ): Promise<SiteAuthProfile | null> {
-  const url = new URL(SERVICE_NOLOGIN_PATH, ensureTrailingSlash(baseUrl));
+  const url = siteUrl(baseUrl, SERVICE_NOLOGIN_PATH);
   url.searchParams.set("info", FUNC_MOBILE_PUBLIC_CONFIG);
   const body = JSON.stringify([{ index: 0, methodname: FUNC_MOBILE_PUBLIC_CONFIG, args: {} }]);
   let response: Response;
@@ -131,7 +131,7 @@ export async function fetchMobileToken(
   cookie: { name: string; value: string },
   fetchImpl: Fetcher = fetch,
 ): Promise<MobileToken | null> {
-  const url = new URL(MOBILE_LAUNCH_PATH, ensureTrailingSlash(baseUrl));
+  const url = siteUrl(baseUrl, MOBILE_LAUNCH_PATH);
   url.searchParams.set("service", MOBILE_SERVICE_SHORTNAME);
   url.searchParams.set("passport", randomPassport());
   url.searchParams.set("urlscheme", MOBILE_URL_SCHEME);
@@ -185,7 +185,7 @@ async function requestAutologinKey(
   token: MobileToken,
   fetchImpl: Fetcher,
 ): Promise<string | null> {
-  const url = new URL(WEBSERVICE_REST_PATH, ensureTrailingSlash(baseUrl));
+  const url = siteUrl(baseUrl, WEBSERVICE_REST_PATH);
   url.searchParams.set("moodlewsrestformat", "json");
   url.searchParams.set("wsfunction", FUNC_MOBILE_AUTOLOGIN_KEY);
   url.searchParams.set("wstoken", token.wstoken);
@@ -216,7 +216,7 @@ async function exchangeAutologinKey(
   key: string,
   fetchImpl: Fetcher,
 ): Promise<MintedSession | null> {
-  const url = new URL(MOBILE_AUTOLOGIN_PATH, ensureTrailingSlash(baseUrl));
+  const url = siteUrl(baseUrl, MOBILE_AUTOLOGIN_PATH);
   url.searchParams.set("userid", String(userid));
   url.searchParams.set("key", key);
 
@@ -256,6 +256,15 @@ function extractSessionCookie(response: Response): { name: string; value: string
 
 function ensureTrailingSlash(baseUrl: string): string {
   return `${baseUrl.replace(/\/+$/, "")}/`;
+}
+
+/**
+ * Resolve a site-absolute path against the base URL, which may name an install
+ * subdirectory such as https://host/moodle. The path is treated as relative so the
+ * subdirectory survives; `new URL("/lib/...", baseUrl)` would discard it.
+ */
+function siteUrl(baseUrl: string, path: string): URL {
+  return new URL(path.replace(/^\//u, ""), ensureTrailingSlash(baseUrl));
 }
 
 function randomPassport(): string {

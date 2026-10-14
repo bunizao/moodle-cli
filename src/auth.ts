@@ -756,7 +756,8 @@ function cookieHostRank(domain: string | undefined, host: string): number | null
 }
 
 export function loginUrl(baseUrl: string): string {
-  return new URL(LOGIN_PATH, `${baseUrl.replace(/\/+$/, "")}/`).toString();
+  // Resolved as a relative path so a base URL that names an install subdirectory keeps it.
+  return new URL(LOGIN_PATH.replace(/^\//u, ""), `${baseUrl.replace(/\/+$/, "")}/`).toString();
 }
 
 export function isLoginRedirect(responseUrl: string, baseUrl: string): boolean {
@@ -764,7 +765,10 @@ export function isLoginRedirect(responseUrl: string, baseUrl: string): boolean {
     return false;
   }
   const path = new URL(responseUrl, baseUrl).pathname;
-  return path === LOGIN_PATH || path.startsWith("/login/");
+  // The login page sits under the install path, so derive it instead of assuming "/login/".
+  const loginPath = new URL(loginUrl(baseUrl)).pathname;
+  const loginDirectory = loginPath.slice(0, loginPath.lastIndexOf("/") + 1);
+  return path === loginPath || path.startsWith(loginDirectory);
 }
 
 function looksLikeLoginPage(html: string): boolean {
