@@ -14,6 +14,16 @@ if [[ ! -f "$LAB/moodle/version.php" ]]; then
   tar -xzf "$LAB/moodle.tgz" -C "$LAB" && rm "$LAB/moodle.tgz"
 fi
 
+# Formulas uses the multipart behaviour; both plugins must exist before Moodle installs.
+if [[ ! -f "$LAB/moodle/question/type/formulas/version.php" ]]; then
+  git clone --quiet --depth 1 https://github.com/FormulasQuestion/moodle-qtype_formulas.git "$LAB/moodle/question/type/formulas"
+fi
+if [[ ! -f "$LAB/moodle/question/behaviour/adaptivemultipart/version.php" ]]; then
+  git clone --quiet --depth 1 https://github.com/maths/moodle-qbehaviour_adaptivemultipart.git "$LAB/moodle/question/behaviour/adaptivemultipart"
+fi
+# Moodle's question generators use PHPUnit classes when building plugin questions.
+(cd "$LAB/moodle" && COMPOSER_ALLOW_SUPERUSER=1 composer install --quiet --no-interaction)
+
 "$HERE/start.sh" stop >/dev/null 2>&1 || true
 service postgresql start >/dev/null 2>&1 || pg_ctlcluster 16 main start
 for _ in $(seq 1 30); do pg_isready -q -h 127.0.0.1 && break; sleep 1; done
