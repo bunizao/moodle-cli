@@ -1,3 +1,4 @@
+import { calendarMonthHtml, calendarMonthData } from "./fixtures/calendar-view.js";
 import { expect, it, vi } from "vitest";
 import { createMoodleClientCore } from "../src/moodle-client-core.js";
 
@@ -30,11 +31,15 @@ it.each([5, 75])("refills a dashboard limit of %i after closed overdue rows", as
   const client = createMoodleClientCore("https://moodle.example.edu", {
     cookie: { name: "MoodleSession", value: "fixture" }, sesskey: "fixture", userid: 1,
     userInfo: { userid: 1, username: "student", fullname: "Student", sitename: "Moodle", siteurl: "https://moodle.example.edu" },
-    fetchImpl: async (_url, init) => Response.json(JSON.parse(String(init?.body)).map(({ index, methodname, args }: { index: number; methodname: string; args: { aftereventid: number; limitnum: number } }) => ({
-      index, error: false, data: methodname === "core_calendar_get_action_events_by_timesort"
-        ? { events: events.filter(event => event.id > args.aftereventid).slice(0, args.limitnum) }
-        : methodname === "core_enrol_get_users_courses" ? [] : {},
-    }))),
+    fetchImpl: async (url, init) => {
+      if (new URL(String(url)).pathname === "/calendar/view.php") return new Response(calendarMonthHtml(Number(new URL(String(url)).searchParams.get("time"))));
+      return Response.json(JSON.parse(String(init?.body)).map(({ index, methodname, args }: { index: number; methodname: string; args: { aftereventid: number; limitnum: number; year: number; month: number } }) => ({
+        index, error: false, data: methodname === "core_calendar_get_action_events_by_timesort"
+          ? { events: events.filter(event => event.id > args.aftereventid).slice(0, args.limitnum) }
+          : methodname === "core_enrol_get_users_courses" ? []
+          : methodname === "core_calendar_get_calendar_monthly_view" ? calendarMonthData({ weeks: [] }, args) : {},
+      })));
+    },
   });
   const snapshot = await client.getOverview(limit, 30);
   expect(snapshot.errors).toEqual([]);
