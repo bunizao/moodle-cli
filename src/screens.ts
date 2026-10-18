@@ -150,11 +150,19 @@ export function renderScreen(data: Record<string, unknown>, options: { width?: n
     next = [`moodle item ${a.quiz_id}`];
   } else if (data.thread) {
     const t = record(data.thread); lines.push(text(t.name));
-    for (const p of array(t.posts)) lines.push("", `${text(record(p.author).name)} · ${moment(p.created, now)}`, text(p.message_text), ...array(p.links).map(l => `${text(l.text)} ${text(l.url)}`));
+    const posts = array(t.posts);
+    const byId = new Map(posts.map(post => [post.id, post]));
+    for (const p of posts) {
+      let parent = byId.get(p.parent_id);
+      const seen = new Set([p.id]);
+      while (parent && !seen.has(parent.id)) { seen.add(parent.id); parent = byId.get(parent.parent_id); }
+      const indent = "  ".repeat(seen.size - 1);
+      lines.push("", `${indent}${text(record(p.author).name)} · ${moment(p.created, now)}`, ...text(p.message_text).split("\n").map(line => `${indent}${line}`), ...array(p.links).map(l => `${indent}${text(l.text)} ${text(l.url)}`), ...array(p.attachments).map(f => `${indent}Attachment: ${text(f.name)} (${f.size} bytes) ${text(f.url)}`));
+    }
     lines.push(`Posts ${Number(t.offset) + array(t.posts).length} of ${t.posts_total}`);
-    next = [`moodle threads show ${t.id} --offset ${Number(t.offset) + array(t.posts).length}`];
+    next = Number(t.offset) + array(t.posts).length < Number(t.posts_total) ? [`moodle threads show ${t.id} --offset ${Number(t.offset) + array(t.posts).length}`] : [];
   } else if (data.news) {
-    for (const n of array(data.news)) { const p = record(n.post); lines.push(`${text(n.unit_code)} · ${text(n.name)}`, `${text(record(p.author).name)} · ${moment(p.created, now)}`, text(p.message_text), ""); }
+    for (const n of array(data.news)) { const p = record(n.post); lines.push(`${text(n.unit_code)} · ${text(n.name)}`, `${text(record(p.author).name)} · ${moment(p.created, now)}`, text(p.message_text), ...array(p.attachments).map(file => `Attachment: ${text(file.name)} (${file.size} bytes) ${text(file.url)}`), ""); }
   } else if (data.units) {
     lines.push(renderTerminalTable([{ label: "ID" }, { label: "Code" }, { label: "Name", flex: true }], array(data.units).map(u => [text(u.id), text(u.code), text(u.name)]), { width: options.width }));
     next = ["moodle UNIT", "moodle find QUERY"];

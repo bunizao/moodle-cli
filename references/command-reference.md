@@ -38,8 +38,11 @@ asks for confirmation (`--yes` skips it) and prints the receipt Moodle shows aft
 | moodle find | Ranked sections, activities and discussion subjects. | <query> [unit] | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required)<br>--limit (value required)<br>--types (value required) |
 | moodle forums | Inspect forums. |  |  |
 | moodle forums list | List forum activities in a unit. | <unit> | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required)<br>--limit (value required) |
+| moodle forums post | Create a forum discussion. | <forum> | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required)<br>--subject (value required)<br>--text (value required) |
 | moodle forums search | Search forum discussion titles and post text. | <query> | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required)<br>--unit (value required)<br>--course (value required)<br>--forum (value required)<br>--titles-only<br>--unread-only<br>--recent<br>--limit-forums (value required)<br>--limit-discussions (value required)<br>--limit (value required) |
 | moodle forums show | List discussions from a forum. | <forum> | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required)<br>--limit (value required)<br>--query (value required) |
+| moodle forums subscribe | Subscribe to a forum. | <forum> | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required) |
+| moodle forums unsubscribe | Unsubscribe from a forum. | <forum> | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required) |
 | moodle grades | Inspect grades. |  |  |
 | moodle grades list | Show marked grades; request summary or all. | [unit] | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required)<br>--mode (value required)<br>--types (value required)<br>--include-feedback<br>--include-ungraded<br>--limit (value required)<br>--offset (value required)<br>--graded-only |
 | moodle mcp | Deploy a private MCP Worker on Cloudflare; encrypted session storage and local renewal. Free-tier limits apply. |  |  |
@@ -79,6 +82,7 @@ asks for confirmation (`--yes` skips it) and prints the receipt Moodle shows aft
 | moodle submit | Upload local files into an assignment; returns the receipt Moodle shows afterwards. | <ref> [files...] | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required)<br>--final<br>--text (value required)<br>--text-file (value required)<br>--replace<br>--accept-statement |
 | moodle sync | Keep one local folder per unit in step with Moodle: new files arrive, changed ones update, and a file you edited is never overwritten. | [unit] | --to (value required)<br>--pretty<br>--json<br>--yaml<br>--table<br>--fields (value required) |
 | moodle threads | Inspect forum discussion threads. |  |  |
+| moodle threads reply | Reply to a forum post. | <post> <text> | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required)<br>--attach (value required) |
 | moodle threads show | Show posts in a forum discussion. | <discussion> | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required)<br>--limit (value required)<br>--offset (value required)<br>--post (value required)<br>--body |
 | moodle todo | List upcoming actionable timeline items. |  | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required)<br>--limit (value required)<br>--days (value required) |
 | moodle uninstall | Remove local background jobs; optionally remove the selected Worker and configuration. |  | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required)<br>--remote<br>--purge |

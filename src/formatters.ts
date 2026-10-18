@@ -269,6 +269,7 @@ export function formatForumDiscussion(
     if (post.url) {
       lines.push(`  URL: ${post.url}`);
     }
+    for (const file of post.attachments ?? []) lines.push(`  Attachment: ${file.name} (${file.size} bytes) ${file.url}`);
     if (options.showBody) {
       if (post.message_text) {
         lines.push("", post.message_text);
@@ -291,9 +292,12 @@ export function formatForumDiscussionRefs(forumCmid: number, refs: ForumDiscussi
       { label: "ID" },
       { label: "Subject" },
       { label: "Group" },
+      { label: "Author" },
+      { label: "Replies" },
+      { label: "Unread" },
     ],
     refs.length
-      ? refs.map((ref) => [String(ref.id), ref.subject, ref.group_name])
+      ? refs.map((ref) => [String(ref.id), `${ref.pinned ? "[pinned] " : ""}${ref.subject}`, ref.group_name, ref.author ?? "", ref.replies === undefined ? "" : String(ref.replies), ref.unread === undefined ? "" : String(ref.unread)])
       : [["No discussions", "", "", ""]],
     { title: `Forum ${forumCmid} · Discussions` },
   );
