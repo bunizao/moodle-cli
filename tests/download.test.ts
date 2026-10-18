@@ -343,6 +343,18 @@ describe("Moodle file downloads", () => {
     await expect(readFile(join(directory, "2", "slides.pdf"), "utf8")).resolves.toBeTruthy();
   });
 
+  it("reports a blocked nested download directory as a configuration error", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "moodle-download-"));
+    await writeFile(join(directory, "week-one"), "Existing local file");
+    const url = `${BASE_URL}/pluginfile.php/7/mod_folder/content/0/week-one/slides.pdf`;
+    const pending = downloadMoodleFiles(client({
+      getActivity: async () => ({ id: 5, type: "folder", file_entries: [{ name: "slides.pdf", url }] }) as never,
+      requestAbsolute: async () => responseAt(url, "pdf", { "content-type": "application/pdf" }),
+    }), { source: "5", directory, force: true });
+    await expect(pending).rejects.toMatchObject({ code: "config", message: `Cannot create local directory '${join(directory, "week-one")}'.` });
+    expect(await readFile(join(directory, "week-one"), "utf8")).toBe("Existing local file");
+  });
+
   it("names each file on a dry run without creating the directory or writing anything", async () => {
     const directory = join(await mkdtemp(join(tmpdir(), "moodle-download-")), "week-3");
     const file = (n: number) => `${BASE_URL}/pluginfile.php/7/mod_folder/content/0/${n}/slides.pdf`;
