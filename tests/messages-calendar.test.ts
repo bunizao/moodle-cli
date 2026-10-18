@@ -80,6 +80,34 @@ describe("notifications through MoodleClient", () => {
   });
 });
 
+describe("profile timezone through CLI and MCP", () => {
+  it("keeps the Moodle timezone in message and calendar results and human output", async () => {
+    const at = Date.parse("2026-10-18T12:00:00Z") / 1000;
+    const fetchImpl: typeof fetch = async (_url, init) => init?.method === "POST"
+      ? Response.json((JSON.parse(String(init.body)) as Array<{ methodname: string }>).map(({ methodname }, index) => ({ index, error: false, data:
+        methodname === "core_webservice_get_site_info" ? { ...user, timezone: "Pacific/Auckland" }
+        : methodname === "core_message_get_conversations" ? { conversations: [] }
+        : methodname === "core_message_get_conversation_messages" ? { id: 2, members: [member], messages: [{ ...message, timecreated: at }] }
+        : { weeks: [{ days: [{ events: [{ id: 5, name: "Dentist", timestart: at }] }] }] },
+      })))
+      : new Response('<script>M.cfg = {"sesskey":"test","userid":7};</script><body id="page-my-index"></body>');
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-10-18T11:00:00Z"));
+    try {
+      for (const args of [["messages", "show", "2"], ["calendar"]]) {
+        let output = "";
+        expect(await runCli(["node", "moodle", ...args, "--table"], { env: { MOODLE_BASE_URL: baseUrl, MOODLE_SESSION: "test" }, fetchImpl, stdout: { write: (text: string) => { output += text; return true; } }, stderr: { write: () => true } })).toBe(0);
+        expect(output).toContain("Mon 19 Oct, 01:00");
+      }
+      const client = new MoodleClient(baseUrl, { cookie: { name: "MoodleSession", value: "test" }, sesskey: "test", userid: 7, fetchImpl });
+      const server = createMoodleMcpServer(createMoodleGateway(client));
+      for (const [name, args] of [["messages", {}], ["conversation", { conversation_id: 2 }], ["calendar", {}]] as const) {
+        expect(await server.handle({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name, arguments: args } }, { protocolVersion: "2025-06-18" })).toMatchObject({ result: { structuredContent: { timezone: "Pacific/Auckland" } } });
+      }
+    } finally { vi.useRealTimers(); }
+  });
+});
+
 describe("calendar through MoodleClient and CLI", () => {
   it("reads all calendar kinds across month boundaries, filters the window and deduplicates spanning events", async () => {
     vi.useFakeTimers();

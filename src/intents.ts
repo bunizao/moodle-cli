@@ -97,16 +97,16 @@ export function createIntentService(gateway: MoodleGateway, now = () => Date.now
       case "messages": {
         if (!gateway.getConversations) throw new ReferenceError("not_found", "This gateway cannot read messages.", []);
         const conversations = await gateway.getConversations(limit, Number(input.offset));
-        result = { conversations, returned: conversations.length, offset: Number(input.offset) }; break;
+        result = { timezone: await timezone(), conversations, returned: conversations.length, offset: Number(input.offset) }; break;
       }
       case "conversation": {
         if (!gateway.getConversation) throw new ReferenceError("not_found", "This gateway cannot read messages.", []);
-        result = { conversation: await gateway.getConversation(Number(input.conversation_id), limit, Number(input.offset)) }; break;
+        result = { timezone: await timezone(), conversation: await gateway.getConversation(Number(input.conversation_id), limit, Number(input.offset)) }; break;
       }
       case "calendar": {
         if (!gateway.getCalendar) throw new ReferenceError("not_found", "This gateway cannot read the calendar.", []);
         const events = await gateway.getCalendar(Number(input.days), ref === undefined ? undefined : (await course(ref)).id);
-        result = { events, total: events.length }; break;
+        result = { timezone: await timezone(), events, total: events.length }; break;
       }
       case "units": { const rows = await courses(); const tz = await timezone(); result = { units: rows.slice(0, limit).map(c => unitRow(c, tz)), total: rows.length }; break; }
       case "unit": {

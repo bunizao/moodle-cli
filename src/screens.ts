@@ -37,7 +37,7 @@ export function tryLines(commands: readonly string[]): string {
 export function renderScreen(data: Record<string, unknown>, options: { width?: number; color?: boolean; now?: number; intent?: string } = {}): string {
   const lines: string[] = [];
   const now = options.now ?? Date.now();
-  const timestamp = (value: unknown, timezone?: string) => moment(isoTime(Number(value), timezone ?? timezoneFor().timezone), now);
+  const timestamp = (value: unknown, timezone?: string) => moment(isoTime(Number(value), timezone ?? (typeof data.timezone === "string" ? data.timezone : timezoneFor().timezone)), now);
   // Three levels on every row: the code a person types next, the name they read, the facts they glance at.
   const theme = createTheme(Boolean(options.color));
   // Text and tone stay apart until the last moment: a line paints them itself, a table cell hands both over.
