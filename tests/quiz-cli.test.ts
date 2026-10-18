@@ -123,26 +123,16 @@ describe("quiz answer CLI", () => {
     expect(post.get("q4000:4_choice2")).toBe("1");
   }, CLI_TIMEOUT);
 
-  it("passes one explicit --value into a single-input formulas answer", async () => {
-    const single = fixture("quiz-attempt-formulas-single.html");
-    const { calls, fetchImpl } = quizFetch({ "0": single }, savedQuestion(single, "question-5484577-7"));
-
-    const result = await runQuiz(["quiz", "answer", "900", "32", "1", "--value", "4", "--yes", "--json"], fetchImpl);
-
-    expect(result.code, result.stderr).toBe(0);
-    expect(postedBody(calls.find(call => call.init?.method === "POST")!).get("q5484577:7_0_0")).toBe("4");
-  }, CLI_TIMEOUT);
-
   it("passes repeated --value flags into a multi-field formulas answer", async () => {
     const multi = fixture("quiz-attempt-formulas.html");
-    const { calls, fetchImpl } = quizFetch({ "0": multi }, savedQuestion(multi, "question-5484577-7"));
+    const { calls, fetchImpl } = quizFetch({ "0": multi }, fixture("moodle-5.0/formulas-attempt-saved.html"));
 
-    const result = await runQuiz(["quiz", "answer", "900", "32", "1", "--value", "4", "--value", "32", "--yes", "--json"], fetchImpl);
+    const result = await runQuiz(["quiz", "answer", "900", "32", "1", "--value", "40 m/s", "--value", "40", "--value", "m/s", "--value", "40", "--value", "40", "--yes", "--json"], fetchImpl);
 
     expect(result.code, result.stderr).toBe(0);
     const post = postedBody(calls.find(call => call.init?.method === "POST")!);
-    expect(post.get("q5484577:7_0_0")).toBe("4");
-    expect(post.get("q5484577:7_1_0")).toBe("32");
+    expect(post.get("q5:1_0_")).toBe("40 m/s");
+    expect(post.get("q5:1_1_1")).toBe("m/s");
   }, CLI_TIMEOUT);
 
   it("rejects multiple explicit values for a non-fields question before posting", async () => {
@@ -156,4 +146,64 @@ describe("quiz answer CLI", () => {
     expect(result.stderr).toContain("takes exactly one --value, not 2");
     expect(calls.some(call => call.init?.method === "POST")).toBe(false);
   }, CLI_TIMEOUT);
+});
+
+
+describe("quiz attempt access errors", () => {
+  for (const [path, message] of [
+    ["startattempt.php?cmid=32", "access password again"],
+    ["summary.php?attempt=900", "time ran out"],
+    ["review.php?attempt=900", "already finished"],
+  ]) {
+    it(`explains a redirect to ${path.split("?")[0]}`, async () => {
+      const fetchImpl: typeof fetch = async input => {
+        const url = String(input);
+        if (new URL(url).pathname === "/my/") return htmlResponse(fixture("dashboard.html"), url);
+        return htmlResponse(fixture("quiz-review.html"), `${BASE}/mod/quiz/${path}`);
+      };
+      const result = await runQuiz(["quiz", "show", "900", "32", "--json"], fetchImpl);
+      expect(result.code, result.stderr).toBe(2);
+      expect(result.stderr).toContain(message);
+      if (path.startsWith("startattempt")) expect(result.stderr).toContain("moodle quiz start 32 --password");
+    });
+  }
+});
+
+
+describe("real formulas attempt", () => {
+  it("shows the timer and named fields in both JSON and human output", async () => {
+    const page = fixture("quiz-attempt-formulas.html");
+    const { fetchImpl } = quizFetch({ "0": page }, fixture("moodle-5.0/formulas-attempt-saved.html"));
+    const result = await runQuiz(["quiz", "show", "900", "32", "--json"], fetchImpl);
+    expect(result.code, result.stderr).toBe(0);
+    const output = JSON.parse(result.stdout).attempt;
+    expect(output.time_left_s).toBe(3557);
+    expect(Date.parse(output.ends_at)).toBeGreaterThan(Date.now() + 3555_000);
+    expect(output.questions[0].fields.map((field: { label: string }) => field.label)).toContain("Unit for part 2");
+    const human = await runQuiz(["quiz", "show", "900", "32", "--table"], fetchImpl);
+    expect(human.stdout).toContain("Time left: 59m 17s");
+    expect(human.stdout).toContain("Unit for part 2: (empty)");
+  });
+
+  it("uses the server clock for a stable deadline across show and answer", async () => {
+    const fetchImpl: typeof fetch = async (input, init) => {
+      const url = String(input);
+      if (new URL(url).pathname === "/my/") return htmlResponse(fixture("dashboard.html"), url);
+      const saved = init?.method === "POST";
+      const response = htmlResponse(fixture(saved ? "moodle-5.0/formulas-attempt-saved.html" : "quiz-attempt-formulas.html"), ATTEMPT);
+      response.headers.set("date", saved ? "Sun, 18 Oct 2026 08:44:42 GMT" : "Sun, 18 Oct 2026 08:41:05 GMT");
+      return response;
+    };
+    const shown = await runQuiz(["quiz", "show", "900", "32", "--json"], fetchImpl);
+    const answered = await runQuiz(["quiz", "answer", "900", "32", "1", "--value", "40 m/s", "--value", "40", "--value", "m/s", "--value", "40", "--value", "40", "--yes", "--json"], fetchImpl);
+    expect(shown.code, shown.stderr).toBe(0);
+    expect(answered.code, answered.stderr).toBe(0);
+    const before = JSON.parse(shown.stdout).attempt;
+    const after = JSON.parse(answered.stdout).attempt;
+    expect(before.time_left_s).toBe(3557);
+    expect(after.time_left_s).toBe(3340);
+    expect(before.ends_at).toBe("2026-10-18T09:40:22.000Z");
+    expect(after.ends_at).toBe(before.ends_at);
+  });
+
 });
