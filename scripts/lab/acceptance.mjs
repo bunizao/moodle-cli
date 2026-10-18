@@ -89,6 +89,8 @@ try {
     const item = command(["activities", "show", restricted.cmid]).item;
     assert.equal(item.available, false);
     assert(item.availability_reason, "The restriction reason is absent.");
+    const listed = command(["activities", "list", course.id, "--limit", 200]).activities?.find(item => item.id === restricted.cmid);
+    assert(listed?.availability_reason, "The activity list omits its restriction reason.");
   });
   check("manual completion and undo", () => {
     try {
@@ -126,7 +128,16 @@ try {
   });
   check("calendar includes user site course and BBB events", () => {
     const events = command(["calendar", "--days", 30]).events || [];
-    for (const name of ["Guest lecture", "Dentist", "Public holiday", "BBB study session"]) assert(events.some(event => event.name.includes(name)), `Calendar lacks ${name}.`);
+    for (const id of seeded.calendar_events) {
+      const expected = truth.calendar_events.find(event => event.id === id);
+      const actual = events.find(event => event.id === id);
+      assert(expected && actual, `Calendar lacks ground-truth event ${id}.`);
+      assert.equal(actual.name, expected.name);
+      assert.equal(actual.starts_at, expected.timestart);
+      assert.equal(actual.event_type, expected.eventtype);
+      assert.equal(new URL(actual.url).hash, `#event_${id}`);
+    }
+    assert(events.some(event => event.name.includes("BBB study session")), "Calendar lacks the BBB session.");
     const overview = command(["overview", "--todo-days", 30]).home;
     assert(overview.calendar?.some(event => event.name.includes("Dentist")), "Overview omits calendar events.");
     const ics = command(["calendar", "--days", 30, "--ics"], { raw: true });

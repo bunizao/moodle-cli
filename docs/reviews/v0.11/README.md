@@ -1,13 +1,13 @@
 # v0.11 implementation validation
 
-Validated on 2026-10-18 in Australia/Melbourne. Code revision: `314d6e85607763692808fcfb380ab62447262db6`. Implementation starts after `5243855`; the existing branch and unrelated untracked PDF were preserved. No release, push or production deployment was performed.
+Validation and review follow-up: 2026-10-19, Australia/Melbourne. Code revision: `e5e3495c038cc01e9e2380d8f6e35c99ae08af80` (the activity-state PR head); implementation starts after `47a548f58ab3ebcd1c3d54fcb2102ffbd2a2d77a` on main. Both revisions are reachable in the PR series. The original working branch and unrelated untracked PDF were preserved. Changes are published as PRs #58–#67; no release or production deployment was performed.
 
 ## Checks
 
 | Check | Result |
 | --- | --- |
 | `npm run check` | Passed |
-| `npm test` | 57 suites; 852 passed, 1 platform-specific Windows credential test skipped on macOS |
+| `npm test` | 58 suites; 875 passed, 1 platform-specific Windows credential test skipped on macOS |
 | `npm run build` | CLI and Worker bundles, bundle checks and shipped vocabulary passed |
 | `npm run pack:check` | Passed |
 | `npm run pack:smoke` | Installed tarball table/JSON output passed; production dependencies: 0 audit vulnerabilities |
@@ -37,3 +37,24 @@ A stock student session cannot prove whether an assignment's first save preserve
 Cut-off dates remain absent from deadline rows when Moodle does not expose them to the student; assignment details report settings only when available. Locked-work limits are likewise omitted when unavailable. Countdown-only quiz pages yield an estimated `ends_at` from the server clock, with up to two seconds of rounding.
 
 Final review counts: Standards 0 unresolved; Spec 0 unresolved actionable findings in the implemented scope. The first draft-only capability remains an explicit specification limitation, not a passing capability check.
+
+
+## Returned PR review follow-up
+
+All 16 returned findings were independently checked and fixed. The download case was reproduced with `--force`: the normal existence check already classifies a blocked parent, while forced nested directory creation previously leaked the raw filesystem error.
+
+| PR | Confirmed issues addressed |
+| --- | --- |
+| #58 | General calendar event ids and records in ground truth; Composer/Git/PHP preflight before setup |
+| #59 | Refill filtered dashboard pages, including limits above the 50-event API cap |
+| #61 | Classify nested destination failures as configuration errors |
+| #62 | Submit access passwords when resuming; use server time for absolute countdowns |
+| #63 | Profile timezone in human output; specific event URLs; native-calendar month navigation |
+| #64 | Text-only replacements may remove old files; mixed consent discloses both writes |
+| #65 | Reuse forum HTML verification and clear stale cache; enforce attachment count before uploading |
+| #66 | Fill missing list restriction text from course HTML; render state fields once |
+| #67 | Record reachable PR-series revisions instead of unpublished implementation commits |
+
+Independent follow-up reviews found **0 Standards findings** and **0 Spec findings**. The Spec reviewer ran 122 tests from nine public-interface suites in an immutable archive, and confirmed against Moodle source that `nextperiod.timestamp` is the first day of the next active-calendar month. The final full test and lab results above supersede the original implementation counts.
+
+Additional real-lab review probes passed: a fresh session resumed the same password-protected timed attempt; text-only replacement removed the old file; messages/conversation/calendar retained `Asia/Tokyo` while the host used UTC; reply and new-discussion verification succeeded with the discussion-post AJAX reader disabled.
