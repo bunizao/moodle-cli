@@ -159,7 +159,7 @@ export function formatDownloadResult(result: DownloadResult, cwd = process.cwd()
   const lines: string[] = [];
   const saved = result.files;
   if (result.dry_run) {
-    if (saved.length) lines.push(`Would save ${saved.length === 1 ? saved[0].filename : `${saved.length} files`} → ${shown(saved.length === 1 ? saved[0].file_path : path.dirname(saved[0].file_path))}`);
+    if (saved.length) lines.push(`Would save ${saved.length === 1 ? saved[0].filename : `${saved.length} files`} → ${shown(saved.length === 1 ? saved[0].file_path : path.resolve(saved[0].file_path.slice(0, -saved[0].filename.length)))}`);
     if (saved.length > 1) lines.push(...saved.map((file) => `  ${file.filename}`));
   } else if (saved.length === 1) {
     lines.push(`✓ Saved ${saved[0].filename} (${size(saved[0].bytes_written)}) → ${shown(saved[0].file_path)}`);
@@ -169,7 +169,7 @@ export function formatDownloadResult(result: DownloadResult, cwd = process.cwd()
       // A saved name is what the person looks for on disk, so it only shrinks to fit the terminal.
       [{ label: "File", flex: true, width: Math.max(...saved.map((file) => Array.from(file.filename).length)) }, { label: "Size" }],
       saved.map((file) => [file.filename, size(file.bytes_written)]),
-      { title: `✓ Saved ${saved.length} files (${size(total)}) → ${shown(path.dirname(saved[0].file_path))}` },
+      { title: `✓ Saved ${saved.length} files (${size(total)}) → ${shown(path.resolve(saved[0].file_path.slice(0, -saved[0].filename.length)))}` },
     ));
   }
   const present = result.skipped.filter((item) => item.reason === "exists");
