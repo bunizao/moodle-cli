@@ -1,0 +1,76 @@
+{
+  "checked_at": "2026-10-18T09:09:58.951Z",
+  "generated_at": 1792314594,
+  "moodle_release": "5.0.10+ (Build: 20261002)",
+  "checks": [
+    {
+      "name": "overdue actionable deadline",
+      "status": "passed"
+    },
+    {
+      "name": "manual grade and category total",
+      "status": "passed"
+    },
+    {
+      "name": "resource identity and unit",
+      "status": "passed"
+    },
+    {
+      "name": "restriction is readable",
+      "status": "passed"
+    },
+    {
+      "name": "manual completion and undo",
+      "status": "passed"
+    },
+    {
+      "name": "nested folder download",
+      "status": "passed"
+    },
+    {
+      "name": "messages list and read conversations",
+      "status": "passed"
+    },
+    {
+      "name": "messages send and mark read",
+      "status": "passed"
+    },
+    {
+      "name": "calendar includes user site course and BBB events",
+      "status": "passed"
+    },
+    {
+      "name": "first draft-only save remains protected",
+      "status": "passed"
+    },
+    {
+      "name": "first draft-only submission",
+      "status": "known_limitation",
+      "detail": "Stock Moodle exposes no draft-setting evidence before the first save; draft-only requests are refused. Initial --final is verified separately."
+    },
+    {
+      "name": "online text with files finalises and round-trips paragraphs",
+      "status": "passed"
+    },
+    {
+      "name": "initial file submission and group finalisation",
+      "status": "passed"
+    },
+    {
+      "name": "editable submission removal",
+      "status": "passed"
+    },
+    {
+      "name": "forum reply with attachment and parent",
+      "status": "passed"
+    },
+    {
+      "name": "forum discussion and subscription",
+      "status": "passed"
+    },
+    {
+      "name": "quiz timer and labelled formula fields",
+      "status": "passed"
+    }
+  ]
+}
