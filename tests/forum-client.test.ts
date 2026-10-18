@@ -131,6 +131,46 @@ describe("forum public write surface", () => {
     expect(await client.createForumDiscussion(66, "Roadmap verification discussion", "First paragraph.\n\nSecond paragraph.")).toEqual({ id: 17, discussion_id: 12, parent_id: 0, url: `${BASE}/mod/forum/discuss.php?d=12#p17` });
   });
 
+  it("verifies a reply through the discussion page when the posts service is disabled", async () => {
+    let changes = 0;
+    const client = writeClient(async (input, init) => {
+      const url = new URL(String(input));
+      if (url.pathname === "/mod/forum/post.php") return responseAt(fixture("forum-reply-fallback.html"), String(input));
+      if (url.pathname === "/mod/forum/discuss.php") return responseAt(fixture("forum-discussion.html"), String(input));
+      if (url.pathname === "/lib/ajax/service.php") {
+        const request = JSON.parse(String(init?.body))[0];
+        if (request.methodname === "mod_forum_add_discussion_post") {
+          changes++;
+          return Response.json([{ error: false, data: { postid: 31 } }]);
+        }
+        if (!changes) return Response.json([{ error: false, data: { forumid: 12, posts: [{ id: 30, parentid: 0, subject: "Week one questions" }] } }]);
+        return Response.json([{ error: true, exception: { errorcode: "servicenotavailable", message: "Web service is not available" } }]);
+      }
+      throw new Error(`Unexpected request: ${url.pathname}`);
+    });
+    expect((await client.getForumDiscussion(20, { group: false })).posts.map(post => post.id)).toEqual([30]);
+    expect(await client.replyForumPost(30, "When is Essay One due?")).toEqual({ id: 31, discussion_id: 20, parent_id: 30, url: `${BASE}/mod/forum/discuss.php?d=20#p31` });
+    expect(changes).toBe(1);
+  });
+
+  it("verifies a new discussion through its page when the posts service is disabled", async () => {
+    let changes = 0;
+    const client = writeClient(async (input, init) => {
+      const url = new URL(String(input));
+      if (url.pathname === "/mod/forum/view.php") return responseAt(fixture("forum-before.html"), String(input));
+      if (url.pathname === "/mod/forum/post.php" && init?.method !== "POST") return responseAt(fixture("forum-new.html"), String(input));
+      if (url.pathname === "/mod/forum/post.php") {
+        changes++;
+        return responseAt("", `${BASE}/mod/forum/discuss.php?d=20`);
+      }
+      if (url.pathname === "/mod/forum/discuss.php") return responseAt(fixture("forum-discussion.html"), String(input));
+      if (url.pathname === "/lib/ajax/service.php") return Response.json([{ error: true, exception: { errorcode: "servicenotavailable", message: "Web service is not available" } }]);
+      throw new Error(`Unexpected request: ${url.pathname}`);
+    });
+    expect(await client.createForumDiscussion(66, "Week one questions", "Post any questions about week one here.")).toEqual({ id: 30, discussion_id: 20, parent_id: 0, url: `${BASE}/mod/forum/discuss.php?d=20#p30` });
+    expect(changes).toBe(1);
+  });
+
   it("subscribes and unsubscribes the forum once, preserving idempotence", async () => {
     let subscribed = false;
     let changes = 0;

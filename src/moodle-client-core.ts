@@ -887,6 +887,10 @@ export class MoodleClientCore {
     return {
       ...await this.quizDeps(),
       call: (name, args) => this.call(name, args),
+      getDiscussion: (discussionId) => {
+        this.forum.clearCache();
+        return this.forum.getForumDiscussion(discussionId, { group: false });
+      },
     };
   }
 

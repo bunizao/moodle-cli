@@ -1,15 +1,17 @@
-import { FUNC_ADD_DISCUSSION_POST, FUNC_GET_DISCUSSION_POSTS, FUNC_GET_STRINGS } from "./constants.js";
+import { FUNC_ADD_DISCUSSION_POST, FUNC_GET_STRINGS } from "./constants.js";
 import { parse, type HTMLElement } from "node-html-parser";
 import { cleanText, filemanagerOptions } from "./html-utils.js";
-import { asArray, asRecord, numberValue, parseForumDiscussion, stringValue } from "./parsers.js";
+import { asArray, asRecord, numberValue, stringValue } from "./parsers.js";
 import { parseForumDiscussionRefsHtml } from "./scraper.js";
 import { noticesOf } from "./moodle-quiz-core.js";
+import type { ForumDiscussion } from "./models.js";
 import type { SubmitFile } from "./moodle-assign-core.js";
 
 export interface ForumWriteDeps {
   baseUrl: string;
   request(url: string, init?: RequestInit, options?: { allowErrorStatus?: boolean }): Promise<Response>;
   call(name: string, args: Record<string, unknown>): Promise<unknown>;
+  getDiscussion(discussionId: number): Promise<ForumDiscussion>;
   fail(message: string): Error;
   usage(message: string): Error;
 }
@@ -65,7 +67,7 @@ export async function createForumDiscussion(deps: ForumWriteDeps, forumCmid: num
     if (added.length === 1) discussionId = added[0].id;
   }
   if (!discussionId) throw deps.fail(`Moodle did not create the discussion: ${noticesOf(responseHtml) || "it returned the posting form"}`);
-  const discussion = parseForumDiscussion(await deps.call(FUNC_GET_DISCUSSION_POSTS, { discussionid: discussionId, sortby: "created", sortdirection: "ASC", includeinlineattachments: true }), discussionId, deps.baseUrl);
+  const discussion = await deps.getDiscussion(discussionId);
   const first = discussion.posts.find(post => !post.parent_id && post.subject === subject.trim());
   if (!first) throw deps.fail("Moodle returned a discussion, but its first post could not be verified.");
   return { id: first.id, discussion_id: discussionId, parent_id: 0, url: `${deps.baseUrl}/mod/forum/discuss.php?d=${discussionId}#p${first.id}` };
@@ -102,7 +104,7 @@ export async function setForumSubscription(deps: ForumWriteDeps, forumCmid: numb
 }
 
 async function verifyPost(deps: ForumWriteDeps, discussionId: number, postId: number, parentId: number): Promise<ForumPostReceipt> {
-  const discussion = parseForumDiscussion(await deps.call(FUNC_GET_DISCUSSION_POSTS, { discussionid: discussionId, sortby: "created", sortdirection: "ASC", includeinlineattachments: true }), discussionId, deps.baseUrl);
+  const discussion = await deps.getDiscussion(discussionId);
   const post = discussion.posts.find(item => item.id === postId && item.parent_id === parentId);
   if (!post) throw deps.fail(`Moodle returned post ${postId}, but the reply could not be verified in discussion ${discussionId}.`);
   return { id: postId, discussion_id: discussionId, parent_id: parentId, url: `${deps.baseUrl}/mod/forum/discuss.php?d=${discussionId}#p${postId}` };

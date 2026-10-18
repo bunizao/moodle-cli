@@ -621,6 +621,9 @@ export function parseForumDiscussionHtml(html: string, baseUrl: string, discussi
       continue;
     }
 
+    const parentLink = element.querySelectorAll('a[data-region="post-action"][href]').map(link => new URL(link.getAttribute("href")!, baseUrl)).find(url =>
+      url.pathname.endsWith("/mod/forum/discuss.php") && Number(url.searchParams.get("d")) === discussionId && /^#p\d+$/.test(url.hash) && Number(url.hash.slice(2)) !== postId,
+    );
     const header = first(element, ["header", ".header"]);
     const subject = cleanNodeText(
       firstDefined([
@@ -658,7 +661,7 @@ export function parseForumDiscussionHtml(html: string, baseUrl: string, discussi
         profile_image_url: "",
       },
       attachments: element.querySelectorAll('.attachments a[href*="pluginfile.php"]').map(link => ({ name: cleanNodeText(link), size: 0, url: resolveUrl(baseUrl, link.getAttribute("href") ?? "") })),
-      parent_id: safeInt(element.getAttribute("data-parent-post-id")) ?? 0,
+      parent_id: safeInt(element.getAttribute("data-parent-post-id")) || safeInt(parentLink?.hash.slice(2)),
       time_created: 0,
       time_modified: 0,
       created_pretty: cleanNodeText(header ? first(header, [".date", "time"]) : null),
