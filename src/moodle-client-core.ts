@@ -1,3 +1,4 @@
+import { htmlToStructuredContent } from "./html-utils.js";
 import { listConversations, getConversation, sendMessage, markConversationRead } from "./moodle-messages-core.js";
 import { readCalendar, readCalendarMonth, calendarMonthOf } from "./moodle-calendar-core.js";
 import { resolveUnit } from "./resolve.js";
@@ -22,6 +23,7 @@ import {
   FUNC_MARK_ALL_NOTIFICATIONS_READ,
   FUNC_GET_SITE_INFO,
   FUNC_GET_STRINGS,
+  FUNC_UPDATE_ACTIVITY_COMPLETION,
   FUNC_GET_UNREAD_CONVERSATION_COUNTS,
   GRADE_REPORT_INDEX_PATH,
   GRADE_REPORT_OVERVIEW_PATH,
@@ -379,17 +381,40 @@ export class MoodleClientCore {
     let activity: Activity | null = null;
     let courseId: number | undefined;
     let type = "";
+    let moduleName = "";
+    let moduleDates: Record<string, unknown> = {};
     try {
       const data = await this.call(FUNC_GET_COURSE_MODULE, { cmid: id });
       const module = isRecord(data) && isRecord(data.cm) ? data.cm : data;
       type = isRecord(module) && typeof module.modname === "string" ? module.modname : "";
       courseId = isRecord(module) && typeof module.course === "number" ? module.course : undefined;
+      moduleName = isRecord(module) && typeof module.name === "string" ? module.name : "";
+      if (isRecord(module) && module.customdata) {
+        try {
+          const data = typeof module.customdata === "string" ? JSON.parse(module.customdata) : module.customdata;
+          if (isRecord(data)) moduleDates = data;
+        } catch { /* Older modules may return custom data that is not JSON. */ }
+      }
+      if (isRecord(module) && Number(module.completion) > 0 && courseId) activity = await this.findActivity(id, courseId);
+      if (isRecord(module) && module.uservisible === false) {
+        return { id, name: moduleName, modname: type, type, visible: module.visible !== 0, description: "", url: `${this.baseUrl}/mod/${type}/view.php?id=${id}`, available: false, availability_reason: htmlToStructuredContent(String(module.availabilityinfo ?? ""), this.baseUrl).text };
+      }
     } catch (error) {
       if (!this.errors.isApi(error) || error.moodleErrorCode !== "servicenotavailable") {
         throw error;
       }
       activity = await this.findActivity(id);
       type = activity.modname;
+      courseId = activity.course_id;
+      moduleName = activity.name;
+    }
+    if (activity?.available === false) {
+      if (!activity.availability_reason && courseId) {
+        const page = parseCourseContentsHtml(await this.get(COURSE_PATH, { id: courseId }), this.baseUrl);
+        const rendered = page.flatMap(section => section.activities).find(item => item.id === id);
+        activity.availability_reason = rendered?.availability_reason;
+      }
+      return { ...activity, type };
     }
     const loaders: Record<string, () => Promise<ActivityDetail>> = {
       assign: () => this.getAssignment(id),
@@ -411,7 +436,27 @@ export class MoodleClientCore {
       activity ??= await this.findActivity(id, courseId);
       return { ...activity, type: type || activity.modname || "unknown" };
     }
-    return { ...(await load()), type: type === "url" ? "link" : type };
+    try {
+      const detail = await load();
+      if (type === "assign") {
+        for (const [source, target] of [["duedate", "due_at"], ["cutoffdate", "cutoff_at"]] as const) {
+          const at = Number(moduleDates[source]);
+          if (Number.isFinite(at) && at > 0) Object.assign(detail, { [target]: new Date(at * 1000).toISOString() });
+        }
+      }
+      return { ...detail, ...(activity?.completion !== undefined ? { completion: activity.completion } : {}), ...(type === "resource" ? { name: moduleName || activity?.name || detail.name, ...(courseId ? { course_id: courseId } : {}) } : {}), type: type === "url" ? "link" : type };
+    } catch (error) {
+      if (!this.errors.isApi(error) || error.moodleErrorCode !== "requireloginerror") throw error;
+      return { ...(activity ?? { id, name: moduleName, modname: type, visible: true, description: "", url: `${this.baseUrl}/mod/${type}/view.php?id=${id}` }), type, available: false, availability_reason: error.message };
+    }
+  }
+
+  async completeActivity(id: number, completed = true): Promise<{ id: number; completion: number }> {
+    await this.ensureSession();
+    const result = await this.call(FUNC_UPDATE_ACTIVITY_COMPLETION, { cmid: id, completed });
+    if (isRecord(result) && result.status === false) throw this.errors.api("Moodle did not change the activity's completion state.");
+    this.contentsCache.clear();
+    return { id, completion: completed ? 1 : 0 };
   }
 
   private async redirectedActivity(type: string, id: number): Promise<number | undefined> {
@@ -1109,7 +1154,7 @@ export class MoodleClientCore {
   private async findActivity(activityId: number, courseId?: number): Promise<Activity> {
     if (courseId !== undefined) {
       const activity = (await this.getActivities(courseId)).find((item) => item.id === activityId);
-      if (activity) return activity;
+      if (activity) return { ...activity, course_id: courseId };
       throw this.errors.notFound(`Activity ${activityId} was not found in course ${courseId}.`);
     }
 
@@ -1139,7 +1184,7 @@ export class MoodleClientCore {
         const activity = parseCourseContents(result.data)
           .flatMap((section) => section.activities)
           .find((item) => item.id === activityId);
-        if (activity) return activity;
+        if (activity) return { ...activity, course_id: id };
       }
     }
 
@@ -1170,7 +1215,7 @@ export class MoodleClientCore {
         searchedCourses += 1;
         const activity = sections.flatMap((section) => section.activities)
           .find((item) => item.id === activityId);
-        if (activity) return activity;
+        if (activity) return { ...activity, course_id: id };
       }
     }
 
@@ -1181,7 +1226,7 @@ export class MoodleClientCore {
           await this.get(COURSE_PATH, { id }),
         )).flatMap((section) => section.activities).find((item) => item.id === activityId);
         searchedCourses += 1;
-        if (activity) return activity;
+        if (activity) return { ...activity, course_id: id };
       } catch (error) {
         if (this.errors.isLoginRequired(error)) throw error;
         lastError = error;

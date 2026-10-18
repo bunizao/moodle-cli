@@ -8,7 +8,7 @@ const ref = z.union([z.string().trim().min(1).max(2048), z.number().int().positi
 const limit = z.number().int().min(1).max(200).default(20);
 const fields = (keys: string[]) => Object.fromEntries(keys.map(key => [key, s]));
 const file = z.object({ name: s, url: s, requires_authentication: z.boolean().optional() });
-const activityFields = { id, name: s, type: s, unit_id: n, section_id: n, hidden: z.boolean().optional(), due: s, due_at: n, files: z.array(file).optional() };
+const activityFields = { id, name: s, type: s, unit_id: n, section_id: n, hidden: z.boolean().optional(), completion: n, available: z.boolean().optional(), availability_reason: s, due: s, due_at: n, files: z.array(file).optional() };
 const activityListSchema = z.object({ ...activityFields, section: s, unit_code: s, description: s });
 const criterion = z.object({ name: s, level: s, score: s, remark: s });
 const attemptSummary = { id, status: s, started: s, completed: s, duration: s, marks: s, grade: s };

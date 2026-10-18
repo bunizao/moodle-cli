@@ -296,7 +296,7 @@ export function buildProgram(io: CliIO = {}): Command {
         platform: process.platform,
         showWordmark,
         storesBlocked: async () => cookieStoresBlocked(await browserCookieStores({ homeDir: io.homeDir })),
-        openInBrowser,
+        openInBrowser: async url => { if (!await openInBrowser(url)) throw new Error("Could not open the browser."); },
         readBrowserSession: () => getAuthenticatedSession(baseUrl, { ...auth, noCache: true, nonInteractive: true }),
         browserLogin: onBrowserOpened => getAuthenticatedSessionWithBrowserFallback(baseUrl, { ...auth, onBrowserOpened }),
         pasteLogin: () => pasteLogin(baseUrl, true),
@@ -585,6 +585,18 @@ export function buildProgram(io: CliIO = {}): Command {
       const receipt = await client.finishQuizAttempt(...ids);
       await runtime.output({ finished: receipt }, () => formatAttemptFinish(receipt), options);
     });
+  addOutputOptions(mutating(program.command("complete").description("Mark an activity complete manually.").argument("<ref>", "Activity id, URL or UNIT TASK phrase")))
+    .option("--undo", "Mark the activity incomplete.")
+    .action(async (ref: string, options: OutputCommandOptions & { undo?: boolean }) => {
+      const client = await runtime.getClient();
+      const id = await createIntentService(createMoodleGateway(client)).resolveItem(ref);
+      if (!await confirm({ summary: `Mark activity ${id} ${options.undo ? "incomplete" : "complete"}?` }, { yes: Boolean(program.opts().yes), dryRun: Boolean(program.opts().dryRun), interactive: human() })) {
+        if (program.opts().dryRun) await runtime.output({ completion: { id, completed: !options.undo }, dry_run: true }, () => `Would mark ${id} ${options.undo ? "incomplete" : "complete"}.`, options);
+        return;
+      }
+      const receipt = await client.completeActivity(id, !options.undo);
+      await runtime.output({ completion: receipt }, () => `Activity ${id}: ${receipt.completion ? "complete" : "incomplete"}.`, options);
+    });
   addOutputOptions(program.command("open").description("Open a unit or activity reference in the browser.").argument("<ref>", "Unit or activity id, URL, or UNIT TASK phrase"))
     .action(async (ref: string, options: OutputCommandOptions) => {
       const client = await runtime.getClient();
@@ -596,8 +608,8 @@ export function buildProgram(io: CliIO = {}): Command {
         else { const id = await createIntentService(createMoodleGateway(client)).resolveItem(ref); const item = await client.getActivity(id); url = item.url; }
       }
       if (!url || !/^https?:/u.test(url)) throw new UsageError("This item has no browser URL.");
-      await openInBrowser(url);
-      await runtime.output({ opened: url }, () => `Opened ${url}`, options);
+      const opened = !program.opts().dryRun && await openInBrowser(url);
+      await runtime.output({ url, opened, ...(program.opts().dryRun ? { dry_run: true } : {}) }, () => opened ? `Opened ${url}` : url, options);
     });
 
   addOutputOptions(program.command("user").description("Show authenticated user info.")).action(async (options: OutputCommandOptions) => {
@@ -1212,7 +1224,7 @@ export function buildProgram(io: CliIO = {}): Command {
 
 // Grouped the way `gh` does: what a person reaches for daily, then the rest, then what only an agent runs.
 const HELP_SECTIONS: Readonly<Record<string, readonly string[]>> = {
-  "Core commands": ["due", "news", "find", "get", "open", "submit", "submission", "messages", "calendar", "quiz", "units", "activities", "grades", "threads", "forums"],
+  "Core commands": ["due", "news", "find", "get", "open", "submit", "submission", "complete", "messages", "calendar", "quiz", "units", "activities", "grades", "threads", "forums"],
   "Additional commands": ["sync", "user", "todo", "alerts", "messages", "calendar", "overview", "download", "auth", "doctor", "coverage", "completion", "uninstall"],
   "Agent commands": ["mcp", "commands", "skills"],
 };
@@ -1258,11 +1270,11 @@ export async function runCli(argv = process.argv, io: CliIO = {}): Promise<numbe
  * user to run `moodle auth login` when the cookie store is unreadable sends
  * them straight back into the failure they just reported.
  */
-function openInBrowser(url: string): Promise<void> {
-  return new Promise<void>((resolve, reject) => {
+function openInBrowser(url: string): Promise<boolean> {
+  return new Promise<boolean>((resolve, reject) => {
     const child = spawn(process.platform === "darwin" ? "open" : process.platform === "win32" ? "explorer.exe" : "xdg-open", [url], { stdio: "ignore" });
-    child.once("error", reject);
-    child.once("exit", code => code === 0 ? resolve() : reject(new Error("Could not open the browser.")));
+    child.once("error", error => (error as NodeJS.ErrnoException).code === "ENOENT" ? resolve(false) : reject(error));
+    child.once("exit", code => resolve(code === 0));
   });
 }
 

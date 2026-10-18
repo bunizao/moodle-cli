@@ -63,6 +63,8 @@ export function renderScreen(data: Record<string, unknown>, options: { width?: n
     if (unitColumn && items.some(r => r.unit_code)) columns.push([{ label: "Unit" }, r => text(r.unit_code)]);
     if (items.some(r => r.type)) columns.push([{ label: "Type" }, r => text(r.type)]);
     columns.push([{ label: "Name", flex: true }, r => text(r.name)]);
+    if (items.some(r => r.completion !== undefined)) columns.push([{ label: "Done" }, r => r.completion === undefined ? "" : Number(r.completion) > 0 ? "yes" : "no"]);
+    if (items.some(r => r.available === false)) columns.push([{ label: "Restriction", flex: true }, r => r.available === false ? text(r.availability_reason) || "Unavailable" : ""]);
     if (items.some(r => r.due_at || r.status || r.submission_status)) columns.push([{ label: "Due" }, r => r.due_at ? due(r) : text(r.status || r.submission_status)]);
     lines.push(table(columns, items));
   };
@@ -138,6 +140,8 @@ export function renderScreen(data: Record<string, unknown>, options: { width?: n
     for (const f of array(i.files).filter(file => !feedbackUrls.has(file.url))) lines.push(`File  ${text(f.name)}  ${text(f.url)}`);
     for (const f of feedbackFiles) lines.push(`Feedback file  ${text(f.name)}  ${text(f.url)}`);
     if (i.limits) lines.push(`Submission limits  ${Object.entries(record(i.limits)).map(([key, value]) => `${key.replaceAll("_", " ")}: ${Array.isArray(value) ? value.join(", ") : value}`).join("; ")}`);
+    if (i.available === false) lines.push(`Unavailable: ${text(i.availability_reason)}`);
+    if (i.completion !== undefined) lines.push(`Complete: ${Number(i.completion) > 0 ? "yes" : "no"}`);
     if (data.threads) rows(array(data.threads), "Threads");
     next = array(i.files).length ? [`moodle dl ${i.id}`] : [];
   } else if (data.attempt) {

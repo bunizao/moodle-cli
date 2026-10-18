@@ -25,12 +25,15 @@ export interface Course {
 
 export interface Activity {
   id: number;
+  course_id?: number;
   name: string;
   modname: string;
   url: string;
   visible: boolean;
   description: string;
   completion?: number;
+  available?: boolean;
+  availability_reason?: string;
   file_entries?: FileEntry[];
 }
 

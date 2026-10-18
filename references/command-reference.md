@@ -30,6 +30,7 @@ asks for confirmation (`--yes` skips it) and prints the receipt Moodle shows aft
 | moodle auth status | Show cached session freshness and keepalive state. |  | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required) |
 | moodle calendar | All course, user and site calendar events in the date window. |  | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required)<br>--days (value required)<br>--unit (value required)<br>--ics |
 | moodle commands | Describe the complete command tree. |  | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required) |
+| moodle complete | Mark an activity complete manually. | <ref> | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required)<br>--undo |
 | moodle completion | Print shell completion for zsh, bash or fish. | <shell> |  |
 | moodle coverage | Check each command against this Moodle site with the signed-in session, one live read at a time. Nothing is created. |  | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required) |
 | moodle doctor | Diagnose runtime, browser access, session, background jobs and MCP setup. |  | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required) |

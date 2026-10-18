@@ -102,6 +102,7 @@ export function parseActivity(value: unknown): Activity {
     url: stringValue(data.url),
     visible: booleanValue(data.visible, true),
     description: stringValue(data.description),
+    ...(data.uservisible === false ? { available: false, availability_reason: htmlText(data.availabilityinfo, "") } : {}),
     ...(data.completiondata && typeof data.completiondata === "object" ? { completion: numberValue(asRecord(data.completiondata).state) } : {}),
     ...(Array.isArray(data.contents) ? { file_entries: data.contents.filter((f: unknown) => asRecord(f).fileurl).map((f: unknown) => ({ name: stringValue(asRecord(f).filename), url: stringValue(asRecord(f).fileurl), requires_authentication: true })) } : {}),
   };
@@ -144,6 +145,7 @@ export function parseCourseFormatState(value: unknown, baseUrl: string): Section
         && booleanValue(data.uservisible, true)
         && !booleanValue(data.stealth),
       description: htmlText(data.content ?? data.description, baseUrl),
+      ...(data.uservisible === false ? { available: false, availability_reason: htmlText(data.availableinfo ?? data.availabilityinfo, baseUrl) } : {}),
       ...(data.completionstate !== undefined && data.completionstate !== null ? { completion: numberValue(data.completionstate) } : {}),
     };
     activities.set(String(id), activity);

@@ -93,7 +93,9 @@ export function parsePageContext(html: string, baseUrl: string): PageContext {
     user_info: {
       userid,
       username: "",
-      fullname: cleanNodeText(root.querySelector(".userfullname")),
+      fullname: cleanNodeText(root.querySelector(".userfullname"))
+        || root.querySelector(".usermenu .userinitials")?.getAttribute("title")
+        || cleanNodeText(root.querySelector('.logininfo a[href*="/user/"]')),
       sitename: extractSitename(root),
       siteurl: baseUrl,
       ...(timezone ? { timezone } : {}),
@@ -170,6 +172,8 @@ export function parseCourseContentsHtml(html: string, baseUrl: string): Section[
         // The contents service calls this uservisible.
         visible: !classes.some((item) => ["hidden", "stealth", "dimmed"].includes(item))
           && (Boolean(href) || !activityElement.querySelector(".availabilityinfo")),
+        ...(activityElement.querySelector(".availabilityinfo") && !href ? { available: false, availability_reason: blockText(activityElement.querySelector(".availabilityinfo")) } : {}),
+        ...(activityElement.querySelector('[data-action="toggle-manual-completion"]') ? { completion: activityElement.querySelector('[data-action="toggle-manual-completion"]')?.getAttribute("data-toggletype") === "manual:mark-done" ? 0 : 1 } : {}),
         description: cleanNodeText(first(activityElement, ["[data-region='activity-description']", ".contentafterlink", ".description"])),
       });
     }
@@ -861,6 +865,8 @@ function parseMoodleConfig(html: string): Record<string, unknown> {
 }
 
 function extractSitename(root: HTMLElement): string {
+  const site = cleanNodeText(root.querySelector(".sitename"));
+  if (site) return site;
   const title = cleanNodeText(root.querySelector("title"));
   return title.includes("|") ? title.split("|").at(-1)?.trim() ?? title : title;
 }

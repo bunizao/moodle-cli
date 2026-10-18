@@ -59,6 +59,7 @@ export const FUNC_GET_POPUP_NOTIFICATIONS = "message_popup_get_popup_notificatio
 export const FUNC_GET_CONVERSATION_COUNTS = "core_message_get_conversation_counts";
 export const FUNC_GET_UNREAD_CONVERSATION_COUNTS = "core_message_get_unread_conversation_counts";
 export const FUNC_ADD_DISCUSSION_POST = "mod_forum_add_discussion_post";
+export const FUNC_UPDATE_ACTIVITY_COMPLETION = "core_completion_update_activity_completion_status_manually";
 export const FUNC_GET_DISCUSSION_POSTS = "mod_forum_get_discussion_posts";
 export const FUNC_GET_STRINGS = "core_get_strings";
 export const FUNC_SESSION_TOUCH = "core_session_touch";

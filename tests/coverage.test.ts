@@ -325,7 +325,7 @@ describe("moodle coverage", () => {
             case "core_course_get_contents": return { error: false, data: sections("Week", c.args.courseid).map(s => ({ ...s, modules: s.activities.map(a => a.modname === "assign" ? { ...a, name: "Essay 1" } : a) })) };
             case "core_calendar_get_calendar_monthly_view": return { error: false, data: calendarMonthData({ weeks: [] }, c.args) };
             case "core_calendar_get_action_events_by_timesort": case "core_calendar_get_action_events_by_course": return { error: false, data: { events: [] } };
-            case "core_course_get_course_module": return { error: false, data: { cm: { id: c.args.cmid, course: 2, modname: c.args.cmid % 10 === 0 ? "resource" : "assign" } } };
+            case "core_course_get_course_module": return { error: false, data: { cm: { id: c.args.cmid, course: Math.floor(c.args.cmid / 100), modname: c.args.cmid % 10 === 0 ? "resource" : "assign" } } };
             default: return { error: false, data: c.methodname.startsWith("mod_forum") ? [] : {} };
           }
         }));
