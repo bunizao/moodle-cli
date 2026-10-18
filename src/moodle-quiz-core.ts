@@ -448,16 +448,16 @@ function fieldLabel(que: HTMLElement, field: HTMLElement): string {
 }
 
 function attemptTimer(root: HTMLElement, html: string, serverDate?: string | null): Pick<AttemptPage, "time_left_s" | "ends_at"> {
+  const serverNow = Date.parse(serverDate ?? "");
+  // The Date header avoids client clock skew; both values have one-second precision.
+  const now = Number.isFinite(serverNow) ? serverNow : Date.now();
   const timer = root.querySelector("#quiz-timer, [data-endtime]");
   const end = Number(timer?.getAttribute("data-endtime") ?? timer?.getAttribute("endtime"));
-  if (end > 0) return { time_left_s: Math.max(0, Math.ceil(end - Date.now() / 1000)), ends_at: new Date(end * 1000).toISOString() };
+  if (end > 0) return { time_left_s: Math.max(0, Math.ceil(end - now / 1000)), ends_at: new Date(end * 1000).toISOString() };
   // Moodle initialises its timer from the server's remaining seconds, before JS fills the timer element.
   const remaining = html.match(/M\.mod_quiz\.timer\.init\(\s*(?:Y\s*,\s*)?(-?\d+)/u)?.[1];
   if (remaining === undefined) return {};
   const seconds = Math.max(0, Number(remaining));
-  const serverNow = Date.parse(serverDate ?? "");
-  // The Date header avoids client clock skew; both values have one-second precision.
-  const now = Number.isFinite(serverNow) ? serverNow : Date.now();
   return { time_left_s: seconds, ends_at: new Date(now + seconds * 1000).toISOString() };
 }
 

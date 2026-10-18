@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { MoodleClient } from "../src/client.js";
 
 const BASE = "https://school.example.edu";
@@ -22,6 +22,25 @@ function client(fetchImpl: typeof fetch): MoodleClient {
 }
 
 describe("quiz client", () => {
+  it.each([
+    ["Sun, 18 Oct 2026 08:41:05 GMT", 3557],
+    [undefined, 2422],
+    ["invalid", 2422],
+  ])("uses the response clock for an absolute quiz deadline (%s)", async (date, remaining) => {
+    const localNow = vi.spyOn(Date, "now").mockReturnValue(Date.parse("2026-10-18T09:00:00Z"));
+    try {
+      const html = `${fixture("quiz-attempt-page-0.html")}<div id="quiz-timer" data-endtime="1792316422"></div>`;
+      const fetchImpl: typeof fetch = async () => htmlResponse(html, ATTEMPT, date);
+
+      const page = await client(fetchImpl).getQuizAttemptPage(900, 32);
+
+      expect(page.time_left_s).toBe(remaining);
+      expect(page.ends_at).toBe("2026-10-18T09:40:22.000Z");
+    } finally {
+      localNow.mockRestore();
+    }
+  });
+
   it("resumes the existing attempt through its password pre-flight form", async () => {
     const posts: URLSearchParams[] = [];
     const fetchImpl: typeof fetch = async (input, init) => {
