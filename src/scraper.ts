@@ -313,22 +313,58 @@ export function parseGradeOverviewRows(html: string, baseUrl: string): Record<nu
 export function parseAssignmentHtml(html: string, assignmentId: number, baseUrl: string, labels?: SiteLabels): Assignment {
   const root = parse(html);
   const feedback = root.querySelector(".feedback");
+  const submissionRoot = root.querySelector(".submissionstatustable") ?? root;
+  const textNode = submissionRoot.querySelector("[class*=full_assignsubmission_onlinetext_] .no-overflow") ?? submissionRoot.querySelector(".onlinetextsubmission, [class*=summary_assignsubmission_onlinetext_] .no-overflow, .assignsubmission_onlinetext .no-overflow");
+  const submissionFiles: FileEntry[] = [];
+  for (const link of submissionRoot.querySelectorAll('.fileuploadsubmission a[href], a[href*="/assignsubmission_file/submission_files/"]')) {
+    const url = resolveUrl(baseUrl, link.getAttribute("href") ?? "");
+    if (!submissionFiles.some(file => file.url === url)) submissionFiles.push(fileEntry(cleanNodeText(link) || decodeURIComponent(new URL(url).pathname.split("/").at(-1) || "file"), url, baseUrl));
+  }
+  const comments = submissionRoot.querySelectorAll(".comment-list .comment-message").map(node => ({
+    author: cleanNodeText(node.querySelector(".user")),
+    text: cleanNodeText(node.querySelector(".text")),
+    time: cleanNodeText(node.querySelector(".time")),
+  })).filter(comment => comment.text && !comment.text.includes("___content___"));
+  const state = submissionRoot.querySelector(".submissionstatussubmitted") ? "submitted" : submissionRoot.querySelector(".submissionstatusdraft") ? "draft" : undefined;
+  const due = extractLabeledText(html, "Due:", labels);
+  const feedbackFiles = feedback ? parseFeedbackFiles(feedback, baseUrl) : [];
+  const criteria = feedback ? parseFeedbackCriteria(feedback) : [];
+  const feedbackComments = feedback ? findTableValue(feedback.toString(), "Feedback comments", labels) : "";
   return {
     id: assignmentId,
     name: pageTitle(html),
     ...activityContext(html),
-    due_pretty: extractLabeledText(html, "Due:", labels),
+    due_pretty: due,
+    description: htmlToStructuredContent(root.querySelector("#intro")?.innerHTML ?? "", baseUrl).text,
+    extension_due: findTableValue(html, "Extension due date", labels),
+    cutoff: findTableValue(html, "Cut-off date", labels),
+    ...(state ? { submission_state: state } : {}),
+    submission: {
+      ...(textNode ? { text: htmlToStructuredContent(textNode.innerHTML, baseUrl).text, text_html: textNode.innerHTML } : {}),
+      files: submissionFiles,
+      comments,
+    },
+    feedback: { comments: feedbackComments, files: feedbackFiles, criteria },
     submission_status: findTableValue(html, "Submission status", labels),
     grading_status: findTableValue(html, "Grading status", labels),
     time_remaining: findTableValue(html, "Time remaining", labels),
     grade: findTableValue(html, "Grade", labels),
     graded_on: feedback ? findTableValue(feedback.toString(), "Graded on", labels) : "",
     graded_by: feedback ? findTableValue(feedback.toString(), "Graded by", labels) : "",
-    feedback_comments: feedback ? findTableValue(feedback.toString(), "Feedback comments", labels) : "",
-    criteria: feedback ? parseFeedbackCriteria(feedback) : [],
-    file_entries: [...parseIntroAttachments(root, baseUrl), ...(feedback ? parseFeedbackFiles(feedback, baseUrl) : [])],
+    feedback_comments: feedbackComments,
+    criteria,
+    file_entries: [...parseIntroAttachments(root, baseUrl), ...feedbackFiles],
     url: `${baseUrl.replace(/\/$/, "")}/mod/assign/view.php?id=${assignmentId}`,
   };
+}
+
+export function assignmentCommentUrl(html: string, baseUrl: string): string | undefined {
+  const root = parse(html);
+  if (Number(cleanNodeText(root.querySelector(".comment-link-count"))) <= 0) return undefined;
+  const href = root.querySelector("a.showcommentsnonjs[href]")?.getAttribute("href");
+  if (!href) return undefined;
+  const url = new URL(resolveUrl(baseUrl, href));
+  return url.origin === new URL(baseUrl).origin ? url.toString() : undefined;
 }
 
 // Rubrics and marking guides render the same tr.criterion rows but keep the

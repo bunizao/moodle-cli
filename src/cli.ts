@@ -137,6 +137,7 @@ interface OutputCommandOptions {
 }
 
 const NOUNS: readonly NounSpec[] = [
+  { name: "submission", verbs: ["show", "remove"], defaultByArity: { 1: "show" } },
   { name: "messages", verbs: ["list", "show", "send", "read"], defaultByArity: { 0: "list", 1: "show" }, valueFlags: ["--limit", "--offset"] },
   { name: "units", aliases: ["courses"], verbs: ["list", "show"], defaultByArity: { 0: "list", 1: "show" } },
   { name: "activities", verbs: ["list", "show"], defaultByArity: { 0: "list", 1: "list" }, valueFlags: ["--limit", "--section"] },
@@ -431,15 +432,17 @@ export function buildProgram(io: CliIO = {}): Command {
     });
   addOutputOptions(mutating(program.command("submit").description(humanDescription("submit")).summary("Upload files into an assignment").argument("<ref>", "Assignment id, URL, or UNIT TASK phrase").argument("[files...]", "Local files to upload")))
     .option("--final", "Also submit for grading. Moodle does not allow undoing this.")
+    .option("--text <text>", "Online text to save; blank lines preserve paragraphs.")
+    .option("--text-file <path>", "Read online text from a Markdown, text or HTML file.")
     .option("--replace", "Remove the files already in the submission first.")
     .option("--accept-statement", "Agree to the site's submission statement when it requires one.")
-    .action(async (ref: string, files: string[], options: OutputCommandOptions & { final?: boolean; replace?: boolean; acceptStatement?: boolean }) => {
+    .action(async (ref: string, files: string[], options: OutputCommandOptions & { final?: boolean; replace?: boolean; acceptStatement?: boolean; text?: string; textFile?: string }) => {
       const interactive = human();
       // Same rule cli-kit's confirm applies, checked before the plan touches the site or the files.
       if (!program.opts().dryRun && !program.opts().yes && !interactive) throw new UsageError("Mutation requires --yes when stdin is not interactive.", "Run with --dry-run to see the plan first.");
       const client = await runtime.getClient();
       const service = createIntentService(createMoodleGateway(client));
-      const args = { files: files.map(file => resolveSubmissionPath(file, io.cwd ?? process.cwd())), final: Boolean(options.final), replace: Boolean(options.replace), accept_statement: Boolean(options.acceptStatement) };
+      const args = { ...(options.text !== undefined ? { text: options.text } : {}), ...(options.textFile ? { text_file: resolveSubmissionPath(options.textFile, io.cwd ?? process.cwd()) } : {}), files: files.map(file => resolveSubmissionPath(file, io.cwd ?? process.cwd())), final: Boolean(options.final), replace: Boolean(options.replace), accept_statement: Boolean(options.acceptStatement) };
       // The plan reads the files and every Moodle page the upload needs, so most refusals happen before any prompt.
       const plan = await choose(() => service.run("submit", { ref, ...args, dry_run: true }), id => service.run("submit", { ref: id, ...args, dry_run: true }));
       const planned = submissionReceiptOf(plan.submission);
@@ -462,6 +465,30 @@ export function buildProgram(io: CliIO = {}): Command {
         runtime.busy = false;
       }
       await runtime.output(result, () => formatSubmissionReceipt(submissionReceiptOf(result.submission)), options);
+    });
+  const submission = program.command("submission").description("Read or remove your assignment submission.");
+  addOutputOptions(submission.command("show").argument("<ref>", "Assignment id, URL or UNIT TASK phrase"))
+    .action(async (ref: string, options: OutputCommandOptions) => {
+      const client = await runtime.getClient();
+      const service = createIntentService(createMoodleGateway(client));
+      const result = await choose(() => service.run("item", { ref }), id => service.run("item", { ref: id }));
+      const item = result.item as Record<string, unknown>;
+      if (item.type !== "assign") throw new UsageError("Choose an assignment to read its submission.");
+      await runtime.output({ submission: { id: item.id, name: item.name, status: item.submission_status, ...(item.submission as object ?? {}) } }, () => runtime.screen(result, options), options);
+    });
+  addOutputOptions(mutating(submission.command("remove").argument("<ref>", "Assignment id, URL or UNIT TASK phrase")))
+    .action(async (ref: string, options: OutputCommandOptions) => {
+      if (!program.opts().dryRun && !program.opts().yes && !human()) throw new UsageError("Mutation requires --yes when stdin is not interactive.", "Run with --dry-run to see the plan first.");
+      const client = await runtime.getClient();
+      const service = createIntentService(createMoodleGateway(client));
+      const result = await choose(() => service.run("item", { ref }), id => service.run("item", { ref: id }));
+      const item = result.item as Record<string, unknown>;
+      if (item.type !== "assign") throw new UsageError("Choose an assignment to remove its submission.");
+      const plan = await client.removeAssignmentSubmission(Number(item.id), true);
+      if (program.opts().dryRun) return runtime.output({ submission: plan }, () => `Would remove the submission for ${plan.name}${plan.group ? ` (shared by ${plan.group})` : ""}.`, options);
+      if (!await confirm({ summary: `Remove all submitted files and online text from ${plan.name}${plan.group ? ` for everyone in ${plan.group}` : ""}?` }, { yes: Boolean(program.opts().yes), dryRun: false, interactive: human() })) return;
+      const receipt = await client.removeAssignmentSubmission(Number(item.id));
+      await runtime.output({ submission: receipt }, () => `Removed the submission for ${receipt.name}.`, options);
     });
   const quiz = program.command("quiz").description("Take a quiz: start an attempt, answer questions, finish it. Beta.").summary("Take a quiz (beta)");
   quiz.addHelpText("after", `\n${QUIZ_NOTICE.join("\n")}\n`);
@@ -1145,7 +1172,7 @@ export function buildProgram(io: CliIO = {}): Command {
 
 // Grouped the way `gh` does: what a person reaches for daily, then the rest, then what only an agent runs.
 const HELP_SECTIONS: Readonly<Record<string, readonly string[]>> = {
-  "Core commands": ["due", "news", "find", "get", "open", "submit", "messages", "calendar", "quiz", "units", "activities", "grades", "threads", "forums"],
+  "Core commands": ["due", "news", "find", "get", "open", "submit", "submission", "messages", "calendar", "quiz", "units", "activities", "grades", "threads", "forums"],
   "Additional commands": ["sync", "user", "todo", "alerts", "messages", "calendar", "overview", "download", "auth", "doctor", "coverage", "completion", "uninstall"],
   "Agent commands": ["mcp", "commands", "skills"],
 };
@@ -1179,6 +1206,7 @@ export async function runCli(argv = process.argv, io: CliIO = {}): Promise<numbe
     const envelope = JSON.parse(reported.text);
     const hint = reference?.hint || normalized.hint || ({ auth: "Run moodle auth login, or moodle doctor.", config: "Run moodle doctor to check configuration.", not_found: "Run moodle units or moodle find QUERY.", usage: "Run moodle --help or moodle commands --json.", upstream: "Run moodle doctor, then retry.", network: "Check the connection, then retry.", unexpected: "Run moodle doctor; use --verbose for request timings.", cancelled: "Retry when ready." }[normalized.code]);
     envelope.error.hint = hint;
+    if (error && typeof error === "object" && "submission" in error) envelope.submission = error.submission;
     if (reference) { envelope.error.code = reference.code; envelope.error.message = reference.message; envelope.error.candidates = reference.candidates; envelope.exit_code = reference.code === "ambiguous" ? 2 : 4; }
     stderr.write(format === "table" ? `✗ ${String(envelope.error.message).replace(/\s+/gu, " ")}\n${hint}\n` : `${JSON.stringify(envelope)}\n`);
     return envelope.exit_code;
@@ -1320,9 +1348,12 @@ function submissionSummary(plan: SubmissionReceipt, final: boolean, theme: Theme
   const destination = `${theme.target(plan.name)}${plan.unit_id ? theme.dim(`  unit ${plan.unit_id}`) : ""}`;
   const lines = plan.uploads.length
     ? [`${theme.dim("Upload")}  ${theme.subject(plan.uploads.map(file => file.name).join(", "))}`, `${theme.dim("    to")}  ${destination}`]
-    : [`${theme.dim("Submit")}  ${destination}`, `${theme.dim("      ")}  ${theme.subject("the files already there")} for grading`];
+    : plan.text !== undefined
+      ? [`${theme.dim("Save online text to")}  ${destination}`]
+      : [`${theme.dim("Submit")}  ${destination}`, `${theme.dim("      ")}  ${theme.subject("the files already there")} for grading`];
   if (plan.removed.length) lines.push(`${theme.dim("Remove")}  ${theme.tone("danger", plan.removed.join(", "))} ${theme.dim("first")}`);
   if (plan.statement) lines.push(`${theme.dim(" Agree")}  "${plan.statement}"`);
+  if (plan.statement_pending) lines.push(theme.dim("Moodle may ask you to accept a submission statement after the draft is saved."));
   if (plan.group) lines.push(`${theme.dim(" Group")}  ${theme.subject(plan.group)} ${theme.dim("shares these files: every change reaches the whole group")}`);
   // The plan refuses a non-final save unless Moodle showed a draft stage, so each line states a fact.
   lines.push(!final

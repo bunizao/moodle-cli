@@ -7,7 +7,7 @@ import {
 } from "./moodle-client-core.js";
 import { isLoginRequiredError, MoodleAPIError, NotFoundError, UsageError } from "./errors.js";
 import type { SubmissionReceipt } from "./moodle-assign-core.js";
-import { readSubmissionFiles, type SubmitLocalFilesRequest } from "./submit.js";
+import { readSubmissionFiles, readSubmissionText, type SubmitLocalFilesRequest } from "./submit.js";
 import type { PageContext } from "./models.js";
 import {
   readCachedSession,
@@ -42,8 +42,8 @@ export class MoodleClient extends MoodleClientCore {
 
   /** Reads local files, then uploads them into the assignment. Only the Node client has a filesystem. */
   async submitAssignmentFiles(request: SubmitLocalFilesRequest): Promise<SubmissionReceipt> {
-    const { files, cwd, ...rest } = request;
-    return this.submitAssignment({ ...rest, files: await readSubmissionFiles(files, cwd) });
+    const { files, cwd, text, textFile, ...rest } = request;
+    return this.submitAssignment({ ...rest, text: await readSubmissionText({ text, textFile, cwd }), files: await readSubmissionFiles(files, cwd) });
   }
 }
 

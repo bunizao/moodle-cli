@@ -128,7 +128,16 @@ export function renderScreen(data: Record<string, unknown>, options: { width?: n
     for (const [k, v] of Object.entries(i)) if (!["id", "name", "type", "files"].includes(k) && !k.endsWith("_at") && typeof v !== "object") lines.push(`${k.replaceAll("_", " ")}: ${moment(v, now)}`);
     for (const a of array(i.attempts)) lines.push(`Attempt ${a.number} · #${a.id}  ${[a.status, a.marks, a.grade, a.completed].map(text).filter(Boolean).join("  ·  ")}`);
     for (const c of array(i.criteria)) lines.push(`${text(c.name)}  ${[c.score, c.level, c.remark].map(text).filter(Boolean).join("  ·  ")}`);
-    for (const f of array(i.files)) lines.push(`File  ${text(f.name)}  ${text(f.url)}`);
+    const submitted = record(i.submission);
+    if (submitted.text) lines.push("", "Submitted text", text(submitted.text));
+    for (const f of array(submitted.files)) lines.push(`Submitted file  ${text(f.name)}  ${text(f.url)}`);
+    for (const c of array(submitted.comments)) lines.push(`Comment  ${text(c.author)}${c.time ? ` · ${text(c.time)}` : ""}: ${text(c.text)}`);
+    const feedback = record(i.feedback);
+    const feedbackFiles = array(feedback.files);
+    const feedbackUrls = new Set(feedbackFiles.map(file => file.url));
+    for (const f of array(i.files).filter(file => !feedbackUrls.has(file.url))) lines.push(`File  ${text(f.name)}  ${text(f.url)}`);
+    for (const f of feedbackFiles) lines.push(`Feedback file  ${text(f.name)}  ${text(f.url)}`);
+    if (i.limits) lines.push(`Submission limits  ${Object.entries(record(i.limits)).map(([key, value]) => `${key.replaceAll("_", " ")}: ${Array.isArray(value) ? value.join(", ") : value}`).join("; ")}`);
     if (data.threads) rows(array(data.threads), "Threads");
     next = array(i.files).length ? [`moodle dl ${i.id}`] : [];
   } else if (data.attempt) {

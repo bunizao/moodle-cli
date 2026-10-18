@@ -32,7 +32,7 @@ import {
   RESOURCE_VIEW_PATH,
   URL_VIEW_PATH,
 } from "./constants.js";
-import { submitAssignmentFiles, type SubmissionReceipt, type SubmitAssignmentRequest } from "./moodle-assign-core.js";
+import { submitAssignmentFiles, removeAssignmentSubmission, parseSubmissionForm, describeLimits, type SubmissionReceipt, type SubmitAssignmentRequest } from "./moodle-assign-core.js";
 import { answerQuizQuestion, finishQuizAttempt, getAttemptPage, getAttemptSummary, planQuizStart, startQuizAttempt, type AnswerRequest, type AttemptFinishReceipt, type AttemptPage, type AttemptSummary, type QuizDeps, type QuizStartPlan, type StartOptions } from "./moodle-quiz-core.js";
 import { ForumModule } from "./moodle-forum-core.js";
 import { labelRequests, siteLabelsFrom, type SiteLabels } from "./site-labels.js";
@@ -75,6 +75,7 @@ import {
   hasCourseGradesHtml,
   isOtherMoodlePage,
   parseAssignmentHtml,
+  assignmentCommentUrl,
   parseCourseContentsHtml,
   parseCourseGradesHtml,
   parseCourseGradesUrl,
@@ -656,7 +657,49 @@ export class MoodleClientCore {
 
   async getAssignment(id: number): Promise<Assignment> {
     const [html, labels] = await Promise.all([this.getActivityPage(ASSIGN_VIEW_PATH, "assign", id), this.siteLabels()]);
-    return parseAssignmentHtml(html, id, this.baseUrl, labels);
+    const assignment = parseAssignmentHtml(html, id, this.baseUrl, labels);
+    const month = calendarMonthOf(assignment.due_pretty, this.userInfo?.lang);
+    if (month && !assignment.due_at) {
+      try {
+        const events = await readCalendarMonth((name, args) => this.call(name, args), this.baseUrl, month.year, month.month, assignment.course_id || undefined);
+        const matching = events.filter(event => {
+          const url = new URL(event.url);
+          return event.event_type === "due" && url.origin === new URL(this.baseUrl).origin && url.pathname === new URL(assignment.url).pathname && Number(url.searchParams.get("id")) === id;
+        });
+        const dates = new Set(matching.map(event => event.starts_at));
+        if (dates.size === 1) assignment.due_at = new Date(matching[0].starts_at * 1000).toISOString();
+      } catch (error) {
+        if (this.errors.isLoginRequired(error)) throw error;
+        if (!this.errors.isApi(error) || !["servicenotavailable", "nopermission", "required_capability_exception"].includes(error.moodleErrorCode ?? "")) throw error;
+      }
+    }
+    // Limits belong to the edit form; locked submissions should remain readable.
+    if (html.includes("editsubmission")) {
+      try {
+        const editHtml = await this.getAbsolute(`${this.baseUrl}${ASSIGN_VIEW_PATH}?id=${id}&action=editsubmission`);
+        const form = parseSubmissionForm(editHtml, { baseUrl: this.baseUrl, fail: message => this.errors.api(message) });
+        assignment.limits = describeLimits(form);
+      } catch (error) {
+        if (!this.errors.isApi(error) || this.errors.isLoginRequired(error)) throw error;
+      }
+    }
+    const commentUrl = assignmentCommentUrl(html, this.baseUrl);
+    if (commentUrl && assignment.submission) {
+      const commentsHtml = await this.getAbsolute(commentUrl);
+      assignment.submission.comments = parseAssignmentHtml(commentsHtml, id, this.baseUrl, labels).submission?.comments ?? [];
+    }
+    return assignment;
+  }
+
+  async removeAssignmentSubmission(id: number, dryRun = false) {
+    await this.ensureSession();
+    return removeAssignmentSubmission({
+      baseUrl: this.baseUrl,
+      labels: await this.siteLabels(),
+      request: (url, init, options) => this.requestAbsolute(url, init, options),
+      fail: (message, code) => this.errors.api(message, code),
+      usage: (message, hint) => this.errors.usage ? this.errors.usage(message, hint) : new MoodleClientCoreError("usage", message, hint),
+    }, id, dryRun);
   }
 
   async getQuiz(id: number): Promise<Quiz> {
@@ -752,6 +795,7 @@ export class MoodleClientCore {
     await this.ensureSession();
     return submitAssignmentFiles({
       baseUrl: this.baseUrl,
+      labels: await this.siteLabels(),
       request: (url, init, options) => this.requestAbsolute(url, init, options),
       fail: (message, moodleErrorCode) => this.errors.api(message, moodleErrorCode),
       usage: (message, hint) => this.errors.usage ? this.errors.usage(message, hint) : new MoodleClientCoreError("usage", message, hint),

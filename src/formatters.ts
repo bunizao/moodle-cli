@@ -216,9 +216,10 @@ export function formatSubmissionReceipt(receipt: SubmissionReceipt): string {
     ["Time remaining", receipt.time_remaining],
     ["Last modified", receipt.last_modified],
     [receipt.action === "planned" ? "Files now" : "Files", receipt.files.map(file => file.bytes ? `${file.name} (${size(file.bytes)})` : file.name).join(", ")],
+    ["Online text", receipt.text ?? ""],
     ["Uploads", receipt.uploads.map(file => `${file.name} (${size(file.bytes)})`).join(", ")],
     ["Removed", receipt.removed.join(", ")],
-    ["Statement", receipt.statement ? `${receipt.statement_accepted ? "accepted" : "not accepted"}: ${receipt.statement}` : ""],
+    ["Statement", receipt.statement ? `${receipt.statement_accepted ? "accepted" : "not accepted"}: ${receipt.statement}` : receipt.statement_pending ? "Checked after saving the draft; Moodle may ask you to accept one." : ""],
     ["Limits", limits],
     ["Checked", receipt.checked_at],
   ], { title: receipt.action === "planned" ? "Submission plan" : "Submission" });
@@ -226,7 +227,7 @@ export function formatSubmissionReceipt(receipt: SubmissionReceipt): string {
     ? "Plan only; nothing was uploaded. Re-run without --dry-run to upload."
     : receipt.action === "submitted" && receipt.awaiting?.length
       ? "Your part is submitted. The group's submission goes for grading once everyone listed under Waiting for has submitted too."
-      : receipt.action === "saved" && /draft|not submitted/iu.test(receipt.submission_status)
+      : receipt.action === "saved" && (receipt.submission_state === "draft" || receipt.draft_stage === true)
         ? "Saved as a draft. Re-run with --final to submit it for grading."
         : "";
   // Table cells truncate, so the warning that the files are shared goes below the table.
