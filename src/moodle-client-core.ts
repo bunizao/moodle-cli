@@ -415,7 +415,7 @@ export class MoodleClientCore {
   async getTodo(limit = 20, days?: number, courseId?: number): Promise<TodoItem[]> {
     await this.ensureSession();
     const now = Math.floor(Date.now() / 1000);
-    const window = { timesortfrom: now, timesortto: days ? now + days * 86400 : 0 };
+    const window = { timesortfrom: now - 14 * 86400, timesortto: days ? now + days * 86400 : 0 };
     const timeline = () => this.readActionEvents(FUNC_GET_ACTION_EVENTS, { ...window, limittononsuspendedevents: true }, limit);
     const unit = (id: number) => this.readActionEvents(FUNC_GET_ACTION_EVENTS_BY_COURSE, { courseid: id, ...window }, limit);
     // Each calendar service covers for the other when a site disables it: one unit
@@ -453,7 +453,7 @@ export class MoodleClientCore {
       const batchSize = Math.min(50, limit - items.length);
       const data = await this.call(functionName, { ...args, aftereventid, limitnum: batchSize });
       const events = isRecord(data) && Array.isArray(data.events) ? data.events : [];
-      for (const item of parseTodoItems(events)) if (!seen.has(item.id)) { seen.add(item.id); items.push(item); }
+      for (const item of parseTodoItems(events)) if ((!item.overdue || item.actionable) && !seen.has(item.id)) { seen.add(item.id); items.push(item); }
       if (events.length < batchSize) break;
       const last = events.at(-1);
       const next = isRecord(last) && typeof last.id === "number" ? last.id : undefined;
@@ -487,7 +487,7 @@ export class MoodleClientCore {
         methodname: FUNC_GET_ACTION_EVENTS,
         args: {
           limitnum: todoLimit,
-          timesortfrom: now,
+          timesortfrom: now - 14 * 86400,
           timesortto: todoDays ? now + todoDays * 24 * 60 * 60 : 0,
           aftereventid: 0,
           limittononsuspendedevents: true,
@@ -501,7 +501,7 @@ export class MoodleClientCore {
     const userPromise = this.userInfo?.fullname ? Promise.resolve(this.userInfo) : this.getSiteInfo();
     const coursesPromise = coursesData?.ok ? Promise.resolve(parseCourses(coursesData.data)) : this.getCourses();
     const todoPromise = todoData?.ok
-      ? Promise.resolve(parseTodoPayload(todoData.data))
+      ? Promise.resolve(parseTodoPayload(todoData.data).filter(item => !item.overdue || item.actionable))
       : todoData && todoData.error.moodleErrorCode !== "servicenotavailable"
         ? Promise.reject(todoData.error)
         : this.getTodo(todoLimit, todoDays);
