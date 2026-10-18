@@ -133,6 +133,8 @@ async function uploadAttachments(deps: ForumWriteDeps, html: string, form: HTMLE
   if (!itemid) throw deps.usage("This forum does not accept attachments.");
   const options = filemanagerOptions(html, itemid);
   if (!options) throw deps.fail("Moodle did not describe the attachment upload area.");
+  const maxFiles = Number(options.maxfiles ?? -1);
+  if (maxFiles >= 0 && files.length > maxFiles) throw deps.usage(`This forum accepts at most ${maxFiles} attachment${maxFiles === 1 ? "" : "s"}.`);
   const picker = asRecord(options.filepicker);
   const repo = (Array.isArray(picker.repositories) ? picker.repositories : Object.values(asRecord(picker.repositories))).map(asRecord).find(item => item.type === "upload");
   const sesskey = form.querySelector('input[name="sesskey"]')?.getAttribute("value");

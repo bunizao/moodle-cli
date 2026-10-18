@@ -94,6 +94,21 @@ describe("forum public write surface", () => {
     expect(discussion.posts.find(post => post.id === 13)?.attachments).toEqual([{ name: "roadmap-proof.txt", size: 33, url: `${BASE}/pluginfile.php/88/mod_forum/attachment/13/roadmap-proof.txt?forcedownload=1` }]);
   });
 
+  it("rejects excess attachments before uploading any draft files", async () => {
+    const writes: string[] = [];
+    const client = writeClient(async (input, init) => {
+      const url = new URL(String(input));
+      if (init?.method === "POST") writes.push(url.pathname);
+      if (url.pathname === "/mod/forum/post.php") return responseAt(fixture("forum-reply.html"), String(input));
+      if (url.pathname === "/repository/repository_ajax.php") return Response.json({ file: "attachment.txt" });
+      if (url.pathname === "/lib/ajax/service.php") return Response.json([{ error: false, data: { postid: 13 } }]);
+      throw new Error(`Unexpected request: ${url.pathname}`);
+    });
+    const files = ["first.txt", "second.txt"].map(name => ({ name, bytes: new TextEncoder().encode(name) }));
+    await expect(client.replyForumPost(10, "A reply with too many attachments", files)).rejects.toThrow("at most 1 attachment");
+    expect(writes).toEqual([]);
+  });
+
   it("creates a new discussion through Moodle's form and verifies it after the forum redirect", async () => {
     let posted = false;
     const client = writeClient(async (input, init) => {
