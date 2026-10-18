@@ -105,16 +105,24 @@ export function formatAlerts(alerts: AlertSummary): string {
     ["Unread notifications", String(alerts.unread_notification_count)],
     ["Direct messages", String(alerts.direct_message_count)],
     ["Unread direct messages", String(alerts.unread_direct_message_count)],
+    ["Group messages", String(alerts.group_message_count)],
+    ["Unread group messages", String(alerts.unread_group_message_count)],
+    ["Starred messages", String(alerts.starred_message_count)],
+    ["Unread starred messages", String(alerts.unread_starred_message_count)],
   ], { title: "Alerts" });
   if (!alerts.notifications.length) return summary;
   const notifications = renderTerminalTable(
     [
       { label: "When" },
       { label: "Subject" },
+      { label: "Body" },
+      { label: "Link" },
     ],
     alerts.notifications.map((notification) => [
       notification.created_pretty || formatTimestamp(notification.created_at),
       notification.short_subject || notification.subject,
+      notification.body ?? "",
+      notification.context_url,
     ]),
     { title: "Notifications" },
   );

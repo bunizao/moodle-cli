@@ -94,6 +94,20 @@ export function createIntentService(gateway: MoodleGateway, now = () => Date.now
     const limit = Number(input.limit ?? 20);
     let result: unknown;
     switch (name) {
+      case "messages": {
+        if (!gateway.getConversations) throw new ReferenceError("not_found", "This gateway cannot read messages.", []);
+        const conversations = await gateway.getConversations(limit, Number(input.offset));
+        result = { conversations, returned: conversations.length, offset: Number(input.offset) }; break;
+      }
+      case "conversation": {
+        if (!gateway.getConversation) throw new ReferenceError("not_found", "This gateway cannot read messages.", []);
+        result = { conversation: await gateway.getConversation(Number(input.conversation_id), limit, Number(input.offset)) }; break;
+      }
+      case "calendar": {
+        if (!gateway.getCalendar) throw new ReferenceError("not_found", "This gateway cannot read the calendar.", []);
+        const events = await gateway.getCalendar(Number(input.days), ref === undefined ? undefined : (await course(ref)).id);
+        result = { events, total: events.length }; break;
+      }
       case "units": { const rows = await courses(); const tz = await timezone(); result = { units: rows.slice(0, limit).map(c => unitRow(c, tz)), total: rows.length }; break; }
       case "unit": {
         const c = await course(ref!);
@@ -149,7 +163,7 @@ export function createIntentService(gateway: MoodleGateway, now = () => Date.now
           catch { errors.push(`Could not load sections for unit ${c.id}.`); return { id: c.id, code: c.shortname, name: c.fullname }; }
         });
         const unread = Object.fromEntries(Object.entries(data.alerts ?? {}).filter(([, v]) => typeof v === "number" && v > 0));
-        result = { home: { today: isoTime(now() / 1000, tz.timezone)!.slice(0, 10), ...tz, name: data.user?.fullname, siteurl: data.user?.siteurl, units, due, total: todos.length, unread, errors } };
+        result = { home: { today: isoTime(now() / 1000, tz.timezone)!.slice(0, 10), ...tz, name: data.user?.fullname, siteurl: data.user?.siteurl, units, due, total: todos.length, calendar: "calendar" in data ? data.calendar : undefined, unread, errors } };
         break;
       }
       case "grades": {

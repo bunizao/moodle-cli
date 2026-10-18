@@ -19,6 +19,7 @@ asks for confirmation (`--yes` skips it) and prints the receipt Moodle shows aft
 | moodle activities list | List activities in a unit; narrow by section. | <unit> | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required)<br>--section (value required)<br>--limit (value required)<br>--include-labels |
 | moodle activities show | Show activity details, including the files moodle download would save. | <id> | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required) |
 | moodle alerts | List notifications and message counts. |  | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required)<br>--limit (value required) |
+| moodle alerts read | Mark one notification, or all notifications, as read. | [notification] | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required)<br>--all |
 | moodle attempt | Each question with your response, and mark, correct answer and feedback when the site shows them. | <ref> | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required) |
 | moodle auth | Session and keepalive utilities. |  |  |
 | moodle auth keepalive | Renew the Moodle session once; used by the background keepalive agent. |  | --no-renew<br>--pretty<br>--json<br>--yaml<br>--table<br>--fields (value required) |
@@ -27,6 +28,7 @@ asks for confirmation (`--yes` skips it) and prints the receipt Moodle shows aft
 | moodle auth keepalive uninstall | Remove the keepalive launch agent. |  | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required) |
 | moodle auth login | Sign in through a browser the CLI controls, then capture the session. |  | --paste<br>--pretty<br>--json<br>--yaml<br>--table<br>--fields (value required) |
 | moodle auth status | Show cached session freshness and keepalive state. |  | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required) |
+| moodle calendar | All course, user and site calendar events in the date window. |  | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required)<br>--days (value required)<br>--unit (value required)<br>--ics |
 | moodle commands | Describe the complete command tree. |  | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required) |
 | moodle completion | Print shell completion for zsh, bash or fish. | <shell> |  |
 | moodle coverage | Check each command against this Moodle site with the signed-in session, one live read at a time. Nothing is created. |  | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required) |
@@ -55,6 +57,11 @@ asks for confirmation (`--yes` skips it) and prints the receipt Moodle shows aft
 | moodle mcp session | Advanced managed-session operations. |  |  |
 | moodle mcp session push | Upload a Moodle cookie from standard input. |  | --stdin<br>--pretty<br>--json<br>--yaml<br>--table<br>--fields (value required) |
 | moodle mcp status | Show local and remote Moodle MCP readiness. |  | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required)<br>--verbose<br>--logs |
+| moodle messages | Read and send direct or group messages. |  |  |
+| moodle messages list | Direct and group conversations with unread counts and the latest message. |  | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required)<br>--limit (value required)<br>--offset (value required) |
+| moodle messages read | Mark one conversation, or all conversations, as read. | [conversation] | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required)<br>--all |
+| moodle messages send | Send a message to a conversation id or user:ID. | <recipient> <text> | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required) |
+| moodle messages show | A conversation's latest messages in chronological order; does not mark them read. | <conversation> | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required)<br>--limit (value required)<br>--offset (value required) |
 | moodle news | Latest announcement threads with first-post text. | [unit] | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required)<br>--limit (value required) |
 | moodle open | Open a unit or activity reference in the browser. | <ref> | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required) |
 | moodle overview | Show a compact multi-source overview. |  | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required)<br>--todo-limit (value required)<br>--todo-days (value required)<br>--alerts-limit (value required) |

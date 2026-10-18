@@ -55,8 +55,8 @@ describe("Moodle MCP server", () => {
       },
     });
     const tools = (response as { result: { tools: Array<Record<string, unknown>> } }).result.tools;
-    expect(tools.map((tool) => tool.name)).toEqual(["home", "due", "units", "unit", "find", "item", "attempt", "grades", "news", "thread", "search_forums", "file"]);
-    expect(tools).toHaveLength(12);
+    expect(tools.map((tool) => tool.name)).toEqual(["home", "due", "units", "unit", "find", "item", "attempt", "grades", "news", "thread", "search_forums", "file", "messages", "conversation", "calendar"]);
+    expect(tools).toHaveLength(15);
     expect(tools.every((tool) => (
       (tool.annotations as Record<string, unknown>).readOnlyHint === true
       && (tool.annotations as Record<string, unknown>).destructiveHint === false
@@ -108,7 +108,7 @@ describe("Moodle MCP server", () => {
     const server = createMoodleMcpServer(gateway);
     const listed = await server.handle({ jsonrpc: "2.0", id: "tools", method: "tools/list", params: modernParams() });
     const tools = (listed as { result: { tools: Array<Record<string, unknown>> } }).result.tools;
-    expect(tools.map((tool) => tool.name)).toEqual(["home", "due", "units", "unit", "find", "item", "attempt", "grades", "news", "thread", "search_forums", "submit", "file"]);
+    expect(tools.map((tool) => tool.name)).toEqual(["home", "due", "units", "unit", "find", "item", "attempt", "grades", "news", "thread", "search_forums", "submit", "file", "messages", "conversation", "calendar"]);
     expect(tools.find((tool) => tool.name === "submit")?.annotations).toEqual({ readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true });
     expect(tools.filter((tool) => tool.name !== "submit").every((tool) => (tool.annotations as Record<string, unknown>).readOnlyHint === true)).toBe(true);
 

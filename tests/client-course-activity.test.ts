@@ -29,6 +29,9 @@ function installFetch(routes: Array<(request: SeenRequest) => Response | undefin
   const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const request = { url: String(input), init };
     seen.push(request);
+    if (new URL(request.url).searchParams.get("info") === "core_calendar_get_calendar_monthly_view") {
+      return jsonResponse([{ index: 0, error: false, data: { weeks: [] } }]);
+    }
     for (const route of routes) {
       const response = route(request);
       if (response) {
@@ -182,7 +185,7 @@ describe("MoodleClient course/activity modules", () => {
     seen.length = 0;
     const second = new MoodleClient(BASE_URL, { ...options, unavailable: ["core_enrol_get_users_courses", "core_webservice_get_site_info"] });
     const overview = await second.getOverview(5, 14, 5);
-    const posted = seen.filter((request) => request.init?.method === "POST").map((request) => new URL(request.url).searchParams.get("info"));
+    const posted = seen.filter((request) => request.init?.method === "POST" && !request.url.includes("core_calendar_get_calendar_monthly_view")).map((request) => new URL(request.url).searchParams.get("info"));
     // The dead function never travels, so the remaining four ride in one batch and the profile comes from the cache.
     expect(posted).toEqual([
       "core_calendar_get_action_events_by_timesort,message_popup_get_popup_notifications,core_message_get_conversation_counts,core_message_get_unread_conversation_counts",
@@ -684,7 +687,7 @@ describe("MoodleClient course/activity modules", () => {
       .toEqual(["Syllabus", "Quiz 1"]);
   });
 
-  it("uses one batched AJAX POST for overview and preserves per-entry errors", async () => {
+  it("batches overview sources, loads calendar events, and preserves per-entry errors", async () => {
     const { seen } = installFetch([
       dashboardRoute,
       (request) => {
@@ -736,7 +739,8 @@ describe("MoodleClient course/activity modules", () => {
 
     const overview = await client.getOverview();
 
-    expect(seen.filter((request) => request.init?.method === "POST")).toHaveLength(1);
+    expect(seen.filter((request) => request.init?.method === "POST" && !request.url.includes("core_calendar_get_calendar_monthly_view"))).toHaveLength(1);
+    expect(overview.calendar).toEqual([]);
     expect(overview.courses).toHaveLength(2);
     expect(overview.todo).toHaveLength(1);
     expect(overview.errors).toEqual(["notifications: Notifications disabled"]);
@@ -1031,6 +1035,9 @@ describe("MoodleClient course/activity modules", () => {
 function cliFetch(routes: Array<(request: SeenRequest) => Response | undefined>): typeof fetch {
   return vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const request = { url: String(input), init };
+    if (new URL(request.url).searchParams.get("info") === "core_calendar_get_calendar_monthly_view") {
+      return jsonResponse([{ index: 0, error: false, data: { weeks: [] } }]);
+    }
     for (const route of routes) {
       const response = route(request);
       if (response) {

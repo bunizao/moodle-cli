@@ -212,6 +212,9 @@ export function parseAlertNotification(value: unknown): AlertNotification {
     id: numberValue(data.id),
     subject: stringValue(data.subject),
     short_subject: stringValue(data.shortenedsubject),
+    body: data.fullmessagehtml || data.text
+      ? htmlToStructuredContent(stringValue(data.fullmessagehtml || data.text), stringValue(data.contexturl)).text
+      : stringValue(data.fullmessage || data.smallmessage),
     event_type: stringValue(data.eventtype),
     component: stringValue(data.component),
     created_at: numberValue(data.timecreated),
