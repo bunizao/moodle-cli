@@ -258,27 +258,25 @@ export function parseCourseGradesHtml(html: string, courseId: number, baseUrl: s
     if (!title || row.querySelector(".toggle-category")) {
       continue;
     }
-    if (title === "Course total") {
+    if (row.querySelector(".column-itemname .courseitem, .courseitem")) {
       report.total_grade = cleanTableCell(row.querySelector("td.column-grade"));
       report.total_range = cleanTableCell(row.querySelector("td.column-range"));
       report.total_percentage = cleanTableCell(row.querySelector("td.column-percentage"));
       continue;
     }
     const link = row.querySelector(".rowtitle a.gradeitemheader, .rowtitle a");
-    if (!link) {
-      continue;
-    }
+    const category = Boolean(row.querySelector(".column-itemname .categoryitem, .categoryitem"));
     const statusIcon = row.querySelector("td.column-grade i[aria-label], td.column-grade i[title]");
     const item: GradeItem = parseGradeItem({
       name: title,
-      item_type: cleanText(row.querySelector(".item img.itemicon, .courseitem img.itemicon, img.itemicon")?.getAttribute("alt") ?? ""),
+      item_type: category ? "category" : cleanText(row.querySelector("img.itemicon")?.getAttribute("alt") ?? "") || (link ? "" : "manual"),
       grade: cleanTableCell(row.querySelector("td.column-grade")),
       range: cleanTableCell(row.querySelector("td.column-range")),
       percentage: cleanTableCell(row.querySelector("td.column-percentage")),
       weight: cleanTableCell(row.querySelector("td.column-weight")),
       contribution: cleanTableCell(row.querySelector("td.column-contributiontocoursetotal")),
       feedback: cleanTableCell(row.querySelector("td.column-feedback")),
-      url: resolveUrl(baseUrl, link.getAttribute("href") ?? ""),
+      url: link ? resolveUrl(baseUrl, link.getAttribute("href") ?? "") : "",
       status: statusIcon?.getAttribute("aria-label") ?? statusIcon?.getAttribute("title") ?? "",
     });
     report.items.push(item);
