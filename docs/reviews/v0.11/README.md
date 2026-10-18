@@ -1,6 +1,6 @@
 # v0.11 implementation validation
 
-Validation and review follow-up: 2026-10-19, Australia/Melbourne. Code revision: `e5e3495c038cc01e9e2380d8f6e35c99ae08af80` (the activity-state PR head); implementation starts after `47a548f58ab3ebcd1c3d54fcb2102ffbd2a2d77a` on main. Both revisions are reachable in the PR series. The original working branch and unrelated untracked PDF were preserved. Changes are published as PRs #58–#67; no release or production deployment was performed.
+Validation and review follow-up: 2026-10-19, Australia/Melbourne. Runtime implementation revision: `e5e3495c038cc01e9e2380d8f6e35c99ae08af80` (reachable in the activity-state PR; later commits isolate the test fixtures); implementation starts after `47a548f58ab3ebcd1c3d54fcb2102ffbd2a2d77a` on main. Both revisions are reachable in the PR series. The original working branch and unrelated untracked PDF were preserved. Changes are published as PRs #58–#67; no release or production deployment was performed.
 
 ## Checks
 
@@ -58,3 +58,5 @@ All 16 returned findings were independently checked and fixed. The download case
 Independent follow-up reviews found **0 Standards findings** and **0 Spec findings**. The Spec reviewer ran 122 tests from nine public-interface suites in an immutable archive, and confirmed against Moodle source that `nextperiod.timestamp` is the first day of the next active-calendar month. The final full test and lab results above supersede the original implementation counts.
 
 Additional real-lab review probes passed: a fresh session resumed the same password-protected timed attempt; text-only replacement removed the old file; messages/conversation/calendar retained `Asia/Tokyo` while the host used UTC; reply and new-discussion verification succeeded with the discussion-post AJAX reader disabled.
+
+The Linux CI follow-up exposed a malformed calendar fixture (`userid` instead of Moodle's `userId`) previously masked by a host session cache. The CLI tests now disable caches and use a valid authenticated context. The failure was reproduced locally with caches disabled and corrected; a real Linux invocation returned the expected calendar JSON with exit code 0.
