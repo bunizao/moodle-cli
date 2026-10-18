@@ -207,3 +207,30 @@ describe("real formulas attempt", () => {
   });
 
 });
+
+
+describe("quiz start CLI", () => {
+  it("continues a password-protected attempt after signing in again", async () => {
+    const posts: URLSearchParams[] = [];
+    const fetchImpl: typeof fetch = async (input, init) => {
+      const url = String(input);
+      const path = new URL(url).pathname;
+      if (path === "/my/") return htmlResponse(fixture("dashboard.html"), url);
+      if (path === "/mod/quiz/view.php") return htmlResponse(`<h1>Quiz 1</h1><a href="${ATTEMPT}">Continue your attempt</a>`, url);
+      if (path === "/mod/quiz/attempt.php") return htmlResponse(`<form method="post" action="${BASE}/mod/quiz/startattempt.php"><input type="hidden" name="cmid" value="32"><input type="hidden" name="sesskey" value="FIXTUREKEY"><input type="hidden" name="attempt" value="900"><input type="password" name="quizpassword"></form>`, `${BASE}/mod/quiz/startattempt.php?cmid=32`);
+      if (path === "/mod/quiz/startattempt.php" && init?.method === "POST") {
+        posts.push(postedBody({ url, init }));
+        return htmlResponse(fixture("quiz-attempt-page-1.html"), `${ATTEMPT}&page=1`);
+      }
+      throw new Error(`Unexpected request: ${init?.method ?? "GET"} ${url}`);
+    };
+
+    const result = await runQuiz(["quiz", "start", "32", "--password", "open-sesame", "--yes", "--json"], fetchImpl);
+
+    expect(result.code, result.stderr).toBe(0);
+    expect(JSON.parse(result.stdout).attempt).toMatchObject({ attempt: 900, page: 1 });
+    expect(posts).toHaveLength(1);
+    expect(posts[0].get("quizpassword")).toBe("open-sesame");
+    expect(posts[0].get("attempt")).toBe("900");
+  });
+});

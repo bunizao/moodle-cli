@@ -128,13 +128,14 @@ export interface StartOptions {
  */
 export async function planQuizStart(deps: QuizDeps, quizId: number): Promise<QuizStartPlan> {
   const { viewUrl, viewHtml, root } = await readQuizView(deps, quizId);
-  const start = formWithAction(root, QUIZ_START_PATH);
+  const resume = resumeControl(root);
+  const start = formWithAction(root, QUIZ_START_PATH) ?? resume;
   if (!start) throw noAttemptButton(deps, root, viewUrl);
   const quiz = parseQuizHtml(viewHtml, quizId, deps.baseUrl);
   const control = start.querySelector("button, input[type=submit]");
   const button = cleanText(control?.getAttribute("value") ?? control?.textContent);
   const cards = root.querySelectorAll("table.quizreviewsummary");
-  const inProgress = /continue/iu.test(button) || cards.some(card => /in progress/iu.test(cleanText(card.textContent)));
+  const inProgress = Boolean(resume) || /continue/iu.test(button) || cards.some(card => /in progress/iu.test(cleanText(card.textContent)));
   return {
     quiz_id: quizId,
     name: quiz.name,
@@ -150,17 +151,23 @@ export async function planQuizStart(deps: QuizDeps, quizId: number): Promise<Qui
 export async function startQuizAttempt(deps: QuizDeps, quizId: number, options: StartOptions = {}): Promise<AttemptPage> {
   const { viewUrl, root } = await readQuizView(deps, quizId);
   // An attempt already under way shows a "Continue" button that lands on the attempt page directly.
-  const resume = formWithAction(root, QUIZ_ATTEMPT_PATH) ?? root.querySelector(`a[href*="${QUIZ_ATTEMPT_PATH}?"]`);
+  let response: Response | undefined;
+  const resume = resumeControl(root);
   if (resume) {
     const target = resume.tagName.toLowerCase() === "form"
       ? `${resolveUrl(deps.baseUrl, resume.getAttribute("action") ?? "")}?${new URLSearchParams(formFields(resume)).toString()}`
       : resolveUrl(deps.baseUrl, resume.getAttribute("href") ?? "");
     const attempt = numberParam(target, "attempt");
-    if (attempt) return getAttemptPage(deps, attempt, quizId);
+    if (attempt) {
+      response = await deps.request(attemptUrl(deps.baseUrl, attempt, quizId, 0));
+      if (!onPath(response.url, QUIZ_START_PATH)) assertAttemptAccess(deps, response.url, attempt, quizId);
+    }
   }
-  const start = formWithAction(root, QUIZ_START_PATH);
-  if (!start) throw noAttemptButton(deps, root, viewUrl);
-  let response = await deps.request(resolveUrl(deps.baseUrl, start.getAttribute("action") ?? ""), postInit(formFields(start)));
+  if (!response) {
+    const start = formWithAction(root, QUIZ_START_PATH);
+    if (!start) throw noAttemptButton(deps, root, viewUrl);
+    response = await deps.request(resolveUrl(deps.baseUrl, start.getAttribute("action") ?? ""), postInit(formFields(start)));
+  }
   let html = await response.text();
   // A timed or password-protected quiz answers with a pre-flight form instead of the attempt.
   if (!onPath(response.url, QUIZ_ATTEMPT_PATH)) {
@@ -544,6 +551,10 @@ export function noticesOf(html: string): string {
     if (text && !texts.includes(text)) texts.push(text);
   }
   return texts.join(" ");
+}
+
+function resumeControl(root: HTMLElement): HTMLElement | null {
+  return formWithAction(root, QUIZ_ATTEMPT_PATH) ?? root.querySelector(`a[href*="${QUIZ_ATTEMPT_PATH}?"]`);
 }
 
 function formWithAction(root: HTMLElement, path: string): HTMLElement | null {
