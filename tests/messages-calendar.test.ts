@@ -92,7 +92,7 @@ describe("profile timezone through CLI and MCP", () => {
         : methodname === "core_message_get_conversation_messages" ? { id: 2, members: [member], messages: [{ ...message, timecreated: at }] }
         : calendarMonthData({ weeks: [{ days: [{ events: [{ id: 5, name: "Dentist", timestart: at }] }] }] }, args),
       })))
-      : new Response(calendarMonthHtml() + '<script>M.cfg = {"sesskey":"test","userid":7};</script><body id="page-my-index"></body>');
+      : new Response(calendarMonthHtml() + '<script>M.cfg = {"sesskey":"test","userId":7};</script><body id="page-my-index"></body>');
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-10-18T11:00:00Z"));
     try {
@@ -202,8 +202,8 @@ describe("calendar through MoodleClient and CLI", () => {
     let output = "";
     const fetchImpl: typeof fetch = async (_url, init) => init?.method === "POST"
       ? Response.json((JSON.parse(String(init.body)) as Array<{ args: Record<string, unknown> }>).map(({ args }, index) => ({ index, error: false, data: calendarMonthData({ weeks: [{ days: [{ events: [{ id: 1, name: "Tomorrow", timestart: now + 86400 }, { id: 2, name: "Next week", timestart: now + 86400 * 7 }] }] }] }, args) })))
-      : new Response(calendarMonthHtml() + '<script>M.cfg = {"sesskey":"test","userid":7};</script><body id="page-my-index"></body>');
-    expect(await runCli(["node", "moodle", "calendar", "--days", "2", "--json"], { env: { MOODLE_BASE_URL: baseUrl, MOODLE_SESSION: "test" }, fetchImpl, stdout: { write: (text: string) => { output += text; return true; } }, stderr: { write: () => true } })).toBe(0);
+      : new Response(calendarMonthHtml() + '<script>M.cfg = {"sesskey":"test","userId":7};</script><body id="page-my-index"></body>');
+    expect(await runCli(["node", "moodle", "calendar", "--days", "2", "--json", "--no-cache"], { env: { MOODLE_BASE_URL: baseUrl, MOODLE_SESSION: "test" }, fetchImpl, stdout: { write: (text: string) => { output += text; return true; } }, stderr: { write: () => true } })).toBe(0);
     expect(JSON.parse(output)).toMatchObject({ events: [{ id: 1, name: "Tomorrow" }], total: 1 });
   });
   it("prints an importable iCalendar stream with escaped text and folded UTF-8 lines", async () => {
@@ -212,8 +212,8 @@ describe("calendar through MoodleClient and CLI", () => {
     let output = "";
     const fetchImpl: typeof fetch = async (_url, init) => init?.method === "POST"
       ? Response.json((JSON.parse(String(init.body)) as Array<{ args: Record<string, unknown> }>).map(({ args }, index) => ({ index, error: false, data: calendarMonthData(fixture, args) })))
-      : new Response(calendarMonthHtml() + '<script>M.cfg = {"sesskey":"test","userid":7};</script><body id="page-my-index"></body>');
-    const result = await runCli(["node", "moodle", "calendar", "--ics"], { env: { MOODLE_BASE_URL: baseUrl, MOODLE_SESSION: "test" }, fetchImpl, stdout: { write: (text: string) => { output += text; return true; } }, stderr: { write: () => true } });
+      : new Response(calendarMonthHtml() + '<script>M.cfg = {"sesskey":"test","userId":7};</script><body id="page-my-index"></body>');
+    const result = await runCli(["node", "moodle", "calendar", "--ics", "--no-cache"], { env: { MOODLE_BASE_URL: baseUrl, MOODLE_SESSION: "test" }, fetchImpl, stdout: { write: (text: string) => { output += text; return true; } }, stderr: { write: () => true } });
     expect(result).toBe(0);
     expect(output).toContain("BEGIN:VCALENDAR\r\n");
     expect(output).toContain("SUMMARY:Dentist\\; check\\,");
