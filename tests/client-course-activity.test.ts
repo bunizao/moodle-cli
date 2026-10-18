@@ -333,6 +333,7 @@ describe("MoodleClient course/activity modules", () => {
   it("falls back to the modern course-format state service", async () => {
     installFetch([
       dashboardRoute,
+      request => request.url === `${BASE_URL}/course/view.php?id=101` ? htmlResponse("<html></html>") : undefined,
       ajaxErrorRoute("core_course_get_contents"),
       ajaxRoute("core_courseformat_get_state", JSON.stringify({
         section: [

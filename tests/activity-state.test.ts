@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { expect, it } from "vitest";
 import { createMoodleClientCore } from "../src/moodle-client-core.js";
 
@@ -49,4 +50,47 @@ it("keeps completion when the module metadata service is available", async () =>
     },
   });
   expect(await client.getActivity(5)).toMatchObject({ id: 5, completion: 1 });
+});
+
+it("lists a restricted course-state activity with the condition from its course page", async () => {
+  let coursePages = 0;
+  const client = createMoodleClientCore("https://school.example.edu", {
+    cookie: { name: "MoodleSession", value: "fixture" }, sesskey: "fixture", userid: 3,
+    fetchImpl: async (input, init) => {
+      const url = new URL(String(input));
+      if (url.pathname === "/course/view.php") {
+        coursePages++;
+        return new Response(readFileSync(new URL("./fixtures/moodle-5.0/course-restrictions.html", import.meta.url), "utf8"));
+      }
+      const [{ methodname }] = JSON.parse(String(init?.body));
+      if (methodname === "core_course_get_contents") return Response.json([{ error: true, exception: { errorcode: "servicenotavailable", message: "Web service is not available" } }]);
+      expect(methodname).toBe("core_courseformat_get_state");
+      return Response.json([{ error: false, data: JSON.stringify({
+        section: [{ id: "94", section: 2, title: "New section", cmlist: ["150"] }],
+        cm: [{ id: "150", sectionid: "94", name: "Locked Task", module: "assign", visible: true, uservisible: false, hascmrestrictions: true, completionstate: 0 }],
+      }) }]);
+    },
+  });
+  expect(await client.getActivities(16)).toMatchObject([{ id: 150, available: false, availability_reason: "Available from 17 November 2026, 12:57 PM", completion: 0 }]);
+  await client.getCourseContents(16);
+  expect(coursePages).toBe(1);
+});
+
+it.each([
+  { uservisible: true },
+  { uservisible: false, availableinfo: "<p>Opens next week</p>" },
+])("keeps course-state reads on AJAX when no restriction text is missing: %j", async (availability) => {
+  const client = createMoodleClientCore("https://school.example.edu", {
+    cookie: { name: "MoodleSession", value: "fixture" }, sesskey: "fixture", userid: 3,
+    fetchImpl: async (input, init) => {
+      expect(new URL(String(input)).pathname).toBe("/lib/ajax/service.php");
+      const [{ methodname }] = JSON.parse(String(init?.body));
+      if (methodname === "core_course_get_contents") return Response.json([{ error: true, exception: { errorcode: "servicenotavailable", message: "Web service is not available" } }]);
+      return Response.json([{ error: false, data: JSON.stringify({
+        section: [{ id: "94", section: 2, title: "New section", cmlist: ["150"] }],
+        cm: [{ id: "150", sectionid: "94", name: "Task", module: "assign", visible: true, ...availability }],
+      }) }]);
+    },
+  });
+  expect((await client.getActivities(16))[0].id).toBe(150);
 });

@@ -347,7 +347,7 @@ export class MoodleClientCore {
   private async fetchCourseContents(courseId: number): Promise<Section[]> {
     await this.ensureSession();
     try {
-      return parseCourseContents(await this.call(FUNC_GET_COURSE_CONTENTS, { courseid: courseId }));
+      return this.fillAvailabilityReasons(courseId, parseCourseContents(await this.call(FUNC_GET_COURSE_CONTENTS, { courseid: courseId })));
     } catch (error) {
       if (!this.errors.isApi(error) || error.moodleErrorCode !== "servicenotavailable") {
         throw error;
@@ -358,7 +358,7 @@ export class MoodleClientCore {
         await this.call(FUNC_GET_COURSE_FORMAT_STATE, { courseid: courseId }),
         this.baseUrl,
       );
-      if (sections.length) return sections;
+      if (sections.length) return this.fillAvailabilityReasons(courseId, sections);
     } catch (error) {
       if (!this.errors.isApi(error) || error.moodleErrorCode !== "servicenotavailable") {
         throw error;
@@ -366,6 +366,17 @@ export class MoodleClientCore {
     }
     const response = await this.get(COURSE_PATH, { id: courseId });
     return this.scrapeCourseContents(courseId, response);
+  }
+
+  private async fillAvailabilityReasons(courseId: number, sections: Section[]): Promise<Section[]> {
+    const missing = sections.flatMap(section => section.activities).filter(activity => activity.available === false && !activity.availability_reason);
+    if (!missing.length) return sections;
+    const rendered = (await this.scrapeCourseContents(courseId, await this.get(COURSE_PATH, { id: courseId }))).flatMap(section => section.activities);
+    for (const activity of missing) {
+      const reason = rendered.find(item => item.id === activity.id)?.availability_reason;
+      if (reason) activity.availability_reason = reason;
+    }
+    return sections;
   }
 
   async getActivities(courseId: number): Promise<Section["activities"]> {
