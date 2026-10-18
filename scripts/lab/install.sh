@@ -1,12 +1,18 @@
 #!/usr/bin/env bash
 # Installs a throwaway Moodle 5.0 into $MOODLE_LAB_DIR (default ~/.cache/moodle-cli-lab) on the
 # local PostgreSQL 16, serves it on http://127.0.0.1:8080 and fills it with the lab data.
-# Needs PHP 8.2-8.4 with pgsql, intl, zip, gd, curl, mbstring, xml and sodium. Rerunning
+# Needs Composer, Git, and PHP 8.2-8.4 with pgsql, intl, zip, gd, curl, mbstring, xml and sodium. Rerunning
 # starts from an empty site: the lab's database and moodledata are dropped first.
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LAB="${MOODLE_LAB_DIR:-$HOME/.cache/moodle-cli-lab}"
 PHP=(php -d max_input_vars=5000)
+for prerequisite in composer git php; do
+  if ! command -v "$prerequisite" >/dev/null 2>&1; then
+    echo "lab install: missing required command '$prerequisite'; install it before running this script." >&2
+    exit 1
+  fi
+done
 mkdir -p "$LAB"
 
 if [[ ! -f "$LAB/moodle/version.php" ]]; then

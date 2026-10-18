@@ -2,7 +2,7 @@
 
 A throwaway Moodle 5.0 with known contents, for checking `moodle coverage` and the page readers against a real site. Nothing here runs in `npm test`.
 
-Needs PostgreSQL 16, PHP 8.2–8.4 (pgsql, intl, zip, gd, curl, mbstring, xml, sodium), and root for `su postgres`. The lab lives in `$MOODLE_LAB_DIR` (default `~/.cache/moodle-cli-lab`) and serves `http://127.0.0.1:8080`; use that exact host.
+Needs Composer, Git, PostgreSQL 16, PHP 8.2–8.4 (pgsql, intl, zip, gd, curl, mbstring, xml, sodium), and root for `su postgres`. The lab lives in `$MOODLE_LAB_DIR` (default `~/.cache/moodle-cli-lab`) and serves `http://127.0.0.1:8080`; use that exact host.
 
 ```bash
 scripts/lab/install.sh      # download, install, generate data, log in (about 70 s); rerun to start over

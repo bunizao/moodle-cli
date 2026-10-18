@@ -491,11 +491,13 @@ $teamchat = \core_message\api::create_conversation(2, [$student->id, $teacher->i
 as_user($teacher);
 \core_message\api::send_message_to_conversation($teacher->id, $teamchat->id, 'Welcome to Team Alpha', FORMAT_PLAIN);
 as_user($admin);
+$generalEventIds = [];
 foreach ([['Guest lecture', 'course', $course1->id, 0], ['Dentist', 'user', 0, $student->id],
         ['Public holiday', 'site', SITEID, 0]] as [$name, $kind, $courseid, $userid]) {
-    calendar_event::create((object) ['name' => $name, 'description' => '<p>Calendar acceptance event.</p>',
+    $event = calendar_event::create((object) ['name' => $name, 'description' => '<p>Calendar acceptance event.</p>',
         'format' => FORMAT_HTML, 'courseid' => $courseid, 'userid' => $userid, 'eventtype' => $kind,
         'timestart' => $now + 3 * $DAY, 'timeduration' => 3600, 'visible' => 1]);
+    $generalEventIds[] = (int) $event->id;
 }
 
 $formulas = $quizgen->create_instance(['course' => $course1->id, 'name' => 'Formulas quiz',
@@ -514,7 +516,7 @@ $formulasattempt = $quizgen->create_attempt($formulas->id, $student->id);
 as_user($admin);
 $v011 = ['draft_essay' => (int) $draftessay->cmid, 'group_project' => (int) $groupassign->cmid,
     'reflection' => (int) $reflection->cmid, 'overdue' => (int) $overdue->cmid,
-    'manual_grade' => (int) $midterm->id, 'conversations' => $messages, 'team_chat' => (int) $teamchat->id,
+    'manual_grade' => (int) $midterm->id, 'calendar_events' => $generalEventIds, 'conversations' => $messages, 'team_chat' => (int) $teamchat->id,
     'formulas_quiz' => (int) $formulas->cmid, 'formulas_attempt' => (int) $formulasattempt->id,
     'completion_page' => (int) $welcomepage->cmid, 'forum' => (int) $forum->cmid];
 
@@ -666,10 +668,11 @@ foreach ([[$forum, $disc], [$news, $newsdisc]] as [$f, $d]) {
     ];
 }
 
-// Calendar events (course-module events only).
+// Calendar ground truth includes module events and every general event seeded above.
 [$insql, $inparams] = $DB->get_in_or_equal([$course1->id, $course2->id]);
 $events = [];
-foreach ($DB->get_records_select('event', "courseid $insql AND modulename <> ''", $inparams, 'timestart, id') as $e) {
+[$eventsql, $eventparams] = $DB->get_in_or_equal($generalEventIds);
+foreach ($DB->get_records_select('event', "(courseid $insql AND modulename <> '') OR id $eventsql", array_merge($inparams, $eventparams), 'timestart, id') as $e) {
     $events[] = [
         'id' => (int) $e->id, 'name' => $e->name, 'courseid' => (int) $e->courseid, 'modulename' => $e->modulename,
         'instance' => (int) $e->instance, 'eventtype' => $e->eventtype, 'timestart' => (int) $e->timestart,
