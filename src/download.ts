@@ -165,9 +165,15 @@ async function downloadAll(client: MoodleClient, request: DownloadRequest, signa
       let parent = directory;
       for (const segment of path.dirname(filename).split(path.sep).filter(part => part !== ".")) {
         parent = path.join(parent, segment);
-        const stat = await lstat(parent).catch(error => { if (error.code !== "ENOENT") throw error; return undefined; });
-        if (stat?.isSymbolicLink()) throw new ConfigError(`Cannot download through symbolic link '${parent}'.`);
-        await mkdir(parent, { recursive: true });
+        try {
+          const stat = await lstat(parent).catch(error => { if (error.code !== "ENOENT") throw error; return undefined; });
+          if (stat?.isSymbolicLink()) throw new ConfigError(`Cannot download through symbolic link '${parent}'.`);
+          await mkdir(parent, { recursive: true });
+        } catch (error) {
+          await resolved.response.body?.cancel().catch(() => undefined);
+          if (error instanceof ConfigError) throw error;
+          throw new ConfigError(`Cannot create local directory '${parent}'.`);
+        }
       }
     }
     const bytesWritten = request.dryRun ? 0 : await writeResponse(resolved.response, destination, Boolean(request.force), signal);
