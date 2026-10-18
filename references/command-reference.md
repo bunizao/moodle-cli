@@ -59,7 +59,7 @@ asks for confirmation (`--yes` skips it) and prints the receipt Moodle shows aft
 | moodle open | Open a unit or activity reference in the browser. | <ref> | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required) |
 | moodle overview | Show a compact multi-source overview. |  | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required)<br>--todo-limit (value required)<br>--todo-days (value required)<br>--alerts-limit (value required) |
 | moodle quiz | Take a quiz: start an attempt, answer questions, finish it. Beta. |  |  |
-| moodle quiz answer | Save one answer: option letters for a choice question (b, or a,c), the text otherwise. | <attempt> <quiz> <question> [answer] | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required)<br>--from (value required) |
+| moodle quiz answer | Save an answer: choice letters (b or a,c) or text. | <attempt> <quiz> <question> [answer] | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required)<br>--from (value required)<br>--value (value required) |
 | moodle quiz finish | Submit the attempt for grading. Moodle does not allow undoing this. | <attempt> <quiz> | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required) |
 | moodle quiz show | Show one page of an attempt in progress: questions, options and saved answers. | <attempt> <quiz> | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required)<br>--page (value required) |
 | moodle quiz start | Start a new attempt, or continue the one in progress, and show its first page. | <ref> | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required)<br>--password (value required) |

@@ -19,7 +19,7 @@ export interface QuizDeps {
   usage(message: string, hint?: string): Error;
 }
 
-export type QuestionKind = "choice" | "multi" | "text" | "info" | "unsupported";
+export type QuestionKind = "choice" | "multi" | "text" | "fields" | "info" | "unsupported";
 
 export interface AttemptOption {
   /** Letter shown to the user: a, b, c... */
@@ -32,6 +32,15 @@ export interface AttemptOption {
   chosen: boolean;
 }
 
+export interface AttemptField {
+  /** The input this field posts to. */
+  name: string;
+  /** A plain text input or an editor-backed textarea. */
+  kind: "text" | "textarea";
+  /** Current value Moodle rendered for this field. */
+  answer: string;
+}
+
 export interface AttemptQuestion {
   slot: number;
   /** Moodle's display number; "i" for an information block. */
@@ -42,6 +51,8 @@ export interface AttemptQuestion {
   text: string;
   /** The input a written or single-choice answer is posted to. */
   field?: string;
+  /** The inputs of a multi-field question, in display order. */
+  fields?: AttemptField[];
   options?: AttemptOption[];
   /** Current free-text answer, when the question takes one. */
   answer?: string;
@@ -221,7 +232,9 @@ export interface AnswerRequest {
   /** Display number of the question, as `moodle quiz show` lists it. */
   question: string;
   /** Option letters ("b", "a,c") for choice questions; the response text otherwise. */
-  value: string;
+  value?: string;
+  /** Values for a multi-field question, in display order. */
+  values?: string[];
 }
 
 /** Saves one answer and returns the page it lives on, re-read after the save. */
@@ -238,7 +251,7 @@ export async function answerQuizQuestion(deps: QuizDeps, request: AnswerRequest)
   const page = entry.page === first.page ? first : await loadAttemptPage(deps, request.attemptId, request.quizId, entry.page);
   const question = page.questions.find(item => item.slot === entry.slot);
   if (!question) throw deps.fail(`Page ${entry.page + 1} does not contain question ${request.question}.`);
-  const fields = encodeAnswer(deps, page.form, question, request.value);
+  const fields = encodeAnswer(deps, page.form, question, request.value ?? "", request.values);
   // Posting nextpage = thispage keeps Moodle on the same page, so the re-rendered page is the receipt.
   const replay = fields.map(([name, value]): Field => (name === "nextpage" ? [name, String(page.page)] : [name, value]));
   const response = await deps.request(page.form.action, postInit(replay));
@@ -386,6 +399,20 @@ function parseAttemptQuestion(que: HTMLElement): AttemptQuestion {
     const html = tag(text) === "textarea";
     return { ...base, kind: "text", field: text.getAttribute("name")!, answer: html ? blockText(parse(text.textContent)) : cleanText(text.getAttribute("value") ?? "") };
   }
+  if (texts.length > 1 && only(texts) && isMultiFieldType(base.type)) {
+    return {
+      ...base,
+      kind: "fields",
+      fields: texts.map(text => {
+        const html = tag(text) === "textarea";
+        return {
+          name: text.getAttribute("name")!,
+          kind: html ? "textarea" : "text",
+          answer: html ? blockText(parse(text.textContent)) : cleanText(text.getAttribute("value") ?? ""),
+        };
+      }),
+    };
+  }
   return base;
 }
 
@@ -398,9 +425,46 @@ function option(que: HTMLElement, input: HTMLElement, index: number): AttemptOpt
   return { key: String.fromCharCode(97 + index), field: input.getAttribute("name") ?? "", value: input.getAttribute("value") ?? "", text, chosen: input.hasAttribute("checked") };
 }
 
-function encodeAnswer(deps: QuizDeps, form: ParsedForm, question: AttemptQuestion, value: string): Field[] {
-  const raw = value.trim();
+function isMultiFieldType(type: string): boolean {
+  return type === "formulas" || type === "calculatedmulti";
+}
+
+function splitFieldAnswers(value: string): string[] {
+  const trimmed = value.trim();
+  return trimmed ? trimmed.split(/\r?\n|;/u).map(part => part.trim()) : [];
+}
+
+function encodeAnswer(deps: QuizDeps, form: ParsedForm, question: AttemptQuestion, value: string, values?: string[]): Field[] {
   if (question.kind === "info") throw deps.usage(`Question ${question.number} is an information block; it takes no answer.`);
+  if (question.kind !== "fields" && values !== undefined) {
+    if (values.length !== 1) {
+      throw deps.usage(
+        `Question ${question.number} takes exactly one --value, not ${values.length}.`,
+        question.kind === "multi" ? "Pass multiple options in one value, such as --value a,c." : undefined,
+      );
+    }
+    value = values[0];
+  }
+  const raw = value.trim();
+  if (question.kind === "fields") {
+    const answerFields = question.fields ?? [];
+    const answers = values?.length ? values : splitFieldAnswers(value);
+    if (answers.length !== answerFields.length) {
+      throw deps.usage(
+        `Question ${question.number} needs ${answerFields.length} values, got ${answers.length}.`,
+        `Pass them in order with --value, for example: ${answerFields.map((_, index) => `--value <${index + 1}>`).join(" ")}.`,
+      );
+    }
+    const names = new Set(answerFields.map(field => field.name));
+    const next = form.fields.filter(([name]) => !names.has(name));
+    for (const [index, field] of answerFields.entries()) {
+      const answer = answers[index].trim();
+      if (!answer) throw deps.usage(`Question ${question.number} is missing answer ${index + 1}.`);
+      const format = form.fields.find(([name]) => name === `${field.name}format`)?.[1];
+      next.push([field.name, field.kind === "textarea" && format === "1" ? paragraphs(answer) : answer]);
+    }
+    return next;
+  }
   if (question.kind === "unsupported" || (!question.field && question.kind !== "multi")) throw deps.usage(`Question ${question.number} is a ${question.type || "question"} type the CLI cannot answer.`, "Answer it in a browser; other questions can still be answered here.");
   if (question.kind === "text") {
     if (!raw) throw deps.usage(`Question ${question.number} needs a written answer.`);

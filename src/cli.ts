@@ -475,7 +475,13 @@ export function buildProgram(io: CliIO = {}): Command {
     // A sequential quiz has locked its earlier pages, so their gaps are no longer the next step.
     const open = page.navigation.find(entry => entry.number !== "i" && /not yet|not answered/iu.test(entry.state) && (!sequential || entry.page >= page.page));
     if (!open) return [`moodle quiz finish ${page.attempt} ${page.quiz_id}`];
-    if (open.page === page.page) return [`moodle quiz answer ${page.attempt} ${page.quiz_id} ${open.number} <answer>`];
+    if (open.page === page.page) {
+      const question = page.questions.find(item => item.slot === open.slot);
+      const values = question?.kind === "fields" && question.fields?.length
+        ? question.fields.map((_, index) => `--value <${index + 1}>`).join(" ")
+        : "<answer>";
+      return [`moodle quiz answer ${page.attempt} ${page.quiz_id} ${open.number} ${values}`];
+    }
     return [`moodle quiz show ${page.attempt} ${page.quiz_id} --page ${sequential ? page.page + 2 : open.page + 1}`];
   };
   const showPage = (page: AttemptPage, palette: Theme) => `${palette.tone("warning", "BETA")} ${formatAttemptPage(page)}\n\n${tryLines(attemptNext(page))}`;
@@ -517,14 +523,20 @@ export function buildProgram(io: CliIO = {}): Command {
       }
       await runtime.output({ attempt: page }, () => showPage(page, theme()), options);
     });
-  addOutputOptions(mutating(quiz.command("answer").description("Save one answer: option letters for a choice question (b, or a,c), the text otherwise.").argument("<attempt>", "Attempt id").argument("<quiz>", "Quiz id").argument("<question>", "Question number as shown").argument("[answer]", "Option letters or answer text")))
+  const collectValue = (value: string, previous: string[] = []): string[] => [...previous, value];
+  addOutputOptions(mutating(quiz.command("answer").description("Save an answer: choice letters (b or a,c) or text.").argument("<attempt>", "Attempt id").argument("<quiz>", "Quiz id").argument("<question>", "Question number as shown").argument("[answer]", "Option letters or answer text")))
     .option("--from <file>", "Read the answer text from a file.")
-    .action(async (attempt: string, quizId: string, question: string, answer: string | undefined, options: OutputCommandOptions & { from?: string }) => {
+    .option("--value <value>", "Value; repeat for multi-field questions.", collectValue)
+    .action(async (attempt: string, quizId: string, question: string, answer: string | undefined, options: OutputCommandOptions & { from?: string; value?: string[] }) => {
       const value = options.from ? await readFile(path.resolve(io.cwd ?? process.cwd(), options.from), "utf8") : answer;
-      if (!value?.trim()) throw new UsageError("Give the answer as an argument or with --from <file>.");
-      const request = { attemptId: parsePositiveInt(attempt), quizId: parsePositiveInt(quizId), question, value };
+      const values = options.value?.length ? options.value : undefined;
+      if (options.from && values) throw new UsageError("Use either --from or --value, not both.");
+      if (answer && values) throw new UsageError("Use either the positional answer or --value, not both.");
+      const previewValue = values ? values.join("; ") : (value ?? "").trim();
+      if (!previewValue) throw new UsageError("Give the answer as an argument or with --from <file>.");
+      const request = { attemptId: parsePositiveInt(attempt), quizId: parsePositiveInt(quizId), question, value: value ?? "", ...(values ? { values } : {}) };
       const palette = theme();
-      const preview = value.trim().length > 80 ? `${value.trim().slice(0, 77)}...` : value.trim();
+      const preview = previewValue.length > 80 ? `${previewValue.slice(0, 77)}...` : previewValue;
       if (program.opts().dryRun) return runtime.output({ planned: "answer", ...request }, () => `Would answer question ${question} of attempt ${attempt} with: ${preview}`, options);
       if (!await quizConsent(`Save ${palette.subject(preview)} as the answer to question ${palette.target(question)} of attempt ${attempt}.`)) return;
       const client = await runtime.getClient();

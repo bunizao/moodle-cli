@@ -423,6 +423,11 @@ function attemptQuestionLines(question: AttemptQuestion): string[] {
     lines.push(`  ${option.chosen ? "[x]" : "[ ]"} ${option.key})${first.slice(1)}`, ...rest.map(line => `     ${line}`));
   }
   if (question.kind === "text") lines.push(`  Answer: ${question.answer || "(empty)"}`);
+  if (question.kind === "fields") {
+    for (const [index, field] of (question.fields ?? []).entries()) {
+      lines.push(`  Answer ${index + 1}: ${field.answer || "(empty)"}`);
+    }
+  }
   if (question.kind === "unsupported") lines.push(`  (${question.type} questions can only be answered in a browser)`);
   return lines;
 }

@@ -38,6 +38,10 @@ function saved(html: string, slot: number): string {
   return html.replace(new RegExp(`(id="question-4000-${slot}"[\\s\\S]*?<div class="state">)Not yet answered`, "u"), "$1Answer saved");
 }
 
+function savedQuestion(html: string, questionId: string): string {
+  return html.replace(new RegExp(`(id="${questionId}"[\\s\\S]*?<div class="state">)Not yet answered`, "u"), "$1Answer saved");
+}
+
 describe("quiz attempt pages", () => {
   const deps = { baseUrl: BASE, fail: (message: string) => new Error(message) };
 
@@ -238,6 +242,86 @@ describe("answerQuizQuestion", () => {
     });
     await answerQuizQuestion(deps, { attemptId: 900, quizId: 32, question: "2", value: "def f():\n    return 1 < 2\n" });
     expect(deps.calls.at(-1)!.body.get("q4000:3_answer")).toBe("def f():\n    return 1 < 2");
+  });
+
+  function multiFieldDeps() {
+    const multi = fixture("quiz-attempt-formulas.html");
+    const deps = fakeDeps({
+      "GET /mod/quiz/attempt.php": ({ url }) => ({ url, html: multi }),
+      "POST /mod/quiz/processattempt.php": () => ({ url: ATTEMPT, html: savedQuestion(multi, "question-5484577-7") }),
+    });
+    return deps;
+  }
+
+  it("posts every field of a multi-field formulas question in display order", async () => {
+    const deps = multiFieldDeps();
+    const page = await getAttemptPage(deps, 900, 32, 0);
+    expect(page.questions[0]).toMatchObject({
+      number: "1",
+      kind: "fields",
+      fields: [
+        { name: "q5484577:7_0_0", kind: "text", answer: "" },
+        { name: "q5484577:7_1_0", kind: "text", answer: "" },
+      ],
+    });
+    await answerQuizQuestion(deps, { attemptId: 900, quizId: 32, question: "1", values: ["4", "32"] });
+    const post = deps.calls.at(-1)!;
+    expect(post.body.get("q5484577:7_0_0")).toBe("4");
+    expect(post.body.get("q5484577:7_1_0")).toBe("32");
+  });
+
+  it("accepts semicolon-separated values for a multi-field question", async () => {
+    const deps = multiFieldDeps();
+    await answerQuizQuestion(deps, { attemptId: 900, quizId: 32, question: "1", value: "4; 32" });
+    const post = deps.calls.at(-1)!;
+    expect(post.body.get("q5484577:7_0_0")).toBe("4");
+    expect(post.body.get("q5484577:7_1_0")).toBe("32");
+  });
+
+  it("rejects a multi-field answer with the wrong number of values", async () => {
+    const deps = multiFieldDeps();
+    await expect(answerQuizQuestion(deps, { attemptId: 900, quizId: 32, question: "1", value: "4" })).rejects.toThrow(/needs 2 values, got 1/u);
+  });
+
+  it("normalizes one explicit value into a text answer", async () => {
+    const deps = attemptDeps(() => ({ url: `${ATTEMPT}&page=1`, html: saved(fixture("quiz-attempt-page-1.html"), 3) }));
+    await answerQuizQuestion(deps, { attemptId: 900, quizId: 32, question: "2", values: ["hello"] });
+    expect(deps.calls.at(-1)!.body.get("q4000:3_answer")).toBe("<p>hello</p>");
+  });
+
+  it("normalizes one explicit value into a single-choice answer", async () => {
+    const deps = attemptDeps(() => ({ url: ATTEMPT, html: saved(fixture("quiz-attempt-page-0.html"), 1) }));
+    await answerQuizQuestion(deps, { attemptId: 900, quizId: 32, question: "1", values: ["b"] });
+    expect(deps.calls.at(-1)!.body.get("q4000:1_answer")).toBe("1");
+  });
+
+  it("normalizes one explicit value into a multiple-choice answer", async () => {
+    const deps = attemptDeps(() => ({ url: `${ATTEMPT}&page=2`, html: saved(fixture("quiz-attempt-page-2.html"), 4) }));
+    await answerQuizQuestion(deps, { attemptId: 900, quizId: 32, question: "3", values: ["a,c"] });
+    const post = deps.calls.at(-1)!;
+    expect(post.body.get("q4000:4_choice0")).toBe("1");
+    expect(post.body.get("q4000:4_choice1")).toBe("0");
+    expect(post.body.get("q4000:4_choice2")).toBe("1");
+  });
+
+  it("normalizes one explicit value into a single-input formulas answer", async () => {
+    const single = fixture("quiz-attempt-formulas-single.html");
+    const deps = fakeDeps({
+      "GET /mod/quiz/attempt.php": ({ url }) => ({ url, html: single }),
+      "POST /mod/quiz/processattempt.php": () => ({ url: ATTEMPT, html: savedQuestion(single, "question-5484577-7") }),
+    });
+    const page = await getAttemptPage(deps, 900, 32, 0);
+    expect(page.questions[0]).toMatchObject({ kind: "text", field: "q5484577:7_0_0" });
+    await answerQuizQuestion(deps, { attemptId: 900, quizId: 32, question: "1", values: ["4"] });
+    expect(deps.calls.at(-1)!.body.get("q5484577:7_0_0")).toBe("4");
+  });
+
+  it("rejects multiple explicit values for a non-fields question before posting", async () => {
+    const deps = attemptDeps(() => {
+      throw new Error("must not post");
+    });
+    await expect(answerQuizQuestion(deps, { attemptId: 900, quizId: 32, question: "2", values: ["hello", "world"] })).rejects.toThrow(/takes exactly one --value, not 2/u);
+    expect(deps.calls.some(call => call.method === "POST")).toBe(false);
   });
 
   it("leaves a cloze question to the browser instead of posting to a field that does not exist", async () => {
