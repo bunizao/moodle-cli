@@ -1,3 +1,4 @@
+import { calendarMonthData, calendarMonthHtml } from "./fixtures/calendar-view.js";
 import { readFileSync } from "node:fs";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -29,8 +30,10 @@ function installFetch(routes: Array<(request: SeenRequest) => Response | undefin
   const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const request = { url: String(input), init };
     seen.push(request);
+    if (new URL(request.url).pathname === "/calendar/view.php") return htmlResponse(calendarMonthHtml(Number(new URL(request.url).searchParams.get("time"))));
     if (new URL(request.url).searchParams.get("info") === "core_calendar_get_calendar_monthly_view") {
-      return jsonResponse([{ index: 0, error: false, data: { weeks: [] } }]);
+      const [{ args }] = JSON.parse(String(request.init?.body));
+      return jsonResponse([{ index: 0, error: false, data: calendarMonthData({ weeks: [] }, args) }]);
     }
     for (const route of routes) {
       const response = route(request);
@@ -1035,8 +1038,10 @@ describe("MoodleClient course/activity modules", () => {
 function cliFetch(routes: Array<(request: SeenRequest) => Response | undefined>): typeof fetch {
   return vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const request = { url: String(input), init };
+    if (new URL(request.url).pathname === "/calendar/view.php") return htmlResponse(calendarMonthHtml(Number(new URL(request.url).searchParams.get("time"))));
     if (new URL(request.url).searchParams.get("info") === "core_calendar_get_calendar_monthly_view") {
-      return jsonResponse([{ index: 0, error: false, data: { weeks: [] } }]);
+      const [{ args }] = JSON.parse(String(request.init?.body));
+      return jsonResponse([{ index: 0, error: false, data: calendarMonthData({ weeks: [] }, args) }]);
     }
     for (const route of routes) {
       const response = route(request);

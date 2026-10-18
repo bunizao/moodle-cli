@@ -504,7 +504,7 @@ export class MoodleClientCore {
   async getCalendar(days = 14, courseId?: number): Promise<CalendarEvent[]> {
     if (!Number.isInteger(days) || days < 1 || days > 365) throw new MoodleClientCoreError("usage", "Calendar days must be between 1 and 365.");
     await this.ensureSession();
-    return readCalendar((name, args) => this.call(name, args), this.baseUrl, days, courseId);
+    return readCalendar((name, args) => this.call(name, args), params => this.get("/calendar/view.php", params), this.baseUrl, days, courseId);
   }
 
   async getAlerts(limit = 20): Promise<AlertSummary> {

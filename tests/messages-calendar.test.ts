@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { MoodleClient } from "../src/client.js";
 import { createMoodleGateway } from "../src/mcp/gateway.js";
 import { createMoodleMcpServer, TOOL_CATALOG } from "../src/mcp/server.js";
+import { calendarMonthData, calendarMonthHtml } from "./fixtures/calendar-view.js";
 import { runCli } from "../src/cli.js";
 
 const baseUrl = "https://moodle.example.edu";
@@ -9,9 +10,10 @@ const user = { userid: 7, username: "student", fullname: "A Student", sitename: 
 function clientWith(handler: (name: string, args: Record<string, unknown>) => unknown) {
   const requests: Array<{ methodname: string; args: Record<string, unknown> }> = [];
   const fetchImpl = vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
+    if (init?.method !== "POST") return new Response(calendarMonthHtml(Number(new URL(String(_url)).searchParams.get("time"))));
     const calls = JSON.parse(String(init?.body)) as typeof requests;
     requests.push(...calls);
-    return Response.json(calls.map((call, index) => ({ index, error: false, data: handler(call.methodname, call.args) })));
+    return Response.json(calls.map((call, index) => ({ index, error: false, data: call.methodname === "core_calendar_get_calendar_monthly_view" ? calendarMonthData(handler(call.methodname, call.args) as Record<string, unknown>, call.args) : handler(call.methodname, call.args) })));
   });
   const client = new MoodleClient(baseUrl, { cookie: { name: "MoodleSession", value: "test" }, sesskey: "test", userid: 7, userInfo: user, fetchImpl });
   return { client, requests, fetchImpl };
@@ -84,13 +86,13 @@ describe("profile timezone through CLI and MCP", () => {
   it("keeps the Moodle timezone in message and calendar results and human output", async () => {
     const at = Date.parse("2026-10-18T12:00:00Z") / 1000;
     const fetchImpl: typeof fetch = async (_url, init) => init?.method === "POST"
-      ? Response.json((JSON.parse(String(init.body)) as Array<{ methodname: string }>).map(({ methodname }, index) => ({ index, error: false, data:
+      ? Response.json((JSON.parse(String(init.body)) as Array<{ methodname: string; args: Record<string, unknown> }>).map(({ methodname, args }, index) => ({ index, error: false, data:
         methodname === "core_webservice_get_site_info" ? { ...user, timezone: "Pacific/Auckland" }
         : methodname === "core_message_get_conversations" ? { conversations: [] }
         : methodname === "core_message_get_conversation_messages" ? { id: 2, members: [member], messages: [{ ...message, timecreated: at }] }
-        : { weeks: [{ days: [{ events: [{ id: 5, name: "Dentist", timestart: at }] }] }] },
+        : calendarMonthData({ weeks: [{ days: [{ events: [{ id: 5, name: "Dentist", timestart: at }] }] }] }, args),
       })))
-      : new Response('<script>M.cfg = {"sesskey":"test","userid":7};</script><body id="page-my-index"></body>');
+      : new Response(calendarMonthHtml() + '<script>M.cfg = {"sesskey":"test","userid":7};</script><body id="page-my-index"></body>');
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-10-18T11:00:00Z"));
     try {
@@ -109,6 +111,51 @@ describe("profile timezone through CLI and MCP", () => {
 });
 
 describe("calendar through MoodleClient and CLI", () => {
+  it("uses active calendar months and their timestamps across the requested window", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-10-18T12:00:00Z"));
+    const requests: Array<Record<string, unknown>> = [];
+    const pageUrls: string[] = [];
+    const start = Date.parse("2026-10-23T00:00:00Z") / 1000;
+    const fetchImpl: typeof fetch = async (url, init) => {
+      if (init?.method !== "POST") {
+        pageUrls.push(String(url));
+        return new Response('<div class="calendarwrapper" data-month="7" data-year="1405" data-view="month"></div>');
+      }
+      const [{ args }] = JSON.parse(String(init.body));
+      requests.push(args);
+      return Response.json([{ error: false, data: {
+        weeks: [{ days: [{ events: args.month === 8 ? [{ id: 1, name: "Next calendar month", timestart: start }] : [] }] }],
+        nextperiod: args.month === 7 ? { year: 1405, mon: 8, timestamp: start } : { year: 1405, mon: 9, timestamp: start + 30 * 86400 },
+      } }]);
+    };
+    try {
+      const client = new MoodleClient(baseUrl, { cookie: { name: "MoodleSession", value: "test" }, sesskey: "test", userid: 7, fetchImpl });
+      expect(await client.getCalendar(7)).toMatchObject([{ id: 1, name: "Next calendar month" }]);
+      expect(requests.map(r => [r.year, r.month])).toEqual([[1405, 7], [1405, 8]]);
+      expect(pageUrls).toEqual([`${baseUrl}/calendar/view.php?view=month&time=1792238400&course=1`]);
+    } finally { vi.useRealTimers(); }
+  });
+  it("does not truncate a busy month and includes events at the next month boundary", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-10-31T23:59:59Z"));
+    const boundary = Date.parse("2026-11-01T00:00:00Z") / 1000;
+    const { client, requests } = clientWith((_name, args) => ({ weeks: [{ days: [{ events: args.month === 11
+      ? Array.from({ length: 75 }, (_, index) => ({ id: index + 1, name: `Event ${index + 1}`, timestart: boundary }))
+      : [{ id: 76, name: "Ongoing", timestart: boundary - 3600, timeduration: 7200 }] }] }] }));
+    try {
+      const events = await client.getCalendar(1);
+      expect(events).toHaveLength(76);
+      expect(events[0]).toMatchObject({ id: 76, name: "Ongoing" });
+      expect(events.at(-1)).toMatchObject({ id: 75, starts_at: boundary });
+      expect(requests.map(r => r.args.month)).toEqual([10, 11]);
+    } finally { vi.useRealTimers(); }
+  });
+  it("rejects invalid month navigation instead of returning an incomplete calendar", async () => {
+    const { client, requests } = clientWith(() => ({ weeks: [], nextperiod: { year: 2026, mon: 10, timestamp: 1 } }));
+    await expect(client.getCalendar()).rejects.toThrow("invalid calendar month navigation");
+    expect(requests).toHaveLength(1);
+  });
   it("reads all calendar kinds across month boundaries, filters the window and deduplicates spanning events", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-10-30T12:00:00Z"));
@@ -154,8 +201,8 @@ describe("calendar through MoodleClient and CLI", () => {
     const now = Math.floor(Date.now() / 1000);
     let output = "";
     const fetchImpl: typeof fetch = async (_url, init) => init?.method === "POST"
-      ? Response.json((JSON.parse(String(init.body)) as Array<{ methodname: string }>).map((_, index) => ({ index, error: false, data: { weeks: [{ days: [{ events: [{ id: 1, name: "Tomorrow", timestart: now + 86400 }, { id: 2, name: "Next week", timestart: now + 86400 * 7 }] }] }] } })))
-      : new Response('<script>M.cfg = {"sesskey":"test","userid":7};</script><body id="page-my-index"></body>');
+      ? Response.json((JSON.parse(String(init.body)) as Array<{ args: Record<string, unknown> }>).map(({ args }, index) => ({ index, error: false, data: calendarMonthData({ weeks: [{ days: [{ events: [{ id: 1, name: "Tomorrow", timestart: now + 86400 }, { id: 2, name: "Next week", timestart: now + 86400 * 7 }] }] }] }, args) })))
+      : new Response(calendarMonthHtml() + '<script>M.cfg = {"sesskey":"test","userid":7};</script><body id="page-my-index"></body>');
     expect(await runCli(["node", "moodle", "calendar", "--days", "2", "--json"], { env: { MOODLE_BASE_URL: baseUrl, MOODLE_SESSION: "test" }, fetchImpl, stdout: { write: (text: string) => { output += text; return true; } }, stderr: { write: () => true } })).toBe(0);
     expect(JSON.parse(output)).toMatchObject({ events: [{ id: 1, name: "Tomorrow" }], total: 1 });
   });
@@ -164,8 +211,8 @@ describe("calendar through MoodleClient and CLI", () => {
     const fixture = { weeks: [{ days: [{ events: [{ id: 42, name: "Dentist; check, " + "界".repeat(50), description: "<p>Bring ID</p>", eventtype: "user", timestart: at, timeduration: 3600 }] }] }] };
     let output = "";
     const fetchImpl: typeof fetch = async (_url, init) => init?.method === "POST"
-      ? Response.json((JSON.parse(String(init.body)) as Array<{ methodname: string }>).map((_, index) => ({ index, error: false, data: fixture })))
-      : new Response('<script>M.cfg = {"sesskey":"test","userid":7};</script><body id="page-my-index"></body>');
+      ? Response.json((JSON.parse(String(init.body)) as Array<{ args: Record<string, unknown> }>).map(({ args }, index) => ({ index, error: false, data: calendarMonthData(fixture, args) })))
+      : new Response(calendarMonthHtml() + '<script>M.cfg = {"sesskey":"test","userid":7};</script><body id="page-my-index"></body>');
     const result = await runCli(["node", "moodle", "calendar", "--ics"], { env: { MOODLE_BASE_URL: baseUrl, MOODLE_SESSION: "test" }, fetchImpl, stdout: { write: (text: string) => { output += text; return true; } }, stderr: { write: () => true } });
     expect(result).toBe(0);
     expect(output).toContain("BEGIN:VCALENDAR\r\n");
