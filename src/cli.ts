@@ -447,7 +447,7 @@ export function buildProgram(io: CliIO = {}): Command {
       const plan = await choose(() => service.run("submit", { ref, ...args, dry_run: true }), id => service.run("submit", { ref: id, ...args, dry_run: true }));
       const planned = submissionReceiptOf(plan.submission);
       if (program.opts().dryRun) return runtime.output(plan, () => formatSubmissionReceipt(planned), options);
-      if (!await confirm({ summary: submissionSummary(planned, args.final, theme()) }, { yes: Boolean(program.opts().yes), dryRun: false, interactive })) return;
+      if (!await confirm({ summary: submissionSummary(planned, args.final, theme()) }, { yes: Boolean(program.opts().yes), dryRun: false, interactive, input: io.stdin ?? process.stdin, output: stderr as Writable })) return;
       // The upload is the one long step a person watches, so it gets a spinner that names each file.
       const spin = interactive ? createUi({ input: io.stdin ?? process.stdin, output: stderr as Writable, interactive: true }).spinner() : undefined;
       runtime.busy = true;
@@ -1348,9 +1348,9 @@ function submissionSummary(plan: SubmissionReceipt, final: boolean, theme: Theme
   const destination = `${theme.target(plan.name)}${plan.unit_id ? theme.dim(`  unit ${plan.unit_id}`) : ""}`;
   const lines = plan.uploads.length
     ? [`${theme.dim("Upload")}  ${theme.subject(plan.uploads.map(file => file.name).join(", "))}`, `${theme.dim("    to")}  ${destination}`]
-    : plan.text !== undefined
-      ? [`${theme.dim("Save online text to")}  ${destination}`]
-      : [`${theme.dim("Submit")}  ${destination}`, `${theme.dim("      ")}  ${theme.subject("the files already there")} for grading`];
+    : [];
+  if (plan.text !== undefined) lines.push(`${theme.dim("Save online text to")}  ${destination}`);
+  if (!lines.length) lines.push(`${theme.dim("Submit")}  ${destination}`, `${theme.dim("      ")}  ${theme.subject("the files already there")} for grading`);
   if (plan.removed.length) lines.push(`${theme.dim("Remove")}  ${theme.tone("danger", plan.removed.join(", "))} ${theme.dim("first")}`);
   if (plan.statement) lines.push(`${theme.dim(" Agree")}  "${plan.statement}"`);
   if (plan.statement_pending) lines.push(theme.dim("Moodle may ask you to accept a submission statement after the draft is saved."));

@@ -1,6 +1,8 @@
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { PassThrough, Writable } from "node:stream";
+import { runCli } from "../src/cli.js";
 
 import { describe, expect, it } from "vitest";
 
@@ -19,6 +21,42 @@ const ITEMID = "640000123";
 const STATEMENT = "This submission is my own work, except where I have acknowledged the use of the works of other people.";
 
 describe("assignment submission flow", () => {
+  it("asks consent for both files and online text before a mixed submission", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "moodle-submit-consent-"));
+    await writeFile(join(directory, "essay.pdf"), "hello");
+    const site = fakeSite({ onlineText: true });
+    const input = Object.assign(new PassThrough(), { isTTY: true, setRawMode: () => undefined });
+    let output = "";
+    let declined = false;
+    const stderr = new Writable({ write(chunk, _encoding, callback) {
+      output += String(chunk);
+      if (!declined && output.includes("Continue?")) {
+        declined = true;
+        setImmediate(() => input.write("n\r"));
+      }
+      callback();
+    } });
+    const stdout = { isTTY: true, write: () => true };
+    const fetchImpl: typeof fetch = async (input, init) => {
+      const url = String(input);
+      if (new URL(url).pathname === "/my/") return page(url, readFileSync(new URL("./fixtures/dashboard.html", import.meta.url), "utf8"));
+      if (url.includes("/lib/ajax/service.php")) return json(url, [{ error: true, exception: { errorcode: "invalidrecord", message: "Unavailable" } }]);
+      return site.deps.request(url, init);
+    };
+
+    const code = await runCli(["node", "moodle", "submit", "555", "essay.pdf", "--text", "Updated reflection", "--table"], {
+      cwd: directory, homeDir: directory, env: { MOODLE_BASE_URL: BASE, MOODLE_SESSION: "fixture", MOODLE_NO_UPDATE_CHECK: "1" },
+      fetchImpl, stdin: input as unknown as NodeJS.ReadStream, stdout, stderr,
+    });
+
+    expect(code, output).toBe(0);
+    expect(output).toContain("essay.pdf");
+    expect(output).toContain("Save online text to");
+    expect(site.calls.some(call => call.url.endsWith("repository_ajax.php?action=upload") || call.url === `${VIEW}&action=editsubmission` && call.method === "POST")).toBe(false);
+    input.destroy();
+    stderr.destroy();
+  });
+
   it("replaces saved files with online text through the shared client", async () => {
     const site = fakeSite({ onlineText: true, status: "draft", draft: [{ filename: "old.pdf", size: 5 }] });
     const client = new MoodleClient(BASE, {
