@@ -126,7 +126,7 @@ export async function submitAssignmentFiles(deps: AssignSubmitDeps, request: Sub
   const id = request.activityId;
   if (!Number.isSafeInteger(id) || id <= 0) throw deps.usage("The assignment id must be a positive integer.");
   if (!request.files.length && request.text === undefined && !request.final) throw deps.usage("Give files or online text to save, or use --final to submit the existing draft.");
-  if (!request.files.length && request.replace) throw deps.usage("--replace with no files would empty the submission.", "Give the files that should replace the current ones.");
+  if (!request.files.length && request.text === undefined && request.replace) throw deps.usage("--replace with no files would empty the submission.", "Give the files that should replace the current ones.");
   const seen = new Set<string>();
   for (const file of request.files) {
     if (!file.name || /[\\/]/u.test(file.name)) throw deps.usage(`'${file.name}' is not a plain file name.`);

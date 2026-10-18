@@ -19,6 +19,33 @@ const ITEMID = "640000123";
 const STATEMENT = "This submission is my own work, except where I have acknowledged the use of the works of other people.";
 
 describe("assignment submission flow", () => {
+  it("replaces saved files with online text through the shared client", async () => {
+    const site = fakeSite({ onlineText: true, status: "draft", draft: [{ filename: "old.pdf", size: 5 }] });
+    const client = new MoodleClient(BASE, {
+      cookie: { name: "MoodleSession", value: "fixture" }, sesskey: "fixture", userid: 3,
+      unavailable: ["core_get_strings"],
+      fetchImpl: (input, init) => site.deps.request(String(input), init),
+    });
+
+    const receipt = await client.submitAssignment(request({ files: [], text: "<p>Replacement text</p>", replace: true }));
+
+    expect(receipt).toMatchObject({ action: "saved", text: "Replacement text", files: [], removed: ["old.pdf"] });
+    expect(site.calls.some(call => call.url.endsWith("draftfiles_ajax.php?action=deleteselected"))).toBe(true);
+    expect(site.calls.some(call => call.url.endsWith("repository_ajax.php?action=upload"))).toBe(false);
+  });
+
+  it("refuses replacing an existing draft with no files or online text", async () => {
+    const site = fakeSite({ status: "draft", draft: [{ filename: "old.pdf", size: 5 }] });
+    const client = new MoodleClient(BASE, {
+      cookie: { name: "MoodleSession", value: "fixture" }, sesskey: "fixture", userid: 3,
+      unavailable: ["core_get_strings"],
+      fetchImpl: (input, init) => site.deps.request(String(input), init),
+    });
+
+    await expect(client.submitAssignment(request({ files: [], replace: true, final: true }))).rejects.toMatchObject({ code: "usage", message: expect.stringContaining("would empty") });
+    expect(site.calls).toHaveLength(0);
+  });
+
   it("saves a text-only draft before opening final confirmation", async () => {
     const site = fakeSite({ onlineText: true, noFiles: true, needsSavedConfirmation: true });
     const receipt = await submitAssignmentFiles(site.deps, request({ files: [], text: "<p>First</p><p>Second</p>", final: true, acceptStatement: true }));
