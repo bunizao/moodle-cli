@@ -127,7 +127,7 @@ export function renderScreen(data: Record<string, unknown>, options: { width?: n
   } else if (data.item) {
     const i = record(data.item); lines.push(`${text(i.name)} · ${text(i.type)} · #${i.id}`);
     // Epoch twins of the ISO fields are for machines reading --json, not for this screen.
-    for (const [k, v] of Object.entries(i)) if (!["id", "name", "type", "files"].includes(k) && !k.endsWith("_at") && typeof v !== "object") lines.push(`${k.replaceAll("_", " ")}: ${moment(v, now)}`);
+    for (const [k, v] of Object.entries(i)) if (!["id", "name", "type", "files", "completion", "available", "availability_reason"].includes(k) && !k.endsWith("_at") && typeof v !== "object") lines.push(`${k.replaceAll("_", " ")}: ${moment(v, now)}`);
     for (const a of array(i.attempts)) lines.push(`Attempt ${a.number} · #${a.id}  ${[a.status, a.marks, a.grade, a.completed].map(text).filter(Boolean).join("  ·  ")}`);
     for (const c of array(i.criteria)) lines.push(`${text(c.name)}  ${[c.score, c.level, c.remark].map(text).filter(Boolean).join("  ·  ")}`);
     const submitted = record(i.submission);

@@ -53,3 +53,12 @@ it("includes announcement attachments in human output", () => {
   expect(screen).toContain("brief.pdf (123 bytes)");
   expect(screen).toContain("https://moodle.example.edu/brief.pdf");
 });
+
+it("renders activity completion and restrictions once in readable terms", () => {
+  const screen = renderScreen({ item: { id: 150, name: "Locked Task", type: "assign", available: false, availability_reason: "Opens next week", completion: 0 } });
+  expect(screen).toContain("Unavailable: Opens next week");
+  expect(screen).toContain("Complete: no");
+  expect(screen.match(/Opens next week/g)).toHaveLength(1);
+  expect(screen).not.toContain("available: false");
+  expect(screen).not.toContain("completion: 0");
+});
