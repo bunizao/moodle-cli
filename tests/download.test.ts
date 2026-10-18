@@ -324,7 +324,7 @@ describe("Moodle file downloads", () => {
     expect(receipt.source_url).toBe(`${BASE_URL}/pluginfile.php/1/slides.pdf?forcedownload=1`);
   });
 
-  it("saves every file of a folder into --to, suffixing a repeated name", async () => {
+  it("keeps folder subpaths under --to for files with the same name", async () => {
     const directory = join(await mkdtemp(join(tmpdir(), "moodle-download-")), "week-3");
     const file = (n: number) => `${BASE_URL}/pluginfile.php/7/mod_folder/content/0/${n}/slides.pdf`;
     const requestAbsolute = vi.fn(async (url: string) => responseAt(url, url.slice(-12), { "content-type": "application/pdf" }));
@@ -337,8 +337,10 @@ describe("Moodle file downloads", () => {
     }), { source: `${BASE_URL}/mod/folder/view.php?id=5`, directory });
 
     expect(result.total).toBe(2);
-    expect(result.files.map(f => f.filename)).toEqual(["slides.pdf", "slides (2).pdf"]);
-    await expect(readdir(directory)).resolves.toEqual(["slides (2).pdf", "slides.pdf"]);
+    expect(result.files.map(f => f.filename)).toEqual(["1/slides.pdf", "2/slides.pdf"]);
+    await expect(readdir(directory)).resolves.toEqual(["1", "2"]);
+    await expect(readFile(join(directory, "1", "slides.pdf"), "utf8")).resolves.toBeTruthy();
+    await expect(readFile(join(directory, "2", "slides.pdf"), "utf8")).resolves.toBeTruthy();
   });
 
   it("names each file on a dry run without creating the directory or writing anything", async () => {
@@ -352,9 +354,9 @@ describe("Moodle file downloads", () => {
       requestAbsolute: async (url: string) => responseAt(url, "%PDF", { "content-type": "application/pdf" }),
     }), { source: `${BASE_URL}/mod/folder/view.php?id=5`, directory, dryRun: true });
 
-    expect(result).toMatchObject({ dry_run: true, total: 2, files: [{ filename: "slides.pdf", bytes_written: 0 }, { filename: "notes.pdf", bytes_written: 0 }] });
+    expect(result).toMatchObject({ dry_run: true, total: 2, files: [{ filename: "1/slides.pdf", bytes_written: 0 }, { filename: "2/notes.pdf", bytes_written: 0 }] });
     await expect(readdir(directory)).rejects.toThrow();
-    expect(formatDownloadResult(result, directory)).toBe("Would save 2 files → .\n  slides.pdf\n  notes.pdf");
+    expect(formatDownloadResult(result, directory)).toBe("Would save 2 files → .\n  1/slides.pdf\n  2/notes.pdf");
   });
 
   it("saves one document linked twice under different URLs once, now and on a rerun", async () => {
@@ -400,7 +402,7 @@ describe("Moodle file downloads", () => {
     }), { source: sectionUrl, directory });
 
     expect(getActivity.mock.calls.map(([id]) => id)).toEqual([1, 2, 4]);
-    expect(result.files.map(f => f.filename)).toEqual(["f1.pdf", "f4.pdf"]);
+    expect(result.files.map(f => f.filename)).toEqual(["a1/f1.pdf", "a4/f4.pdf"]);
   });
 
   it("skips a broken file, an unavailable activity and a repeat, and keeps the rest of the section", async () => {
@@ -427,7 +429,7 @@ describe("Moodle file downloads", () => {
 
     expect(getActivity.mock.calls.map(([id]) => id)).toEqual([1, 2, 5]);
     // The assignment links the folder's first file again, so it is saved once; case never collides.
-    expect(result.files.map(f => f.filename)).toEqual(["Slides.pdf", "slides (2).pdf"]);
+    expect(result.files.map(f => f.filename)).toEqual(["a1/Slides.pdf", "a1/slides (2).pdf"]);
     expect(result.skipped.map(s => `${s.reason} ${s.name}`)).toEqual(["unavailable a5", "unavailable gone.pdf"]);
   });
 
@@ -459,7 +461,7 @@ describe("Moodle file downloads", () => {
         ? responseAt(url, sectionHtml(4, "Week 4", cm(1, "resource")), { "content-type": "text/html" })
         : responseAt(url, "x", { "content-disposition": "attachment" }),
     }), { source: sectionUrl, directory });
-    expect(result.files.map(f => f.filename)).toEqual(["f.pdf"]);
+    expect(result.files.map(f => f.filename)).toEqual(["a1/f.pdf"]);
   });
 
   it("refuses --dest with --to, and --dest naming a directory", async () => {
