@@ -40,7 +40,7 @@ export async function readCalendarMonth(call: Call, baseUrl: string, year: numbe
       starts_at: starts, duration: Number(event.timeduration ?? 0), event_type: String(event.eventtype ?? ""),
       course_id: Number(course.id ?? event.courseid ?? 0), course_name: String(course.shortname ?? course.fullname ?? ""),
       location: String(event.location ?? ""),
-      url: resolveUrl(baseUrl, String(event.url || `/calendar/view.php?view=day&time=${starts}`)),
+      url: resolveUrl(baseUrl, String((event.modulename ? event.activityurl || event.url : event.viewurl) || `/calendar/view.php?view=day&time=${starts}`)),
     });
   }
   return [...events.values()];

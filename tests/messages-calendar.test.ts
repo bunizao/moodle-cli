@@ -122,6 +122,16 @@ describe("calendar through MoodleClient and CLI", () => {
       await expect(client.getCalendar(366)).rejects.toMatchObject({ code: "usage" });
     } finally { vi.useRealTimers(); }
   });
+  it("links non-module events to their event pages and module events to their activities", async () => {
+    const at = Math.floor(Date.now() / 1000) + 3600;
+    const { client } = clientWith(() => ({ weeks: [{ days: [{ events: [
+      ...["user", "site", "course"].map((eventtype, i) => ({ id: i + 1, name: eventtype, eventtype, timestart: at, url: `${baseUrl}/course/view.php?id=10`, viewurl: `/calendar/view.php?view=day&event=${i + 1}` })),
+      { id: 4, name: "Essay due", eventtype: "due", modulename: "assign", timestart: at, url: `${baseUrl}/mod/assign/view.php?id=10`, activityurl: `${baseUrl}/mod/assign/view.php?id=10`, viewurl: "/calendar/view.php?event=4" },
+    ] }] }] }));
+    expect((await client.getCalendar()).map(e => e.url)).toEqual([
+      `${baseUrl}/calendar/view.php?view=day&event=1`, `${baseUrl}/calendar/view.php?view=day&event=2`, `${baseUrl}/calendar/view.php?view=day&event=3`, `${baseUrl}/mod/assign/view.php?id=10`,
+    ]);
+  });
   it("merges non-action calendar events into overview and exposes the same events over read-only MCP", async () => {
     const starts = Math.floor(Date.now() / 1000) + 3600;
     const { client } = clientWith(name => name === "core_calendar_get_calendar_monthly_view"
