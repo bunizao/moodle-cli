@@ -500,8 +500,12 @@ export class MoodleClientCore {
     const [coursesData, todoData, notifications, counts, unread] = results;
     const userPromise = this.userInfo?.fullname ? Promise.resolve(this.userInfo) : this.getSiteInfo();
     const coursesPromise = coursesData?.ok ? Promise.resolve(parseCourses(coursesData.data)) : this.getCourses();
+    const batchedTodo = todoData?.ok ? parseTodoPayload(todoData.data) : [];
+    const visibleTodo = batchedTodo.filter(item => !item.overdue || item.actionable);
     const todoPromise = todoData?.ok
-      ? Promise.resolve(parseTodoPayload(todoData.data).filter(item => !item.overdue || item.actionable))
+      ? batchedTodo.length >= todoLimit && visibleTodo.length < todoLimit
+        ? this.getTodo(todoLimit, todoDays)
+        : Promise.resolve(visibleTodo)
       : todoData && todoData.error.moodleErrorCode !== "servicenotavailable"
         ? Promise.reject(todoData.error)
         : this.getTodo(todoLimit, todoDays);
