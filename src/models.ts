@@ -173,6 +173,15 @@ export interface Assignment {
   course_name: string;
   section_name: string;
   due_pretty: string;
+  description?: string;
+  due_at?: string;
+  extension_due?: string;
+  cutoff?: string;
+  cutoff_at?: string;
+  submission_state?: "new" | "draft" | "submitted";
+  submission?: { text?: string; text_html?: string; files: FileEntry[]; comments: Array<{ author: string; text: string; time?: string }> };
+  feedback?: { comments: string; files: FileEntry[]; criteria: FeedbackCriterion[] };
+  limits?: { max_bytes?: number; max_files?: number; accepted_types?: string[] };
   submission_status: string;
   grading_status: string;
   time_remaining: string;

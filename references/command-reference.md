@@ -73,7 +73,10 @@ asks for confirmation (`--yes` skips it) and prints the receipt Moodle shows aft
 | moodle skills | Show skill metadata or delegate to the shared skills CLI. |  |  |
 | moodle skills add | Install the published skill through npx skills add. |  |  |
 | moodle skills generate | Regenerate the agent skill bundle from the CLI command tree. |  |  |
-| moodle submit | Upload local files into an assignment; returns the receipt Moodle shows afterwards. | <ref> [files...] | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required)<br>--final<br>--replace<br>--accept-statement |
+| moodle submission | Read or remove your assignment submission. |  |  |
+| moodle submission remove |  | <ref> | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required) |
+| moodle submission show |  | <ref> | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required) |
+| moodle submit | Upload local files into an assignment; returns the receipt Moodle shows afterwards. | <ref> [files...] | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required)<br>--final<br>--text (value required)<br>--text-file (value required)<br>--replace<br>--accept-statement |
 | moodle sync | Keep one local folder per unit in step with Moodle: new files arrive, changed ones update, and a file you edited is never overwritten. | [unit] | --to (value required)<br>--pretty<br>--json<br>--yaml<br>--table<br>--fields (value required) |
 | moodle threads | Inspect forum discussion threads. |  |  |
 | moodle threads show | Show posts in a forum discussion. | <discussion> | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required)<br>--limit (value required)<br>--offset (value required)<br>--post (value required)<br>--body |

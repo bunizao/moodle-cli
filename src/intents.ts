@@ -245,7 +245,7 @@ export function createIntentService(gateway: MoodleGateway, now = () => Date.now
       case "submit": {
         if (!gateway.submitAssignment) throw new MoodleGatewayError("MOODLE_TOOL_UNAVAILABLE", "Submitting needs local files; run moodle submit or the local MCP server on the machine that holds them.");
         const activityId = await resolveItem(input.ref as string | number);
-        result = { submission: await gateway.submitAssignment({ activityId, files: input.files as string[], final: Boolean(input.final), replace: Boolean(input.replace), acceptStatement: Boolean(input.accept_statement), dryRun: Boolean(input.dry_run) }) };
+        result = { submission: await gateway.submitAssignment({ activityId, files: input.files as string[], ...(typeof input.text === "string" ? { text: input.text } : {}), ...(typeof input.text_file === "string" ? { textFile: input.text_file } : {}), final: Boolean(input.final), replace: Boolean(input.replace), acceptStatement: Boolean(input.accept_statement), dryRun: Boolean(input.dry_run) }) };
         break;
       }
     }
