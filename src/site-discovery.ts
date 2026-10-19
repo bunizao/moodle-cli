@@ -194,7 +194,10 @@ async function askHops(input: URL, hops: URL[], fetcher: typeof fetch, timeoutMs
 function metaRefresh(html: string, base: URL): URL | null {
   for (const tag of html.match(/<meta\b[^>]*>/giu) ?? []) {
     if (!/http-equiv\s*=\s*["']?refresh\b/iu.test(tag)) continue;
-    const target = /content\s*=\s*(["'])\s*\d*\s*[;,]\s*url\s*=\s*['"]?([^'">]+?)['"]?\s*\1/iu.exec(tag)?.[2];
+    // Hand-written pages often leave the attribute unquoted: content=0;url=/moodle/
+    const attribute = /content\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+))/iu.exec(tag);
+    const content = attribute?.[1] ?? attribute?.[2] ?? attribute?.[3] ?? "";
+    const target = /^\s*\d*\s*[;,]\s*url\s*=\s*['"]?([^'"]+?)['"]?\s*$/iu.exec(content)?.[1];
     if (!target) return null;
     try {
       const url = new URL(target.trim(), base);

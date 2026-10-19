@@ -17,6 +17,8 @@ interface FakeSite {
   sso?: boolean;
   /** An SSO plugin's pre-login hook sends signed-out visitors to the provider from any page. */
   ssoEverywhere?: boolean;
+  /** The meta tag a "refresh" front page serves; `{path}` stands for the install path. */
+  refreshTag?: string;
 }
 
 function fakeMoodle(site: FakeSite = {}): { fetch: typeof fetch; calls: string[] } {
@@ -41,7 +43,8 @@ function fakeMoodle(site: FakeSite = {}): { fetch: typeof fetch; calls: string[]
     if (url.pathname === "/" && site.front === "redirect") return redirect(`${root}/`);
     if (url.pathname === "/" && site.front === "login") return redirect(`${root}/login/`);
     if (url.pathname === "/" && site.front === "refresh") {
-      return html(`<html><head><META CONTENT="0; URL='${new URL(root).pathname}/'" HTTP-EQUIV="Refresh"></head></html>`);
+      const tag = site.refreshTag ?? `<META CONTENT="0; URL='{path}/'" HTTP-EQUIV="Refresh">`;
+      return html(`<html><head>${tag.replace("{path}", new URL(root).pathname)}</head></html>`);
     }
     if (url.pathname === "/" && site.front === "other") return html("<html>University home</html>");
     return new Response("Not found", { status: 404, headers: { "content-type": "text/html" } });
@@ -136,6 +139,8 @@ describe("discoverSite", () => {
   it("follows a front page that forwards with a meta refresh", async () => {
     const { fetch } = fakeMoodle({ front: "refresh" });
     await expect(discoverSite(HOST, { fetch })).resolves.toMatchObject({ kind: "found", site: { root: ROOT, source: "site_config" } });
+    const unquoted = fakeMoodle({ front: "refresh", refreshTag: "<meta http-equiv=refresh content=0;url={path}/>" });
+    await expect(discoverSite(HOST, { fetch: unquoted.fetch })).resolves.toMatchObject({ kind: "found", site: { root: ROOT, source: "site_config" } });
   });
 
   it("reads the login redirect when the anonymous service is blocked and sign-in is forced", async () => {
