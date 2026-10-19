@@ -10,6 +10,7 @@ import { CONFIG_DIR_NAME, CONFIG_FILENAME, ENV_MOODLE_BASE_URL, ENV_MOODLE_CONFI
 import { ConfigError } from "./errors.js";
 import { writeFileAtomic } from "./atomic-write.js";
 import { discoverSite, parseSiteInput, type DiscoveredSite } from "./site-discovery.js";
+import { sameSiteRoot } from "./site-root.js";
 
 export interface MoodleConfig extends Record<string, unknown> {
   baseUrl: string;
@@ -152,6 +153,34 @@ export async function promptForBaseUrl(options: ConfigOptions = {}): Promise<str
 
 function describeSite(site: DiscoveredSite): string {
   return site.sitename ? `${site.sitename} at ${site.root}` : site.root;
+}
+
+export interface SiteCorrection {
+  from: string;
+  to: string;
+  /** The config file now holding the corrected address, or null when it came from the environment. */
+  savedTo: string | null;
+  /** The variable to change by hand when the address came from the environment. */
+  envVar?: string;
+}
+
+/**
+ * Ask the configured site where Moodle really lives, and repair a saved address that is
+ * wrong: a page inside the install, or a host root when Moodle lives under a path. Only
+ * an answer on the same host is applied, because the session cookie follows this address.
+ * Called after a failure, so a working setup never pays for the extra requests.
+ */
+export async function correctBaseUrl(baseUrl: string, options: ConfigOptions = {}): Promise<SiteCorrection | null> {
+  const result = await discoverSite(baseUrl, { fetch: options.fetch }).catch(() => null);
+  if (result?.kind !== "found" || sameSiteRoot(result.site.root, baseUrl)) return null;
+  const to = result.site.root;
+  const env = options.env ?? process.env;
+  const envVar = [ENV_MOODLE_BASE_URL, ENV_MOODLE_URL].find(name => env[name]);
+  if (envVar) return { from: baseUrl, to, savedTo: null, envVar };
+  const loaded = await loadExistingConfig(options);
+  if (!loaded.path || !loaded.config.base_url) return null;
+  await saveConfigFile(loaded.path, { ...loaded.config, base_url: to }, options);
+  return { from: baseUrl, to, savedTo: loaded.path };
 }
 
 export function missingBaseUrlMessage(configPath: string | null, options: ConfigOptions = {}): string {

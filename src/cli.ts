@@ -47,8 +47,8 @@ import { fileURLToPath } from "node:url";
 import { createMoodleClient, type MoodleClient } from "./client.js";
 import { refreshLatestVersion, runUpdate, startupUpdateNotice } from "./update-check.js";
 import { isNewerVersion } from "./update-core.js";
-import { loadConfig } from "./config.js";
-import { AuthError, CliError, MoodleAPIError, UsageError, asNetworkError } from "./errors.js";
+import { correctBaseUrl, loadConfig } from "./config.js";
+import { AuthError, CliError, ConfigError, MoodleAPIError, UsageError, asNetworkError } from "./errors.js";
 import {
   formatActivityDetail,
   formatActivityList,
@@ -186,15 +186,16 @@ export function buildProgram(io: CliIO = {}): Command {
   // then the command's own default.
   const count = (key: "limit" | "days", local?: number, fallback?: number) => (program.opts()[key] as number | undefined) ?? local ?? fallback;
 
+  const configOptions = () => ({ env: io.env, cwd: io.cwd, homeDir: io.homeDir, stdin: io.stdin, stderr: stderr as NodeJS.WritableStream, fetch: io.fetchImpl });
   const runtime: Runtime = {
     client: null,
     busy: false,
     screen,
     count,
-    baseUrl: async () => (await loadConfig({ env: io.env, cwd: io.cwd, homeDir: io.homeDir, stdin: io.stdin, stderr: stderr as NodeJS.WritableStream, fetch: io.fetchImpl })).baseUrl,
+    baseUrl: async () => (await loadConfig(configOptions())).baseUrl,
     getClient: async () => {
       if (!runtime.client) {
-        const baseUrl = await runtime.baseUrl();
+        let baseUrl = await runtime.baseUrl();
         // One indicator for the whole command, however many requests run at once.
         let inflight = 0;
         let displayed = false;
@@ -224,6 +225,22 @@ export function buildProgram(io: CliIO = {}): Command {
         try {
           runtime.client = await connect();
         } catch (error) {
+          // A saved address that is not the install root fails here first; the site says
+          // where it really lives, so fix the address before asking anyone to sign in.
+          const correction = await correctBaseUrl(baseUrl, configOptions());
+          if (correction?.envVar) {
+            throw new ConfigError(`${correction.envVar} points to ${correction.from}, but Moodle lives at ${correction.to}.`, `Set ${correction.envVar}=${correction.to}`);
+          }
+          if (correction) {
+            stderr.write(`Moodle lives at ${correction.to}; updated ${correction.savedTo}.\n`);
+            baseUrl = correction.to;
+            try {
+              runtime.client = await connect();
+              return runtime.client;
+            } catch (retryError) {
+              error = retryError;
+            }
+          }
           // A person with no session is walked through the browser sign-in once; an agent gets the auth error.
           if (!(error instanceof AuthError) || !human()) throw error;
           await signIn(baseUrl);

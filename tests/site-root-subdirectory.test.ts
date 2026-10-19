@@ -41,3 +41,46 @@ describe("a Moodle install under a path", () => {
     expect(() => resolveTopLevelUrl(ROOT, `${HOST}/course/view.php?id=3`)).toThrow(/not part of the configured Moodle site/u);
   });
 });
+
+describe("a saved address that is a page, not the install root", () => {
+  it("is repaired from the site's own answer and the command still succeeds", async () => {
+    const { mkdtemp, mkdir, readFile, writeFile } = await import("node:fs/promises");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const { runCli } = await import("../src/cli.js");
+    const home = await mkdtemp(join(tmpdir(), "moodle-subdir-"));
+    const configPath = join(home, ".config/moodle-cli/config.yaml");
+    await mkdir(join(home, ".config/moodle-cli"), { recursive: true });
+    await writeFile(configPath, `base_url: ${ROOT}/course\n`);
+
+    const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = new URL(String(input));
+      const path = `${url.origin}${url.pathname}`;
+      if (path === `${ROOT}/lib/ajax/service-nologin.php`) return Response.json([{ error: false, data: { wwwroot: ROOT, sitename: "School" } }]);
+      if (path === `${ROOT}/my/`) return new Response('<html><script>M.cfg={"sesskey":"fixture","userid":7}</script></html>');
+      if (path === `${ROOT}/lib/ajax/service.php`) {
+        const batch = JSON.parse(String(init?.body)) as Array<{ methodname: string }>;
+        return Response.json(batch.map(() => ({ error: false, data: { siteurl: ROOT, sitename: "School", userid: 7, username: "student", fullname: "Alex Student", lang: "en" } })));
+      }
+      // Anything else under the install bounces to sign-in, as Moodle does.
+      if (path.startsWith(`${ROOT}/`)) return new Response(null, { status: 303, headers: { location: `${ROOT}/login/index.php` } });
+      return new Response("Not found", { status: 404 });
+    }) as typeof fetch;
+
+    const stdout: string[] = [];
+    const stderr: string[] = [];
+    const code = await runCli(["node", "moodle", "user", "--json", "--no-cache"], {
+      env: { MOODLE_SESSION: "fixture", MOODLE_NO_UPDATE_CHECK: "1" },
+      homeDir: home,
+      cwd: home,
+      fetchImpl,
+      stdin: { isTTY: false } as NodeJS.ReadStream,
+      stdout: { write: (text: string) => stdout.push(text) } as unknown as NodeJS.WriteStream,
+      stderr: { write: (text: string) => stderr.push(text) } as unknown as NodeJS.WriteStream,
+    });
+
+    expect(stderr.join("")).toContain(`Moodle lives at ${ROOT}; updated ${configPath}.`);
+    expect(code).toBe(0);
+    expect(await readFile(configPath, "utf8")).toBe(`base_url: ${ROOT}\n`);
+  });
+});

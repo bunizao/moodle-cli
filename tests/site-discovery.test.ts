@@ -211,3 +211,43 @@ describe("interactive setup", () => {
     expect(answers).toEqual([]);
   });
 });
+
+describe("correctBaseUrl", () => {
+  const quietFs = (initial: string, written: Array<{ path: string; content: string }>) => ({
+    readFile: (async (path: string) => {
+      if (path === "/home/student/.config/moodle-cli/config.yaml") return initial;
+      throw Object.assign(new Error("missing"), { code: "ENOENT" });
+    }) as never,
+    write: async (path: string, content: string) => {
+      written.push({ path, content });
+    },
+  });
+
+  it("repairs a saved page address to the install root", async () => {
+    const { correctBaseUrl } = await import("../src/config.js");
+    const written: Array<{ path: string; content: string }> = [];
+    const { fetch } = fakeMoodle();
+    await expect(correctBaseUrl(`${ROOT}/my`, {
+      env: {},
+      cwd: "/work",
+      homeDir: "/home/student",
+      fetch,
+      fs: quietFs(`base_url: ${ROOT}/my\nbrowser: chrome\n`, written),
+    })).resolves.toEqual({ from: `${ROOT}/my`, to: ROOT, savedTo: "/home/student/.config/moodle-cli/config.yaml" });
+    expect(written[0].content).toBe(`base_url: ${ROOT}\nbrowser: chrome\n`);
+  });
+
+  it("leaves a correct address alone and never rewrites the environment", async () => {
+    const { correctBaseUrl } = await import("../src/config.js");
+    const written: Array<{ path: string; content: string }> = [];
+    const { fetch } = fakeMoodle({ front: "redirect" });
+    await expect(correctBaseUrl(ROOT, { env: {}, homeDir: "/home/student", cwd: "/work", fetch, fs: quietFs(`base_url: ${ROOT}\n`, written) })).resolves.toBeNull();
+    await expect(correctBaseUrl(HOST, { env: { MOODLE_BASE_URL: HOST }, fetch })).resolves.toEqual({
+      from: HOST,
+      to: ROOT,
+      savedTo: null,
+      envVar: "MOODLE_BASE_URL",
+    });
+    expect(written).toEqual([]);
+  });
+});

@@ -1,3 +1,5 @@
+import { discoverSite } from "./site-discovery.js";
+import { sameSiteRoot } from "./site-root.js";
 import { access, readdir, readFile } from "node:fs/promises";
 import { constants } from "node:fs";
 import { homedir } from "node:os";
@@ -30,6 +32,7 @@ export async function doctor(options: { homeDir?: string; cwd?: string; env?: No
   try { baseUrl = (await loadConfig({ ...options, stdin: { isTTY: false } })).baseUrl; checks.push({ name: "config", status: "pass", detail: baseUrl }); }
   catch { checks.push({ name: "config", status: "fail", detail: "No usable Moodle URL configured.", hint: "Run moodle interactively once, or set MOODLE_BASE_URL." }); }
   if (baseUrl) {
+    checks.push(await siteCheck(baseUrl, options.fetchImpl));
     try {
       const status = await getAuthStatus(baseUrl, { homeDir: home, fetchImpl: options.fetchImpl });
       checks.push({ name: "session", status: status.session_alive ? "pass" : "warn", detail: status.session_cached ? `Cache age ${status.cache_age_minutes} minutes; alive: ${status.session_alive}` : "No cached session.", ...(!status.session_alive ? { hint: "Run moodle auth login." } : {}) });
@@ -53,4 +56,17 @@ export async function doctor(options: { homeDir?: string; cwd?: string; env?: No
   let pin: unknown;
   try { pin = runtimeCommand(); } catch { /* The sqlite check already explains the failure. */ }
   return { runtime: { executable: process.execPath, version: process.versions.bun ?? process.versions.node, cookie_sqlite: cookies }, config_path: userConfigPath(home), browser_stores: stores, pin, checks };
+}
+
+// Read-only: a command that fails repairs the saved address itself; doctor only reports.
+async function siteCheck(baseUrl: string, fetchImpl?: typeof fetch): Promise<{ name: string; status: "pass" | "warn" | "fail"; detail: string; hint?: string }> {
+  const result = await discoverSite(baseUrl, { fetch: fetchImpl }).catch(() => null);
+  if (result?.kind === "found" && sameSiteRoot(result.site.root, baseUrl)) {
+    return { name: "site", status: "pass", detail: result.site.sitename ? `${result.site.sitename} confirms ${baseUrl}` : `Moodle confirms ${baseUrl}` };
+  }
+  if (result?.kind === "found" || result?.kind === "elsewhere") {
+    return { name: "site", status: "warn", detail: `Moodle reports its address as ${result.site.root}, not ${baseUrl}.`, hint: `Set base_url to ${result.site.root}.` };
+  }
+  if (result?.kind === "unreachable") return { name: "site", status: "fail", detail: result.message };
+  return { name: "site", status: "warn", detail: `Moodle did not confirm ${baseUrl}.`, hint: "Run moodle with no config to find the site from any page address." };
 }
