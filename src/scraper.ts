@@ -94,7 +94,9 @@ export function parsePageContext(html: string, baseUrl: string): PageContext {
     user_info: {
       userid,
       username: "",
-      fullname: cleanNodeText(root.querySelector(".userfullname")),
+      fullname: cleanNodeText(root.querySelector(".userfullname"))
+        || root.querySelector(".usermenu .userinitials")?.getAttribute("title")
+        || cleanNodeText(root.querySelector('.logininfo a[href*="/user/"]')),
       sitename: extractSitename(root),
       siteurl: baseUrl,
       ...(timezone ? { timezone } : {}),
@@ -171,6 +173,8 @@ export function parseCourseContentsHtml(html: string, baseUrl: string): Section[
         // The contents service calls this uservisible.
         visible: !classes.some((item) => ["hidden", "stealth", "dimmed"].includes(item))
           && (Boolean(href) || !activityElement.querySelector(".availabilityinfo")),
+        ...(activityElement.querySelector(".availabilityinfo") && !href ? { available: false, availability_reason: blockText(activityElement.querySelector(".availabilityinfo")) } : {}),
+        ...(activityElement.querySelector('[data-action="toggle-manual-completion"]') ? { completion: activityElement.querySelector('[data-action="toggle-manual-completion"]')?.getAttribute("data-toggletype") === "manual:mark-done" ? 0 : 1 } : {}),
         description: cleanNodeText(first(activityElement, ["[data-region='activity-description']", ".contentafterlink", ".description"])),
       });
     }
@@ -259,27 +263,25 @@ export function parseCourseGradesHtml(html: string, courseId: number, baseUrl: s
     if (!title || row.querySelector(".toggle-category")) {
       continue;
     }
-    if (title === "Course total") {
+    if (row.querySelector(".column-itemname .courseitem, .courseitem")) {
       report.total_grade = cleanTableCell(row.querySelector("td.column-grade"));
       report.total_range = cleanTableCell(row.querySelector("td.column-range"));
       report.total_percentage = cleanTableCell(row.querySelector("td.column-percentage"));
       continue;
     }
     const link = row.querySelector(".rowtitle a.gradeitemheader, .rowtitle a");
-    if (!link) {
-      continue;
-    }
+    const category = Boolean(row.querySelector(".column-itemname .categoryitem, .categoryitem"));
     const statusIcon = row.querySelector("td.column-grade i[aria-label], td.column-grade i[title]");
     const item: GradeItem = parseGradeItem({
       name: title,
-      item_type: cleanText(row.querySelector(".item img.itemicon, .courseitem img.itemicon, img.itemicon")?.getAttribute("alt") ?? ""),
+      item_type: category ? "category" : cleanText(row.querySelector("img.itemicon")?.getAttribute("alt") ?? "") || (link ? "" : "manual"),
       grade: cleanTableCell(row.querySelector("td.column-grade")),
       range: cleanTableCell(row.querySelector("td.column-range")),
       percentage: cleanTableCell(row.querySelector("td.column-percentage")),
       weight: cleanTableCell(row.querySelector("td.column-weight")),
       contribution: cleanTableCell(row.querySelector("td.column-contributiontocoursetotal")),
       feedback: cleanTableCell(row.querySelector("td.column-feedback")),
-      url: resolveUrl(baseUrl, link.getAttribute("href") ?? ""),
+      url: link ? resolveUrl(baseUrl, link.getAttribute("href") ?? "") : "",
       status: statusIcon?.getAttribute("aria-label") ?? statusIcon?.getAttribute("title") ?? "",
     });
     report.items.push(item);
@@ -316,22 +318,58 @@ export function parseGradeOverviewRows(html: string, baseUrl: string): Record<nu
 export function parseAssignmentHtml(html: string, assignmentId: number, baseUrl: string, labels?: SiteLabels): Assignment {
   const root = parse(html);
   const feedback = root.querySelector(".feedback");
+  const submissionRoot = root.querySelector(".submissionstatustable") ?? root;
+  const textNode = submissionRoot.querySelector("[class*=full_assignsubmission_onlinetext_] .no-overflow") ?? submissionRoot.querySelector(".onlinetextsubmission, [class*=summary_assignsubmission_onlinetext_] .no-overflow, .assignsubmission_onlinetext .no-overflow");
+  const submissionFiles: FileEntry[] = [];
+  for (const link of submissionRoot.querySelectorAll('.fileuploadsubmission a[href], a[href*="/assignsubmission_file/submission_files/"]')) {
+    const url = resolveUrl(baseUrl, link.getAttribute("href") ?? "");
+    if (!submissionFiles.some(file => file.url === url)) submissionFiles.push(fileEntry(cleanNodeText(link) || decodeURIComponent(new URL(url).pathname.split("/").at(-1) || "file"), url, baseUrl));
+  }
+  const comments = submissionRoot.querySelectorAll(".comment-list .comment-message").map(node => ({
+    author: cleanNodeText(node.querySelector(".user")),
+    text: cleanNodeText(node.querySelector(".text")),
+    time: cleanNodeText(node.querySelector(".time")),
+  })).filter(comment => comment.text && !comment.text.includes("___content___"));
+  const state = submissionRoot.querySelector(".submissionstatussubmitted") ? "submitted" : submissionRoot.querySelector(".submissionstatusdraft") ? "draft" : undefined;
+  const due = extractLabeledText(html, "Due:", labels);
+  const feedbackFiles = feedback ? parseFeedbackFiles(feedback, baseUrl) : [];
+  const criteria = feedback ? parseFeedbackCriteria(feedback) : [];
+  const feedbackComments = feedback ? findTableValue(feedback.toString(), "Feedback comments", labels) : "";
   return {
     id: assignmentId,
     name: pageTitle(html),
     ...activityContext(html),
-    due_pretty: extractLabeledText(html, "Due:", labels),
+    due_pretty: due,
+    description: htmlToStructuredContent(root.querySelector("#intro")?.innerHTML ?? "", baseUrl).text,
+    extension_due: findTableValue(html, "Extension due date", labels),
+    cutoff: findTableValue(html, "Cut-off date", labels),
+    ...(state ? { submission_state: state } : {}),
+    submission: {
+      ...(textNode ? { text: htmlToStructuredContent(textNode.innerHTML, baseUrl).text, text_html: textNode.innerHTML } : {}),
+      files: submissionFiles,
+      comments,
+    },
+    feedback: { comments: feedbackComments, files: feedbackFiles, criteria },
     submission_status: findTableValue(html, "Submission status", labels),
     grading_status: findTableValue(html, "Grading status", labels),
     time_remaining: findTableValue(html, "Time remaining", labels),
     grade: findTableValue(html, "Grade", labels),
     graded_on: feedback ? findTableValue(feedback.toString(), "Graded on", labels) : "",
     graded_by: feedback ? findTableValue(feedback.toString(), "Graded by", labels) : "",
-    feedback_comments: feedback ? findTableValue(feedback.toString(), "Feedback comments", labels) : "",
-    criteria: feedback ? parseFeedbackCriteria(feedback) : [],
-    file_entries: [...parseIntroAttachments(root, baseUrl), ...(feedback ? parseFeedbackFiles(feedback, baseUrl) : [])],
+    feedback_comments: feedbackComments,
+    criteria,
+    file_entries: [...parseIntroAttachments(root, baseUrl), ...feedbackFiles],
     url: `${baseUrl.replace(/\/$/, "")}/mod/assign/view.php?id=${assignmentId}`,
   };
+}
+
+export function assignmentCommentUrl(html: string, baseUrl: string): string | undefined {
+  const root = parse(html);
+  if (Number(cleanNodeText(root.querySelector(".comment-link-count"))) <= 0) return undefined;
+  const href = root.querySelector("a.showcommentsnonjs[href]")?.getAttribute("href");
+  if (!href) return undefined;
+  const url = new URL(resolveUrl(baseUrl, href));
+  return url.origin === new URL(baseUrl).origin ? url.toString() : undefined;
 }
 
 // Rubrics and marking guides render the same tr.criterion rows but keep the
@@ -453,7 +491,9 @@ function parseQuizQuestion(que: HTMLElement): QuizQuestion {
   }).filter(Boolean) ?? [];
   // Short answers and numbers sit in a read-only input's value; the gap layout puts that input inside .qtext.
   const typed = cleanText(que.querySelector('input[type="text"], input[type="number"]')?.getAttribute("value") ?? "");
-  const response = picked.length ? picked.join("; ") : typed || blockText(answer?.querySelector(".qtype_essay_response") ?? answer);
+  const selects = que.querySelectorAll("select");
+  const selected = selects.map(select => cleanNodeText(select.querySelector("option[selected]"))).filter(Boolean);
+  const response = selects.length ? selected.join("; ") : picked.length ? picked.join("; ") : typed || blockText(answer?.querySelector(".qtype_essay_response") ?? answer);
   return {
     number: Number(cleanNodeText(que.querySelector(".qno")) || 0),
     type: que.classList.value[1] ?? "",
@@ -586,6 +626,9 @@ export function parseForumDiscussionHtml(html: string, baseUrl: string, discussi
       continue;
     }
 
+    const parentLink = element.querySelectorAll('a[data-region="post-action"][href]').map(link => new URL(link.getAttribute("href")!, baseUrl)).find(url =>
+      url.pathname.endsWith("/mod/forum/discuss.php") && Number(url.searchParams.get("d")) === discussionId && /^#p\d+$/.test(url.hash) && Number(url.hash.slice(2)) !== postId,
+    );
     const header = first(element, ["header", ".header"]);
     const subject = cleanNodeText(
       firstDefined([
@@ -622,7 +665,8 @@ export function parseForumDiscussionHtml(html: string, baseUrl: string, discussi
         profile_url: authorLink ? resolveUrl(baseUrl, authorLink.getAttribute("href") ?? "") : "",
         profile_image_url: "",
       },
-      parent_id: 0,
+      attachments: element.querySelectorAll('.attachments a[href*="pluginfile.php"]').map(link => ({ name: cleanNodeText(link), size: 0, url: resolveUrl(baseUrl, link.getAttribute("href") ?? "") })),
+      parent_id: safeInt(element.getAttribute("data-parent-post-id")) || safeInt(parentLink?.hash.slice(2)),
       time_created: 0,
       time_modified: 0,
       created_pretty: cleanNodeText(header ? first(header, [".date", "time"]) : null),
@@ -638,7 +682,7 @@ export function parseForumDiscussionHtml(html: string, baseUrl: string, discussi
     id: discussionId,
     subject: posts[0]?.subject ?? "",
     course_id: 0,
-    forum_id: 0,
+    forum_id: parseForumViewCmidFromDiscussionHtml(html) ?? 0,
     group_id: groupId,
     group_name: groupName,
     url: `${baseUrl.replace(/\/$/, "")}/mod/forum/discuss.php?d=${discussionId}`,
@@ -685,9 +729,13 @@ export function parseForumDiscussionRefsHtml(html: string, baseUrl: string): For
       continue;
     }
     seen.add(discussionId);
+    const row = link.closest('[data-region="discussion-list-item"], tr');
+    const replyCount = row?.querySelector("td.text-center > span");
+    const author = row?.querySelector(".author .author-info > div, .author a[href*='/user/']");
     refs.push({
       id: discussionId,
       subject,
+      ...(row ? { pinned: row.classList.contains("pinned"), author: cleanNodeText(author), ...(replyCount ? { replies: Number(cleanNodeText(replyCount)) || 0 } : {}), unread: Number(cleanNodeText(row.querySelector("td.text-center a.badge"))) || 0 } : {}),
       group_id: 0,
       group_name: "",
       url: resolveUrl(baseUrl, href),
@@ -818,6 +866,8 @@ export function parseMoodleConfig(html: string): Record<string, unknown> {
 }
 
 function extractSitename(root: HTMLElement): string {
+  const site = cleanNodeText(root.querySelector(".sitename"));
+  if (site) return site;
   const title = cleanNodeText(root.querySelector("title"));
   return title.includes("|") ? title.split("|").at(-1)?.trim() ?? title : title;
 }

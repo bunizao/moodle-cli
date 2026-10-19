@@ -1,9 +1,13 @@
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { PassThrough, Writable } from "node:stream";
+import { runCli } from "../src/cli.js";
 
 import { describe, expect, it } from "vitest";
 
+import { MoodleClient } from "../src/client.js";
+import { readFileSync } from "node:fs";
 import { MoodleAPIError, UsageError } from "../src/errors.js";
 import { intentContracts } from "../src/intent-contract.js";
 import { formatSubmissionReceipt } from "../src/formatters.js";
@@ -17,6 +21,122 @@ const ITEMID = "640000123";
 const STATEMENT = "This submission is my own work, except where I have acknowledged the use of the works of other people.";
 
 describe("assignment submission flow", () => {
+  it("asks consent for both files and online text before a mixed submission", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "moodle-submit-consent-"));
+    await writeFile(join(directory, "essay.pdf"), "hello");
+    const site = fakeSite({ onlineText: true });
+    const input = Object.assign(new PassThrough(), { isTTY: true, setRawMode: () => undefined });
+    let output = "";
+    let declined = false;
+    const stderr = new Writable({ write(chunk, _encoding, callback) {
+      output += String(chunk);
+      if (!declined && output.includes("Continue?")) {
+        declined = true;
+        setImmediate(() => input.write("n\r"));
+      }
+      callback();
+    } });
+    const stdout = { isTTY: true, write: () => true };
+    const fetchImpl: typeof fetch = async (input, init) => {
+      const url = String(input);
+      if (new URL(url).pathname === "/my/") return page(url, readFileSync(new URL("./fixtures/dashboard.html", import.meta.url), "utf8"));
+      if (url.includes("/lib/ajax/service.php")) return json(url, [{ error: true, exception: { errorcode: "invalidrecord", message: "Unavailable" } }]);
+      return site.deps.request(url, init);
+    };
+
+    const code = await runCli(["node", "moodle", "submit", "555", "essay.pdf", "--text", "Updated reflection", "--table"], {
+      cwd: directory, homeDir: directory, env: { MOODLE_BASE_URL: BASE, MOODLE_SESSION: "fixture", MOODLE_NO_UPDATE_CHECK: "1" },
+      fetchImpl, stdin: input as unknown as NodeJS.ReadStream, stdout, stderr,
+    });
+
+    expect(code, output).toBe(0);
+    expect(output).toContain("essay.pdf");
+    expect(output).toContain("Save online text to");
+    expect(site.calls.some(call => call.url.endsWith("repository_ajax.php?action=upload") || call.url === `${VIEW}&action=editsubmission` && call.method === "POST")).toBe(false);
+    input.destroy();
+    stderr.destroy();
+  });
+
+  it("replaces saved files with online text through the shared client", async () => {
+    const site = fakeSite({ onlineText: true, status: "draft", draft: [{ filename: "old.pdf", size: 5 }] });
+    const client = new MoodleClient(BASE, {
+      cookie: { name: "MoodleSession", value: "fixture" }, sesskey: "fixture", userid: 3,
+      unavailable: ["core_get_strings"],
+      fetchImpl: (input, init) => site.deps.request(String(input), init),
+    });
+
+    const receipt = await client.submitAssignment(request({ files: [], text: "<p>Replacement text</p>", replace: true }));
+
+    expect(receipt).toMatchObject({ action: "saved", text: "Replacement text", files: [], removed: ["old.pdf"] });
+    expect(site.calls.some(call => call.url.endsWith("draftfiles_ajax.php?action=deleteselected"))).toBe(true);
+    expect(site.calls.some(call => call.url.endsWith("repository_ajax.php?action=upload"))).toBe(false);
+  });
+
+  it("refuses replacing an existing draft with no files or online text", async () => {
+    const site = fakeSite({ status: "draft", draft: [{ filename: "old.pdf", size: 5 }] });
+    const client = new MoodleClient(BASE, {
+      cookie: { name: "MoodleSession", value: "fixture" }, sesskey: "fixture", userid: 3,
+      unavailable: ["core_get_strings"],
+      fetchImpl: (input, init) => site.deps.request(String(input), init),
+    });
+
+    await expect(client.submitAssignment(request({ files: [], replace: true, final: true }))).rejects.toMatchObject({ code: "usage", message: expect.stringContaining("would empty") });
+    expect(site.calls).toHaveLength(0);
+  });
+
+  it("saves a text-only draft before opening final confirmation", async () => {
+    const site = fakeSite({ onlineText: true, noFiles: true, needsSavedConfirmation: true });
+    const receipt = await submitAssignmentFiles(site.deps, request({ files: [], text: "<p>First</p><p>Second</p>", final: true, acceptStatement: true }));
+    expect(receipt.action).toBe("submitted");
+    expect(receipt.text).toBe("First\nSecond");
+    const save = site.calls.findIndex(call => call.method === "POST" && call.url === `${VIEW}&action=editsubmission`);
+    const confirm = site.calls.findIndex(call => call.url === `${VIEW}&action=submit`);
+    expect(save).toBeGreaterThan(-1);
+    expect(confirm).toBeGreaterThan(save);
+    expect(new URLSearchParams(String(site.calls[save].body)).get("onlinetext_editor[text]")).toBe("<p>First</p><p>Second</p>");
+    expect(site.calls.some(call => call.url.includes("repository/"))).toBe(false);
+  });
+
+  it("removes an editable submission using Moodle's confirmation form and verifies it", async () => {
+    const { removeAssignmentSubmission } = await import("../src/moodle-assign-core.js");
+    const site = fakeSite({ status: "draft", draft: [{ filename: "essay.pdf", size: 5 }] });
+    const plan = await removeAssignmentSubmission(site.deps, 555, true);
+    expect(plan.action).toBe("planned");
+    expect(site.calls.every(call => call.method === "GET")).toBe(true);
+    const receipt = await removeAssignmentSubmission(site.deps, 555);
+    expect(receipt).toMatchObject({ action: "removed", id: 555, files: [] });
+  });
+
+  it("does not report an empty group submission as submitted", async () => {
+    const site = fakeSite({ group: "Team Alpha" });
+    await expect(submitAssignmentFiles(site.deps, request({ files: [], final: true }))).rejects.toMatchObject({ code: "usage", message: expect.stringContaining("No saved draft") });
+    expect(site.calls.every(call => call.method !== "POST" || call.url.includes("action=list"))).toBe(true);
+  });
+
+  it("explains a locked assignment without treating it as missing", async () => {
+    const site = fakeSite();
+    const send = site.deps.request;
+    site.deps.request = async (url, init, options) => {
+      if (url.endsWith("action=editsubmission")) throw new MoodleAPIError("Permission denied", "nopermission");
+      return send(url, init, options);
+    };
+    await expect(submitAssignmentFiles(site.deps, request({ final: true }))).rejects.toMatchObject({ code: "upstream", message: expect.stringContaining("locked") });
+  });
+
+  it("keeps the current draft separate from submitted attempt history", async () => {
+    const site = fakeSite({ status: "draft", draft: [{ filename: "essay.pdf", size: 5 }], history: true });
+    const receipt = await submitAssignmentFiles(site.deps, request({}));
+    expect(receipt).toMatchObject({ action: "saved", submission_state: "draft" });
+    expect(receipt.files.map(file => file.name)).toEqual(["essay.pdf"]);
+  });
+
+  it("reads submitted paragraphs from a real Moodle 5 student page", async () => {
+    const html = readFileSync(new URL("./fixtures/moodle-5.0/assign-online-text.html", import.meta.url), "utf8");
+    const client = new MoodleClient(BASE, { cookie: { name: "MoodleSession", value: "fixture" }, sesskey: "fixture", userid: 3, unavailable: ["core_get_strings"], fetchImpl: async () => page(`${BASE}/mod/assign/view.php?id=73`, html) });
+    const detail = await client.getAssignment(73);
+    expect(detail).toMatchObject({ name: "Reflection (online text)", submission_state: "submitted", submission: { text: "First paragraph.\nSecond paragraph.", text_html: "<p>First paragraph.</p><p>Second paragraph.</p>", files: [] } });
+  });
+
   it("plans without sending anything that writes", async () => {
     const site = fakeSite();
     const receipt = await submitAssignmentFiles(site.deps, request({ dryRun: true }));
@@ -60,8 +180,8 @@ describe("assignment submission flow", () => {
 
   it("submits for grading only after the statement was accepted, and verifies the final status", async () => {
     const site = fakeSite();
-    await expect(submitAssignmentFiles(site.deps, request({ final: true }))).rejects.toMatchObject({ code: "usage", message: `Moodle requires you to accept this statement: "${STATEMENT}"` });
-    expect(site.calls.filter(call => call.method === "POST" && !call.url.includes("action=list"))).toHaveLength(0);
+    await expect(submitAssignmentFiles(site.deps, request({ final: true }))).rejects.toMatchObject({ code: "usage", message: `The draft was saved. Moodle requires you to accept this statement: "${STATEMENT}"`, submission: { action: "saved", draft_stage: true, statement_accepted: false, files: [{ name: "essay.pdf" }] } });
+    expect(site.calls.filter(call => call.method === "POST" && String(call.body).includes("confirmsubmit"))).toHaveLength(0);
 
     site.calls.length = 0;
     const receipt = await submitAssignmentFiles(site.deps, request({ final: true, acceptStatement: true }));
@@ -209,11 +329,22 @@ describe("assignment submission flow", () => {
     expect(form).toMatchObject({ itemid: ITEMID, clientId: "c1", contextId: "9001", repoId: "3", maxFiles: 2, maxBytes: 1048576, areaMaxBytes: -1, acceptedTypes: "*", statement: STATEMENT });
     expect(form.fields.filter(([name]) => name === "action").map(([, value]) => value)).toEqual(["editsubmission", "savesubmission"]);
     expect(form.fields.some(([name]) => name === "submissionstatement")).toBe(false);
-    expect(() => parseSubmissionForm(editPage().replace(/name="files_filemanager"/u, 'name="other"'), { baseUrl: BASE, fail: message => new MoodleAPIError(message) })).toThrow("does not accept file uploads");
+    expect(() => parseSubmissionForm(editPage().replace(/name="files_filemanager"/u, 'name="other"'), { baseUrl: BASE, fail: message => new MoodleAPIError(message) })).toThrow("accepts neither file uploads nor online text");
   });
 });
 
 describe("local submission files", () => {
+  it("keeps plain-text paragraphs and HTML when reading online submissions", async () => {
+    const { readSubmissionText } = await import("../src/submit.js");
+    const directory = await mkdtemp(join(tmpdir(), "moodle-submit-text-"));
+    await writeFile(join(directory, "reflection.md"), "First paragraph.\n\nSecond & last.");
+    await writeFile(join(directory, "reflection.html"), "<p>First</p><p>Second</p>");
+    expect(await readSubmissionText({ text: "First paragraph.\n\nSecond & last." })).toBe("<p>First paragraph.</p>\n<p>Second &amp; last.</p>");
+    expect(await readSubmissionText({ textFile: "reflection.md", cwd: directory })).toBe("<p>First paragraph.</p>\n<p>Second &amp; last.</p>");
+    expect(await readSubmissionText({ textFile: "reflection.html", cwd: directory })).toBe("<p>First</p><p>Second</p>");
+    await expect(readSubmissionText({ text: "one", textFile: "reflection.md", cwd: directory })).rejects.toMatchObject({ code: "usage" });
+  });
+
   it("reads files by path and refuses folders or missing paths", async () => {
     const directory = await mkdtemp(join(tmpdir(), "moodle-submit-"));
     await writeFile(join(directory, "essay.pdf"), "hello");
@@ -232,6 +363,10 @@ function request(overrides: Partial<SubmitAssignmentRequest>): SubmitAssignmentR
 interface Call { method: string; url: string; body?: BodyInit | null; headers?: Record<string, string>; options?: { allowErrorStatus?: boolean } }
 
 interface SiteOptions {
+  history?: boolean;
+  onlineText?: boolean;
+  noFiles?: boolean;
+  needsSavedConfirmation?: boolean;
   draft?: Array<{ filename: string; size: number }>;
   status?: "none" | "draft" | "submitted";
   /** The assignment's "require students to click the submit button"; on unless false. */
@@ -263,8 +398,12 @@ function fakeSite(options: SiteOptions = {}) {
   let draft = [...(options.draft ?? [])];
   let saved = options.status && options.status !== "none" ? [...draft] : [];
   let status = options.status ?? "none";
+  let savedText = "";
   let awaiting = options.waitsFor ? ["Student A", ...options.waitsFor] : [];
-  const view = () => viewPage(status, saved, drafts, options.group, awaiting);
+  const view = () => viewPage(status, saved, drafts, options.group, awaiting)
+    .replace('<table class="generaltable">', '<div class="submissionstatustable"><table class="generaltable">')
+    .replace("</table>", `</table>${savedText ? `<div class="plugincontentsummary summary_assignsubmission_onlinetext_7"><div class="no-overflow">${savedText}</div></div>` : ""}</div>`)
+    .replace("</body>", options.history ? '<div class="attempthistory"><div class="submissionstatussubmitted">Submitted</div><div class="fileuploadsubmission"><a href="/pluginfile.php/old.txt">old.txt</a></div></div></body>' : "</body>");
   const deps: AssignSubmitDeps = {
     baseUrl: BASE,
     now: () => new Date("2026-05-13T09:00:00Z"),
@@ -273,9 +412,12 @@ function fakeSite(options: SiteOptions = {}) {
     async request(url, init = {}, requestOptions) {
       const method = (init.method ?? "GET").toUpperCase();
       calls.push({ method, url, body: init.body, headers: init.headers as Record<string, string> | undefined, options: requestOptions });
-      if (url === VIEW) return page(url, view());
-      if (url === `${VIEW}&action=editsubmission` && method === "GET") return page(url, options.closed || (drafts && status === "submitted") ? closedPage() : editPage({ statement: statement && !drafts, maxfiles: options.maxfiles, maxbytes: options.maxbytes, accepted: options.accepted }));
-      if (url === `${VIEW}&action=submit` && method === "GET") return page(url, confirmPage(statement));
+      if (url === VIEW && method === "GET") return page(url, view());
+      if (url === `${VIEW}&action=removesubmissionconfirm`) return page(url, `<form action="${VIEW}" method="post"><input name="id" value="555"><input name="action" value="removesubmission"><input name="sesskey" value="fixture-sesskey"></form>`);
+      if (url === VIEW && method === "POST") { saved = []; savedText = ""; status = "none"; return page(VIEW, view()); }
+
+      if (url === `${VIEW}&action=editsubmission` && method === "GET") return page(url, options.closed || (drafts && status === "submitted") ? closedPage() : editPage({ statement: statement && !drafts, maxfiles: options.maxfiles, maxbytes: options.maxbytes, accepted: options.accepted, onlineText: options.onlineText, noFiles: options.noFiles }));
+      if (url === `${VIEW}&action=submit` && method === "GET") return page(url, options.needsSavedConfirmation && status === "none" ? closedPage() : confirmPage(statement));
       if (url.endsWith("draftfiles_ajax.php?action=list")) return json(url, { list: draft.map(file => ({ ...file, filepath: "/", fullname: file.filename, type: "file" })), filecount: draft.length });
       if (url.endsWith("draftfiles_ajax.php?action=deleteselected")) { draft = []; return json(url, ["/"]); }
       if (url.endsWith("repository_ajax.php?action=upload")) {
@@ -286,6 +428,7 @@ function fakeSite(options: SiteOptions = {}) {
       }
       if (url === `${VIEW}&action=editsubmission` && method === "POST") {
         if (options.saveNotice) return page(url, editPage({ notice: options.saveNotice }));
+        savedText = new URLSearchParams(String(init.body)).get("onlinetext_editor[text]") ?? savedText;
         saved = options.forgetUploads ? [] : [...draft];
         status = drafts && !options.saveSubmits ? "draft" : "submitted";
         return page(`${VIEW}&action=view`, view());
@@ -314,7 +457,7 @@ function json(url: string, body: unknown): Response {
 }
 
 function viewPage(status: "none" | "draft" | "submitted", files: Array<{ filename: string }>, drafts = true, group?: string, awaiting: string[] = []): string {
-  const label = status === "none" ? "No submission" : status === "draft" ? "Draft (not submitted)" : "Submitted for grading";
+  const label = status === "none" ? (group ? "Nothing has been submitted for this assignment" : "No submission") : status === "draft" ? "Draft (not submitted)" : "Submitted for grading";
   const rows = files.map(file => `<div class="fileuploadsubmission"><a href="/pluginfile.php/9001/assignsubmission_file/submission_files/1/${file.filename}" target="_blank">${file.filename}</a></div>`).join("");
   return `<!doctype html><html><body>
 <nav aria-label="Breadcrumb"><a href="${BASE}/course/view.php?id=101">Mathematics 101</a></nav>
@@ -323,7 +466,7 @@ ${drafts && status === "draft" && files.length ? `<div class="singlebutton"><for
 <p><strong>Due:</strong> Friday, 15 May 2026, 5:00 PM</p>
 <table class="generaltable">
 ${group ? `<tr><th>Group</th><td>${group}</td></tr>` : ""}
-<tr><th>Submission status</th><td>${label}${awaiting.length && status !== "none" ? `<div class="box py-3">Users who need to submit: ${awaiting.map(name => `<a href="${BASE}/user/view.php?id=1">${name}</a>`).join(", ")}</div>` : ""}</td></tr>
+<tr><th>Submission status</th><td class="${status === "none" ? "" : `submissionstatus${status}`}">${label}${awaiting.length && status !== "none" ? `<div class="box py-3">Users who need to submit: ${awaiting.map(name => `<a href="${BASE}/user/view.php?id=1">${name}</a>`).join(", ")}</div>` : ""}</td></tr>
 <tr><th>Grading status</th><td>Not graded</td></tr>
 <tr><th>Time remaining</th><td>2 days</td></tr>
 ${status === "none" ? "" : "<tr><th>Last modified</th><td>Wednesday, 13 May 2026, 9:00 AM</td></tr>"}
@@ -332,7 +475,7 @@ ${files.length ? `<tr><th>File submissions</th><td>${rows}</td></tr>` : ""}
 </body></html>`;
 }
 
-function editPage(options: { statement?: boolean; maxfiles?: number; maxbytes?: number; accepted?: unknown; notice?: string } = {}): string {
+function editPage(options: { statement?: boolean; maxfiles?: number; maxbytes?: number; accepted?: unknown; notice?: string; onlineText?: boolean; noFiles?: boolean } = {}): string {
   const statement = options.statement
     ? `<div class="form-check"><input type="checkbox" name="submissionstatement" id="id_submissionstatement" value="1" class="form-check-input"><label class="form-check-label" for="id_submissionstatement">${STATEMENT}</label></div>`
     : "";
@@ -352,7 +495,8 @@ ${options.notice ? `<div class="alert alert-danger" role="alert">${options.notic
 <input name="id" type="hidden" value="555">
 <input name="userid" type="hidden" value="7">
 <input name="action" type="hidden" value="savesubmission">
-<input value="${ITEMID}" name="files_filemanager" type="hidden" id="id_files_filemanager">
+${options.noFiles ? "" : `<input value="${ITEMID}" name="files_filemanager" type="hidden" id="id_files_filemanager">`}
+${options.onlineText ? `<textarea name="onlinetext_editor[text]"></textarea><input name="onlinetext_editor[format]" value="1" type="hidden">` : ""}
 ${statement}
 <input type="submit" name="submitbutton" value="Save changes"><input type="submit" name="cancel" value="Cancel">
 </form>

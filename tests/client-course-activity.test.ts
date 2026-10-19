@@ -1,3 +1,4 @@
+import { calendarMonthData, calendarMonthHtml } from "./fixtures/calendar-view.js";
 import { readFileSync } from "node:fs";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -29,6 +30,11 @@ function installFetch(routes: Array<(request: SeenRequest) => Response | undefin
   const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const request = { url: String(input), init };
     seen.push(request);
+    if (new URL(request.url).pathname === "/calendar/view.php") return htmlResponse(calendarMonthHtml(Number(new URL(request.url).searchParams.get("time"))));
+    if (new URL(request.url).searchParams.get("info") === "core_calendar_get_calendar_monthly_view") {
+      const [{ args }] = JSON.parse(String(request.init?.body));
+      return jsonResponse([{ index: 0, error: false, data: calendarMonthData({ weeks: [] }, args) }]);
+    }
     for (const route of routes) {
       const response = route(request);
       if (response) {
@@ -182,7 +188,7 @@ describe("MoodleClient course/activity modules", () => {
     seen.length = 0;
     const second = new MoodleClient(BASE_URL, { ...options, unavailable: ["core_enrol_get_users_courses", "core_webservice_get_site_info"] });
     const overview = await second.getOverview(5, 14, 5);
-    const posted = seen.filter((request) => request.init?.method === "POST").map((request) => new URL(request.url).searchParams.get("info"));
+    const posted = seen.filter((request) => request.init?.method === "POST" && !request.url.includes("core_calendar_get_calendar_monthly_view")).map((request) => new URL(request.url).searchParams.get("info"));
     // The dead function never travels, so the remaining four ride in one batch and the profile comes from the cache.
     expect(posted).toEqual([
       "core_calendar_get_action_events_by_timesort,message_popup_get_popup_notifications,core_message_get_conversation_counts,core_message_get_unread_conversation_counts",
@@ -327,6 +333,7 @@ describe("MoodleClient course/activity modules", () => {
   it("falls back to the modern course-format state service", async () => {
     installFetch([
       dashboardRoute,
+      request => request.url === `${BASE_URL}/course/view.php?id=101` ? htmlResponse("<html></html>") : undefined,
       ajaxErrorRoute("core_course_get_contents"),
       ajaxRoute("core_courseformat_get_state", JSON.stringify({
         section: [
@@ -365,7 +372,7 @@ describe("MoodleClient course/activity modules", () => {
         visible: false,
         summary: "",
         activities: [
-          { id: 23, name: "Hidden page", modname: "page", url: `${BASE_URL}/mod/page/view.php?id=23`, visible: false, description: "" },
+          { id: 23, name: "Hidden page", modname: "page", url: `${BASE_URL}/mod/page/view.php?id=23`, visible: false, description: "", available: false, availability_reason: "" },
         ],
       },
       {
@@ -617,6 +624,7 @@ describe("MoodleClient course/activity modules", () => {
     await expect(client.getActivity(24)).resolves.toEqual({
       id: 24,
       name: "Reading list",
+      course_id: 101,
       modname: "lti",
       url: `${BASE_URL}/mod/lti/view.php?id=24`,
       visible: true,
@@ -684,7 +692,7 @@ describe("MoodleClient course/activity modules", () => {
       .toEqual(["Syllabus", "Quiz 1"]);
   });
 
-  it("uses one batched AJAX POST for overview and preserves per-entry errors", async () => {
+  it("batches overview sources, loads calendar events, and preserves per-entry errors", async () => {
     const { seen } = installFetch([
       dashboardRoute,
       (request) => {
@@ -736,7 +744,8 @@ describe("MoodleClient course/activity modules", () => {
 
     const overview = await client.getOverview();
 
-    expect(seen.filter((request) => request.init?.method === "POST")).toHaveLength(1);
+    expect(seen.filter((request) => request.init?.method === "POST" && !request.url.includes("core_calendar_get_calendar_monthly_view"))).toHaveLength(1);
+    expect(overview.calendar).toEqual([]);
     expect(overview.courses).toHaveLength(2);
     expect(overview.todo).toHaveLength(1);
     expect(overview.errors).toEqual(["notifications: Notifications disabled"]);
@@ -955,6 +964,48 @@ describe("MoodleClient course/activity modules", () => {
     expect(JSON.parse(result.stdout)).toMatchObject({ item: { id: 31, name: "Essay 1", type: "assign" } });
   });
 
+  it("shows media from the requested inline label", async () => {
+    const fetchImpl = cliFetch([
+      dashboardRoute,
+      ajaxRoute("core_course_get_course_module", { cm: { id: 42, modname: "label", course: 101 } }),
+      ajaxRoute("core_course_get_contents", [{ id: 10, name: "Week 12", section: 12, visible: true, modules: [
+        { id: 42, name: "Lecture review", modname: "label", visible: true },
+      ] }]),
+      (request) => request.url === `${BASE_URL}/mod/label/view.php?id=42`
+        ? htmlResponse(`<body id="page-course-view"><li id="module-41"><a href="https://video.example.edu/Panopto/Pages/Viewer.aspx?id=other">Other video</a></li><li id="module-42"><div class="activityinline"><a href="https://video.example.edu/Panopto/Pages/Viewer.aspx?id=abc&amp;instance=Moodle">Lecture review video</a><iframe src="https://video.example.edu/Panopto/Pages/Embed.aspx?id=abc"></iframe></div></li></body>`)
+        : undefined,
+    ]);
+
+    const result = await runJsonCommand(["activities", "show", "42", "--json"], fetchImpl);
+
+    expect(result).toMatchObject({ code: 0, stderr: "" });
+    expect(JSON.parse(result.stdout)).toMatchObject({ item: { id: 42, type: "label", media: [{ id: "abc", title: "Lecture review video", url: "https://video.example.edu/Panopto/Pages/Viewer.aspx?id=abc" }] } });
+  });
+
+  it("exports an exposed caption track with timestamps and source provenance", async () => {
+    const fetchImpl = cliFetch([
+      dashboardRoute,
+      ajaxRoute("core_course_get_course_module", { cm: { id: 42, modname: "label", course: 101 } }),
+      ajaxRoute("core_course_get_contents", [{ id: 10, name: "Week 12", section: 12, visible: true, modules: [
+        { id: 42, name: "Lecture review", modname: "label", visible: true },
+      ] }]),
+      (request) => request.url === `${BASE_URL}/mod/label/view.php?id=42`
+        ? htmlResponse('<body id="page-course-view"><li id="module-42"><video src="/video/42.mp4" title="Lecture review"><track kind="captions" src="/captions/42.vtt" srclang="en"></video></li></body>')
+        : undefined,
+      (request) => request.url === `${BASE_URL}/captions/42.vtt`
+        ? new Response("WEBVTT\n\n00:00:01.000 --> 00:00:02.000\nHello", { status: 200 })
+        : undefined,
+    ]);
+    const directory = await mkdtemp(join(tmpdir(), "moodle-captions-"));
+    const target = join(directory, "lecture.txt");
+
+    const result = await runJsonCommand(["activities", "captions", "42", "--to", target, "--json"], fetchImpl);
+
+    expect(result).toMatchObject({ code: 0, stderr: "" });
+    expect(JSON.parse(result.stdout)).toMatchObject({ captions: { file: target, source_id: "42", source_url: `${BASE_URL}/video/42.mp4` } });
+    expect(readFileSync(target, "utf8")).toContain(`Source URL: ${BASE_URL}/video/42.mp4\nMoodle activity ID: 42\n\nWEBVTT\n\n00:00:01.000 --> 00:00:02.000`);
+  });
+
   it("returns usage errors for invalid URL --fields", async () => {
     const fetchImpl = cliFetch([
       dashboardRoute,
@@ -1031,6 +1082,11 @@ describe("MoodleClient course/activity modules", () => {
 function cliFetch(routes: Array<(request: SeenRequest) => Response | undefined>): typeof fetch {
   return vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const request = { url: String(input), init };
+    if (new URL(request.url).pathname === "/calendar/view.php") return htmlResponse(calendarMonthHtml(Number(new URL(request.url).searchParams.get("time"))));
+    if (new URL(request.url).searchParams.get("info") === "core_calendar_get_calendar_monthly_view") {
+      const [{ args }] = JSON.parse(String(request.init?.body));
+      return jsonResponse([{ index: 0, error: false, data: calendarMonthData({ weeks: [] }, args) }]);
+    }
     for (const route of routes) {
       const response = route(request);
       if (response) {

@@ -5,6 +5,11 @@
 
 /** English label as the readers match it → the language strings a site may show instead. */
 export const LABEL_STRINGS: Readonly<Record<string, ReadonlyArray<readonly [component: string, id: string]>>> = {
+  "Group": [["mod_assign", "submissionteam"]],
+  "Last modified": [["mod_assign", "timemodified"]],
+  "Due date": [["mod_assign", "duedate"]],
+  "Extension due date": [["mod_assign", "extensionduedate"]],
+  "Cut-off date": [["mod_assign", "cutoffdate"]],
   "Submission status": [["mod_assign", "submissionstatus"], ["mod_assign", "submissionstatusheading"]],
   "Grading status": [["mod_assign", "gradingstatus"]],
   "Time remaining": [["mod_assign", "timeremaining"]],

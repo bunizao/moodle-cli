@@ -16,9 +16,11 @@ asks for confirmation (`--yes` skips it) and prints the receipt Moodle shows aft
 | Command | Description | Arguments | Flags |
 | --- | --- | --- | --- |
 | moodle activities | Inspect activities. |  |  |
+| moodle activities captions | Export timestamped captions from an inline video label. | <id> [media] | --to (value required)<br>--pretty<br>--json<br>--yaml<br>--table<br>--fields (value required) |
 | moodle activities list | List activities in a unit; narrow by section. | <unit> | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required)<br>--section (value required)<br>--limit (value required)<br>--include-labels |
 | moodle activities show | Show activity details, including the files moodle download would save. | <id> | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required) |
 | moodle alerts | List notifications and message counts. |  | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required)<br>--limit (value required) |
+| moodle alerts read | Mark one notification, or all notifications, as read. | [notification] | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required)<br>--all |
 | moodle attempt | Each question with your response, and mark, correct answer and feedback when the site shows them. | <ref> | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required) |
 | moodle auth | Session and keepalive utilities. |  |  |
 | moodle auth keepalive | Renew the Moodle session once; used by the background keepalive agent. |  | --no-renew<br>--pretty<br>--json<br>--yaml<br>--table<br>--fields (value required) |
@@ -28,7 +30,9 @@ asks for confirmation (`--yes` skips it) and prints the receipt Moodle shows aft
 | moodle auth login | Sign in through a browser the CLI controls, then capture the session. |  | --paste<br>--pretty<br>--json<br>--yaml<br>--table<br>--fields (value required) |
 | moodle auth site | Find the Moodle site from any page address and save it; with no address, show the saved one. | [address] | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required) |
 | moodle auth status | Show cached session freshness and keepalive state. |  | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required) |
+| moodle calendar | All course, user and site calendar events in the date window. |  | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required)<br>--days (value required)<br>--unit (value required)<br>--ics |
 | moodle commands | Describe the complete command tree. |  | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required) |
+| moodle complete | Mark an activity complete manually. | <ref> | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required)<br>--undo |
 | moodle completion | Print shell completion for zsh, bash or fish. | <shell> |  |
 | moodle coverage | Check each command against this Moodle site with the signed-in session, one live read at a time. Nothing is created. |  | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required) |
 | moodle doctor | Diagnose runtime, browser access, session, background jobs and MCP setup. |  | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required) |
@@ -37,8 +41,11 @@ asks for confirmation (`--yes` skips it) and prints the receipt Moodle shows aft
 | moodle find | Ranked sections, activities and discussion subjects. | <query> [unit] | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required)<br>--limit (value required)<br>--types (value required) |
 | moodle forums | Inspect forums. |  |  |
 | moodle forums list | List forum activities in a unit. | <unit> | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required)<br>--limit (value required) |
+| moodle forums post | Create a forum discussion. | <forum> | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required)<br>--subject (value required)<br>--text (value required) |
 | moodle forums search | Search forum discussion titles and post text. | <query> | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required)<br>--unit (value required)<br>--course (value required)<br>--forum (value required)<br>--titles-only<br>--unread-only<br>--recent<br>--limit-forums (value required)<br>--limit-discussions (value required)<br>--limit (value required) |
 | moodle forums show | List discussions from a forum. | <forum> | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required)<br>--limit (value required)<br>--query (value required) |
+| moodle forums subscribe | Subscribe to a forum. | <forum> | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required) |
+| moodle forums unsubscribe | Unsubscribe from a forum. | <forum> | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required) |
 | moodle grades | Inspect grades. |  |  |
 | moodle grades list | Show marked grades; request summary or all. | [unit] | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required)<br>--mode (value required)<br>--types (value required)<br>--include-feedback<br>--include-ungraded<br>--limit (value required)<br>--offset (value required)<br>--graded-only |
 | moodle mcp | Deploy a private MCP Worker on Cloudflare; encrypted session storage and local renewal. Free-tier limits apply. |  |  |
@@ -56,6 +63,11 @@ asks for confirmation (`--yes` skips it) and prints the receipt Moodle shows aft
 | moodle mcp session | Advanced managed-session operations. |  |  |
 | moodle mcp session push | Upload a Moodle cookie from standard input. |  | --stdin<br>--pretty<br>--json<br>--yaml<br>--table<br>--fields (value required) |
 | moodle mcp status | Show local and remote Moodle MCP readiness. |  | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required)<br>--verbose<br>--logs |
+| moodle messages | Read and send direct or group messages. |  |  |
+| moodle messages list | Direct and group conversations with unread counts and the latest message. |  | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required)<br>--limit (value required)<br>--offset (value required) |
+| moodle messages read | Mark one conversation, or all conversations, as read. | [conversation] | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required)<br>--all |
+| moodle messages send | Send a message to a conversation id or user:ID. | <recipient> <text> | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required) |
+| moodle messages show | A conversation's latest messages in chronological order; does not mark them read. | <conversation> | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required)<br>--limit (value required)<br>--offset (value required) |
 | moodle news | Latest announcement threads with first-post text. | [unit] | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required)<br>--limit (value required) |
 | moodle open | Open a unit or activity reference in the browser. | <ref> | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required) |
 | moodle overview | Show a compact multi-source overview. |  | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required)<br>--todo-limit (value required)<br>--todo-days (value required)<br>--alerts-limit (value required) |
@@ -67,9 +79,13 @@ asks for confirmation (`--yes` skips it) and prints the receipt Moodle shows aft
 | moodle skills | Show skill metadata or delegate to the shared skills CLI. |  |  |
 | moodle skills add | Install the published skill through npx skills add. |  |  |
 | moodle skills generate | Regenerate the agent skill bundle from the CLI command tree. |  |  |
-| moodle submit | Upload local files into an assignment; returns the receipt Moodle shows afterwards. | <ref> [files...] | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required)<br>--final<br>--replace<br>--accept-statement |
+| moodle submission | Read or remove your assignment submission. |  |  |
+| moodle submission remove |  | <ref> | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required) |
+| moodle submission show |  | <ref> | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required) |
+| moodle submit | Upload local files into an assignment; returns the receipt Moodle shows afterwards. | <ref> [files...] | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required)<br>--final<br>--text (value required)<br>--text-file (value required)<br>--replace<br>--accept-statement |
 | moodle sync | Keep one local folder per unit in step with Moodle: new files arrive, changed ones update, and a file you edited is never overwritten. | [unit] | --to (value required)<br>--pretty<br>--json<br>--yaml<br>--table<br>--fields (value required) |
 | moodle threads | Inspect forum discussion threads. |  |  |
+| moodle threads reply | Reply to a forum post. | <post> <text> | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required)<br>--attach (value required) |
 | moodle threads show | Show posts in a forum discussion. | <discussion> | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required)<br>--limit (value required)<br>--offset (value required)<br>--post (value required)<br>--body |
 | moodle todo | List upcoming actionable timeline items. |  | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required)<br>--limit (value required)<br>--days (value required) |
 | moodle uninstall | Remove local background jobs; optionally remove the selected Worker and configuration. |  | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required)<br>--remote<br>--purge |

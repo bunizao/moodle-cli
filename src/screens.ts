@@ -1,3 +1,4 @@
+import { isoTime, timezoneFor } from "./results.js";
 import { createTheme, type Tone } from "@bunizao/cli-kit";
 
 import { renderTerminalTable, sanitizeTerminalText, type TerminalTableCell, type TerminalTableColumn } from "./terminal-table.js";
@@ -36,6 +37,7 @@ export function tryLines(commands: readonly string[]): string {
 export function renderScreen(data: Record<string, unknown>, options: { width?: number; color?: boolean; now?: number; intent?: string } = {}): string {
   const lines: string[] = [];
   const now = options.now ?? Date.now();
+  const timestamp = (value: unknown, timezone?: string) => moment(isoTime(Number(value), timezone ?? (typeof data.timezone === "string" ? data.timezone : timezoneFor().timezone)), now);
   // Three levels on every row: the code a person types next, the name they read, the facts they glance at.
   const theme = createTheme(Boolean(options.color));
   // Text and tone stay apart until the last moment: a line paints them itself, a table cell hands both over.
@@ -61,6 +63,8 @@ export function renderScreen(data: Record<string, unknown>, options: { width?: n
     if (unitColumn && items.some(r => r.unit_code)) columns.push([{ label: "Unit" }, r => text(r.unit_code)]);
     if (items.some(r => r.type)) columns.push([{ label: "Type" }, r => text(r.type)]);
     columns.push([{ label: "Name", flex: true }, r => text(r.name)]);
+    if (items.some(r => r.completion !== undefined)) columns.push([{ label: "Done" }, r => r.completion === undefined ? "" : Number(r.completion) > 0 ? "yes" : "no"]);
+    if (items.some(r => r.available === false)) columns.push([{ label: "Restriction", flex: true }, r => r.available === false ? text(r.availability_reason) || "Unavailable" : ""]);
     if (items.some(r => r.due_at || r.status || r.submission_status)) columns.push([{ label: "Due" }, r => r.due_at ? due(r) : text(r.status || r.submission_status)]);
     lines.push(table(columns, items));
   };
@@ -69,10 +73,27 @@ export function renderScreen(data: Record<string, unknown>, options: { width?: n
     const h = record(data.home);
     lines.push(`${text(h.name)} · ${moment(h.today, now)} · ${text(h.timezone)}${h.timezone_source === "site" ? "" : ` (${text(h.timezone_source)})`}`, text(h.siteurl), "");
     rows(array(h.due), "Due soon");
+    if (array(h.calendar).length) {
+      lines.push("", theme.subject("Calendar"));
+      lines.push(table([[{ label: "When" }, e => timestamp(e.starts_at, String(h.timezone))], [{ label: "Event", flex: true }, e => text(e.name)], [{ label: "Unit" }, e => text(e.course_name)]], array(h.calendar)));
+    }
     lines.push("", `Unread  ${Object.entries(record(h.unread)).map(([k, v]) => `${v} ${k.replace(/_count$/u, "").replaceAll("_", " ")}${Number(v) === 1 ? "" : "s"}`).join(" · ") || "nothing"}`, "", `Units  ${array(h.units).map(u => text(u.code || u.name)).join(" · ")}`);
     for (const u of array(h.units)) { const c = record(u.current_section); if (c.id) lines.push(`  ${text(u.code || u.name)} · ${text(c.name)}`); }
     for (const e of Array.isArray(h.errors) ? h.errors : []) lines.push(`Unavailable: ${text(e)}`);
     if (Number(h.total) > array(h.due).length) lines.push(`${h.total} due items in this window; showing ${array(h.due).length}.`);
+  } else if (data.conversations || options.intent === "messages") {
+    lines.push(theme.subject("Messages"), table([[{ label: "ID" }, c => text(c.id)], [{ label: "Conversation", flex: true }, c => text(c.name)], [{ label: "Type" }, c => text(c.type)], [{ label: "Unread" }, c => text(c.unread_count)], [{ label: "Latest", flex: true }, c => text(array(c.messages).at(-1)?.text)]], array(data.conversations)));
+    next = ["moodle messages show ID"];
+  } else if (data.conversation) {
+    const c = record(data.conversation);
+    const people = new Map(array(c.members).map(m => [m.id, m.name]));
+    lines.push(theme.subject(`Conversation #${c.id}`));
+    for (const m of array(c.messages)) lines.push("", `${text(people.get(m.sender_id) || m.sender_id)} · ${timestamp(m.created_at)}`, text(m.text));
+    next = [`moodle messages send ${c.id} "TEXT"`, `moodle messages read ${c.id}`];
+  } else if (data.events || options.intent === "calendar") {
+    lines.push(theme.subject("Calendar"), table([[{ label: "When" }, e => timestamp(e.starts_at)], [{ label: "Event", flex: true }, e => text(e.name)], [{ label: "Type" }, e => text(e.event_type)], [{ label: "Unit" }, e => text(e.course_name)], [{ label: "Location" }, e => text(e.location)]], array(data.events)));
+    if (data.total !== undefined) lines.push(`${data.total} events`);
+    next = ["moodle calendar --days 30", "moodle calendar --ics"];
   } else if (data.unit) {
     const u = record(data.unit); const c = record(u.current_section);
     lines.push(`${theme.key(text(u.code))} · ${text(u.name)}`);
@@ -106,10 +127,21 @@ export function renderScreen(data: Record<string, unknown>, options: { width?: n
   } else if (data.item) {
     const i = record(data.item); lines.push(`${text(i.name)} · ${text(i.type)} · #${i.id}`);
     // Epoch twins of the ISO fields are for machines reading --json, not for this screen.
-    for (const [k, v] of Object.entries(i)) if (!["id", "name", "type", "files"].includes(k) && !k.endsWith("_at") && typeof v !== "object") lines.push(`${k.replaceAll("_", " ")}: ${moment(v, now)}`);
+    for (const [k, v] of Object.entries(i)) if (!["id", "name", "type", "files", "completion", "available", "availability_reason"].includes(k) && !k.endsWith("_at") && typeof v !== "object") lines.push(`${k.replaceAll("_", " ")}: ${moment(v, now)}`);
     for (const a of array(i.attempts)) lines.push(`Attempt ${a.number} · #${a.id}  ${[a.status, a.marks, a.grade, a.completed].map(text).filter(Boolean).join("  ·  ")}`);
     for (const c of array(i.criteria)) lines.push(`${text(c.name)}  ${[c.score, c.level, c.remark].map(text).filter(Boolean).join("  ·  ")}`);
-    for (const f of array(i.files)) lines.push(`File  ${text(f.name)}  ${text(f.url)}`);
+    const submitted = record(i.submission);
+    if (submitted.text) lines.push("", "Submitted text", text(submitted.text));
+    for (const f of array(submitted.files)) lines.push(`Submitted file  ${text(f.name)}  ${text(f.url)}`);
+    for (const c of array(submitted.comments)) lines.push(`Comment  ${text(c.author)}${c.time ? ` · ${text(c.time)}` : ""}: ${text(c.text)}`);
+    const feedback = record(i.feedback);
+    const feedbackFiles = array(feedback.files);
+    const feedbackUrls = new Set(feedbackFiles.map(file => file.url));
+    for (const f of array(i.files).filter(file => !feedbackUrls.has(file.url))) lines.push(`File  ${text(f.name)}  ${text(f.url)}`);
+    for (const f of feedbackFiles) lines.push(`Feedback file  ${text(f.name)}  ${text(f.url)}`);
+    if (i.limits) lines.push(`Submission limits  ${Object.entries(record(i.limits)).map(([key, value]) => `${key.replaceAll("_", " ")}: ${Array.isArray(value) ? value.join(", ") : value}`).join("; ")}`);
+    if (i.available === false) lines.push(`Unavailable: ${text(i.availability_reason)}`);
+    if (i.completion !== undefined) lines.push(`Complete: ${Number(i.completion) > 0 ? "yes" : "no"}`);
     if (data.threads) rows(array(data.threads), "Threads");
     next = array(i.files).length ? [`moodle dl ${i.id}`] : [];
   } else if (data.attempt) {
@@ -122,11 +154,19 @@ export function renderScreen(data: Record<string, unknown>, options: { width?: n
     next = [`moodle item ${a.quiz_id}`];
   } else if (data.thread) {
     const t = record(data.thread); lines.push(text(t.name));
-    for (const p of array(t.posts)) lines.push("", `${text(record(p.author).name)} · ${moment(p.created, now)}`, text(p.message_text), ...array(p.links).map(l => `${text(l.text)} ${text(l.url)}`));
+    const posts = array(t.posts);
+    const byId = new Map(posts.map(post => [post.id, post]));
+    for (const p of posts) {
+      let parent = byId.get(p.parent_id);
+      const seen = new Set([p.id]);
+      while (parent && !seen.has(parent.id)) { seen.add(parent.id); parent = byId.get(parent.parent_id); }
+      const indent = "  ".repeat(seen.size - 1);
+      lines.push("", `${indent}${text(record(p.author).name)} · ${moment(p.created, now)}`, ...text(p.message_text).split("\n").map(line => `${indent}${line}`), ...array(p.links).map(l => `${indent}${text(l.text)} ${text(l.url)}`), ...array(p.attachments).map(f => `${indent}Attachment: ${text(f.name)} (${f.size} bytes) ${text(f.url)}`));
+    }
     lines.push(`Posts ${Number(t.offset) + array(t.posts).length} of ${t.posts_total}`);
-    next = [`moodle threads show ${t.id} --offset ${Number(t.offset) + array(t.posts).length}`];
+    next = Number(t.offset) + array(t.posts).length < Number(t.posts_total) ? [`moodle threads show ${t.id} --offset ${Number(t.offset) + array(t.posts).length}`] : [];
   } else if (data.news) {
-    for (const n of array(data.news)) { const p = record(n.post); lines.push(`${text(n.unit_code)} · ${text(n.name)}`, `${text(record(p.author).name)} · ${moment(p.created, now)}`, text(p.message_text), ""); }
+    for (const n of array(data.news)) { const p = record(n.post); lines.push(`${text(n.unit_code)} · ${text(n.name)}`, `${text(record(p.author).name)} · ${moment(p.created, now)}`, text(p.message_text), ...array(p.attachments).map(file => `Attachment: ${text(file.name)} (${file.size} bytes) ${text(file.url)}`), ""); }
   } else if (data.units) {
     lines.push(renderTerminalTable([{ label: "ID" }, { label: "Code" }, { label: "Name", flex: true }], array(data.units).map(u => [text(u.id), text(u.code), text(u.name)]), { width: options.width }));
     next = ["moodle UNIT", "moodle find QUERY"];

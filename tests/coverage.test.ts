@@ -1,3 +1,4 @@
+import { calendarMonthData, calendarMonthHtml } from "./fixtures/calendar-view.js";
 import { readFileSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
@@ -51,6 +52,13 @@ describe("coverage checks", () => {
     expect(checks.file).toMatchObject({ status: "ok", detail: "application/pdf, 6 bytes" });
     expect(checks.submit).toMatchObject({ status: "untested" });
     expect(submitted).toEqual([]);
+  });
+
+  it("accepts actionable overdue deadlines but still rejects closed past work", async () => {
+    const item = { id: 1, name: "Overdue prep", activity_name: "Overdue prep", modname: "assign", course_id: 1, course_name: "Unit", due_at: -2 * 86400, overdue: true, actionable: true, action_name: "Submit", action_url: "", url: "", event_type: "due" };
+    const gateway = { ...fixtureGateway(), getDue: async () => [item] };
+    expect(byName(await collect(gateway)).due.status).toBe("ok");
+    expect(byName(await collect({ ...gateway, getDue: async () => [{ ...item, actionable: false }] })).due.status).toBe("mismatch");
   });
 
   it("names the services a check went around and keeps failures to their own line", async () => {
@@ -296,6 +304,7 @@ describe("moodle coverage", () => {
       const url = new URL(String(input));
       if (url.hostname === "registry.npmjs.org") return latest ? Response.json({ latest }) : new Response("", { status: 503 });
       const html = (body: string) => new Response(body, { headers: { "content-type": "text/html" } });
+      if (url.pathname === "/calendar/view.php") return html(calendarMonthHtml(Number(url.searchParams.get("time"))));
       if (url.pathname === "/my/") return html('<html><script>M.cfg = {"sesskey":"fixture","userId":7,"theme":"boost"};</script><span class="userfullname">Alex</span></html>');
       if (url.pathname === "/lib/ajax/service-nologin.php") return Response.json([{ error: false, data: { enablewebservices: 1, enablemobilewebservice: 0 } }]);
       if (url.pathname.includes("/pluginfile.php/")) return new Response("slides", { headers: { "content-type": "application/pdf", "content-disposition": 'attachment; filename="slides.pdf"' } });
@@ -314,8 +323,9 @@ describe("moodle coverage", () => {
             case "core_webservice_get_site_info": return { error: false, data: { ...siteUser, release: "4.5.1 (Build: 20250101)" } };
             // Named as the assignment fixture page is, so the page and the contents agree.
             case "core_course_get_contents": return { error: false, data: sections("Week", c.args.courseid).map(s => ({ ...s, modules: s.activities.map(a => a.modname === "assign" ? { ...a, name: "Essay 1" } : a) })) };
+            case "core_calendar_get_calendar_monthly_view": return { error: false, data: calendarMonthData({ weeks: [] }, c.args) };
             case "core_calendar_get_action_events_by_timesort": case "core_calendar_get_action_events_by_course": return { error: false, data: { events: [] } };
-            case "core_course_get_course_module": return { error: false, data: { cm: { id: c.args.cmid, course: 2, modname: c.args.cmid % 10 === 0 ? "resource" : "assign" } } };
+            case "core_course_get_course_module": return { error: false, data: { cm: { id: c.args.cmid, course: Math.floor(c.args.cmid / 100), modname: c.args.cmid % 10 === 0 ? "resource" : "assign" } } };
             default: return { error: false, data: c.methodname.startsWith("mod_forum") ? [] : {} };
           }
         }));

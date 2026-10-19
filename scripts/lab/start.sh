@@ -26,7 +26,7 @@ case "${1:-start}" in
       # setsid + nohup detach it from the calling shell so it survives the session.
       PHP_CLI_SERVER_WORKERS=4 setsid nohup php \
         -d max_input_vars=5000 -d memory_limit=512M -d opcache.enable_cli=1 -d opcache.memory_consumption=256 \
-        -S "$HOST:$PORT" -t "$LAB/moodle" >>"$LAB/server.log" 2>&1 </dev/null &
+        -S "${MOODLE_BIND_ADDRESS:-$HOST}:$PORT" -t "$LAB/moodle" >>"$LAB/server.log" 2>&1 </dev/null &
       echo $! >"$LAB/server.pid"
       for _ in $(seq 1 30); do web_up && break; sleep 1; done
       web_up && echo "web server up on $URL (pid $(cat "$LAB/server.pid"))" || { echo "web server failed to start; see $LAB/server.log" >&2; exit 1; }

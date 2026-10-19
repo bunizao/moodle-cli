@@ -1,3 +1,4 @@
+import { calendarMonthHtml, calendarMonthData } from "./fixtures/calendar-view.js";
 import { expect, it } from "vitest";
 import { createMoodleClientCore } from "../src/moodle-client-core.js";
 it("uses Moodle's 50-event page cap and the last event cursor for exact totals", async () => {
@@ -42,6 +43,7 @@ function timelineDisabledSite(eventsByUnit: Record<number, Array<{ id: number; t
     cookie: { name: "MoodleSession", value: "fixture" }, sesskey: "fixture", userid: 1,
     userInfo: { userid: 1, username: "", fullname: "Student", sitename: "Example", siteurl: "https://moodle.example.edu", lang: "" },
     fetchImpl: async (_input, init) => {
+      if (new URL(String(_input)).pathname === "/calendar/view.php") return new Response(calendarMonthHtml(Number(new URL(String(_input)).searchParams.get("time"))));
       const envelope: unknown[] = [];
       for (const { index, methodname, args } of JSON.parse(String(init?.body))) {
         calls.push({ methodname, args });
@@ -56,6 +58,8 @@ function timelineDisabledSite(eventsByUnit: Record<number, Array<{ id: number; t
           const start = args.aftereventid ? unit.findIndex((event) => event.id === args.aftereventid) + 1 : 0;
           const events = unit.slice(start, start + args.limitnum).map((event) => ({ ...event, timesort: now + event.timesort, name: `Task ${event.id}`, course: { id: args.courseid } }));
           envelope.push({ index, error: false, data: { events } });
+        } else if (methodname === "core_calendar_get_calendar_monthly_view") {
+          envelope.push({ index, error: false, data: calendarMonthData({ weeks: [] }, args) });
         } else {
           envelope.push({ index, error: false, data: {} });
         }

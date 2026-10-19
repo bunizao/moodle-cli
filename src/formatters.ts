@@ -105,16 +105,24 @@ export function formatAlerts(alerts: AlertSummary): string {
     ["Unread notifications", String(alerts.unread_notification_count)],
     ["Direct messages", String(alerts.direct_message_count)],
     ["Unread direct messages", String(alerts.unread_direct_message_count)],
+    ["Group messages", String(alerts.group_message_count)],
+    ["Unread group messages", String(alerts.unread_group_message_count)],
+    ["Starred messages", String(alerts.starred_message_count)],
+    ["Unread starred messages", String(alerts.unread_starred_message_count)],
   ], { title: "Alerts" });
   if (!alerts.notifications.length) return summary;
   const notifications = renderTerminalTable(
     [
       { label: "When" },
       { label: "Subject" },
+      { label: "Body" },
+      { label: "Link" },
     ],
     alerts.notifications.map((notification) => [
       notification.created_pretty || formatTimestamp(notification.created_at),
       notification.short_subject || notification.subject,
+      notification.body ?? "",
+      notification.context_url,
     ]),
     { title: "Notifications" },
   );
@@ -159,7 +167,7 @@ export function formatDownloadResult(result: DownloadResult, cwd = process.cwd()
   const lines: string[] = [];
   const saved = result.files;
   if (result.dry_run) {
-    if (saved.length) lines.push(`Would save ${saved.length === 1 ? saved[0].filename : `${saved.length} files`} → ${shown(saved.length === 1 ? saved[0].file_path : path.dirname(saved[0].file_path))}`);
+    if (saved.length) lines.push(`Would save ${saved.length === 1 ? saved[0].filename : `${saved.length} files`} → ${shown(saved.length === 1 ? saved[0].file_path : path.resolve(saved[0].file_path.slice(0, -saved[0].filename.length)))}`);
     if (saved.length > 1) lines.push(...saved.map((file) => `  ${file.filename}`));
   } else if (saved.length === 1) {
     lines.push(`✓ Saved ${saved[0].filename} (${size(saved[0].bytes_written)}) → ${shown(saved[0].file_path)}`);
@@ -169,7 +177,7 @@ export function formatDownloadResult(result: DownloadResult, cwd = process.cwd()
       // A saved name is what the person looks for on disk, so it only shrinks to fit the terminal.
       [{ label: "File", flex: true, width: Math.max(...saved.map((file) => Array.from(file.filename).length)) }, { label: "Size" }],
       saved.map((file) => [file.filename, size(file.bytes_written)]),
-      { title: `✓ Saved ${saved.length} files (${size(total)}) → ${shown(path.dirname(saved[0].file_path))}` },
+      { title: `✓ Saved ${saved.length} files (${size(total)}) → ${shown(path.resolve(saved[0].file_path.slice(0, -saved[0].filename.length)))}` },
     ));
   }
   const present = result.skipped.filter((item) => item.reason === "exists");
@@ -208,9 +216,10 @@ export function formatSubmissionReceipt(receipt: SubmissionReceipt): string {
     ["Time remaining", receipt.time_remaining],
     ["Last modified", receipt.last_modified],
     [receipt.action === "planned" ? "Files now" : "Files", receipt.files.map(file => file.bytes ? `${file.name} (${size(file.bytes)})` : file.name).join(", ")],
+    ["Online text", receipt.text ?? ""],
     ["Uploads", receipt.uploads.map(file => `${file.name} (${size(file.bytes)})`).join(", ")],
     ["Removed", receipt.removed.join(", ")],
-    ["Statement", receipt.statement ? `${receipt.statement_accepted ? "accepted" : "not accepted"}: ${receipt.statement}` : ""],
+    ["Statement", receipt.statement ? `${receipt.statement_accepted ? "accepted" : "not accepted"}: ${receipt.statement}` : receipt.statement_pending ? "Checked after saving the draft; Moodle may ask you to accept one." : ""],
     ["Limits", limits],
     ["Checked", receipt.checked_at],
   ], { title: receipt.action === "planned" ? "Submission plan" : "Submission" });
@@ -218,7 +227,7 @@ export function formatSubmissionReceipt(receipt: SubmissionReceipt): string {
     ? "Plan only; nothing was uploaded. Re-run without --dry-run to upload."
     : receipt.action === "submitted" && receipt.awaiting?.length
       ? "Your part is submitted. The group's submission goes for grading once everyone listed under Waiting for has submitted too."
-      : receipt.action === "saved" && /draft|not submitted/iu.test(receipt.submission_status)
+      : receipt.action === "saved" && (receipt.submission_state === "draft" || receipt.draft_stage === true)
         ? "Saved as a draft. Re-run with --final to submit it for grading."
         : "";
   // Table cells truncate, so the warning that the files are shared goes below the table.
@@ -260,6 +269,7 @@ export function formatForumDiscussion(
     if (post.url) {
       lines.push(`  URL: ${post.url}`);
     }
+    for (const file of post.attachments ?? []) lines.push(`  Attachment: ${file.name} (${file.size} bytes) ${file.url}`);
     if (options.showBody) {
       if (post.message_text) {
         lines.push("", post.message_text);
@@ -282,9 +292,12 @@ export function formatForumDiscussionRefs(forumCmid: number, refs: ForumDiscussi
       { label: "ID" },
       { label: "Subject" },
       { label: "Group" },
+      { label: "Author" },
+      { label: "Replies" },
+      { label: "Unread" },
     ],
     refs.length
-      ? refs.map((ref) => [String(ref.id), ref.subject, ref.group_name])
+      ? refs.map((ref) => [String(ref.id), `${ref.pinned ? "[pinned] " : ""}${ref.subject}`, ref.group_name, ref.author ?? "", ref.replies === undefined ? "" : String(ref.replies), ref.unread === undefined ? "" : String(ref.unread)])
       : [["No discussions", "", "", ""]],
     { title: `Forum ${forumCmid} · Discussions` },
   );
@@ -408,6 +421,7 @@ function formatTimestamp(value: number): string {
 
 export function formatAttemptPage(page: AttemptPage): string {
   const lines = [`${page.name}  attempt ${page.attempt}  page ${page.page + 1} of ${page.pages}`, ""];
+  if (page.time_left_s !== undefined) lines.splice(1, 0, `Time left: ${Math.floor(page.time_left_s / 60)}m ${page.time_left_s % 60}s · Ends: ${page.ends_at}`);
   for (const question of page.questions) lines.push(...attemptQuestionLines(question), "");
   const elsewhere = page.navigation.filter(entry => entry.page !== page.page && entry.number !== "i");
   if (elsewhere.length) lines.push(`Other pages: ${elsewhere.map(entry => `Q${entry.number} p${entry.page + 1} (${entry.state.toLowerCase()})`).join(", ")}`);
@@ -425,7 +439,7 @@ function attemptQuestionLines(question: AttemptQuestion): string[] {
   if (question.kind === "text") lines.push(`  Answer: ${question.answer || "(empty)"}`);
   if (question.kind === "fields") {
     for (const [index, field] of (question.fields ?? []).entries()) {
-      lines.push(`  Answer ${index + 1}: ${field.answer || "(empty)"}`);
+      lines.push(`  ${field.label || `Answer ${index + 1}`}: ${field.answer || "(empty)"}`);
     }
   }
   if (question.kind === "unsupported") lines.push(`  (${question.type} questions can only be answered in a browser)`);
