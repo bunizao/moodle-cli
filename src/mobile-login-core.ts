@@ -1,4 +1,5 @@
 import { parseMoodleErrorHtml } from "./scraper.js";
+import { siteUrl } from "./site-root.js";
 import {
   FUNC_MOBILE_AUTOLOGIN_KEY,
   FUNC_MOBILE_PUBLIC_CONFIG,
@@ -81,24 +82,27 @@ export function parseLaunchToken(location: string): MobileToken | null {
   return { wstoken: parts[1], privatetoken: parts[2] || undefined };
 }
 
-/** Read the site's public sign-in facts from `tool_mobile_get_public_config`, without signing in. */
-export async function readSiteAuthProfile(
+/**
+ * Call `tool_mobile_get_public_config` anonymously. Moodle marks it `loginrequired: false`
+ * and serves it through `service-nologin.php`, which never runs require_login, so a site
+ * that forces SSO still answers. Redirects are not followed: a redirect here means the
+ * address is not a Moodle install root, and following it would turn the POST into a GET.
+ */
+export async function fetchPublicConfig(
   baseUrl: string,
   fetchImpl: Fetcher = fetch,
-): Promise<SiteAuthProfile | null> {
-  const url = siteUrl(baseUrl, SERVICE_NOLOGIN_PATH);
+  signal?: AbortSignal,
+): Promise<Record<string, unknown> | null> {
+  const url = new URL(siteUrl(baseUrl, SERVICE_NOLOGIN_PATH));
   url.searchParams.set("info", FUNC_MOBILE_PUBLIC_CONFIG);
   const body = JSON.stringify([{ index: 0, methodname: FUNC_MOBILE_PUBLIC_CONFIG, args: {} }]);
-  let response: Response;
-  try {
-    response = await fetchImpl(url.toString(), {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body,
-    });
-  } catch {
-    return null;
-  }
+  const response = await fetchImpl(url.toString(), {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body,
+    redirect: "manual",
+    ...(signal ? { signal } : {}),
+  });
   if (!response.ok) return null;
   let payload: unknown;
   try {
@@ -107,8 +111,21 @@ export async function readSiteAuthProfile(
     return null;
   }
   const data = Array.isArray(payload) ? (payload[0] as { error?: unknown; data?: unknown } | undefined) : undefined;
-  if (!data || data.error) return null;
-  const config = data.data as Record<string, unknown> | undefined;
+  if (!data || data.error || !data.data || typeof data.data !== "object") return null;
+  return data.data as Record<string, unknown>;
+}
+
+/** Read the site's public sign-in facts from `tool_mobile_get_public_config`, without signing in. */
+export async function readSiteAuthProfile(
+  baseUrl: string,
+  fetchImpl: Fetcher = fetch,
+): Promise<SiteAuthProfile | null> {
+  let config: Record<string, unknown> | null;
+  try {
+    config = await fetchPublicConfig(baseUrl, fetchImpl);
+  } catch {
+    return null;
+  }
   if (!config) return null;
   const mobileService = config.enablemobilewebservice === 1 || config.enablemobilewebservice === true;
   // typeoflogin describes the app's sign-in, so it means nothing while the app is shut
@@ -131,7 +148,7 @@ export async function fetchMobileToken(
   cookie: { name: string; value: string },
   fetchImpl: Fetcher = fetch,
 ): Promise<MobileToken | null> {
-  const url = siteUrl(baseUrl, MOBILE_LAUNCH_PATH);
+  const url = new URL(siteUrl(baseUrl, MOBILE_LAUNCH_PATH));
   url.searchParams.set("service", MOBILE_SERVICE_SHORTNAME);
   url.searchParams.set("passport", randomPassport());
   url.searchParams.set("urlscheme", MOBILE_URL_SCHEME);
@@ -185,7 +202,7 @@ async function requestAutologinKey(
   token: MobileToken,
   fetchImpl: Fetcher,
 ): Promise<string | null> {
-  const url = siteUrl(baseUrl, WEBSERVICE_REST_PATH);
+  const url = new URL(siteUrl(baseUrl, WEBSERVICE_REST_PATH));
   url.searchParams.set("moodlewsrestformat", "json");
   url.searchParams.set("wsfunction", FUNC_MOBILE_AUTOLOGIN_KEY);
   url.searchParams.set("wstoken", token.wstoken);
@@ -216,7 +233,7 @@ async function exchangeAutologinKey(
   key: string,
   fetchImpl: Fetcher,
 ): Promise<MintedSession | null> {
-  const url = siteUrl(baseUrl, MOBILE_AUTOLOGIN_PATH);
+  const url = new URL(siteUrl(baseUrl, MOBILE_AUTOLOGIN_PATH));
   url.searchParams.set("userid", String(userid));
   url.searchParams.set("key", key);
 
@@ -252,19 +269,6 @@ function extractSessionCookie(response: Response): { name: string; value: string
     }
   }
   return null;
-}
-
-function ensureTrailingSlash(baseUrl: string): string {
-  return `${baseUrl.replace(/\/+$/, "")}/`;
-}
-
-/**
- * Resolve a site-absolute path against the base URL, which may name an install
- * subdirectory such as https://host/moodle. The path is treated as relative so the
- * subdirectory survives; `new URL("/lib/...", baseUrl)` would discard it.
- */
-function siteUrl(baseUrl: string, path: string): URL {
-  return new URL(path.replace(/^\//u, ""), ensureTrailingSlash(baseUrl));
 }
 
 function randomPassport(): string {

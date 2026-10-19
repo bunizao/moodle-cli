@@ -393,22 +393,22 @@ describe("config and session cache", () => {
     expect(loadSessionFromEnv({ [ENV_MOODLE_TOKEN]: "canonical", [ENV_MOODLE_SESSION]: "legacy" })?.value).toBe("canonical");
   });
 
-  it("rejects page URLs and non-TTY missing config", async () => {
-    expect(() => normalizeBaseUrl(`${BASE_URL}/login/index.php`)).toThrow(/install root/u);
+  it("keeps an install path, drops a trailing slash, and refuses non-TTY missing config", async () => {
+    expect(normalizeBaseUrl(`${BASE_URL}/elearning/moodle/`)).toBe(`${BASE_URL}/elearning/moodle`);
+    expect(normalizeBaseUrl(`${BASE_URL}/`)).toBe(BASE_URL);
+    expect(() => normalizeBaseUrl(`${BASE_URL}/my/?x=1`)).toThrow(/query/);
     await expect(loadConfig({ cwd: await mkdtemp(join(tmpdir(), "moodle-cli-empty-")), homeDir: await mkdtemp(join(tmpdir(), "moodle-cli-home-")), env: {}, stdin: { isTTY: false } })).rejects.toThrow(/MOODLE_BASE_URL/);
   });
 
-  it("prompts, probes, saves, and then reads the saved config", async () => {
+  it("prompts, discovers, saves, and then reads the saved config", async () => {
     const root = await mkdtemp(join(tmpdir(), "moodle-cli-config-"));
     const cwd = join(root, "empty");
     const homeDir = join(root, "home");
-    const prompt = vi.fn()
-      .mockResolvedValueOnce(`${BASE_URL}/login/index.php`)
-      .mockResolvedValueOnce(BASE_URL);
-    const fetchImpl = vi.fn(async () => new Response('{"errorcode":"missingparam"}', {
-      status: 200,
-      headers: { "content-type": "application/json" },
-    }));
+    const prompt = vi.fn().mockResolvedValueOnce(`${BASE_URL}/login/index.php`);
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL) =>
+      String(input).startsWith(`${BASE_URL}/lib/ajax/service-nologin.php`)
+        ? Response.json([{ error: false, data: { wwwroot: BASE_URL } }])
+        : new Response("Not found", { status: 404 }));
     const stderr = buffer();
 
     await expect(loadConfig({
@@ -417,12 +417,11 @@ describe("config and session cache", () => {
       env: {},
       stdin: { isTTY: true },
       prompt,
-      fetch: fetchImpl,
+      fetch: fetchImpl as unknown as typeof fetch,
       stderr: stderr as unknown as NodeJS.WritableStream,
     })).resolves.toMatchObject({ baseUrl: BASE_URL });
 
-    expect(prompt).toHaveBeenCalledTimes(2);
-    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(prompt).toHaveBeenCalledTimes(1);
     expect(await readFile(join(homeDir, ".config/moodle-cli/config.yaml"), "utf8")).toContain(`base_url: ${BASE_URL}`);
 
     fetchImpl.mockClear();

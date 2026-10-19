@@ -804,7 +804,7 @@ export function parseSiteTheme(html: string): string | undefined {
   return stringValue(parseMoodleConfig(html).theme) || undefined;
 }
 
-function parseMoodleConfig(html: string): Record<string, unknown> {
+export function parseMoodleConfig(html: string): Record<string, unknown> {
   const match = html.match(/M\.cfg\s*=\s*({[\s\S]*?});/);
   if (!match) {
     return {};

@@ -9,14 +9,10 @@ import YAML from "yaml";
 import { CONFIG_DIR_NAME, CONFIG_FILENAME, ENV_MOODLE_BASE_URL, ENV_MOODLE_CONFIG, ENV_MOODLE_URL } from "./constants.js";
 import { ConfigError } from "./errors.js";
 import { writeFileAtomic } from "./atomic-write.js";
+import { discoverSite, parseSiteInput, type DiscoveredSite } from "./site-discovery.js";
 
 export interface MoodleConfig extends Record<string, unknown> {
   baseUrl: string;
-}
-
-export interface ProbeResult {
-  ok: boolean;
-  message?: string;
 }
 
 export interface ConfigOptions {
@@ -46,10 +42,11 @@ export function userConfigPath(homeDir = homedir()): string {
   return join(homeDir, CONFIG_DIR_NAME, CONFIG_FILENAME);
 }
 
-// A path that names a page rather than an install directory: the two landmarks users
-// paste by mistake, plus anything ending in a file extension.
-const PAGE_LIKE_PATH = /(?:\/(?:login|my)|\.(?:php|html?|aspx?|jspx?|cgi))$/iu;
-
+/**
+ * Normalize a configured site root. Moodle may be installed under any path, so a path is
+ * kept; what this cannot tell is whether the path is the install root or a page inside
+ * it. Interactive setup answers that by asking the site (see site-discovery.ts).
+ */
 export function normalizeBaseUrl(value: string): string {
   const raw = value.trim();
   if (!raw) {
@@ -75,16 +72,8 @@ export function normalizeBaseUrl(value: string): string {
   if (parsed.search || parsed.hash) {
     throw new ConfigError("Base URL must not include query parameters or fragments");
   }
-  // Moodle is often installed in a subdirectory (https://host/moodle), so a path is
-  // allowed; only a page URL, which is what users paste by mistake, is rejected.
-  const installPath = parsed.pathname.replace(/\/+$/u, "");
-  if (PAGE_LIKE_PATH.test(installPath)) {
-    throw new ConfigError(
-      "Base URL must be the Moodle install root, for example https://school.example.edu or https://school.example.edu/moodle. Do not include pages like /login/index.php or /my/.",
-    );
-  }
 
-  return `${parsed.origin}${installPath}`;
+  return `${parsed.origin}${parsed.pathname.replace(/\/+$/u, "")}`;
 }
 
 export async function loadConfig(options: ConfigOptions = {}): Promise<MoodleConfig> {
@@ -116,66 +105,53 @@ export async function promptForBaseUrl(options: ConfigOptions = {}): Promise<str
   // An injected prompt (tests) means plain lines; a real terminal gets the guided setup.
   const ui = createUi({ input: process.stdin, output: (options.stderr ?? process.stderr) as Writable, ...(options.prompt ? { interactive: false } : {}) });
   const prompt = options.prompt ?? defaultPrompt(ui);
+  const confirm = async (message: string): Promise<boolean> =>
+    ui.interactive ? ui.confirm(message, { initial: true }) : /^y/iu.test((await prompt(`${message} (y/n)`)).trim());
   showWordmark(ui);
   ui.intro("Moodle setup");
   ui.note([
-    "Moodle base URL is not configured yet.",
+    "Paste the address of your Moodle site. Any page works: the front page, your dashboard, or a course.",
+    "The address is checked with the site itself, so a site under a path such as /moodle is found too.",
     `Runtime: ${process.versions.bun ? `bun ${process.versions.bun}` : `node ${process.versions.node}`}. Browser SQLite needs Bun or Node 22.13+. Run moodle doctor for diagnostics.`,
-    "Use the site root only, for example https://school.example.edu.",
-    "Do not include paths like /login/index.php or /my/.",
-  ].join("\n"), "Configuration required");
+  ].join("\n"), "Connect to Moodle");
 
   while (true) {
-    let baseUrl: string;
+    let input: URL;
     try {
-      baseUrl = normalizeBaseUrl(await prompt("Moodle base URL"));
+      input = parseSiteInput(await prompt("Moodle address"));
     } catch (error) {
-      ui.warn(`Invalid URL: ${error instanceof Error ? error.message : String(error)}`);
+      ui.warn(error instanceof Error ? error.message : String(error));
       continue;
     }
 
     const spin = ui.spinner();
-    spin.start(`Checking ${baseUrl}`);
-    const probe = await probeBaseUrl(baseUrl, options);
-    if (probe.ok) {
-      spin.stop(`${baseUrl} looks like Moodle`);
-      return baseUrl;
+    spin.start(`Looking for Moodle at ${input.host}`);
+    const result = await discoverSite(input, { fetch: options.fetch });
+    switch (result.kind) {
+      case "found":
+        spin.stop(`Found ${describeSite(result.site)}`);
+        return result.site.root;
+      case "elsewhere":
+        spin.stop(`${input.host} leads to ${describeSite(result.site)}`);
+        if (await confirm(`Use ${result.site.root}?`)) return result.site.root;
+        break;
+      case "redirected":
+        spin.error(`${input.host} sends you on to ${result.host}, which is not Moodle`);
+        ui.info("If that is your sign-in page, sign in, then paste the address of any Moodle page you land on.");
+        break;
+      case "not_found":
+        spin.error(`No Moodle found at ${input.host}${input.pathname === "/" ? "" : input.pathname}`);
+        ui.info("Open Moodle in your browser and paste the address of any page there, such as a course.");
+        break;
+      case "unreachable":
+        spin.error(result.message);
+        break;
     }
-    spin.error(`Validation failed: ${probe.message ?? "site did not look like Moodle"}`);
   }
 }
 
-export async function probeBaseUrl(baseUrl: string, options: ConfigOptions = {}): Promise<ProbeResult> {
-  const fetcher = options.fetch ?? globalThis.fetch;
-  if (!fetcher) {
-    return { ok: false, message: "fetch is not available in this runtime" };
-  }
-
-  let response: Response;
-  try {
-    response = await fetcher(`${baseUrl}/login/token.php`, { redirect: "follow" });
-  } catch (error) {
-    return { ok: false, message: `Could not reach ${baseUrl}: ${error instanceof Error ? error.message : String(error)}` };
-  }
-
-  const body = (await response.text()).slice(0, 5000).toLowerCase();
-  const contentType = response.headers.get("content-type")?.toLowerCase() ?? "";
-  const looksJson = contentType.includes("application/json") || body.startsWith("{");
-  const looksMoodleTokenError = [
-    '"errorcode":"missingparam"',
-    '"errorcode":"invalidparameter"',
-    '"errorcode":"invalidlogin"',
-    "a required parameter (username) was missing",
-  ].some((marker) => body.includes(marker));
-  const looksMoodleHtml = body.includes("moodle") && (body.includes("login") || body.includes("sesskey"));
-
-  if (response.status >= 400) {
-    return { ok: false, message: `${baseUrl} returned HTTP ${response.status}` };
-  }
-  if ((looksJson && looksMoodleTokenError) || looksMoodleHtml) {
-    return { ok: true };
-  }
-  return { ok: false, message: `${baseUrl} does not expose the expected Moodle token endpoint` };
+function describeSite(site: DiscoveredSite): string {
+  return site.sitename ? `${site.sitename} at ${site.root}` : site.root;
 }
 
 export function missingBaseUrlMessage(configPath: string | null, options: ConfigOptions = {}): string {
@@ -185,8 +161,8 @@ export function missingBaseUrlMessage(configPath: string | null, options: Config
     `Add base_url to ${targetPath} or set MOODLE_BASE_URL.`,
     "Required format:",
     "  base_url: https://school.example.edu",
-    "Add the install subdirectory when the site has one, for example https://school.example.edu/moodle.",
-    "Do not include pages like /login/index.php or /my/.",
+    "Use the address Moodle lives at, with its path if it has one, for example https://school.example.edu/moodle.",
+    "Run `moodle` in an interactive shell to have it found from any page address.",
   ].join("\n");
 }
 
@@ -235,7 +211,7 @@ function toMoodleConfig(config: Record<string, unknown>, baseUrl: string): Moodl
 }
 
 function defaultPrompt(ui: Ui): (label: string) => Promise<string> {
-  return (label) => ui.text(label, { placeholder: "https://school.example.edu" });
+  return (label) => ui.text(label, { placeholder: "https://school.example.edu/my/" });
 }
 
 // Only a person gets the setup prompt. An agent shell with a pty is told what to set instead.

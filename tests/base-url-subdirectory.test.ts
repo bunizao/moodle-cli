@@ -1,8 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 import { isLoginRedirect, loginUrl } from "../src/auth.js";
-import { loadConfig, normalizeBaseUrl, probeBaseUrl } from "../src/config.js";
+import { loadConfig, normalizeBaseUrl } from "../src/config.js";
 import { ENV_MOODLE_BASE_URL } from "../src/constants.js";
-import { fetchMobileToken, readSiteAuthProfile } from "../src/mobile-login-core.js";
+import { fetchMobileToken, fetchPublicConfig, readSiteAuthProfile } from "../src/mobile-login-core.js";
 
 const HOST = "https://school.example.edu";
 const SUBDIR = `${HOST}/moodle`;
@@ -21,12 +21,11 @@ describe("normalizeBaseUrl with an install subdirectory", () => {
     expect(normalizeBaseUrl(`  ${HOST}  `)).toBe(HOST);
   });
 
-  it("still rejects a page instead of an install root", () => {
-    const pages = ["/login/index.php", "/my/", "/my", "/course/view.php", "/mod/forum/view.php", "/index.php"];
-    for (const page of pages) {
-      expect(() => normalizeBaseUrl(`${HOST}${page}`)).toThrow(/install root/u);
-      expect(() => normalizeBaseUrl(`${SUBDIR}${page}`)).toThrow(/install root/u);
-    }
+  // A page address is kept as typed: site discovery asks Moodle for its real root and
+  // repairs the saved address, which beats rejecting what the person pasted.
+  it("keeps a page address for discovery to repair", () => {
+    expect(normalizeBaseUrl(`${SUBDIR}/my/`)).toBe(`${SUBDIR}/my`);
+    expect(normalizeBaseUrl(`${HOST}/login/index.php`)).toBe(`${HOST}/login/index.php`);
   });
 
   it("rejects a query, fragment, or wrong scheme", () => {
@@ -63,13 +62,10 @@ describe("login URLs inside a subdirectory", () => {
 });
 
 describe("request URLs keep the install path", () => {
-  it("probes the token endpoint under the subdirectory", async () => {
-    const fetchImpl = vi.fn(async () => new Response('{"errorcode":"missingparam"}', {
-      status: 200,
-      headers: { "content-type": "application/json" },
-    }));
-    await expect(probeBaseUrl(SUBDIR, { fetch: fetchImpl as unknown as typeof fetch })).resolves.toEqual({ ok: true });
-    expect(fetchImpl).toHaveBeenCalledWith(`${SUBDIR}/login/token.php`, { redirect: "follow" });
+  it("asks for the public site config under the subdirectory", async () => {
+    const fetchImpl = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => Response.json([{ error: false, data: { wwwroot: SUBDIR } }]));
+    await expect(fetchPublicConfig(SUBDIR, fetchImpl as unknown as typeof fetch)).resolves.toMatchObject({ wwwroot: SUBDIR });
+    expect(String(fetchImpl.mock.calls[0][0])).toContain(`${SUBDIR}/lib/ajax/service-nologin.php`);
   });
 
   it("reads the mobile public config under the subdirectory", async () => {
