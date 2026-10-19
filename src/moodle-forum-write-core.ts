@@ -2,8 +2,9 @@ import { FUNC_ADD_DISCUSSION_POST, FUNC_GET_STRINGS } from "./constants.js";
 import { parse, type HTMLElement } from "node-html-parser";
 import { cleanText, filemanagerOptions } from "./html-utils.js";
 import { asArray, asRecord, numberValue, stringValue } from "./parsers.js";
-import { parseForumDiscussionRefsHtml } from "./scraper.js";
+import { parseForumDiscussionRefsHtml, parseMoodleConfig } from "./scraper.js";
 import { noticesOf } from "./moodle-quiz-core.js";
+import { isSiteUrl } from "./site-root.js";
 import type { ForumDiscussion } from "./models.js";
 import type { SubmitFile } from "./moodle-assign-core.js";
 
@@ -51,6 +52,10 @@ export async function createForumDiscussion(deps: ForumWriteDeps, forumCmid: num
   const forumId = link ? new URL(link.getAttribute("href")!, deps.baseUrl).searchParams.get("forum") : addForm?.querySelector('input[name="forum"]')?.getAttribute("value");
   if (!forumId) throw deps.usage("Moodle does not offer a new discussion in this forum.");
   const html = await (await deps.request(`${deps.baseUrl}/mod/forum/post.php?forum=${encodeURIComponent(forumId)}`)).text();
+  // The add-topic link was found by shape, and intro text can link to another forum's;
+  // the posting page names its own forum, so a mismatch stops before anything is written.
+  const postingCmid = Number(parseMoodleConfig(html).contextInstanceId);
+  if (postingCmid && postingCmid !== forumCmid) throw deps.fail(`Moodle offered the posting form of activity ${postingCmid}, not forum ${forumCmid}; nothing was posted.`);
   const form = postForm(deps, html);
   const fields = formFields(form);
   fields.set("subject", subject.trim());
@@ -66,10 +71,15 @@ export async function createForumDiscussion(deps: ForumWriteDeps, forumCmid: num
     const added = parseForumDiscussionRefsHtml(afterHtml, deps.baseUrl).filter(ref => !previous.has(ref.id) && ref.subject === subject.trim());
     if (added.length === 1) discussionId = added[0].id;
   }
-  if (!discussionId) throw deps.fail(`Moodle did not create the discussion: ${noticesOf(responseHtml) || "it returned the posting form"}`);
+  if (!discussionId) {
+    // Only the posting form coming back proves nothing was saved; anything else may be a
+    // success page, and a retry would post the discussion twice.
+    if (findPostForm(responseHtml)) throw deps.fail(`Moodle did not create the discussion: ${noticesOf(responseHtml) || "it returned the posting form"}`);
+    throw deps.fail(`Moodle may have created the discussion, but it could not be found in forum ${forumCmid}. Check the forum before posting again.`);
+  }
   const discussion = await deps.getDiscussion(discussionId);
   const first = discussion.posts.find(post => !post.parent_id && post.subject === subject.trim());
-  if (!first) throw deps.fail("Moodle returned a discussion, but its first post could not be verified.");
+  if (!first) throw deps.fail(`Moodle created discussion ${discussionId}, but its first post could not be verified. Check it before posting again.`);
   return { id: first.id, discussion_id: discussionId, parent_id: 0, url: `${deps.baseUrl}/mod/forum/discuss.php?d=${discussionId}#p${first.id}` };
 }
 
@@ -81,7 +91,8 @@ export async function setForumSubscription(deps: ForumWriteDeps, forumCmid: numb
     const root = parse(html);
     for (const element of root.querySelectorAll('a[href], form[action]')) {
       const url = new URL(element.getAttribute("href") ?? element.getAttribute("action") ?? "", deps.baseUrl);
-      if (!url.pathname.endsWith("/mod/forum/subscribe.php")) continue;
+      // Intro text can hold a look-alike link; only this install's control gets the sesskey.
+      if (!isSiteUrl(deps.baseUrl, url) || !url.pathname.endsWith("/mod/forum/subscribe.php")) continue;
       if (element.tagName === "FORM") for (const [key, value] of formFields(element)) url.searchParams.set(key, value);
       if (url.searchParams.has("d") || url.searchParams.has("mode") || url.searchParams.has("user")) continue;
       const label = cleanText(element.textContent);
@@ -110,8 +121,12 @@ async function verifyPost(deps: ForumWriteDeps, discussionId: number, postId: nu
   return { id: postId, discussion_id: discussionId, parent_id: parentId, url: `${deps.baseUrl}/mod/forum/discuss.php?d=${discussionId}#p${postId}` };
 }
 
+function findPostForm(html: string): HTMLElement | undefined {
+  return parse(html).querySelectorAll("form").find(node => node.querySelector('input[name="subject"]') && node.querySelector('textarea[name="message[text]"]'));
+}
+
 function postForm(deps: ForumWriteDeps, html: string): HTMLElement {
-  const form = parse(html).querySelectorAll("form").find(node => node.querySelector('input[name="subject"]') && node.querySelector('textarea[name="message[text]"]'));
+  const form = findPostForm(html);
   if (!form) throw deps.usage(`Moodle is not accepting a forum post: ${noticesOf(html) || "no posting form is available"}`);
   return form;
 }

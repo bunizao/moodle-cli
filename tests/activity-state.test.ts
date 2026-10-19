@@ -94,3 +94,31 @@ it.each([
   });
   expect((await client.getActivities(16))[0].id).toBe(150);
 });
+
+it("returns a hidden restricted activity even though course contents leave it out", async () => {
+  const client = createMoodleClientCore("https://moodle.example.edu", {
+    cookie: { name: "MoodleSession", value: "fixture" }, sesskey: "fixture", userid: 1,
+    fetchImpl: async (_url, init) => {
+      const [{ methodname }] = JSON.parse(String(init?.body));
+      if (methodname === "core_course_get_course_module") return Response.json([{ error: false, data: { cm: { id: 5, name: "Quiz", modname: "quiz", course: 2, completion: 1, uservisible: false, availabilityinfo: "<p>Not available unless: Group A</p>" } } }]);
+      return Response.json([{ error: false, data: [{ id: 1, name: "Week one", section: 1, modules: [] }] }]);
+    },
+  });
+  expect(await client.getActivity(5)).toMatchObject({ id: 5, available: false, availability_reason: "Not available unless: Group A" });
+});
+
+it("keeps the course read when the page that explains restrictions fails", async () => {
+  const client = createMoodleClientCore("https://school.example.edu", {
+    cookie: { name: "MoodleSession", value: "fixture" }, sesskey: "fixture", userid: 3,
+    fetchImpl: async (input, init) => {
+      if (new URL(String(input)).pathname === "/course/view.php") return new Response("Service unavailable", { status: 503 });
+      const [{ methodname }] = JSON.parse(String(init?.body));
+      if (methodname === "core_course_get_contents") return Response.json([{ error: true, exception: { errorcode: "servicenotavailable", message: "Web service is not available" } }]);
+      return Response.json([{ error: false, data: JSON.stringify({
+        section: [{ id: "94", section: 2, title: "New section", cmlist: ["150"] }],
+        cm: [{ id: "150", sectionid: "94", name: "Locked Task", module: "assign", visible: true, uservisible: false, hascmrestrictions: true }],
+      }) }]);
+    },
+  });
+  expect(await client.getActivities(16)).toMatchObject([{ id: 150, available: false }]);
+});
