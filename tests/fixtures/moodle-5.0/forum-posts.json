@@ -1,0 +1,271 @@
+{
+  "posts": [
+    {
+      "id": 10,
+      "subject": "Week one questions",
+      "replysubject": "Week one questions",
+      "label": "Week one questions by Tess Teacher",
+      "message": "<p>Post any questions about week one here.</p>",
+      "messageformat": 1,
+      "author": {
+        "id": 4,
+        "fullname": "Tess Teacher",
+        "isdeleted": false,
+        "groups": [],
+        "urls": {
+          "profile": "https://school.example.edu/user/view.php?id=4&course=8",
+          "profileimage": "https://school.example.edu/theme/image.php/boost/core/1792312583/u/f1"
+        }
+      },
+      "discussionid": 7,
+      "hasparent": false,
+      "parentid": null,
+      "timecreated": 1792140020,
+      "timemodified": 1792140020,
+      "unread": null,
+      "isdeleted": false,
+      "isprivatereply": false,
+      "haswordcount": false,
+      "wordcount": null,
+      "charcount": null,
+      "capabilities": {
+        "view": true,
+        "edit": false,
+        "delete": false,
+        "split": false,
+        "reply": true,
+        "selfenrol": false,
+        "export": false,
+        "controlreadstatus": false,
+        "canreplyprivately": false
+      },
+      "urls": {
+        "view": "https://school.example.edu/mod/forum/discuss.php?d=7#p10",
+        "viewisolated": "https://school.example.edu/mod/forum/discuss.php?d=7&parent=10",
+        "viewparent": null,
+        "edit": null,
+        "delete": null,
+        "split": null,
+        "reply": "https://school.example.edu/mod/forum/post.php?reply=10#mformforum",
+        "export": null,
+        "markasread": null,
+        "markasunread": null,
+        "discuss": "https://school.example.edu/mod/forum/discuss.php?d=7"
+      },
+      "attachments": [],
+      "messageinlinefiles": [],
+      "tags": [],
+      "html": {
+        "rating": null,
+        "taglist": null,
+        "authorsubheading": "by <a href=\"https://school.example.edu/user/view.php?id=4&course=8\">Tess Teacher</a> - <time datetime=\"2026-10-16T09:40:20+01:00\">Friday, 16 October 2026, 9:40 AM</time>"
+      }
+    },
+    {
+      "id": 11,
+      "subject": "Re: Week one questions",
+      "replysubject": "Re: Week one questions",
+      "label": "Re: Week one questions by Sam Student",
+      "message": "<p>When is <a class=\"autolink\" title=\"Essay One\" href=\"https://school.example.edu/mod/assign/view.php?id=58\">Essay One</a> due?</p>",
+      "messageformat": 1,
+      "author": {
+        "id": 3,
+        "fullname": "Sam Student",
+        "isdeleted": false,
+        "groups": [
+          {
+            "id": 3,
+            "name": "Team Alpha",
+            "urls": {
+              "image": null
+            }
+          }
+        ],
+        "urls": {
+          "profile": "https://school.example.edu/user/view.php?id=3&course=8",
+          "profileimage": "https://school.example.edu/theme/image.php/boost/core/1792312583/u/f1"
+        }
+      },
+      "discussionid": 7,
+      "hasparent": true,
+      "parentid": 10,
+      "timecreated": 1792226420,
+      "timemodified": 1792226420,
+      "unread": null,
+      "isdeleted": false,
+      "isprivatereply": false,
+      "haswordcount": false,
+      "wordcount": null,
+      "charcount": null,
+      "capabilities": {
+        "view": true,
+        "edit": false,
+        "delete": false,
+        "split": false,
+        "reply": true,
+        "selfenrol": false,
+        "export": false,
+        "controlreadstatus": false,
+        "canreplyprivately": false
+      },
+      "urls": {
+        "view": "https://school.example.edu/mod/forum/discuss.php?d=7#p11",
+        "viewisolated": "https://school.example.edu/mod/forum/discuss.php?d=7&parent=11",
+        "viewparent": "https://school.example.edu/mod/forum/discuss.php?d=7#p10",
+        "edit": null,
+        "delete": null,
+        "split": null,
+        "reply": "https://school.example.edu/mod/forum/post.php?reply=11#mformforum",
+        "export": null,
+        "markasread": null,
+        "markasunread": null,
+        "discuss": "https://school.example.edu/mod/forum/discuss.php?d=7"
+      },
+      "attachments": [
+        {
+          "contextid": 88,
+          "component": "mod_forum",
+          "filearea": "attachment",
+          "itemid": 11,
+          "filepath": "/",
+          "filename": "course-notes.txt",
+          "isdir": false,
+          "isimage": false,
+          "timemodified": 1792312822,
+          "timecreated": 1792312822,
+          "filesize": 18,
+          "author": "",
+          "license": "",
+          "filenameshort": "course-notes.txt",
+          "filesizeformatted": "18 bytes",
+          "icon": "f/text",
+          "timecreatedformatted": "Sunday, 18 October 2026, 9:40 AM",
+          "timemodifiedformatted": "Sunday, 18 October 2026, 9:40 AM",
+          "url": "https://school.example.edu/pluginfile.php/88/mod_forum/attachment/11/course-notes.txt?forcedownload=1",
+          "urls": {
+            "export": null
+          },
+          "html": {
+            "plagiarism": null
+          }
+        }
+      ],
+      "messageinlinefiles": [],
+      "tags": [],
+      "html": {
+        "rating": null,
+        "taglist": null,
+        "authorsubheading": "by <a href=\"https://school.example.edu/user/view.php?id=3&course=8\">Sam Student</a> - <time datetime=\"2026-10-17T09:40:20+01:00\">Saturday, 17 October 2026, 9:40 AM</time>"
+      }
+    },
+    {
+      "id": 13,
+      "subject": "Week one questions",
+      "replysubject": "Week one questions",
+      "label": "Week one questions by Sam Student",
+      "message": "Roadmap forum reply verified",
+      "messageformat": 1,
+      "author": {
+        "id": 3,
+        "fullname": "Sam Student",
+        "isdeleted": false,
+        "groups": [
+          {
+            "id": 3,
+            "name": "Team Alpha",
+            "urls": {
+              "image": null
+            }
+          }
+        ],
+        "urls": {
+          "profile": "https://school.example.edu/user/view.php?id=3&course=8",
+          "profileimage": "https://school.example.edu/theme/image.php/boost/core/1792312583/u/f1"
+        }
+      },
+      "discussionid": 7,
+      "hasparent": true,
+      "parentid": 10,
+      "timecreated": 1792312974,
+      "timemodified": 1792312974,
+      "unread": null,
+      "isdeleted": false,
+      "isprivatereply": false,
+      "haswordcount": false,
+      "wordcount": null,
+      "charcount": null,
+      "capabilities": {
+        "view": true,
+        "edit": true,
+        "delete": true,
+        "split": false,
+        "reply": true,
+        "selfenrol": false,
+        "export": false,
+        "controlreadstatus": false,
+        "canreplyprivately": false
+      },
+      "urls": {
+        "view": "https://school.example.edu/mod/forum/discuss.php?d=7#p13",
+        "viewisolated": "https://school.example.edu/mod/forum/discuss.php?d=7&parent=13",
+        "viewparent": "https://school.example.edu/mod/forum/discuss.php?d=7#p10",
+        "edit": "https://school.example.edu/mod/forum/post.php?edit=13",
+        "delete": "https://school.example.edu/mod/forum/post.php?delete=13",
+        "split": null,
+        "reply": "https://school.example.edu/mod/forum/post.php?reply=13#mformforum",
+        "export": null,
+        "markasread": null,
+        "markasunread": null,
+        "discuss": "https://school.example.edu/mod/forum/discuss.php?d=7"
+      },
+      "attachments": [
+        {
+          "contextid": 88,
+          "component": "mod_forum",
+          "filearea": "attachment",
+          "itemid": 13,
+          "filepath": "/",
+          "filename": "roadmap-proof.txt",
+          "isdir": false,
+          "isimage": false,
+          "timemodified": 1792312974,
+          "timecreated": 1792312974,
+          "filesize": 33,
+          "author": "Sam Student",
+          "license": "unknown",
+          "filenameshort": "roadmap-proof.txt",
+          "filesizeformatted": "33 bytes",
+          "icon": "f/text",
+          "timecreatedformatted": "Sunday, 18 October 2026, 9:42 AM",
+          "timemodifiedformatted": "Sunday, 18 October 2026, 9:42 AM",
+          "url": "https://school.example.edu/pluginfile.php/88/mod_forum/attachment/13/roadmap-proof.txt?forcedownload=1",
+          "urls": {
+            "export": null
+          },
+          "html": {
+            "plagiarism": null
+          }
+        }
+      ],
+      "messageinlinefiles": [],
+      "tags": [],
+      "html": {
+        "rating": null,
+        "taglist": null,
+        "authorsubheading": "by <a href=\"https://school.example.edu/user/view.php?id=3&course=8\">Sam Student</a> - <time datetime=\"2026-10-18T09:42:54+01:00\">Sunday, 18 October 2026, 9:42 AM</time>"
+      }
+    }
+  ],
+  "forumid": 12,
+  "courseid": 8,
+  "ratinginfo": {
+    "contextid": 88,
+    "component": "mod_forum",
+    "ratingarea": "post",
+    "canviewall": null,
+    "canviewany": null,
+    "scales": [],
+    "ratings": []
+  },
+  "warnings": []
+}

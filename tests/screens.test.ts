@@ -47,3 +47,9 @@ it("names an empty list after the command, since the empty array itself is dropp
 it("lists the next commands one per line", () => {
   expect(tryLines(["moodle due", "moodle grades"])).toBe("Try  moodle due\n     moodle grades");
 });
+
+it("includes announcement attachments in human output", () => {
+  const screen = renderScreen({ news: [{ name: "Brief", post: { message_text: "Read the brief.", attachments: [{ name: "brief.pdf", size: 123, url: "https://moodle.example.edu/brief.pdf" }] } }] }, { width: 140 });
+  expect(screen).toContain("brief.pdf (123 bytes)");
+  expect(screen).toContain("https://moodle.example.edu/brief.pdf");
+});

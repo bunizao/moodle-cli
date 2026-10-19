@@ -19,7 +19,7 @@ const current = z.object({ id, name: s });
 const unitSchema = z.object({ id, code: s, name: s, start: s, end: s, start_at: n, end_at: n, hidden: z.boolean().optional(), current_section: current.optional() });
 const dueSchema = z.object({ id, activity_id: n, name: s, type: s, unit_id: id, unit_code: s, event: s, due: s, due_at: id, actionable: z.boolean().optional(), status: s });
 const counts = z.object(Object.fromEntries(["notification_count", "unread_notification_count", "starred_message_count", "direct_message_count", "group_message_count", "self_message_count", "unread_starred_message_count", "unread_direct_message_count", "unread_group_message_count", "unread_self_message_count"].map(key => [key, n])));
-const postSchema = z.object({ id, parent_id: n, name: s, author: z.object({ id, name: s }), time_created: id, created: s, message_text: s, links: z.array(z.object({ text: s, url: s })).optional() });
+const postSchema = z.object({ id, parent_id: n, name: s, author: z.object({ id, name: s }), time_created: id, created: s, message_text: s, links: z.array(z.object({ text: s, url: s })).optional(), attachments: z.array(z.object({ name: z.string(), size: id, url: z.string() })).optional() });
 const gradeSchema = z.object({ unit_id: id, code: s, graded: id, ungraded: id, total: id, total_grade: s, total_range: s, total_percentage: s, items: z.array(z.object({ id: n, name: s, type: s, grade: s, range: s, percentage: s, weight: s, contribution: s, feedback: s, status: s, due: s, due_at: n })).optional() });
 const searchSchema = z.object({ unit_id: id, forum_id: id, discussion_id: id, name: s, post_id: id, snippet: s, time_created: n, created: s, url: s });
 const submissionFile = z.object({ name: z.string(), bytes: n, url: s });

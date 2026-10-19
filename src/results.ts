@@ -33,5 +33,5 @@ export function dueRow(t: TodoItem, courses: Course[], tz = "UTC") {
   return { id: t.id, activity_id: activityId, name: t.activity_name || t.name, type: t.modname, unit_id: t.course_id, unit_code: courses.find(c => c.id === t.course_id)?.shortname, event: t.event_type, due: isoTime(t.due_at, tz), due_at: t.due_at, actionable: t.actionable, status: t.overdue ? "overdue" : undefined };
 }
 export function postRow(p: ForumPost, subject: string, tz = "UTC") {
-  return { id: p.id, parent_id: p.parent_id || undefined, name: p.subject === subject || p.subject === `Re: ${subject}` ? undefined : p.subject, author: { id: p.author.id, name: p.author.fullname }, time_created: p.time_created, created: isoTime(p.time_created, tz), message_text: p.message_text, links: p.links };
+  return { id: p.id, parent_id: p.parent_id || undefined, name: p.subject === subject || p.subject === `Re: ${subject}` ? undefined : p.subject, author: { id: p.author.id, name: p.author.fullname }, time_created: p.time_created, created: isoTime(p.time_created, tz), message_text: p.message_text, links: p.links, attachments: p.attachments };
 }

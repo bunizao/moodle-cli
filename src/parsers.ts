@@ -277,6 +277,10 @@ export function parseForumPost(value: unknown, baseUrl = ""): ForumPost {
     image_urls: structured.image_urls,
     links: structured.links,
     tables: structured.tables,
+    attachments: asArray(data.attachments).map(item => {
+      const file = asRecord(item);
+      return { name: stringValue(file.filename), size: numberValue(file.filesize), url: resolveUrl(baseUrl, stringValue(file.fileurl || file.url)) };
+    }),
     author: parseForumPostAuthor(data.author),
     parent_id: numberValue(data.parentid),
     time_created: numberValue(data.timecreated),
@@ -297,7 +301,7 @@ export function parseForumDiscussion(value: unknown, discussionId: number, baseU
     id: discussionId,
     subject: posts[0]?.subject ?? "",
     course_id: numberValue(data.courseid),
-    forum_id: numberValue(data.forumid),
+    forum_id: numberValue(data.cmid),
     group_id: numberValue(data.groupid),
     group_name: stringValue(data.groupname),
     url: posts[0]?.url ? posts[0].url.split("#", 1)[0] : "",

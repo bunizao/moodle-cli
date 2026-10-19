@@ -81,7 +81,7 @@ import { chooseDownloadSource } from "./download-source.js";
 import { syncUnits, type SyncResult } from "./sync.js";
 import { submissionReceiptOf, type SubmissionReceipt } from "./moodle-assign-core.js";
 import type { AttemptPage, QuizStartPlan } from "./moodle-quiz-core.js";
-import { resolveSubmissionPath } from "./submit.js";
+import { readSubmissionFiles, resolveSubmissionPath } from "./submit.js";
 import { formatSkillSummary, installSkill, writeGeneratedSkill } from "./skills.js";
 import {
   getAuthStatus,
@@ -144,11 +144,11 @@ const NOUNS: readonly NounSpec[] = [
   { name: "grades", verbs: ["list"], defaultByArity: { 0: "list", 1: "list" }, valueFlags: ["--mode", "--types", "--limit", "--offset"] },
   {
     name: "forums",
-    verbs: ["list", "show", "search"],
+    verbs: ["list", "show", "search", "post", "subscribe", "unsubscribe"],
     defaultByArity: { 0: "list", 1: "list" },
-    valueFlags: ["--limit", "--course", "--forum", "--limit-forums", "--limit-discussions", "--unit"],
+    valueFlags: ["--limit", "--course", "--forum", "--limit-forums", "--limit-discussions", "--unit", "--subject", "--text"],
   },
-  { name: "threads", verbs: ["show"], defaultByArity: { 1: "show" }, valueFlags: ["--post", "--limit", "--offset"] },
+  { name: "threads", verbs: ["show", "reply"], defaultByArity: { 1: "show" }, valueFlags: ["--post", "--limit", "--offset", "--attach"] },
 ];
 
 export function buildProgram(io: CliIO = {}): Command {
@@ -830,6 +830,20 @@ export function buildProgram(io: CliIO = {}): Command {
       else await execute("thread", { discussion_id: parsed.discussionId, limit: count("limit", options.limit), offset: options.offset }, options);
     });
 
+  addOutputOptions(mutating(threads.command("reply").description("Reply to a forum post.").argument("<post>", "Post id or discussion URL with a #p anchor").argument("<text>", "Reply text")))
+    .option("--attach <path>", "Attach a local file; repeat for several files.", (value: string, previous: string[]) => [...previous, value], [] as string[])
+    .action(async (post: string, text: string, options: OutputCommandOptions & { attach: string[] }) => {
+      const postId = /^\d+$/u.test(post) ? parsePositiveInt(post) : parseDiscussionReference(post).postId;
+      if (!postId) throw new UsageError("A reply URL needs a #p post anchor.");
+      if (!text.trim()) throw new UsageError("A forum reply needs some text.");
+      const files = await readSubmissionFiles(options.attach, io.cwd ?? process.cwd());
+      const plan = { post_id: postId, text, attachments: files.map(file => ({ name: file.name, bytes: file.bytes.byteLength })) };
+      if (program.opts().dryRun) return runtime.output({ planned: plan }, () => `Would reply to post ${postId}: ${text}`, options);
+      if (!await confirm({ summary: `Reply to forum post ${postId}: ${text}${files.length ? ` (${files.length} attachments)` : ""}` }, { yes: Boolean(program.opts().yes), dryRun: false, interactive: human() })) return;
+      const postReceipt = await (await runtime.getClient()).replyForumPost(postId, text, files);
+      await runtime.output({ post: postReceipt }, () => `Posted reply ${postReceipt.id}\n${postReceipt.url}`, options);
+    });
+
   const forums = program.command("forums").description("Inspect forums.");
   addOutputOptions(forums.command("show").description("List discussions from a forum.").argument("<forum>", "Forum ID or URL"))
     .option("--limit <number>", "Maximum number of discussions.", parsePositiveInt, 50)
@@ -843,8 +857,34 @@ export function buildProgram(io: CliIO = {}): Command {
       }
       const total = refs.length;
       refs = refs.slice(0, count("limit", options.limit));
-      await runtime.output(stripEmpty({ threads: refs.map(t => ({ id: t.id, name: t.subject })), total }), () => formatForumDiscussionRefs(forumId, refs), options);
+      await runtime.output(stripEmpty({ threads: refs.map(t => ({ id: t.id, name: t.subject, pinned: t.pinned, author: t.author, replies: t.replies, unread: t.unread })), total }), () => formatForumDiscussionRefs(forumId, refs), options);
     });
+
+  addOutputOptions(mutating(forums.command("post").description("Create a forum discussion.").argument("<forum>", "Forum module id or URL")))
+    .requiredOption("--subject <subject>", "Discussion subject.")
+    .requiredOption("--text <text>", "Discussion text.")
+    .action(async (forum: string, options: OutputCommandOptions & { subject: string; text: string }) => {
+      if (!options.subject.trim() || !options.text.trim()) throw new UsageError("A new discussion needs a subject and text.");
+      const client = await runtime.getClient();
+      const forumId = await parseForumReference(forum, discussion => client.getForumViewCmid(discussion));
+      if (program.opts().dryRun) return runtime.output({ planned: { forum_id: forumId, subject: options.subject, text: options.text } }, () => `Would post to forum ${forumId}: ${options.subject}\n${options.text}`, options);
+      if (!await confirm({ summary: `Post a new discussion in forum ${forumId}: ${options.subject}\n${options.text}` }, { yes: Boolean(program.opts().yes), dryRun: false, interactive: human() })) return;
+      const postReceipt = await client.createForumDiscussion(forumId, options.subject, options.text);
+      await runtime.output({ post: postReceipt }, () => `Posted discussion ${postReceipt.discussion_id}\n${postReceipt.url}`, options);
+    });
+
+  for (const action of ["subscribe", "unsubscribe"] as const) {
+    addOutputOptions(mutating(forums.command(action).description(`${action === "subscribe" ? "Subscribe to" : "Unsubscribe from"} a forum.`).argument("<forum>", "Forum module id or URL")))
+      .action(async (forum: string, options: OutputCommandOptions) => {
+        const client = await runtime.getClient();
+        const forumId = await parseForumReference(forum, discussion => client.getForumViewCmid(discussion));
+        const subscribed = action === "subscribe";
+        if (program.opts().dryRun) return runtime.output({ planned: { forum_id: forumId, subscribed } }, () => `Would ${action} forum ${forumId}.`, options);
+        if (!await confirm({ summary: `${action === "subscribe" ? "Subscribe to" : "Unsubscribe from"} forum ${forumId}.` }, { yes: Boolean(program.opts().yes), dryRun: false, interactive: human() })) return;
+        const receipt = await client.setForumSubscription(forumId, subscribed);
+        await runtime.output(receipt, () => `${subscribed ? "Subscribed to" : "Unsubscribed from"} forum ${forumId}.`, options);
+      });
+  }
 
   addOutputOptions(forums.command("list").description("List forum activities in a unit.").argument("<unit>", "Unit ID or unique name"))
     .option("--limit <number>", "Maximum number of forums.", parsePositiveInt, 50)

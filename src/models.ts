@@ -314,6 +314,12 @@ export interface ForumPostAuthor {
   profile_image_url: string;
 }
 
+export interface ForumAttachment {
+  name: string;
+  size: number;
+  url: string;
+}
+
 export interface ForumPost {
   id: number;
   discussion_id: number;
@@ -333,6 +339,7 @@ export interface ForumPost {
   is_private_reply: boolean;
   url: string;
   reply_url: string;
+  attachments?: ForumAttachment[];
 }
 
 export interface ForumDiscussion {
@@ -349,6 +356,10 @@ export interface ForumDiscussion {
 export interface ForumDiscussionRef {
   id: number;
   subject: string;
+  pinned?: boolean;
+  author?: string;
+  replies?: number;
+  unread?: number;
   group_id: number;
   group_name: string;
   url: string;

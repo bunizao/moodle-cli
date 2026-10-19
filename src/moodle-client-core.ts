@@ -34,6 +34,8 @@ import {
 } from "./constants.js";
 import { submitAssignmentFiles, removeAssignmentSubmission, parseSubmissionForm, describeLimits, type SubmissionReceipt, type SubmitAssignmentRequest } from "./moodle-assign-core.js";
 import { answerQuizQuestion, finishQuizAttempt, getAttemptPage, getAttemptSummary, planQuizStart, startQuizAttempt, type AnswerRequest, type AttemptFinishReceipt, type AttemptPage, type AttemptSummary, type QuizDeps, type QuizStartPlan, type StartOptions } from "./moodle-quiz-core.js";
+import { createForumDiscussion, replyForumPost, setForumSubscription, type ForumWriteDeps, type ForumPostReceipt } from "./moodle-forum-write-core.js";
+import type { SubmitFile } from "./moodle-assign-core.js";
 import { ForumModule } from "./moodle-forum-core.js";
 import { labelRequests, siteLabelsFrom, type SiteLabels } from "./site-labels.js";
 import { searchForumContent as searchForumModule } from "./moodle-forum-search-core.js";
@@ -861,6 +863,35 @@ export class MoodleClientCore {
       flags.push(...await Promise.all(candidates.slice(index, index + 4).map((forum) => this.forum.isNewsForum(forum.id))));
     }
     return candidates.filter((_, index) => flags[index]);
+  }
+
+  async replyForumPost(postId: number, text: string, files: SubmitFile[] = []): Promise<ForumPostReceipt> {
+    const receipt = await replyForumPost(await this.forumWriteDeps(), postId, text, files);
+    this.forum.clearCache();
+    return receipt;
+  }
+
+  async createForumDiscussion(forumCmid: number, subject: string, text: string): Promise<ForumPostReceipt> {
+    const receipt = await createForumDiscussion(await this.forumWriteDeps(), forumCmid, subject, text);
+    this.forum.clearCache();
+    return receipt;
+  }
+
+  async setForumSubscription(forumCmid: number, subscribed: boolean): Promise<{ forum_id: number; subscribed: boolean }> {
+    const receipt = await setForumSubscription(await this.forumWriteDeps(), forumCmid, subscribed);
+    this.forum.clearCache();
+    return receipt;
+  }
+
+  private async forumWriteDeps(): Promise<ForumWriteDeps> {
+    return {
+      ...await this.quizDeps(),
+      call: (name, args) => this.call(name, args),
+      getDiscussion: (discussionId) => {
+        this.forum.clearCache();
+        return this.forum.getForumDiscussion(discussionId, { group: false });
+      },
+    };
   }
 
   async getForumDiscussion(discussionId: number, options: { group?: boolean } = {}): Promise<ForumDiscussion> {
