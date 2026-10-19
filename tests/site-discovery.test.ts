@@ -136,7 +136,7 @@ describe("discoverSite", () => {
 
   it("reports a bare host that is not Moodle", async () => {
     const { fetch } = fakeMoodle({ front: "other" });
-    await expect(discoverSite(HOST, { fetch })).resolves.toEqual({ kind: "not_found" });
+    await expect(discoverSite(HOST, { fetch })).resolves.toMatchObject({ kind: "not_found" });
   });
 
   it("reports a sign-in provider address as leading elsewhere", async () => {
@@ -156,6 +156,20 @@ describe("discoverSite", () => {
       kind: "unreachable",
       message: "nowhere.example.edu does not resolve. Check the spelling, or your network or VPN.",
     });
+  });
+
+  it("names the network cause instead of fetch's generic failure", async () => {
+    const failingWith = (cause: object) => (async () => {
+      throw Object.assign(new TypeError("fetch failed"), { cause });
+    }) as typeof fetch;
+    const reason = async (cause: object) => {
+      const result = await discoverSite("https://nowhere.example.edu", { fetch: failingWith(cause) });
+      return result.kind === "unreachable" ? result.message : result.kind;
+    };
+    expect(await reason({ code: "ECONNRESET" })).toMatch(/dropped the connection.*proxy or VPN/u);
+    expect(await reason({ code: "ECONNREFUSED" })).toBe("Nothing is answering at nowhere.example.edu.");
+    expect(await reason({ code: "DEPTH_ZERO_SELF_SIGNED_CERT" })).toBe("nowhere.example.edu has a certificate this computer does not trust.");
+    expect(await reason({ message: "bad port" })).toBe("Could not reach nowhere.example.edu: bad port");
   });
 
   it("asks each prefix once and never posts to a script path", async () => {
@@ -233,7 +247,7 @@ describe("correctBaseUrl", () => {
       homeDir: "/home/student",
       fetch,
       fs: quietFs(`base_url: ${ROOT}/my\nbrowser: chrome\n`, written),
-    })).resolves.toEqual({ from: `${ROOT}/my`, to: ROOT, savedTo: "/home/student/.config/moodle-cli/config.yaml" });
+    })).resolves.toEqual({ kind: "moved", from: `${ROOT}/my`, to: ROOT, savedTo: "/home/student/.config/moodle-cli/config.yaml" });
     expect(written[0].content).toBe(`base_url: ${ROOT}\nbrowser: chrome\n`);
   });
 
@@ -243,12 +257,19 @@ describe("correctBaseUrl", () => {
     const { fetch } = fakeMoodle({ front: "redirect" });
     await expect(correctBaseUrl(ROOT, { env: {}, homeDir: "/home/student", cwd: "/work", fetch, fs: quietFs(`base_url: ${ROOT}\n`, written) })).resolves.toBeNull();
     await expect(correctBaseUrl(HOST, { env: { MOODLE_BASE_URL: HOST }, fetch })).resolves.toEqual({
+      kind: "moved",
       from: HOST,
       to: ROOT,
       savedTo: null,
       envVar: "MOODLE_BASE_URL",
     });
     expect(written).toEqual([]);
+  });
+
+  it("reports an address where nothing answers as Moodle", async () => {
+    const { correctBaseUrl } = await import("../src/config.js");
+    const fetchImpl = (async () => new Response("Forbidden", { status: 403, headers: { "content-type": "text/html" } })) as typeof fetch;
+    await expect(correctBaseUrl(`${HOST}/elearning`, { env: {}, fetch: fetchImpl })).resolves.toEqual({ kind: "absent", from: `${HOST}/elearning` });
   });
 });
 

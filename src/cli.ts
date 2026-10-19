@@ -229,10 +229,15 @@ export function buildProgram(io: CliIO = {}): Command {
           // A saved address that is not the install root fails here first; the site says
           // where it really lives, so fix the address before asking anyone to sign in.
           const correction = await correctBaseUrl(baseUrl, configOptions());
-          if (correction?.envVar) {
+          if (correction?.kind === "absent") {
+            // A firewall page can look like "not Moodle", so a person still gets the sign-in
+            // attempt; an agent gets the likelier cause instead of an auth error it cannot fix.
+            const hint = "Run `moodle auth site <address of any Moodle page>`, or check that the site is up.";
+            if (!human()) throw new ConfigError(`No Moodle answered at ${correction.from}.`, hint);
+            stderr.write(`No Moodle answered at ${correction.from}. ${hint}\n`);
+          } else if (correction?.envVar) {
             throw new ConfigError(`${correction.envVar} points to ${correction.from}, but Moodle lives at ${correction.to}.`, `Set ${correction.envVar}=${correction.to}`);
-          }
-          if (correction) {
+          } else if (correction) {
             stderr.write(`Moodle lives at ${correction.to}; updated ${correction.savedTo}.\n`);
             baseUrl = correction.to;
             try {

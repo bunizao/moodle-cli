@@ -165,14 +165,18 @@ export async function saveBaseUrl(baseUrl: string, options: ConfigOptions = {}):
   return path;
 }
 
-export interface SiteCorrection {
-  from: string;
-  to: string;
-  /** The config file now holding the corrected address, or null when it came from the environment. */
-  savedTo: string | null;
-  /** The variable to change by hand when the address came from the environment. */
-  envVar?: string;
-}
+export type SiteCorrection =
+  | {
+    kind: "moved";
+    from: string;
+    to: string;
+    /** The config file now holding the corrected address, or null when it came from the environment. */
+    savedTo: string | null;
+    /** The variable to change by hand when the address came from the environment. */
+    envVar?: string;
+  }
+  /** Nothing at the address answered as Moodle, so signing in there cannot help. */
+  | { kind: "absent"; from: string };
 
 /**
  * Ask the configured site where Moodle really lives, and repair a saved address that is
@@ -182,15 +186,18 @@ export interface SiteCorrection {
  */
 export async function correctBaseUrl(baseUrl: string, options: ConfigOptions = {}): Promise<SiteCorrection | null> {
   const result = await discoverSite(baseUrl, { fetch: options.fetch }).catch(() => null);
+  // Only an error status counts: a page that loads but lacks Moodle's markers may still be
+  // a customised Moodle, and its sign-in hints are worth more than a guess.
+  if (result?.kind === "not_found" && (result.status ?? 0) >= 400) return { kind: "absent", from: baseUrl };
   if (result?.kind !== "found" || sameSiteRoot(result.site.root, baseUrl)) return null;
   const to = result.site.root;
   const env = options.env ?? process.env;
   const envVar = [ENV_MOODLE_BASE_URL, ENV_MOODLE_URL].find(name => env[name]);
-  if (envVar) return { from: baseUrl, to, savedTo: null, envVar };
+  if (envVar) return { kind: "moved", from: baseUrl, to, savedTo: null, envVar };
   const loaded = await loadExistingConfig(options);
   if (!loaded.path || !loaded.config.base_url) return null;
   await saveConfigFile(loaded.path, { ...loaded.config, base_url: to }, options);
-  return { from: baseUrl, to, savedTo: loaded.path };
+  return { kind: "moved", from: baseUrl, to, savedTo: loaded.path };
 }
 
 export function missingBaseUrlMessage(configPath: string | null, options: ConfigOptions = {}): string {

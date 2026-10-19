@@ -32,7 +32,8 @@ export type Discovery =
   /** The address led to another host that is not Moodle, usually a sign-in provider. */
   | { kind: "redirected"; host: string }
   | { kind: "unreachable"; message: string }
-  | { kind: "not_found" };
+  /** Nothing Moodle-shaped at the address; `status` is the HTTP status it ended on. */
+  | { kind: "not_found"; status?: number };
 
 export interface DiscoveryOptions {
   fetch?: typeof fetch;
@@ -154,7 +155,7 @@ async function followAddress(input: URL, fetcher: typeof fetch, timeoutMs: numbe
     const wwwroot = parseMoodleConfig(html).wwwroot;
     const declared = typeof wwwroot === "string" ? cleanRoot(wwwroot) : null;
     if (declared) return confirm(input, declared, fetcher, timeoutMs, "page");
-    return current.host === input.host ? { kind: "not_found" } : { kind: "redirected", host: current.host };
+    return current.host === input.host ? { kind: "not_found", status: response.status } : { kind: "redirected", host: current.host };
   }
   return { kind: "redirected", host: current.host };
 }
@@ -188,8 +189,15 @@ function stripTags(value: string): string {
 }
 
 function describeFailure(host: string, error: unknown): string {
-  const cause = error instanceof Error && error.cause && typeof error.cause === "object" ? (error.cause as { code?: unknown }).code : undefined;
-  if (cause === "ENOTFOUND" || cause === "EAI_AGAIN") return `${host} does not resolve. Check the spelling, or your network or VPN.`;
+  // fetch reports every network failure as "fetch failed"; the useful part is the cause.
+  const cause = error instanceof Error && error.cause && typeof error.cause === "object" ? error.cause as { code?: unknown; message?: unknown } : undefined;
+  const code = typeof cause?.code === "string" ? cause.code : "";
   if (error instanceof Error && error.name === "TimeoutError") return `${host} did not answer in time.`;
-  return `Could not reach ${host}: ${error instanceof Error ? error.message : String(error)}`;
+  if (code === "ENOTFOUND" || code === "EAI_AGAIN") return `${host} does not resolve. Check the spelling, or your network or VPN.`;
+  if (code === "ECONNREFUSED") return `Nothing is answering at ${host}.`;
+  // A proxy or VPN that fakes DNS turns an unknown host into a reset connection.
+  if (code === "ECONNRESET") return `${host} dropped the connection. Check the spelling, or your network, proxy or VPN.`;
+  if (/CERT|SSL|SIGNATURE/u.test(code)) return `${host} has a certificate this computer does not trust.`;
+  const detail = typeof cause?.message === "string" && cause.message ? cause.message : error instanceof Error ? error.message : String(error);
+  return `Could not reach ${host}: ${detail}`;
 }
