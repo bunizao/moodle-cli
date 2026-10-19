@@ -171,6 +171,31 @@ describe("forum public write surface", () => {
     expect(changes).toBe(1);
   });
 
+  it("refuses before posting when the add-topic link leads to another forum", async () => {
+    let changes = 0;
+    const otherForum = fixture("forum-new.html").replace("<body", '<script>M.cfg = {"contextInstanceId":99};</script><body');
+    const client = writeClient(async (input, init) => {
+      const url = new URL(String(input));
+      if (url.pathname === "/mod/forum/view.php") return responseAt(fixture("forum-before.html"), String(input));
+      if (url.pathname === "/mod/forum/post.php" && init?.method !== "POST") return responseAt(otherForum, String(input));
+      if (url.pathname === "/mod/forum/post.php") changes++;
+      throw new Error(`Unexpected request: ${url.pathname}`);
+    });
+    await expect(client.createForumDiscussion(66, "Week one questions", "Text.")).rejects.toThrow("not forum 66; nothing was posted");
+    expect(changes).toBe(0);
+  });
+
+  it("warns against a retry when the saved discussion cannot be found", async () => {
+    const client = writeClient(async (input, init) => {
+      const url = new URL(String(input));
+      if (url.pathname === "/mod/forum/view.php") return responseAt(fixture("forum-before.html"), String(input));
+      if (url.pathname === "/mod/forum/post.php" && init?.method !== "POST") return responseAt(fixture("forum-new.html"), String(input));
+      if (url.pathname === "/mod/forum/post.php") return responseAt("<html><body>Your post was successfully added.</body></html>", String(input));
+      throw new Error(`Unexpected request: ${url.pathname}`);
+    });
+    await expect(client.createForumDiscussion(66, "Week one questions", "Text.")).rejects.toThrow("Check the forum before posting again");
+  });
+
   it("subscribes and unsubscribes the forum once, preserving idempotence", async () => {
     let subscribed = false;
     let changes = 0;

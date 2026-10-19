@@ -163,7 +163,8 @@ export function createIntentService(gateway: MoodleGateway, now = () => Date.now
           catch { errors.push(`Could not load sections for unit ${c.id}.`); return { id: c.id, code: c.shortname, name: c.fullname }; }
         });
         const unread = Object.fromEntries(Object.entries(data.alerts ?? {}).filter(([, v]) => typeof v === "number" && v > 0));
-        result = { home: { today: isoTime(now() / 1000, tz.timezone)!.slice(0, 10), ...tz, name: data.user?.fullname, siteurl: data.user?.siteurl, units, due, total: todos.length, calendar: "calendar" in data ? data.calendar : undefined, unread, errors } };
+        // The dashboard lists events by name; descriptions belong to the calendar intent.
+        result = { home: { today: isoTime(now() / 1000, tz.timezone)!.slice(0, 10), ...tz, name: data.user?.fullname, siteurl: data.user?.siteurl, units, due, total: todos.length, calendar: data.calendar?.map(({ description: _, ...event }) => event), unread, errors } };
         break;
       }
       case "grades": {

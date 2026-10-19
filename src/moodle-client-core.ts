@@ -373,12 +373,25 @@ export class MoodleClientCore {
   private async fillAvailabilityReasons(courseId: number, sections: Section[]): Promise<Section[]> {
     const missing = sections.flatMap(section => section.activities).filter(activity => activity.available === false && !activity.availability_reason);
     if (!missing.length) return sections;
-    const rendered = (await this.scrapeCourseContents(courseId, await this.get(COURSE_PATH, { id: courseId }))).flatMap(section => section.activities);
+    const rendered = await this.renderedActivities(courseId);
     for (const activity of missing) {
       const reason = rendered.find(item => item.id === activity.id)?.availability_reason;
       if (reason) activity.availability_reason = reason;
     }
     return sections;
+  }
+
+  // The rendered course page is the only place some sites explain a restriction. Reading it
+  // is best effort: the AJAX answer is already complete without the reasons.
+  private async renderedActivities(courseId: number, sectionPages = true): Promise<Activity[]> {
+    try {
+      const html = await this.get(COURSE_PATH, { id: courseId });
+      const sections = sectionPages ? await this.scrapeCourseContents(courseId, html) : parseCourseContentsHtml(html, this.baseUrl);
+      return sections.flatMap(section => section.activities);
+    } catch (error) {
+      if (this.errors.isLoginRequired(error)) throw error;
+      return [];
+    }
   }
 
   async getActivities(courseId: number): Promise<Section["activities"]> {
@@ -408,10 +421,11 @@ export class MoodleClientCore {
           if (isRecord(data)) moduleDates = data;
         } catch { /* Older modules may return custom data that is not JSON. */ }
       }
-      if (isRecord(module) && Number(module.completion) > 0 && courseId) activity = await this.findActivity(id, courseId);
+      // Checked first: Moodle leaves a fully hidden activity out of the course contents.
       if (isRecord(module) && module.uservisible === false) {
         return { id, name: moduleName, modname: type, type, visible: module.visible !== 0, description: "", url: `${this.baseUrl}/mod/${type}/view.php?id=${id}`, available: false, availability_reason: htmlToStructuredContent(String(module.availabilityinfo ?? ""), this.baseUrl).text };
       }
+      if (isRecord(module) && Number(module.completion) > 0 && courseId) activity = await this.findActivity(id, courseId);
     } catch (error) {
       if (!this.errors.isApi(error) || error.moodleErrorCode !== "servicenotavailable") {
         throw error;
@@ -423,9 +437,7 @@ export class MoodleClientCore {
     }
     if (activity?.available === false) {
       if (!activity.availability_reason && courseId) {
-        const page = parseCourseContentsHtml(await this.get(COURSE_PATH, { id: courseId }), this.baseUrl);
-        const rendered = page.flatMap(section => section.activities).find(item => item.id === id);
-        activity.availability_reason = rendered?.availability_reason;
+        activity.availability_reason = (await this.renderedActivities(courseId, false)).find(item => item.id === id)?.availability_reason;
       }
       return { ...activity, type };
     }
@@ -730,8 +742,8 @@ export class MoodleClientCore {
         const dates = new Set(matching.map(event => event.starts_at));
         if (dates.size === 1) assignment.due_at = new Date(matching[0].starts_at * 1000).toISOString();
       } catch (error) {
-        if (this.errors.isLoginRequired(error)) throw error;
-        if (!this.errors.isApi(error) || !["servicenotavailable", "nopermission", "required_capability_exception"].includes(error.moodleErrorCode ?? "")) throw error;
+        // Best effort: a refused or mismatched month leaves the page's own date in place.
+        if (this.errors.isLoginRequired(error) || !this.errors.isApi(error)) throw error;
       }
     }
     // Limits belong to the edit form; locked submissions should remain readable.
