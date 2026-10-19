@@ -48,3 +48,8 @@ export function sameSiteRoot(left: string, right: string): boolean {
     return false;
   }
 }
+
+/** True when `url` is Moodle's sign-in area for this site: where it sends a lapsed session. */
+export function isSiteLoginUrl(root: string, url: string | URL): boolean {
+  return sitePath(root, url)?.startsWith("/login/") ?? false;
+}

@@ -11,6 +11,7 @@ import type { MoodleClient } from "./client.js";
 import { CliError, ConfigError, NotFoundError, UsageError } from "./errors.js";
 import type { Activity, Resource, Section } from "./models.js";
 import { parseCourseContentsHtml } from "./scraper.js";
+import { sitePath, siteUrl } from "./site-root.js";
 
 export interface DownloadRequest {
   source: string;
@@ -188,17 +189,16 @@ async function resolveTargets(client: MoodleClient, rawSource: string, skipped: 
   } catch {
     throw new UsageError(`Unsupported download source '${source}'.`, ACCEPTED_SOURCE_HINT);
   }
-  const siteUrl = new URL(client.baseUrl);
-  if (url.origin !== siteUrl.origin) {
+  const route = sitePath(client.baseUrl, url);
+  if (route === null) {
     throw new UsageError("Download URLs must use the configured Moodle site.", ACCEPTED_SOURCE_HINT);
   }
-  const route = url.pathname.slice(siteUrl.pathname.replace(/\/$/u, "").length);
   if (route.startsWith("/pluginfile.php/")) {
     return [{ url: url.toString(), sourceUrl: url.toString() }];
   }
   if (route === "/mod/resource/view.php") {
     const id = positiveId(url.searchParams.get("id"), "A Moodle resource URL must include a positive ?id= value.");
-    const sourceUrl = new URL(`${siteUrl.pathname.replace(/\/$/u, "")}/mod/resource/view.php?id=${id}`, siteUrl.origin).toString();
+    const sourceUrl = siteUrl(client.baseUrl, `/mod/resource/view.php?id=${id}`);
     return [{ url: url.toString(), sourceUrl }];
   }
   if (/^\/mod\/\w+\/view\.php$/u.test(route)) {

@@ -101,6 +101,7 @@ import { looksLikeUrl, resolveTopLevelUrl } from "./url-resolver.js";
 import { createMcpCommandService, type McpCommandOutput, type McpCommandService } from "./mcp/cli.js";
 import { describeProgram } from "./command-contract.js";
 import { ONBOARDING_COPY } from "./mcp/deployment/onboarding.js";
+import { isSiteUrl } from "./site-root.js";
 
 interface CliIO {
   stdout?: NodeJS.WriteStream | { write(chunk: string): boolean };
@@ -391,7 +392,7 @@ export function buildProgram(io: CliIO = {}): Command {
   dev.command("fetch").description("Print a same-site page as HTML with the session; sesskey values are redacted.").argument("<url>")
     .action(async (url: string) => {
       const client = await runtime.getClient();
-      if (new URL(url).origin !== new URL(client.baseUrl).origin) throw new UsageError("The URL must belong to the configured Moodle site.");
+      if (!isSiteUrl(client.baseUrl, url)) throw new UsageError("The URL must belong to the configured Moodle site.");
       const html = await (await client.requestAbsolute(url)).text();
       stdout.write(`${redactSesskey(html)}\n`);
     });
