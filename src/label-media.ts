@@ -2,7 +2,13 @@ import { parse } from "node-html-parser";
 import { cleanText } from "./html-utils.js";
 import type { EmbeddedMedia } from "./models.js";
 
-export function parseLabelMedia(html: string, activityId: number, baseUrl: string): EmbeddedMedia[] | null {
+export interface LabelContent {
+  media: EmbeddedMedia[];
+  // Students only see availability info on a label Moodle withholds from them.
+  restriction: string;
+}
+
+export function parseLabelMedia(html: string, activityId: number, baseUrl: string): LabelContent | null {
   const module = parse(html).querySelector(`#module-${activityId}`);
   if (!module) return null;
 
@@ -23,10 +29,14 @@ export function parseLabelMedia(html: string, activityId: number, baseUrl: strin
     const panopto = /\/Panopto\/Pages\/Embed\.aspx$/iu.test(url.pathname);
     const id = panopto ? url.searchParams.get("id") : null;
     const key = id ? `${url.origin}/${id}` : url.toString();
-    if (!media.has(key)) {
-      const canonical = id ? new URL(`/Panopto/Pages/Viewer.aspx?id=${encodeURIComponent(id)}`, url.origin) : url;
-      media.set(key, { ...(id ? { id } : {}), title: cleanText(iframe.getAttribute("title")) || "Embedded video", url: canonical.toString() });
+    const title = cleanText(iframe.getAttribute("title"));
+    const existing = media.get(key);
+    if (existing) {
+      existing.title ||= title;
+      continue;
     }
+    const canonical = id ? new URL(`/Panopto/Pages/Viewer.aspx?id=${encodeURIComponent(id)}`, url.origin) : url;
+    media.set(key, { ...(id ? { id } : {}), title, url: canonical.toString() });
   }
 
   for (const video of module.querySelectorAll("video")) {
@@ -38,9 +48,13 @@ export function parseLabelMedia(html: string, activityId: number, baseUrl: strin
         const captionUrl = mediaUrl(track.getAttribute("src"), baseUrl);
         return captionUrl ? [{ url: captionUrl.toString(), language: track.getAttribute("srclang") ?? undefined }] : [];
       });
-    media.set(url.toString(), { title: cleanText(video.getAttribute("title")) || "Embedded video", url: url.toString(), ...(captions.length ? { captions } : {}) });
+    media.set(url.toString(), { title: cleanText(video.getAttribute("title")), url: url.toString(), ...(captions.length ? { captions } : {}) });
   }
-  return [...media.values()];
+  return {
+    // An image-only link with no alt text still needs a title; the schema requires one.
+    media: [...media.values()].map(item => ({ ...item, title: item.title || "Embedded video" })),
+    restriction: cleanText(module.querySelector(".availabilityinfo")?.textContent),
+  };
 }
 
 function mediaUrl(value: string | undefined, baseUrl: string): URL | null {

@@ -1,6 +1,9 @@
 import type { EmbeddedMedia } from "./models.js";
 import type { MoodleSessionCookie } from "./auth.js";
 
+// Matches the Moodle transport's budget; external hosts get no longer to stall.
+const CAPTION_TIMEOUT_MS = 30_000;
+
 export async function fetchMediaCaptions(
   media: EmbeddedMedia,
   moodleBaseUrl: string,
@@ -23,7 +26,7 @@ export async function fetchMediaCaptions(
     for (const profile of profiles.values()) {
       if (!profile.some(cookie => cookie.name.toLowerCase() === ".aspxauth")) continue;
       const cookie = profile.map(({ name, value }) => `${name}=${value}`).join("; ");
-      const response = await fetchImpl(url, { headers: { Cookie: cookie }, redirect: "manual" });
+      const response = await fetchImpl(url, { headers: { Cookie: cookie }, redirect: "manual", signal: AbortSignal.timeout(CAPTION_TIMEOUT_MS) });
       const text = await captionBody(response);
       if (text) return text;
     }
@@ -35,7 +38,7 @@ export async function fetchMediaCaptions(
   const url = new URL(caption.url);
   const response = url.origin === new URL(moodleBaseUrl).origin
     ? await requestMoodle(url.toString())
-    : await fetchImpl(url, { redirect: "manual" });
+    : await fetchImpl(url, { redirect: "manual", signal: AbortSignal.timeout(CAPTION_TIMEOUT_MS) });
   const text = await captionBody(response);
   if (!text) throw new Error("The caption track returned no timestamped text.");
   return text;

@@ -679,12 +679,12 @@ export class MoodleClientCore {
   private async getLabel(id: number, courseId?: number): Promise<Activity> {
     const activity = await this.findActivity(id, courseId);
     const html = await this.get("/mod/label/view.php", { id });
-    const media = parseLabelMedia(html, id, this.baseUrl);
-    if (!media) {
-      const reason = parseUnavailableNotice(html);
+    const label = parseLabelMedia(html, id, this.baseUrl);
+    if (!label || (label.restriction && !label.media.length)) {
+      const reason = label?.restriction || parseUnavailableNotice(html);
       throw this.errors.api(`Activity ${id} is not available to you${reason ? `. ${reason}` : "."}`, "requireloginerror");
     }
-    return { ...activity, media };
+    return { ...activity, media: label.media };
   }
 
   private async getActivityPage(pathname: string, type: string, id: number, params: Record<string, number> = {}): Promise<string> {
