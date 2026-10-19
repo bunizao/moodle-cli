@@ -102,6 +102,7 @@ export function parseActivity(value: unknown): Activity {
     url: stringValue(data.url),
     visible: booleanValue(data.visible, true),
     description: stringValue(data.description),
+    ...(data.uservisible === false ? { available: false, availability_reason: htmlText(data.availabilityinfo, "") } : {}),
     ...(data.completiondata && typeof data.completiondata === "object" ? { completion: numberValue(asRecord(data.completiondata).state) } : {}),
     ...(Array.isArray(data.contents) ? { file_entries: data.contents.filter((f: unknown) => asRecord(f).fileurl).map((f: unknown) => ({ name: stringValue(asRecord(f).filename), url: stringValue(asRecord(f).fileurl), requires_authentication: true })) } : {}),
   };
@@ -144,6 +145,7 @@ export function parseCourseFormatState(value: unknown, baseUrl: string): Section
         && booleanValue(data.uservisible, true)
         && !booleanValue(data.stealth),
       description: htmlText(data.content ?? data.description, baseUrl),
+      ...(data.uservisible === false ? { available: false, availability_reason: htmlText(data.availableinfo ?? data.availabilityinfo, baseUrl) } : {}),
       ...(data.completionstate !== undefined && data.completionstate !== null ? { completion: numberValue(data.completionstate) } : {}),
     };
     activities.set(String(id), activity);
@@ -212,6 +214,9 @@ export function parseAlertNotification(value: unknown): AlertNotification {
     id: numberValue(data.id),
     subject: stringValue(data.subject),
     short_subject: stringValue(data.shortenedsubject),
+    body: data.fullmessagehtml || data.text
+      ? htmlToStructuredContent(stringValue(data.fullmessagehtml || data.text), stringValue(data.contexturl)).text
+      : stringValue(data.fullmessage || data.smallmessage),
     event_type: stringValue(data.eventtype),
     component: stringValue(data.component),
     created_at: numberValue(data.timecreated),
@@ -274,6 +279,10 @@ export function parseForumPost(value: unknown, baseUrl = ""): ForumPost {
     image_urls: structured.image_urls,
     links: structured.links,
     tables: structured.tables,
+    attachments: asArray(data.attachments).map(item => {
+      const file = asRecord(item);
+      return { name: stringValue(file.filename), size: numberValue(file.filesize), url: resolveUrl(baseUrl, stringValue(file.fileurl || file.url)) };
+    }),
     author: parseForumPostAuthor(data.author),
     parent_id: numberValue(data.parentid),
     time_created: numberValue(data.timecreated),
@@ -294,7 +303,7 @@ export function parseForumDiscussion(value: unknown, discussionId: number, baseU
     id: discussionId,
     subject: posts[0]?.subject ?? "",
     course_id: numberValue(data.courseid),
-    forum_id: numberValue(data.forumid),
+    forum_id: numberValue(data.cmid),
     group_id: numberValue(data.groupid),
     group_name: stringValue(data.groupname),
     url: posts[0]?.url ? posts[0].url.split("#", 1)[0] : "",

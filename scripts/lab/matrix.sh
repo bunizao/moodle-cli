@@ -50,7 +50,7 @@ expect boost ""
 "$HERE/variant.sh" lang en >/dev/null; "$HERE/login.sh" >/dev/null 2>&1
 "$HERE/variant.sh" strings on >/dev/null; expect custom-string ""; "$HERE/variant.sh" strings off >/dev/null
 ajax core_courseformat_get_state false; expect no-format-state ""; ajax core_courseformat_get_state true
-ajax core_calendar_get_action_events_by_timesort false; expect no-calendar "due=fail home=partial"; ajax core_calendar_get_action_events_by_timesort true
+ajax core_calendar_get_action_events_by_timesort false; expect no-calendar "due=fallback home=fallback"; ajax core_calendar_get_action_events_by_timesort true
 
 echo "$failures variant(s) unexpected"
 exit $((failures > 0))

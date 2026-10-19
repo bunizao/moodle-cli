@@ -1,18 +1,34 @@
 #!/usr/bin/env bash
 # Installs a throwaway Moodle 5.0 into $MOODLE_LAB_DIR (default ~/.cache/moodle-cli-lab) on the
 # local PostgreSQL 16, serves it on http://127.0.0.1:8080 and fills it with the lab data.
-# Needs PHP 8.2-8.4 with pgsql, intl, zip, gd, curl, mbstring, xml and sodium. Rerunning
+# Needs Composer, Git, and PHP 8.2-8.4 with pgsql, intl, zip, gd, curl, mbstring, xml and sodium. Rerunning
 # starts from an empty site: the lab's database and moodledata are dropped first.
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LAB="${MOODLE_LAB_DIR:-$HOME/.cache/moodle-cli-lab}"
 PHP=(php -d max_input_vars=5000)
+for prerequisite in composer git php; do
+  if ! command -v "$prerequisite" >/dev/null 2>&1; then
+    echo "lab install: missing required command '$prerequisite'; install it before running this script." >&2
+    exit 1
+  fi
+done
 mkdir -p "$LAB"
 
 if [[ ! -f "$LAB/moodle/version.php" ]]; then
   curl -fsSL -o "$LAB/moodle.tgz" https://download.moodle.org/download.php/direct/stable500/moodle-latest-500.tgz
   tar -xzf "$LAB/moodle.tgz" -C "$LAB" && rm "$LAB/moodle.tgz"
 fi
+
+# Formulas uses the multipart behaviour; both plugins must exist before Moodle installs.
+if [[ ! -f "$LAB/moodle/question/type/formulas/version.php" ]]; then
+  git clone --quiet --depth 1 https://github.com/FormulasQuestion/moodle-qtype_formulas.git "$LAB/moodle/question/type/formulas"
+fi
+if [[ ! -f "$LAB/moodle/question/behaviour/adaptivemultipart/version.php" ]]; then
+  git clone --quiet --depth 1 https://github.com/maths/moodle-qbehaviour_adaptivemultipart.git "$LAB/moodle/question/behaviour/adaptivemultipart"
+fi
+# Moodle's question generators use PHPUnit classes when building plugin questions.
+(cd "$LAB/moodle" && COMPOSER_ALLOW_SUPERUSER=1 composer install --quiet --no-interaction)
 
 "$HERE/start.sh" stop >/dev/null 2>&1 || true
 service postgresql start >/dev/null 2>&1 || pg_ctlcluster 16 main start

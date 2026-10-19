@@ -2,15 +2,11 @@
 
 # Moodle CLI
 
-Reads Moodle; only `submit` writes. UNIT is a site code/name, id or URL; SECTION is a number or name.
-Never assume code patterns or ask for ids; `moodle units` shows the vocabulary.
+UNIT is a code/name, id or URL; SECTION is a number/name. Discover with `moodle units`; never guess ids.
 
 {{generated_intent_table}}
 
-Pipes emit compact JSON; `--json` forces it, `--pretty` indents it.
-Ambiguity returns `candidates`: pick or refine, never guess.
-Lists report `total`; narrow or page when more exist. Quote ISO dates.
-Never expose cookies or tokens. Download or submit only when asked; dry-run submit first. `--final` cannot be undone.
-Sign-in trouble: `moodle doctor`; remote expiry: `moodle mcp login`.
-Exact syntax: `moodle commands --json` or [reference](references/command-reference.md).
-Setup, MCP and removal: [guide](references/setup-and-auth.md).
+Pipes emit JSON; `--json` forces it. Ambiguity returns `candidates`: refine or pick.
+Lists report `total`; narrow or page. Confirm writes; dry-run submissions first. `--final` is irreversible.
+Never expose cookies or tokens. Sign-in: `moodle doctor`; remote expiry: `moodle mcp login`.
+Syntax: `moodle commands --json` or [reference](references/command-reference.md). [Setup/MCP](references/setup-and-auth.md).

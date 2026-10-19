@@ -1,3 +1,4 @@
+import { calendarIcs } from "./moodle-calendar-core.js";
 import { activitySchema } from "./intent-contract.js";
 import { activityRow, itemRow, postRow, stripEmpty } from "./results.js";
 import { doctor, ownedJobs } from "./doctor.js";
@@ -82,7 +83,7 @@ import { chooseDownloadSource } from "./download-source.js";
 import { syncUnits, type SyncResult } from "./sync.js";
 import { submissionReceiptOf, type SubmissionReceipt } from "./moodle-assign-core.js";
 import type { AttemptPage, QuizStartPlan } from "./moodle-quiz-core.js";
-import { resolveSubmissionPath } from "./submit.js";
+import { readSubmissionFiles, resolveSubmissionPath } from "./submit.js";
 import { formatSkillSummary, installSkill, writeGeneratedSkill } from "./skills.js";
 import {
   getAuthStatus,
@@ -138,16 +139,18 @@ interface OutputCommandOptions {
 }
 
 const NOUNS: readonly NounSpec[] = [
+  { name: "submission", verbs: ["show", "remove"], defaultByArity: { 1: "show" } },
+  { name: "messages", verbs: ["list", "show", "send", "read"], defaultByArity: { 0: "list", 1: "show" }, valueFlags: ["--limit", "--offset"] },
   { name: "units", aliases: ["courses"], verbs: ["list", "show"], defaultByArity: { 0: "list", 1: "show" } },
   { name: "activities", verbs: ["list", "show", "captions"], defaultByArity: { 0: "list", 1: "list" }, valueFlags: ["--limit", "--section", "--to"] },
   { name: "grades", verbs: ["list"], defaultByArity: { 0: "list", 1: "list" }, valueFlags: ["--mode", "--types", "--limit", "--offset"] },
   {
     name: "forums",
-    verbs: ["list", "show", "search"],
+    verbs: ["list", "show", "search", "post", "subscribe", "unsubscribe"],
     defaultByArity: { 0: "list", 1: "list" },
-    valueFlags: ["--limit", "--course", "--forum", "--limit-forums", "--limit-discussions", "--unit"],
+    valueFlags: ["--limit", "--course", "--forum", "--limit-forums", "--limit-discussions", "--unit", "--subject", "--text"],
   },
-  { name: "threads", verbs: ["show"], defaultByArity: { 1: "show" }, valueFlags: ["--post", "--limit", "--offset"] },
+  { name: "threads", verbs: ["show", "reply"], defaultByArity: { 1: "show" }, valueFlags: ["--post", "--limit", "--offset", "--attach"] },
 ];
 
 export function buildProgram(io: CliIO = {}): Command {
@@ -295,7 +298,7 @@ export function buildProgram(io: CliIO = {}): Command {
         platform: process.platform,
         showWordmark,
         storesBlocked: async () => cookieStoresBlocked(await browserCookieStores({ homeDir: io.homeDir })),
-        openInBrowser,
+        openInBrowser: async url => { if (!await openInBrowser(url)) throw new Error("Could not open the browser."); },
         readBrowserSession: () => getAuthenticatedSession(baseUrl, { ...auth, noCache: true, nonInteractive: true }),
         browserLogin: onBrowserOpened => getAuthenticatedSessionWithBrowserFallback(baseUrl, { ...auth, onBrowserOpened }),
         pasteLogin: () => pasteLogin(baseUrl, true),
@@ -431,20 +434,22 @@ export function buildProgram(io: CliIO = {}): Command {
     });
   addOutputOptions(mutating(program.command("submit").description(humanDescription("submit")).summary("Upload files into an assignment").argument("<ref>", "Assignment id, URL, or UNIT TASK phrase").argument("[files...]", "Local files to upload")))
     .option("--final", "Also submit for grading. Moodle does not allow undoing this.")
+    .option("--text <text>", "Online text to save; blank lines preserve paragraphs.")
+    .option("--text-file <path>", "Read online text from a Markdown, text or HTML file.")
     .option("--replace", "Remove the files already in the submission first.")
     .option("--accept-statement", "Agree to the site's submission statement when it requires one.")
-    .action(async (ref: string, files: string[], options: OutputCommandOptions & { final?: boolean; replace?: boolean; acceptStatement?: boolean }) => {
+    .action(async (ref: string, files: string[], options: OutputCommandOptions & { final?: boolean; replace?: boolean; acceptStatement?: boolean; text?: string; textFile?: string }) => {
       const interactive = human();
       // Same rule cli-kit's confirm applies, checked before the plan touches the site or the files.
       if (!program.opts().dryRun && !program.opts().yes && !interactive) throw new UsageError("Mutation requires --yes when stdin is not interactive.", "Run with --dry-run to see the plan first.");
       const client = await runtime.getClient();
       const service = createIntentService(createMoodleGateway(client));
-      const args = { files: files.map(file => resolveSubmissionPath(file, io.cwd ?? process.cwd())), final: Boolean(options.final), replace: Boolean(options.replace), accept_statement: Boolean(options.acceptStatement) };
+      const args = { ...(options.text !== undefined ? { text: options.text } : {}), ...(options.textFile ? { text_file: resolveSubmissionPath(options.textFile, io.cwd ?? process.cwd()) } : {}), files: files.map(file => resolveSubmissionPath(file, io.cwd ?? process.cwd())), final: Boolean(options.final), replace: Boolean(options.replace), accept_statement: Boolean(options.acceptStatement) };
       // The plan reads the files and every Moodle page the upload needs, so most refusals happen before any prompt.
       const plan = await choose(() => service.run("submit", { ref, ...args, dry_run: true }), id => service.run("submit", { ref: id, ...args, dry_run: true }));
       const planned = submissionReceiptOf(plan.submission);
       if (program.opts().dryRun) return runtime.output(plan, () => formatSubmissionReceipt(planned), options);
-      if (!await confirm({ summary: submissionSummary(planned, args.final, theme()) }, { yes: Boolean(program.opts().yes), dryRun: false, interactive })) return;
+      if (!await confirm({ summary: submissionSummary(planned, args.final, theme()) }, { yes: Boolean(program.opts().yes), dryRun: false, interactive, input: io.stdin ?? process.stdin, output: stderr as Writable })) return;
       // The upload is the one long step a person watches, so it gets a spinner that names each file.
       const spin = interactive ? createUi({ input: io.stdin ?? process.stdin, output: stderr as Writable, interactive: true }).spinner() : undefined;
       runtime.busy = true;
@@ -462,6 +467,30 @@ export function buildProgram(io: CliIO = {}): Command {
         runtime.busy = false;
       }
       await runtime.output(result, () => formatSubmissionReceipt(submissionReceiptOf(result.submission)), options);
+    });
+  const submission = program.command("submission").description("Read or remove your assignment submission.");
+  addOutputOptions(submission.command("show").argument("<ref>", "Assignment id, URL or UNIT TASK phrase"))
+    .action(async (ref: string, options: OutputCommandOptions) => {
+      const client = await runtime.getClient();
+      const service = createIntentService(createMoodleGateway(client));
+      const result = await choose(() => service.run("item", { ref }), id => service.run("item", { ref: id }));
+      const item = result.item as Record<string, unknown>;
+      if (item.type !== "assign") throw new UsageError("Choose an assignment to read its submission.");
+      await runtime.output({ submission: { id: item.id, name: item.name, status: item.submission_status, ...(item.submission as object ?? {}) } }, () => runtime.screen(result, options), options);
+    });
+  addOutputOptions(mutating(submission.command("remove").argument("<ref>", "Assignment id, URL or UNIT TASK phrase")))
+    .action(async (ref: string, options: OutputCommandOptions) => {
+      if (!program.opts().dryRun && !program.opts().yes && !human()) throw new UsageError("Mutation requires --yes when stdin is not interactive.", "Run with --dry-run to see the plan first.");
+      const client = await runtime.getClient();
+      const service = createIntentService(createMoodleGateway(client));
+      const result = await choose(() => service.run("item", { ref }), id => service.run("item", { ref: id }));
+      const item = result.item as Record<string, unknown>;
+      if (item.type !== "assign") throw new UsageError("Choose an assignment to remove its submission.");
+      const plan = await client.removeAssignmentSubmission(Number(item.id), true);
+      if (program.opts().dryRun) return runtime.output({ submission: plan }, () => `Would remove the submission for ${plan.name}${plan.group ? ` (shared by ${plan.group})` : ""}.`, options);
+      if (!await confirm({ summary: `Remove all submitted files and online text from ${plan.name}${plan.group ? ` for everyone in ${plan.group}` : ""}?` }, { yes: Boolean(program.opts().yes), dryRun: false, interactive: human() })) return;
+      const receipt = await client.removeAssignmentSubmission(Number(item.id));
+      await runtime.output({ submission: receipt }, () => `Removed the submission for ${receipt.name}.`, options);
     });
   const quiz = program.command("quiz").description("Take a quiz: start an attempt, answer questions, finish it. Beta.").summary("Take a quiz (beta)");
   quiz.addHelpText("after", `\n${QUIZ_NOTICE.join("\n")}\n`);
@@ -558,6 +587,18 @@ export function buildProgram(io: CliIO = {}): Command {
       const receipt = await client.finishQuizAttempt(...ids);
       await runtime.output({ finished: receipt }, () => formatAttemptFinish(receipt), options);
     });
+  addOutputOptions(mutating(program.command("complete").description("Mark an activity complete manually.").argument("<ref>", "Activity id, URL or UNIT TASK phrase")))
+    .option("--undo", "Mark the activity incomplete.")
+    .action(async (ref: string, options: OutputCommandOptions & { undo?: boolean }) => {
+      const client = await runtime.getClient();
+      const id = await createIntentService(createMoodleGateway(client)).resolveItem(ref);
+      if (!await confirm({ summary: `Mark activity ${id} ${options.undo ? "incomplete" : "complete"}?` }, { yes: Boolean(program.opts().yes), dryRun: Boolean(program.opts().dryRun), interactive: human() })) {
+        if (program.opts().dryRun) await runtime.output({ completion: { id, completed: !options.undo }, dry_run: true }, () => `Would mark ${id} ${options.undo ? "incomplete" : "complete"}.`, options);
+        return;
+      }
+      const receipt = await client.completeActivity(id, !options.undo);
+      await runtime.output({ completion: receipt }, () => `Activity ${id}: ${receipt.completion ? "complete" : "incomplete"}.`, options);
+    });
   addOutputOptions(program.command("open").description("Open a unit or activity reference in the browser.").argument("<ref>", "Unit or activity id, URL, or UNIT TASK phrase"))
     .action(async (ref: string, options: OutputCommandOptions) => {
       const client = await runtime.getClient();
@@ -569,8 +610,8 @@ export function buildProgram(io: CliIO = {}): Command {
         else { const id = await createIntentService(createMoodleGateway(client)).resolveItem(ref); const item = await client.getActivity(id); url = item.url; }
       }
       if (!url || !/^https?:/u.test(url)) throw new UsageError("This item has no browser URL.");
-      await openInBrowser(url);
-      await runtime.output({ opened: url }, () => `Opened ${url}`, options);
+      const opened = !program.opts().dryRun && await openInBrowser(url);
+      await runtime.output({ url, opened, ...(program.opts().dryRun ? { dry_run: true } : {}) }, () => opened ? `Opened ${url}` : url, options);
     });
 
   addOutputOptions(program.command("user").description("Show authenticated user info.")).action(async (options: OutputCommandOptions) => {
@@ -598,11 +639,77 @@ export function buildProgram(io: CliIO = {}): Command {
       await execute("due", { limit: count("limit", options.limit), days: count("days", options.days) }, options);
     });
 
-  addOutputOptions(program.command("alerts").description("List notifications and message counts."))
+  const alerts = program.command("alerts").description("List notifications and message counts.");
+  addOutputOptions(alerts)
     .option("--limit <number>", "Maximum number of notifications.", parsePositiveInt, 20)
     .action(async (options: OutputCommandOptions & { limit: number }) => {
       const alerts = await (await runtime.getClient()).getAlerts(count("limit", options.limit)!);
       await runtime.output(stripEmpty({ alerts }), () => formatAlerts(alerts), options);
+    });
+
+  addOutputOptions(mutating(alerts.command("read").description("Mark one notification, or all notifications, as read.").argument("[notification]", "Notification id")))
+    .option("--all", "Mark every notification as read.")
+    .action(async (notification: string | undefined, options: OutputCommandOptions & { all?: boolean }) => {
+      if (Boolean(notification) === Boolean(options.all)) throw new UsageError("Provide a notification id or --all.");
+      const id = notification === undefined ? undefined : parsePositiveInt(notification);
+      const summary = id === undefined ? "Mark all notifications as read." : `Mark notification ${id} as read.`;
+      if (program.opts().dryRun) return runtime.output({ planned: "read", notification_id: id, all: Boolean(options.all) }, () => summary, options, false);
+      if (!await confirm({ summary }, { yes: Boolean(program.opts().yes), dryRun: false, interactive: human() })) return;
+      await (await runtime.getClient()).markAlertsRead(id);
+      await runtime.output({ read: true, notification_id: id, all: Boolean(options.all) }, () => summary, options, false);
+    });
+
+  const messages = program.command("messages").description("Read and send direct or group messages.");
+  addOutputOptions(messages.command("list").description(humanDescription("messages")))
+    .option("--limit <number>", "Maximum conversations.", parsePositiveInt, 20)
+    .option("--offset <number>", "Skip this many conversations.", parseNonNegativeInt, 0)
+    .action(async (options: OutputCommandOptions & { limit: number; offset: number }) => {
+      await execute("messages", { limit: count("limit", options.limit), offset: options.offset }, options);
+    });
+  addOutputOptions(messages.command("show").description(humanDescription("conversation")).argument("<conversation>", "Conversation id"))
+    .option("--limit <number>", "Maximum messages.", parsePositiveInt, 50)
+    .option("--offset <number>", "Skip this many newest messages.", parseNonNegativeInt, 0)
+    .action(async (conversation: string, options: OutputCommandOptions & { limit: number; offset: number }) => {
+      await execute("conversation", { conversation_id: parsePositiveInt(conversation), limit: count("limit", options.limit), offset: options.offset }, options);
+    });
+  addOutputOptions(mutating(messages.command("send").description("Send a message to a conversation id or user:ID.").argument("<recipient>", "Conversation id, conversation:ID or user:ID").argument("<text>", "Message text")))
+    .action(async (recipient: string, text: string, options: OutputCommandOptions) => {
+      const match = /^(?:(user|conversation):)?([1-9]\d*)$/u.exec(recipient);
+      if (!match || !Number.isSafeInteger(Number(match[2]))) throw new UsageError("Use a conversation id, conversation:ID or user:ID.");
+      if (!text.trim()) throw new UsageError("Message text cannot be empty.");
+      const id = Number(match[2]);
+      const user = match[1] === "user";
+      const summary = `Send to ${user ? "user" : "conversation"} ${id}: ${text}`;
+      if (program.opts().dryRun) return runtime.output({ planned: "send", recipient, text }, () => summary, options, false);
+      if (!await confirm({ summary }, { yes: Boolean(program.opts().yes), dryRun: false, interactive: human() })) return;
+      const sent = await (await runtime.getClient()).sendMessage(id, text, { user });
+      await runtime.output({ message: sent }, () => `Message ${sent.id} sent.`, options, false);
+    });
+  addOutputOptions(mutating(messages.command("read").description("Mark one conversation, or all conversations, as read.").argument("[conversation]", "Conversation id")))
+    .option("--all", "Mark every unread conversation as read.")
+    .action(async (conversation: string | undefined, options: OutputCommandOptions & { all?: boolean }) => {
+      if (Boolean(conversation) === Boolean(options.all)) throw new UsageError("Provide a conversation id or --all.");
+      const id = conversation === undefined ? undefined : parsePositiveInt(conversation);
+      const summary = id === undefined ? "Mark all conversations as read." : `Mark conversation ${id} as read.`;
+      if (program.opts().dryRun) return runtime.output({ planned: "read", conversation_id: id, all: Boolean(options.all) }, () => summary, options, false);
+      if (!await confirm({ summary }, { yes: Boolean(program.opts().yes), dryRun: false, interactive: human() })) return;
+      const read = await (await runtime.getClient()).markMessagesRead(id);
+      await runtime.output({ read }, () => `${read.conversations.length} conversations marked read.`, options, false);
+    });
+
+  addOutputOptions(program.command("calendar").description(humanDescription("calendar")))
+    .option("--days <number>", "Events within the next N days (1–365).", parsePositiveInt, 14)
+    .option("--unit <unit>", "Only events for this unit.")
+    .option("--ics", "Export an iCalendar file to stdout or --output.")
+    .action(async (options: OutputCommandOptions & { days: number; unit?: string; ics?: boolean }) => {
+      if (!options.ics) return execute("calendar", { days: count("days", options.days), unit: options.unit }, options);
+      const merged = { ...program.opts(), ...options };
+      if (merged.json || merged.yaml || merged.fields) throw new UsageError("Use --ics separately from structured output options.");
+      const client = await runtime.getClient();
+      const events = await client.getCalendar(count("days", options.days), options.unit ? await client.resolveCourseReference(options.unit) : undefined);
+      const content = calendarIcs(events, client.baseUrl);
+      if (io.stdout && !merged.output) stdout.write(content);
+      else await writeOutput(content, { output: merged.output });
     });
 
   addOutputOptions(program.command("overview").description("Show a compact multi-source overview."))
@@ -752,6 +859,20 @@ export function buildProgram(io: CliIO = {}): Command {
       else await execute("thread", { discussion_id: parsed.discussionId, limit: count("limit", options.limit), offset: options.offset }, options);
     });
 
+  addOutputOptions(mutating(threads.command("reply").description("Reply to a forum post.").argument("<post>", "Post id or discussion URL with a #p anchor").argument("<text>", "Reply text")))
+    .option("--attach <path>", "Attach a local file; repeat for several files.", (value: string, previous: string[]) => [...previous, value], [] as string[])
+    .action(async (post: string, text: string, options: OutputCommandOptions & { attach: string[] }) => {
+      const postId = /^\d+$/u.test(post) ? parsePositiveInt(post) : parseDiscussionReference(post).postId;
+      if (!postId) throw new UsageError("A reply URL needs a #p post anchor.");
+      if (!text.trim()) throw new UsageError("A forum reply needs some text.");
+      const files = await readSubmissionFiles(options.attach, io.cwd ?? process.cwd());
+      const plan = { post_id: postId, text, attachments: files.map(file => ({ name: file.name, bytes: file.bytes.byteLength })) };
+      if (program.opts().dryRun) return runtime.output({ planned: plan }, () => `Would reply to post ${postId}: ${text}`, options);
+      if (!await confirm({ summary: `Reply to forum post ${postId}: ${text}${files.length ? ` (${files.length} attachments)` : ""}` }, { yes: Boolean(program.opts().yes), dryRun: false, interactive: human() })) return;
+      const postReceipt = await (await runtime.getClient()).replyForumPost(postId, text, files);
+      await runtime.output({ post: postReceipt }, () => `Posted reply ${postReceipt.id}\n${postReceipt.url}`, options);
+    });
+
   const forums = program.command("forums").description("Inspect forums.");
   addOutputOptions(forums.command("show").description("List discussions from a forum.").argument("<forum>", "Forum ID or URL"))
     .option("--limit <number>", "Maximum number of discussions.", parsePositiveInt, 50)
@@ -765,8 +886,34 @@ export function buildProgram(io: CliIO = {}): Command {
       }
       const total = refs.length;
       refs = refs.slice(0, count("limit", options.limit));
-      await runtime.output(stripEmpty({ threads: refs.map(t => ({ id: t.id, name: t.subject })), total }), () => formatForumDiscussionRefs(forumId, refs), options);
+      await runtime.output(stripEmpty({ threads: refs.map(t => ({ id: t.id, name: t.subject, pinned: t.pinned, author: t.author, replies: t.replies, unread: t.unread })), total }), () => formatForumDiscussionRefs(forumId, refs), options);
     });
+
+  addOutputOptions(mutating(forums.command("post").description("Create a forum discussion.").argument("<forum>", "Forum module id or URL")))
+    .requiredOption("--subject <subject>", "Discussion subject.")
+    .requiredOption("--text <text>", "Discussion text.")
+    .action(async (forum: string, options: OutputCommandOptions & { subject: string; text: string }) => {
+      if (!options.subject.trim() || !options.text.trim()) throw new UsageError("A new discussion needs a subject and text.");
+      const client = await runtime.getClient();
+      const forumId = await parseForumReference(forum, discussion => client.getForumViewCmid(discussion));
+      if (program.opts().dryRun) return runtime.output({ planned: { forum_id: forumId, subject: options.subject, text: options.text } }, () => `Would post to forum ${forumId}: ${options.subject}\n${options.text}`, options);
+      if (!await confirm({ summary: `Post a new discussion in forum ${forumId}: ${options.subject}\n${options.text}` }, { yes: Boolean(program.opts().yes), dryRun: false, interactive: human() })) return;
+      const postReceipt = await client.createForumDiscussion(forumId, options.subject, options.text);
+      await runtime.output({ post: postReceipt }, () => `Posted discussion ${postReceipt.discussion_id}\n${postReceipt.url}`, options);
+    });
+
+  for (const action of ["subscribe", "unsubscribe"] as const) {
+    addOutputOptions(mutating(forums.command(action).description(`${action === "subscribe" ? "Subscribe to" : "Unsubscribe from"} a forum.`).argument("<forum>", "Forum module id or URL")))
+      .action(async (forum: string, options: OutputCommandOptions) => {
+        const client = await runtime.getClient();
+        const forumId = await parseForumReference(forum, discussion => client.getForumViewCmid(discussion));
+        const subscribed = action === "subscribe";
+        if (program.opts().dryRun) return runtime.output({ planned: { forum_id: forumId, subscribed } }, () => `Would ${action} forum ${forumId}.`, options);
+        if (!await confirm({ summary: `${action === "subscribe" ? "Subscribe to" : "Unsubscribe from"} forum ${forumId}.` }, { yes: Boolean(program.opts().yes), dryRun: false, interactive: human() })) return;
+        const receipt = await client.setForumSubscription(forumId, subscribed);
+        await runtime.output(receipt, () => `${subscribed ? "Subscribed to" : "Unsubscribed from"} forum ${forumId}.`, options);
+      });
+  }
 
   addOutputOptions(forums.command("list").description("List forum activities in a unit.").argument("<unit>", "Unit ID or unique name"))
     .option("--limit <number>", "Maximum number of forums.", parsePositiveInt, 50)
@@ -1094,8 +1241,8 @@ export function buildProgram(io: CliIO = {}): Command {
 
 // Grouped the way `gh` does: what a person reaches for daily, then the rest, then what only an agent runs.
 const HELP_SECTIONS: Readonly<Record<string, readonly string[]>> = {
-  "Core commands": ["due", "news", "find", "get", "open", "submit", "quiz", "units", "activities", "grades", "threads", "forums"],
-  "Additional commands": ["sync", "user", "todo", "alerts", "overview", "download", "auth", "doctor", "coverage", "completion", "uninstall"],
+  "Core commands": ["due", "news", "find", "get", "open", "submit", "submission", "complete", "messages", "calendar", "quiz", "units", "activities", "grades", "threads", "forums"],
+  "Additional commands": ["sync", "user", "todo", "alerts", "messages", "calendar", "overview", "download", "auth", "doctor", "coverage", "completion", "uninstall"],
   "Agent commands": ["mcp", "commands", "skills"],
 };
 
@@ -1128,6 +1275,7 @@ export async function runCli(argv = process.argv, io: CliIO = {}): Promise<numbe
     const envelope = JSON.parse(reported.text);
     const hint = reference?.hint || normalized.hint || ({ auth: "Run moodle auth login, or moodle doctor.", config: "Run moodle doctor to check configuration.", not_found: "Run moodle units or moodle find QUERY.", usage: "Run moodle --help or moodle commands --json.", upstream: "Run moodle doctor, then retry.", network: "Check the connection, then retry.", unexpected: "Run moodle doctor; use --verbose for request timings.", cancelled: "Retry when ready." }[normalized.code]);
     envelope.error.hint = hint;
+    if (error && typeof error === "object" && "submission" in error) envelope.submission = error.submission;
     if (reference) { envelope.error.code = reference.code; envelope.error.message = reference.message; envelope.error.candidates = reference.candidates; envelope.exit_code = reference.code === "ambiguous" ? 2 : 4; }
     stderr.write(format === "table" ? `✗ ${String(envelope.error.message).replace(/\s+/gu, " ")}\n${hint}\n` : `${JSON.stringify(envelope)}\n`);
     return envelope.exit_code;
@@ -1139,11 +1287,11 @@ export async function runCli(argv = process.argv, io: CliIO = {}): Promise<numbe
  * user to run `moodle auth login` when the cookie store is unreadable sends
  * them straight back into the failure they just reported.
  */
-function openInBrowser(url: string): Promise<void> {
-  return new Promise<void>((resolve, reject) => {
+function openInBrowser(url: string): Promise<boolean> {
+  return new Promise<boolean>((resolve, reject) => {
     const child = spawn(process.platform === "darwin" ? "open" : process.platform === "win32" ? "explorer.exe" : "xdg-open", [url], { stdio: "ignore" });
-    child.once("error", reject);
-    child.once("exit", code => code === 0 ? resolve() : reject(new Error("Could not open the browser.")));
+    child.once("error", error => (error as NodeJS.ErrnoException).code === "ENOENT" ? resolve(false) : reject(error));
+    child.once("exit", code => resolve(code === 0));
   });
 }
 
@@ -1269,9 +1417,12 @@ function submissionSummary(plan: SubmissionReceipt, final: boolean, theme: Theme
   const destination = `${theme.target(plan.name)}${plan.unit_id ? theme.dim(`  unit ${plan.unit_id}`) : ""}`;
   const lines = plan.uploads.length
     ? [`${theme.dim("Upload")}  ${theme.subject(plan.uploads.map(file => file.name).join(", "))}`, `${theme.dim("    to")}  ${destination}`]
-    : [`${theme.dim("Submit")}  ${destination}`, `${theme.dim("      ")}  ${theme.subject("the files already there")} for grading`];
+    : [];
+  if (plan.text !== undefined) lines.push(`${theme.dim("Save online text to")}  ${destination}`);
+  if (!lines.length) lines.push(`${theme.dim("Submit")}  ${destination}`, `${theme.dim("      ")}  ${theme.subject("the files already there")} for grading`);
   if (plan.removed.length) lines.push(`${theme.dim("Remove")}  ${theme.tone("danger", plan.removed.join(", "))} ${theme.dim("first")}`);
   if (plan.statement) lines.push(`${theme.dim(" Agree")}  "${plan.statement}"`);
+  if (plan.statement_pending) lines.push(theme.dim("Moodle may ask you to accept a submission statement after the draft is saved."));
   if (plan.group) lines.push(`${theme.dim(" Group")}  ${theme.subject(plan.group)} ${theme.dim("shares these files: every change reaches the whole group")}`);
   // The plan refuses a non-final save unless Moodle showed a draft stage, so each line states a fact.
   lines.push(!final
@@ -1280,6 +1431,12 @@ function submissionSummary(plan: SubmissionReceipt, final: boolean, theme: Theme
       ? theme.tone("warning", "This assignment has no draft stage: saving submits it for grading. Moodle does not allow undoing this.")
       : theme.tone("warning", `Then submit ${plan.group ? "the group's work " : ""}for grading. Moodle does not allow undoing this.`));
   return lines.join("\n");
+}
+
+function parseNonNegativeInt(value: string): number {
+  const number = Number(value);
+  if (!Number.isSafeInteger(number) || number < 0) throw new UsageError("Expected a nonnegative integer.");
+  return number;
 }
 
 function parsePositiveInt(value: string): number {

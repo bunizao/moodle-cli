@@ -63,6 +63,12 @@ export function htmlToStructuredContent(html: string, baseUrl: string): Structur
     }
   }
 
+  // Block boundaries survive text extraction even when the HTML has no whitespace.
+  for (const block of root.querySelectorAll("p, div, li, h1, h2, h3, h4, h5, h6, blockquote, pre, tr")) {
+    block.insertAdjacentHTML("afterbegin", "\n");
+    block.insertAdjacentHTML("beforeend", "\n");
+  }
+
   const text = root.textContent
     .split(/\r?\n/)
     .map((line) => cleanText(line))
@@ -91,4 +97,34 @@ function decodeHtml(value: string): string {
     .replace(/&gt;/g, ">")
     .replace(/&quot;/g, '"')
     .replace(/&#39;/g, "'");
+}
+
+export function filemanagerOptions(html: string, itemid: string): Record<string, unknown> | null {
+  const pattern = /M\.form_filemanager\.init\(\s*Y\s*,\s*/gu;
+  let match: RegExpExecArray | null;
+  while ((match = pattern.exec(html))) {
+    const json = balancedObject(html, match.index + match[0].length);
+    if (!json) continue;
+    try {
+      const options = JSON.parse(json) as unknown;
+      if (typeof options === "object" && options !== null && !Array.isArray(options) && String((options as Record<string, unknown>).itemid) === itemid) return options as Record<string, unknown>;
+    } catch { /* Not JSON; keep scanning for the next initialiser. */ }
+  }
+  return null;
+}
+
+function balancedObject(text: string, start: number): string | null {
+  if (text[start] !== "{") return null;
+  let depth = 0;
+  let quoted = false;
+  for (let index = start; index < text.length; index += 1) {
+    const char = text[index];
+    if (quoted) {
+      if (char === "\\") index += 1;
+      else if (char === '"') quoted = false;
+    } else if (char === '"') quoted = true;
+    else if (char === "{") depth += 1;
+    else if (char === "}") { depth -= 1; if (depth === 0) return text.slice(start, index + 1); }
+  }
+  return null;
 }

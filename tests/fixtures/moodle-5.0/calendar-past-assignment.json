@@ -1,0 +1,25 @@
+{
+  "weeks": [
+    {
+      "days": [
+        {
+          "events": [
+            {
+              "id": 42,
+              "name": "Essay Zero is due",
+              "description": "<p>A warm-up essay that is already submitted and graded.</p>",
+              "timestart": 1791708643,
+              "timeduration": 0,
+              "eventtype": "due",
+              "course": {
+                "id": 10,
+                "shortname": "LAB101"
+              },
+              "url": "https://moodle.example.edu/mod/assign/view.php?id=79"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

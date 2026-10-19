@@ -38,13 +38,20 @@ export class ForumModule {
     this.loadCourseContents = options.getCourseContents;
   }
 
-  // The posts service does not name the discussion's group; that costs a page load,
-  // so callers that never show groups (announcements, thread pages) opt out.
+  clearCache(): void {
+    this.forumDiscussionCache.clear();
+    this.forumDiscussionRefsCache.clear();
+    this.forumViewCache.clear();
+    this.groupResolved.clear();
+  }
+
+  // The posts service returns an instance id; the discussion page carries the module
+  // id accepted by every public forum command, as well as optional group details.
   async getForumDiscussion(discussionId: number, options: { group?: boolean } = {}): Promise<ForumDiscussion> {
     const wantGroup = options.group !== false;
     const cached = this.forumDiscussionCache.get(discussionId);
     if (cached) {
-      if (wantGroup && cached.group_id <= 0 && !this.groupResolved.has(discussionId)) await this.resolveGroup(cached);
+      if ((!cached.forum_id || (wantGroup && cached.group_id <= 0)) && !this.groupResolved.has(discussionId)) await this.resolveGroup(cached);
       return cached;
     }
 
@@ -56,7 +63,7 @@ export class ForumModule {
         includeinlineattachments: true,
       });
       const discussion = parseForumDiscussion(data, discussionId, this.baseUrl);
-      if (wantGroup && discussion.group_id <= 0) await this.resolveGroup(discussion);
+      if (!discussion.forum_id || (wantGroup && discussion.group_id <= 0)) await this.resolveGroup(discussion);
       this.forumDiscussionCache.set(discussionId, discussion);
       return discussion;
     } catch (error) {
@@ -76,6 +83,7 @@ export class ForumModule {
     this.groupResolved.add(discussion.id);
     const html = await this.loadPage(FORUM_DISCUSS_PATH, { d: discussion.id }).catch(() => "");
     if (!html) return;
+    discussion.forum_id = parseForumViewCmidFromDiscussionHtml(html) ?? 0;
     const [groupId, groupName] = parseForumDiscussionGroupHtml(html);
     discussion.group_id = groupId;
     discussion.group_name = groupName;

@@ -25,12 +25,15 @@ export interface Course {
 
 export interface Activity {
   id: number;
+  course_id?: number;
   name: string;
   modname: string;
   url: string;
   visible: boolean;
   description: string;
   completion?: number;
+  available?: boolean;
+  availability_reason?: string;
   file_entries?: FileEntry[];
   media?: EmbeddedMedia[];
 }
@@ -75,6 +78,7 @@ export interface AlertNotification {
   id: number;
   subject: string;
   short_subject: string;
+  body?: string;
   event_type: string;
   component: string;
   created_at: number;
@@ -98,11 +102,53 @@ export interface AlertSummary {
   unread_self_message_count: number;
 }
 
+export interface MessageMember {
+  id: number;
+  name: string;
+}
+
+export interface ConversationMessage {
+  id: number;
+  sender_id: number;
+  text: string;
+  created_at: number;
+}
+
+export interface Conversation {
+  id: number;
+  name: string;
+  type: "direct" | "group" | "self";
+  unread_count: number;
+  members: MessageMember[];
+  messages: ConversationMessage[];
+}
+
+export interface ConversationDetail {
+  id: number;
+  members: MessageMember[];
+  messages: ConversationMessage[];
+  offset: number;
+}
+
+export interface CalendarEvent {
+  id: number;
+  name: string;
+  description: string;
+  starts_at: number;
+  duration: number;
+  event_type: string;
+  course_id: number;
+  course_name: string;
+  location: string;
+  url: string;
+}
+
 export interface Overview {
   user: UserInfo;
   courses: Course[];
   todo: TodoItem[];
   alerts?: AlertSummary;
+  calendar?: CalendarEvent[];
   errors: string[];
 }
 
@@ -138,6 +184,15 @@ export interface Assignment {
   course_name: string;
   section_name: string;
   due_pretty: string;
+  description?: string;
+  due_at?: string;
+  extension_due?: string;
+  cutoff?: string;
+  cutoff_at?: string;
+  submission_state?: "new" | "draft" | "submitted";
+  submission?: { text?: string; text_html?: string; files: FileEntry[]; comments: Array<{ author: string; text: string; time?: string }> };
+  feedback?: { comments: string; files: FileEntry[]; criteria: FeedbackCriterion[] };
+  limits?: { max_bytes?: number; max_files?: number; accepted_types?: string[] };
   submission_status: string;
   grading_status: string;
   time_remaining: string;
@@ -270,6 +325,12 @@ export interface ForumPostAuthor {
   profile_image_url: string;
 }
 
+export interface ForumAttachment {
+  name: string;
+  size: number;
+  url: string;
+}
+
 export interface ForumPost {
   id: number;
   discussion_id: number;
@@ -289,6 +350,7 @@ export interface ForumPost {
   is_private_reply: boolean;
   url: string;
   reply_url: string;
+  attachments?: ForumAttachment[];
 }
 
 export interface ForumDiscussion {
@@ -305,6 +367,10 @@ export interface ForumDiscussion {
 export interface ForumDiscussionRef {
   id: number;
   subject: string;
+  pinned?: boolean;
+  author?: string;
+  replies?: number;
+  unread?: number;
   group_id: number;
   group_name: string;
   url: string;

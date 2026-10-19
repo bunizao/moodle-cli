@@ -1,3 +1,6 @@
+import { htmlToStructuredContent } from "./html-utils.js";
+import { listConversations, getConversation, sendMessage, markConversationRead } from "./moodle-messages-core.js";
+import { readCalendar, readCalendarMonth, calendarMonthOf } from "./moodle-calendar-core.js";
 import { resolveUnit } from "./resolve.js";
 import { fetchWithSession } from "./session-fetch.js";
 import { z } from "zod";
@@ -16,8 +19,11 @@ import {
   FUNC_GET_COURSES,
   FUNC_GET_COURSES_BY_TIMELINE,
   FUNC_GET_POPUP_NOTIFICATIONS,
+  FUNC_MARK_NOTIFICATION_READ,
+  FUNC_MARK_ALL_NOTIFICATIONS_READ,
   FUNC_GET_SITE_INFO,
   FUNC_GET_STRINGS,
+  FUNC_UPDATE_ACTIVITY_COMPLETION,
   FUNC_GET_UNREAD_CONVERSATION_COUNTS,
   GRADE_REPORT_INDEX_PATH,
   GRADE_REPORT_OVERVIEW_PATH,
@@ -28,8 +34,10 @@ import {
   RESOURCE_VIEW_PATH,
   URL_VIEW_PATH,
 } from "./constants.js";
-import { submitAssignmentFiles, type SubmissionReceipt, type SubmitAssignmentRequest } from "./moodle-assign-core.js";
+import { submitAssignmentFiles, removeAssignmentSubmission, parseSubmissionForm, describeLimits, type SubmissionReceipt, type SubmitAssignmentRequest } from "./moodle-assign-core.js";
 import { answerQuizQuestion, finishQuizAttempt, getAttemptPage, getAttemptSummary, planQuizStart, startQuizAttempt, type AnswerRequest, type AttemptFinishReceipt, type AttemptPage, type AttemptSummary, type QuizDeps, type QuizStartPlan, type StartOptions } from "./moodle-quiz-core.js";
+import { createForumDiscussion, replyForumPost, setForumSubscription, type ForumWriteDeps, type ForumPostReceipt } from "./moodle-forum-write-core.js";
+import type { SubmitFile } from "./moodle-assign-core.js";
 import { ForumModule } from "./moodle-forum-core.js";
 import { labelRequests, siteLabelsFrom, type SiteLabels } from "./site-labels.js";
 import { parseLabelMedia } from "./label-media.js";
@@ -39,6 +47,9 @@ import type {
   AlertSummary,
   ActivityDetail,
   Assignment,
+  CalendarEvent,
+  Conversation,
+  ConversationDetail,
   Course,
   CourseGrades,
   Folder,
@@ -69,6 +80,7 @@ import {
   hasCourseGradesHtml,
   isOtherMoodlePage,
   parseAssignmentHtml,
+  assignmentCommentUrl,
   parseCourseContentsHtml,
   parseCourseGradesHtml,
   parseCourseGradesUrl,
@@ -336,7 +348,7 @@ export class MoodleClientCore {
   private async fetchCourseContents(courseId: number): Promise<Section[]> {
     await this.ensureSession();
     try {
-      return parseCourseContents(await this.call(FUNC_GET_COURSE_CONTENTS, { courseid: courseId }));
+      return this.fillAvailabilityReasons(courseId, parseCourseContents(await this.call(FUNC_GET_COURSE_CONTENTS, { courseid: courseId })));
     } catch (error) {
       if (!this.errors.isApi(error) || error.moodleErrorCode !== "servicenotavailable") {
         throw error;
@@ -347,7 +359,7 @@ export class MoodleClientCore {
         await this.call(FUNC_GET_COURSE_FORMAT_STATE, { courseid: courseId }),
         this.baseUrl,
       );
-      if (sections.length) return sections;
+      if (sections.length) return this.fillAvailabilityReasons(courseId, sections);
     } catch (error) {
       if (!this.errors.isApi(error) || error.moodleErrorCode !== "servicenotavailable") {
         throw error;
@@ -355,6 +367,17 @@ export class MoodleClientCore {
     }
     const response = await this.get(COURSE_PATH, { id: courseId });
     return this.scrapeCourseContents(courseId, response);
+  }
+
+  private async fillAvailabilityReasons(courseId: number, sections: Section[]): Promise<Section[]> {
+    const missing = sections.flatMap(section => section.activities).filter(activity => activity.available === false && !activity.availability_reason);
+    if (!missing.length) return sections;
+    const rendered = (await this.scrapeCourseContents(courseId, await this.get(COURSE_PATH, { id: courseId }))).flatMap(section => section.activities);
+    for (const activity of missing) {
+      const reason = rendered.find(item => item.id === activity.id)?.availability_reason;
+      if (reason) activity.availability_reason = reason;
+    }
+    return sections;
   }
 
   async getActivities(courseId: number): Promise<Section["activities"]> {
@@ -370,17 +393,40 @@ export class MoodleClientCore {
     let activity: Activity | null = null;
     let courseId: number | undefined;
     let type = "";
+    let moduleName = "";
+    let moduleDates: Record<string, unknown> = {};
     try {
       const data = await this.call(FUNC_GET_COURSE_MODULE, { cmid: id });
       const module = isRecord(data) && isRecord(data.cm) ? data.cm : data;
       type = isRecord(module) && typeof module.modname === "string" ? module.modname : "";
       courseId = isRecord(module) && typeof module.course === "number" ? module.course : undefined;
+      moduleName = isRecord(module) && typeof module.name === "string" ? module.name : "";
+      if (isRecord(module) && module.customdata) {
+        try {
+          const data = typeof module.customdata === "string" ? JSON.parse(module.customdata) : module.customdata;
+          if (isRecord(data)) moduleDates = data;
+        } catch { /* Older modules may return custom data that is not JSON. */ }
+      }
+      if (isRecord(module) && Number(module.completion) > 0 && courseId) activity = await this.findActivity(id, courseId);
+      if (isRecord(module) && module.uservisible === false) {
+        return { id, name: moduleName, modname: type, type, visible: module.visible !== 0, description: "", url: `${this.baseUrl}/mod/${type}/view.php?id=${id}`, available: false, availability_reason: htmlToStructuredContent(String(module.availabilityinfo ?? ""), this.baseUrl).text };
+      }
     } catch (error) {
       if (!this.errors.isApi(error) || error.moodleErrorCode !== "servicenotavailable") {
         throw error;
       }
       activity = await this.findActivity(id);
       type = activity.modname;
+      courseId = activity.course_id;
+      moduleName = activity.name;
+    }
+    if (activity?.available === false) {
+      if (!activity.availability_reason && courseId) {
+        const page = parseCourseContentsHtml(await this.get(COURSE_PATH, { id: courseId }), this.baseUrl);
+        const rendered = page.flatMap(section => section.activities).find(item => item.id === id);
+        activity.availability_reason = rendered?.availability_reason;
+      }
+      return { ...activity, type };
     }
     const loaders: Record<string, () => Promise<ActivityDetail>> = {
       assign: () => this.getAssignment(id),
@@ -403,7 +449,27 @@ export class MoodleClientCore {
       activity ??= await this.findActivity(id, courseId);
       return { ...activity, type: type || activity.modname || "unknown" };
     }
-    return { ...(await load()), type: type === "url" ? "link" : type };
+    try {
+      const detail = await load();
+      if (type === "assign") {
+        for (const [source, target] of [["duedate", "due_at"], ["cutoffdate", "cutoff_at"]] as const) {
+          const at = Number(moduleDates[source]);
+          if (Number.isFinite(at) && at > 0) Object.assign(detail, { [target]: new Date(at * 1000).toISOString() });
+        }
+      }
+      return { ...detail, ...(activity?.completion !== undefined ? { completion: activity.completion } : {}), ...(type === "resource" ? { name: moduleName || activity?.name || detail.name, ...(courseId ? { course_id: courseId } : {}) } : {}), type: type === "url" ? "link" : type };
+    } catch (error) {
+      if (!this.errors.isApi(error) || error.moodleErrorCode !== "requireloginerror") throw error;
+      return { ...(activity ?? { id, name: moduleName, modname: type, visible: true, description: "", url: `${this.baseUrl}/mod/${type}/view.php?id=${id}` }), type, available: false, availability_reason: error.message };
+    }
+  }
+
+  async completeActivity(id: number, completed = true): Promise<{ id: number; completion: number }> {
+    await this.ensureSession();
+    const result = await this.call(FUNC_UPDATE_ACTIVITY_COMPLETION, { cmid: id, completed });
+    if (isRecord(result) && result.status === false) throw this.errors.api("Moodle did not change the activity's completion state.");
+    this.contentsCache.clear();
+    return { id, completion: completed ? 1 : 0 };
   }
 
   private async redirectedActivity(type: string, id: number): Promise<number | undefined> {
@@ -417,7 +483,7 @@ export class MoodleClientCore {
   async getTodo(limit = 20, days?: number, courseId?: number): Promise<TodoItem[]> {
     await this.ensureSession();
     const now = Math.floor(Date.now() / 1000);
-    const window = { timesortfrom: now, timesortto: days ? now + days * 86400 : 0 };
+    const window = { timesortfrom: now - 14 * 86400, timesortto: days ? now + days * 86400 : 0 };
     const timeline = () => this.readActionEvents(FUNC_GET_ACTION_EVENTS, { ...window, limittononsuspendedevents: true }, limit);
     const unit = (id: number) => this.readActionEvents(FUNC_GET_ACTION_EVENTS_BY_COURSE, { courseid: id, ...window }, limit);
     // Each calendar service covers for the other when a site disables it: one unit
@@ -455,7 +521,7 @@ export class MoodleClientCore {
       const batchSize = Math.min(50, limit - items.length);
       const data = await this.call(functionName, { ...args, aftereventid, limitnum: batchSize });
       const events = isRecord(data) && Array.isArray(data.events) ? data.events : [];
-      for (const item of parseTodoItems(events)) if (!seen.has(item.id)) { seen.add(item.id); items.push(item); }
+      for (const item of parseTodoItems(events)) if ((!item.overdue || item.actionable) && !seen.has(item.id)) { seen.add(item.id); items.push(item); }
       if (events.length < batchSize) break;
       const last = events.at(-1);
       const next = isRecord(last) && typeof last.id === "number" ? last.id : undefined;
@@ -463,6 +529,43 @@ export class MoodleClientCore {
       aftereventid = next;
     }
     return items;
+  }
+
+  async getConversations(limit = 20, offset = 0): Promise<Conversation[]> {
+    await this.ensureSession();
+    return listConversations((name, args) => this.call(name, args), this.userid!, this.baseUrl, limit, offset);
+  }
+
+  async getConversation(id: number, limit = 50, offset = 0): Promise<ConversationDetail> {
+    await this.ensureSession();
+    return getConversation((name, args) => this.call(name, args), this.userid!, this.baseUrl, id, limit, offset);
+  }
+
+  async sendMessage(id: number, text: string, options: { user?: boolean } = {}): Promise<{ id: number }> {
+    if (!text.trim()) throw this.errors.usage?.("Message text cannot be empty.") ?? new MoodleClientCoreError("usage", "Message text cannot be empty.");
+    await this.ensureSession();
+    return { id: await sendMessage((name, args) => this.call(name, args), id, text, Boolean(options.user)) };
+  }
+
+  async markMessagesRead(conversationId?: number): Promise<{ conversations: number[] }> {
+    await this.ensureSession();
+    const ids: number[] = [];
+    if (conversationId !== undefined) ids.push(conversationId);
+    else {
+      for (let offset = 0; ; offset += 100) {
+        const page = await this.getConversations(100, offset);
+        ids.push(...page.filter(c => c.unread_count > 0).map(c => c.id));
+        if (page.length < 100) break;
+      }
+    }
+    for (const id of ids) await markConversationRead((name, args) => this.call(name, args), this.userid!, id);
+    return { conversations: ids };
+  }
+
+  async getCalendar(days = 14, courseId?: number): Promise<CalendarEvent[]> {
+    if (!Number.isInteger(days) || days < 1 || days > 365) throw new MoodleClientCoreError("usage", "Calendar days must be between 1 and 365.");
+    await this.ensureSession();
+    return readCalendar((name, args) => this.call(name, args), params => this.get("/calendar/view.php", params), this.baseUrl, days, courseId);
   }
 
   async getAlerts(limit = 20): Promise<AlertSummary> {
@@ -473,6 +576,12 @@ export class MoodleClientCore {
       { methodname: FUNC_GET_UNREAD_CONVERSATION_COUNTS, args: { userid: this.userid } },
     ]);
     return parseAlertSummary(notifications, counts, unread);
+  }
+
+  async markAlertsRead(notificationId?: number): Promise<void> {
+    await this.ensureSession();
+    if (notificationId === undefined) await this.call(FUNC_MARK_ALL_NOTIFICATIONS_READ, { useridto: this.userid });
+    else await this.call(FUNC_MARK_NOTIFICATION_READ, { notificationid: notificationId });
   }
 
   async getOverview(todoLimit = 5, todoDays?: number, alertsLimit = 5): Promise<Overview> {
@@ -489,7 +598,7 @@ export class MoodleClientCore {
         methodname: FUNC_GET_ACTION_EVENTS,
         args: {
           limitnum: todoLimit,
-          timesortfrom: now,
+          timesortfrom: now - 14 * 86400,
           timesortto: todoDays ? now + todoDays * 24 * 60 * 60 : 0,
           aftereventid: 0,
           limittononsuspendedevents: true,
@@ -502,8 +611,12 @@ export class MoodleClientCore {
     const [coursesData, todoData, notifications, counts, unread] = results;
     const userPromise = this.userInfo?.fullname ? Promise.resolve(this.userInfo) : this.getSiteInfo();
     const coursesPromise = coursesData?.ok ? Promise.resolve(parseCourses(coursesData.data)) : this.getCourses();
+    const batchedTodo = todoData?.ok ? parseTodoPayload(todoData.data) : [];
+    const visibleTodo = batchedTodo.filter(item => !item.overdue || item.actionable);
     const todoPromise = todoData?.ok
-      ? Promise.resolve(parseTodoPayload(todoData.data))
+      ? batchedTodo.length >= todoLimit && visibleTodo.length < todoLimit
+        ? this.getTodo(todoLimit, todoDays)
+        : Promise.resolve(visibleTodo)
       : todoData && todoData.error.moodleErrorCode !== "servicenotavailable"
         ? Promise.reject(todoData.error)
         : this.getTodo(todoLimit, todoDays);
@@ -519,7 +632,7 @@ export class MoodleClientCore {
             unread && unread.ok ? unread.data : undefined,
           ))
         : this.getAlerts(alertsLimit);
-    const settled = await Promise.allSettled([userPromise, coursesPromise, todoPromise, alertsPromise] as const);
+    const settled = await Promise.allSettled([userPromise, coursesPromise, todoPromise, alertsPromise, this.getCalendar(todoDays ?? 14)] as const);
     const labels = [
       "user",
       "courses",
@@ -527,16 +640,18 @@ export class MoodleClientCore {
       alertFailureIndex >= 0
         ? ["notifications", "conversation counts", "unread conversation counts"][alertFailureIndex]!
         : "alerts",
+      "calendar",
     ];
     const errors = settled.flatMap((result, index) => result.status === "rejected"
       ? [`${labels[index]}: ${errorMessage(result.reason)}`]
       : []);
-    const [userResult, coursesResult, todoResult, alertsResult] = settled;
+    const [userResult, coursesResult, todoResult, alertsResult, calendarResult] = settled;
     return {
       user: userResult.status === "fulfilled" ? userResult.value : this.userInfo!,
       courses: coursesResult.status === "fulfilled" ? coursesResult.value : [],
       todo: todoResult.status === "fulfilled" ? todoResult.value : [],
       ...(alertsResult.status === "fulfilled" ? { alerts: alertsResult.value } : {}),
+      ...(calendarResult.status === "fulfilled" ? { calendar: calendarResult.value } : {}),
       errors,
     };
   }
@@ -602,7 +717,49 @@ export class MoodleClientCore {
 
   async getAssignment(id: number): Promise<Assignment> {
     const [html, labels] = await Promise.all([this.getActivityPage(ASSIGN_VIEW_PATH, "assign", id), this.siteLabels()]);
-    return parseAssignmentHtml(html, id, this.baseUrl, labels);
+    const assignment = parseAssignmentHtml(html, id, this.baseUrl, labels);
+    const month = calendarMonthOf(assignment.due_pretty, this.userInfo?.lang);
+    if (month && !assignment.due_at) {
+      try {
+        const events = await readCalendarMonth((name, args) => this.call(name, args), this.baseUrl, month.year, month.month, assignment.course_id || undefined);
+        const matching = events.filter(event => {
+          const url = new URL(event.url);
+          return event.event_type === "due" && url.origin === new URL(this.baseUrl).origin && url.pathname === new URL(assignment.url).pathname && Number(url.searchParams.get("id")) === id;
+        });
+        const dates = new Set(matching.map(event => event.starts_at));
+        if (dates.size === 1) assignment.due_at = new Date(matching[0].starts_at * 1000).toISOString();
+      } catch (error) {
+        if (this.errors.isLoginRequired(error)) throw error;
+        if (!this.errors.isApi(error) || !["servicenotavailable", "nopermission", "required_capability_exception"].includes(error.moodleErrorCode ?? "")) throw error;
+      }
+    }
+    // Limits belong to the edit form; locked submissions should remain readable.
+    if (html.includes("editsubmission")) {
+      try {
+        const editHtml = await this.getAbsolute(`${this.baseUrl}${ASSIGN_VIEW_PATH}?id=${id}&action=editsubmission`);
+        const form = parseSubmissionForm(editHtml, { baseUrl: this.baseUrl, fail: message => this.errors.api(message) });
+        assignment.limits = describeLimits(form);
+      } catch (error) {
+        if (!this.errors.isApi(error) || this.errors.isLoginRequired(error)) throw error;
+      }
+    }
+    const commentUrl = assignmentCommentUrl(html, this.baseUrl);
+    if (commentUrl && assignment.submission) {
+      const commentsHtml = await this.getAbsolute(commentUrl);
+      assignment.submission.comments = parseAssignmentHtml(commentsHtml, id, this.baseUrl, labels).submission?.comments ?? [];
+    }
+    return assignment;
+  }
+
+  async removeAssignmentSubmission(id: number, dryRun = false) {
+    await this.ensureSession();
+    return removeAssignmentSubmission({
+      baseUrl: this.baseUrl,
+      labels: await this.siteLabels(),
+      request: (url, init, options) => this.requestAbsolute(url, init, options),
+      fail: (message, code) => this.errors.api(message, code),
+      usage: (message, hint) => this.errors.usage ? this.errors.usage(message, hint) : new MoodleClientCoreError("usage", message, hint),
+    }, id, dryRun);
   }
 
   async getQuiz(id: number): Promise<Quiz> {
@@ -709,6 +866,7 @@ export class MoodleClientCore {
     await this.ensureSession();
     return submitAssignmentFiles({
       baseUrl: this.baseUrl,
+      labels: await this.siteLabels(),
       request: (url, init, options) => this.requestAbsolute(url, init, options),
       fail: (message, moodleErrorCode) => this.errors.api(message, moodleErrorCode),
       usage: (message, hint) => this.errors.usage ? this.errors.usage(message, hint) : new MoodleClientCoreError("usage", message, hint),
@@ -774,6 +932,35 @@ export class MoodleClientCore {
       flags.push(...await Promise.all(candidates.slice(index, index + 4).map((forum) => this.forum.isNewsForum(forum.id))));
     }
     return candidates.filter((_, index) => flags[index]);
+  }
+
+  async replyForumPost(postId: number, text: string, files: SubmitFile[] = []): Promise<ForumPostReceipt> {
+    const receipt = await replyForumPost(await this.forumWriteDeps(), postId, text, files);
+    this.forum.clearCache();
+    return receipt;
+  }
+
+  async createForumDiscussion(forumCmid: number, subject: string, text: string): Promise<ForumPostReceipt> {
+    const receipt = await createForumDiscussion(await this.forumWriteDeps(), forumCmid, subject, text);
+    this.forum.clearCache();
+    return receipt;
+  }
+
+  async setForumSubscription(forumCmid: number, subscribed: boolean): Promise<{ forum_id: number; subscribed: boolean }> {
+    const receipt = await setForumSubscription(await this.forumWriteDeps(), forumCmid, subscribed);
+    this.forum.clearCache();
+    return receipt;
+  }
+
+  private async forumWriteDeps(): Promise<ForumWriteDeps> {
+    return {
+      ...await this.quizDeps(),
+      call: (name, args) => this.call(name, args),
+      getDiscussion: (discussionId) => {
+        this.forum.clearCache();
+        return this.forum.getForumDiscussion(discussionId, { group: false });
+      },
+    };
   }
 
   async getForumDiscussion(discussionId: number, options: { group?: boolean } = {}): Promise<ForumDiscussion> {
@@ -991,7 +1178,7 @@ export class MoodleClientCore {
   private async findActivity(activityId: number, courseId?: number): Promise<Activity> {
     if (courseId !== undefined) {
       const activity = (await this.getActivities(courseId)).find((item) => item.id === activityId);
-      if (activity) return activity;
+      if (activity) return { ...activity, course_id: courseId };
       throw this.errors.notFound(`Activity ${activityId} was not found in course ${courseId}.`);
     }
 
@@ -1021,7 +1208,7 @@ export class MoodleClientCore {
         const activity = parseCourseContents(result.data)
           .flatMap((section) => section.activities)
           .find((item) => item.id === activityId);
-        if (activity) return activity;
+        if (activity) return { ...activity, course_id: id };
       }
     }
 
@@ -1052,7 +1239,7 @@ export class MoodleClientCore {
         searchedCourses += 1;
         const activity = sections.flatMap((section) => section.activities)
           .find((item) => item.id === activityId);
-        if (activity) return activity;
+        if (activity) return { ...activity, course_id: id };
       }
     }
 
@@ -1063,7 +1250,7 @@ export class MoodleClientCore {
           await this.get(COURSE_PATH, { id }),
         )).flatMap((section) => section.activities).find((item) => item.id === activityId);
         searchedCourses += 1;
-        if (activity) return activity;
+        if (activity) return { ...activity, course_id: id };
       } catch (error) {
         if (this.errors.isLoginRequired(error)) throw error;
         lastError = error;

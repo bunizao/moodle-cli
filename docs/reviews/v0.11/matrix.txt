@@ -1,0 +1,7 @@
+boost            {"ok":18,"untested":1}
+classic          {"ok":18,"untested":1}
+german           {"ok":18,"untested":1}
+custom-string    {"ok":18,"untested":1}
+no-format-state  {"ok":9,"fallback":9,"untested":1}
+no-calendar      {"ok":16,"fallback":2,"untested":1}
+0 variant(s) unexpected

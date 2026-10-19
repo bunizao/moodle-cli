@@ -171,10 +171,10 @@ export async function* checkCoverage(service: IntentService, gateway: MoodleGate
   const due = await run("due", { days: 30 }, r => {
     const rowsDue = rows(r, "due");
     const nowSeconds = now() / 1000;
-    // Calendar rows are structured already; one from before the window means the window
-    // the command sent was ignored. Units are not compared: the calendar also covers units
-    // a person has hidden from the dashboard, which the fallback unit list leaves out.
-    const stray = rowsDue.filter(row => num(row.due_at) < nowSeconds - 86_400);
+    // The timeline keeps a 14-day lookback for overdue work that can still be submitted.
+    // Other past rows mean Moodle ignored the window; hidden dashboard units are allowed.
+    const stray = rowsDue.filter(row => num(row.due_at) < nowSeconds - 86_400
+      && !(row.status === "overdue" && row.actionable === true && num(row.due_at) >= nowSeconds - 14 * 86400));
     if (stray.length) return { status: "mismatch", detail: `${count(stray.length, "deadline")} fall before the requested window.` };
     return { detail: `${count(num(r.total), "item")} in 30 days`, verified: rowsDue.length ? ["window"] : [] };
   });

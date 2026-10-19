@@ -1,7 +1,8 @@
 import { parse, type HTMLElement } from "node-html-parser";
 
 import { ASSIGN_VIEW_PATH } from "./constants.js";
-import { cleanText, resolveUrl } from "./html-utils.js";
+import { cleanText, filemanagerOptions, htmlToStructuredContent, resolveUrl } from "./html-utils.js";
+import { labelTexts } from "./site-labels.js";
 import { parseAssignmentHtml } from "./scraper.js";
 
 // Assignment submission replays the browser flow, because the site-restricted AJAX
@@ -20,6 +21,8 @@ export interface SubmitFile {
 export interface SubmitAssignmentRequest {
   activityId: number;
   files: SubmitFile[];
+  /** HTML saved into Moodle's online-text editor. */
+  text?: string;
   /** Also submit for grading after saving. Moodle treats that as irreversible. */
   final?: boolean;
   /** Remove every file already in the submission before uploading. */
@@ -58,12 +61,16 @@ export interface SubmissionReceipt {
   /** Group members Moodle still waits for before the group's submission counts as submitted. */
   awaiting?: string[];
   submission_status: string;
+  submission_state?: "new" | "draft" | "submitted";
+  text?: string;
   grading_status: string;
   due: string;
   time_remaining: string;
   last_modified: string;
   statement?: string;
   statement_accepted?: boolean;
+  /** Final confirmation may reveal a statement only after saving the first draft. */
+  statement_pending?: boolean;
   /** Files Moodle lists in the submission (draft area for a plan, view page after a write). */
   files: SubmissionFileRow[];
   uploads: Array<{ name: string; bytes: number; path?: string }>;
@@ -80,6 +87,7 @@ export interface AssignSubmitDeps {
   /** The request cannot succeed as given; the caller can change it. */
   usage(message: string, hint?: string): Error;
   now?: () => Date;
+  labels?: import("./site-labels.js").SiteLabels;
 }
 
 type Field = [string, string];
@@ -99,6 +107,7 @@ export interface SubmissionForm {
   maxFiles: number;
   acceptedTypes: string[] | "*";
   statement?: string;
+  onlineText?: string;
 }
 
 export interface ConfirmForm {
@@ -116,8 +125,8 @@ interface DraftFile {
 export async function submitAssignmentFiles(deps: AssignSubmitDeps, request: SubmitAssignmentRequest): Promise<SubmissionReceipt> {
   const id = request.activityId;
   if (!Number.isSafeInteger(id) || id <= 0) throw deps.usage("The assignment id must be a positive integer.");
-  if (!request.files.length && !request.final) throw deps.usage("Give at least one file to upload, or use --final to submit the existing draft.");
-  if (!request.files.length && request.replace) throw deps.usage("--replace with no files would empty the submission.", "Give the files that should replace the current ones.");
+  if (!request.files.length && request.text === undefined && !request.final) throw deps.usage("Give files or online text to save, or use --final to submit the existing draft.");
+  if (!request.files.length && request.text === undefined && request.replace) throw deps.usage("--replace with no files would empty the submission.", "Give the files that should replace the current ones.");
   const seen = new Set<string>();
   for (const file of request.files) {
     if (!file.name || /[\\/]/u.test(file.name)) throw deps.usage(`'${file.name}' is not a plain file name.`);
@@ -128,9 +137,12 @@ export async function submitAssignmentFiles(deps: AssignSubmitDeps, request: Sub
   const viewUrl = `${deps.baseUrl}${ASSIGN_VIEW_PATH}?id=${id}`;
   request.onProgress?.("Reading the assignment");
   const viewHtml = await pageText(deps, viewUrl);
-  const before = parseReceiptPage(viewHtml, id, deps.baseUrl);
+  const before = parseReceiptPage(viewHtml, id, deps.baseUrl, deps.labels);
+  if (!request.files.length && request.text === undefined && !before.files.length && !before.text) throw deps.usage("No saved draft was found to submit.", "Give files or online text to save first.");
   const form = parseSubmissionForm(await pageText(deps, `${viewUrl}&action=editsubmission`), deps);
-  const draft = await listDraftFiles(deps, form);
+  if (request.files.length && !form.itemid) throw deps.usage("This assignment does not accept file uploads.");
+  if (request.text !== undefined && form.onlineText === undefined) throw deps.usage("This assignment does not accept online text.");
+  const draft = form.itemid ? await listDraftFiles(deps, form) : [];
 
   const removed = request.replace ? draft.map(file => file.name) : [];
   const kept = request.replace ? [] : draft.filter(file => !seen.has(file.name.toLowerCase()));
@@ -139,8 +151,13 @@ export async function submitAssignmentFiles(deps: AssignSubmitDeps, request: Sub
   // Saving is only a draft when the assignment has a draft stage; otherwise Moodle submits
   // for grading on save. That must be known before anything is written, and an unknown
   // answer counts as "it submits", because a submission for grading cannot be taken back.
-  const confirmHtml = form.statement ? undefined : await pageText(deps, `${viewUrl}&action=submit`);
-  const draftStage = draftStageOf(viewHtml, before.submission_status, form, confirmHtml);
+  let draftStage = draftStageOf(viewHtml, form);
+  // A confirmation page can reveal drafts on older/custom sites, but Moodle normally
+  // refuses this page before the first save. Never make finalisation depend on it.
+  if (draftStage === undefined && !request.final) {
+    const confirmHtml = await pageText(deps, `${viewUrl}&action=submit`).catch(() => undefined);
+    draftStage = draftStageOf(viewHtml, form, confirmHtml);
+  }
   if (draftStage !== true && !request.final) {
     throw deps.usage(
       draftStage === false
@@ -151,11 +168,6 @@ export async function submitAssignmentFiles(deps: AssignSubmitDeps, request: Sub
   }
 
   let statement = form.statement;
-  let confirm: ConfirmForm | undefined;
-  if (request.final && draftStage !== false && confirmHtml !== undefined) {
-    confirm = parseConfirmForm(confirmHtml, deps);
-    statement = confirm.statement;
-  }
   if (statement && !request.acceptStatement) {
     throw deps.usage(`Moodle requires you to accept this statement: "${statement}"`, "Re-run with --accept-statement once you agree.");
   }
@@ -167,11 +179,12 @@ export async function submitAssignmentFiles(deps: AssignSubmitDeps, request: Sub
       ...before,
       action: "planned",
       ...(draftStage === undefined ? {} : { draft_stage: draftStage }),
+      ...(request.text !== undefined ? { text: request.text } : {}),
       files: draft.map(file => ({ name: file.name, bytes: file.bytes })),
       uploads,
       removed,
       limits,
-      ...(statement ? { statement, statement_accepted: true } : {}),
+      ...(statement ? { statement, statement_accepted: true } : request.final && draftStage !== false ? { statement_pending: true } : {}),
       checked_at: timestamp(deps),
     };
   }
@@ -187,31 +200,41 @@ export async function submitAssignmentFiles(deps: AssignSubmitDeps, request: Sub
     request.onProgress?.(`Uploading ${file.name} (${index + 1}/${request.files.length})`);
     storedNames.push(await uploadDraftFile(deps, form, file));
   }
-  if (storedNames.length || removed.length) {
+  if (storedNames.length || removed.length || request.text !== undefined) {
     request.onProgress?.("Saving the submission");
-    const savedHtml = await postForm(deps, form.action, [...form.fields, ...(form.statement ? [["submissionstatement", "1"] as Field] : []), ["submitbutton", "Save changes"]]);
+    const fields = form.fields.filter(([name]) => request.text === undefined || !["onlinetext_editor[text]", "onlinetext_editor[format]"].includes(name));
+    if (request.text !== undefined) fields.push(["onlinetext_editor[text]", request.text], ["onlinetext_editor[format]", "1"]);
+    const savedHtml = await postForm(deps, form.action, [...fields, ...(form.statement ? [["submissionstatement", "1"] as Field] : []), ["submitbutton", "Save changes"]]);
     if (savedHtml !== null) throw deps.fail(`Moodle did not save the submission: ${noticesOf(savedHtml) || "it returned the edit form again without a reason"}`);
   }
 
   request.onProgress?.("Reading the receipt");
-  let receipt = parseReceiptPage(await pageText(deps, viewUrl), id, deps.baseUrl);
+  let receipt = parseReceiptPage(await pageText(deps, viewUrl), id, deps.baseUrl, deps.labels);
   const listed = new Set(receipt.files.map(file => file.name.toLowerCase()));
   const missing = storedNames.filter(name => !listed.has(name.toLowerCase()));
   if (missing.length) throw deps.fail(`Moodle saved the submission but its page does not list ${missing.join(", ")}; check the assignment in a browser before submitting.`);
+  if (request.text !== undefined && cleanText(receipt.text) !== cleanText(htmlToStructuredContent(request.text, deps.baseUrl).text)) {
+    throw deps.fail("Moodle saved the submission but its page does not show the expected online text; check it in a browser before submitting.");
+  }
 
   let action: SubmissionReceipt["action"] = "saved";
-  if (isSubmitted(receipt.submission_status) && !request.final) {
+  if (receipt.submission_state === "submitted" && !request.final) {
     throw deps.fail(`Moodle submitted the assignment for grading when the files were saved, although its pages showed a draft stage. It now reports "${receipt.submission_status}"; check it in a browser.`);
   }
-  if (isSubmitted(receipt.submission_status)) action = "submitted";
+  if (receipt.submission_state === "submitted") action = "submitted";
   else if (request.final) {
     request.onProgress?.("Submitting for grading");
-    confirm ??= parseConfirmForm(await pageText(deps, `${viewUrl}&action=submit`), deps);
+    const confirm = parseConfirmForm(await pageText(deps, `${viewUrl}&action=submit`), deps);
+    statement = confirm.statement ?? statement;
+    if (statement && !request.acceptStatement) {
+      const submission: SubmissionReceipt = { ...receipt, action: "saved", draft_stage: true, uploads, removed, limits, statement, statement_accepted: false, checked_at: timestamp(deps) };
+      throw Object.assign(deps.usage(`The draft was saved. Moodle requires you to accept this statement: "${statement}"`, `Read the statement, then run moodle submit ${id} --final --accept-statement once you agree.`), { submission });
+    }
     const errorHtml = await postForm(deps, confirm.action, [...confirm.fields, ...(confirm.statement ? [["submissionstatement", "1"] as Field] : []), ["submitbutton", "Continue"]]);
     if (errorHtml !== null) throw deps.fail(`Moodle did not submit the assignment for grading: ${noticesOf(errorHtml) || "it returned the confirmation page again without a reason"}`);
-    receipt = parseReceiptPage(await pageText(deps, viewUrl), id, deps.baseUrl);
+    receipt = parseReceiptPage(await pageText(deps, viewUrl), id, deps.baseUrl, deps.labels);
     // When every member has to submit, the group's status stays a draft until the last one does.
-    if (!isSubmitted(receipt.submission_status) && !receipt.awaiting?.length) throw deps.fail(`Moodle accepted the confirmation but still reports "${receipt.submission_status || "no status"}"; check the assignment in a browser.`);
+    if (receipt.submission_state !== "submitted" && !receipt.awaiting?.length) throw deps.fail(`Moodle accepted the confirmation but still reports "${receipt.submission_status || "no status"}"; check the assignment in a browser.`);
     action = "submitted";
   }
 
@@ -225,6 +248,24 @@ export async function submitAssignmentFiles(deps: AssignSubmitDeps, request: Sub
     ...(statement ? { statement, statement_accepted: true } : {}),
     checked_at: timestamp(deps),
   };
+}
+
+export async function removeAssignmentSubmission(deps: AssignSubmitDeps, activityId: number, dryRun = false) {
+  if (!Number.isSafeInteger(activityId) || activityId <= 0) throw deps.usage("The assignment id must be a positive integer.");
+  const viewUrl = `${deps.baseUrl}${ASSIGN_VIEW_PATH}?id=${activityId}`;
+  const before = parseReceiptPage(await pageText(deps, viewUrl), activityId, deps.baseUrl, deps.labels);
+  const html = await pageText(deps, `${viewUrl}&action=removesubmissionconfirm`);
+  const form = formWithAction(parse(html), "removesubmission");
+  if (!form) throw deps.fail(`Moodle cannot remove this submission${noticesOf(html) ? `: ${noticesOf(html)}` : "; it may be locked or graded"}.`);
+  const fields = formFields(form);
+  if (!fields.some(([name, value]) => name === "sesskey" && value)) throw deps.fail("Moodle's removal confirmation has no session key.");
+  if (dryRun) return { ...before, action: "planned" as const };
+  const action = resolveUrl(deps.baseUrl, form.getAttribute("action") || viewUrl);
+  const errorHtml = await postForm(deps, action, fields);
+  if (errorHtml !== null) throw deps.fail(`Moodle did not remove the submission: ${noticesOf(errorHtml) || "it returned the confirmation again"}`);
+  const receipt = parseReceiptPage(await pageText(deps, viewUrl), activityId, deps.baseUrl, deps.labels);
+  if (receipt.files.length || receipt.text || receipt.submission_state === "submitted" || receipt.submission_state === "draft") throw deps.fail("Moodle accepted removal but the submission still contains work; check it in a browser.");
+  return { ...receipt, action: "removed" as const };
 }
 
 /**
@@ -244,14 +285,15 @@ export function parseSubmissionForm(html: string, deps: Pick<AssignSubmitDeps, "
   const form = formWithAction(root, "savesubmission");
   if (!form) {
     const notice = noticesOf(html);
-    if (root.querySelectorAll("input[type=submit], button").some(button => /begin assignment/iu.test(cleanText(button.getAttribute("value") ?? button.textContent)))) {
+    if (root.querySelector('a[href*="begin=1"]')) {
       throw deps.fail("This is a timed assignment; start it in a browser before uploading files.");
     }
     throw deps.fail(notice ? `Moodle is not accepting a submission: ${notice}` : "Moodle did not show a submission form for this assignment.");
   }
   const itemid = form.querySelector("input[name=files_filemanager]")?.getAttribute("value")?.trim() ?? "";
-  if (!itemid) throw deps.fail("This assignment does not accept file uploads.");
-  const options = filemanagerOptions(html, itemid);
+  const editor = form.querySelector('textarea[name="onlinetext_editor[text]"]');
+  if (!itemid && !editor) throw deps.fail("This assignment accepts neither file uploads nor online text.");
+  const options = itemid ? filemanagerOptions(html, itemid) : {};
   if (!options) throw deps.fail("Moodle did not describe the file upload area for this assignment.");
   const fields = formFields(form);
   const sesskey = fields.find(([name]) => name === "sesskey")?.[1] ?? "";
@@ -259,7 +301,7 @@ export function parseSubmissionForm(html: string, deps: Pick<AssignSubmitDeps, "
   const picker = record(options.filepicker);
   const repositories = (Array.isArray(picker.repositories) ? picker.repositories : Object.values(record(picker.repositories))).map(record);
   const upload = repositories.find(repo => repo.type === "upload");
-  if (!upload || upload.id === undefined) throw deps.fail("The site does not allow direct file uploads for this assignment.");
+  if (itemid && (!upload || upload.id === undefined)) throw deps.fail("The site does not allow direct file uploads for this assignment.");
   return {
     action: resolveUrl(deps.baseUrl, form.getAttribute("action") || `${deps.baseUrl}${ASSIGN_VIEW_PATH}`),
     fields,
@@ -267,13 +309,14 @@ export function parseSubmissionForm(html: string, deps: Pick<AssignSubmitDeps, "
     itemid,
     clientId: String(options.client_id ?? ""),
     contextId: String(record(options.context).id ?? ""),
-    repoId: String(upload.id),
+    repoId: String(upload?.id ?? ""),
     author: String(picker.author ?? ""),
     license: String(picker.defaultlicense ?? ""),
     maxBytes: integer(options.maxbytes),
     areaMaxBytes: integer(options.areamaxbytes),
     maxFiles: integer(options.maxfiles),
     acceptedTypes: acceptedTypesOf(options.accepted_types),
+    ...(editor ? { onlineText: editor.textContent } : {}),
     ...statementOf(form),
   };
 }
@@ -288,22 +331,14 @@ export function parseConfirmForm(html: string, deps: Pick<AssignSubmitDeps, "bas
   return { action: resolveUrl(deps.baseUrl, form.getAttribute("action") || `${deps.baseUrl}${ASSIGN_VIEW_PATH}`), fields: formFields(form), ...statementOf(form) };
 }
 
-export function parseReceiptPage(html: string, activityId: number, baseUrl: string): Omit<SubmissionReceipt, "action" | "uploads" | "removed" | "limits" | "checked_at"> {
-  const page = parseAssignmentHtml(html, activityId, baseUrl);
+export function parseReceiptPage(html: string, activityId: number, baseUrl: string, labels?: import("./site-labels.js").SiteLabels): Omit<SubmissionReceipt, "action" | "uploads" | "removed" | "limits" | "checked_at"> {
+  const page = parseAssignmentHtml(html, activityId, baseUrl, labels);
   const root = parse(html);
-  const files = new Map<string, SubmissionFileRow>();
-  const add = (link: HTMLElement) => {
-    const name = cleanText(link.textContent);
-    const href = link.getAttribute("href") ?? "";
-    if (name && !files.has(name.toLowerCase())) files.set(name.toLowerCase(), { name, ...(href ? { url: resolveUrl(baseUrl, href) } : {}) });
-  };
-  for (const link of root.querySelectorAll(".fileuploadsubmission a[href]")) add(link);
-  for (const link of tableCell(root, "File submissions")?.querySelectorAll("a[href]") ?? []) add(link);
   // A group submission has a "Group" row. Its files are shared, so every change reaches the
   // whole group. The row holds an error notice instead when the user has no usable group.
-  const groupCell = tableCell(root, "Group");
+  const groupCell = tableCell(root, "Group", labels);
   const group = groupCell && !groupCell.querySelector(".alert") ? cleanText(groupCell.textContent) : "";
-  const pending = tableCell(root, "Submission status")?.querySelectorAll("div").find(div => /^Users who need to submit:/iu.test(cleanText(div.textContent)));
+  const pending = tableCell(root, "Submission status", labels)?.querySelectorAll("div").find(div => div.querySelector('a[href*="/user/"]'));
   const awaiting = pending?.querySelectorAll("a").map(link => cleanText(link.textContent)).filter(Boolean) ?? [];
   return {
     id: activityId,
@@ -312,12 +347,14 @@ export function parseReceiptPage(html: string, activityId: number, baseUrl: stri
     url: page.url,
     ...(group ? { group } : {}),
     ...(awaiting.length ? { awaiting } : {}),
-    submission_status: page.submission_status.replace(/\s*Users who need to submit:.*$/isu, ""),
+    ...(page.submission_state ? { submission_state: page.submission_state } : {}),
+    ...(page.submission?.text ? { text: page.submission.text } : {}),
+    submission_status: pending ? page.submission_status.replace(cleanText(pending.textContent), "").trim() : page.submission_status,
     grading_status: page.grading_status,
-    due: page.due_pretty || cleanText(tableCell(root, "Due date")?.textContent),
+    due: page.due_pretty || cleanText(tableCell(root, "Due date", labels)?.textContent),
     time_remaining: page.time_remaining,
-    last_modified: cleanText(tableCell(root, "Last modified")?.textContent),
-    files: [...files.values()],
+    last_modified: cleanText(tableCell(root, "Last modified", labels)?.textContent),
+    files: page.submission?.files.map(file => ({ name: file.name, url: file.url })) ?? [],
   };
 }
 
@@ -331,12 +368,15 @@ export function parseReceiptPage(html: string, activityId: number, baseUrl: stri
  *   locks a submitted submission when there is a draft stage.
  * Anything else is unknown.
  */
-export function draftStageOf(viewHtml: string, status: string, form: Pick<SubmissionForm, "statement">, confirmHtml?: string): boolean | undefined {
+export function draftStageOf(viewHtml: string, form: Pick<SubmissionForm, "statement">, confirmHtml?: string): boolean | undefined {
   if (form.statement) return false;
   const confirm = confirmHtml === undefined ? null : formWithAction(parse(confirmHtml), "confirmsubmit");
   if (confirm && statementOf(confirm).statement) return true;
   if (formWithAction(parse(viewHtml), "submit")) return true;
-  if (isSubmitted(status)) return false;
+  const parsed = parse(viewHtml);
+  const root = parsed.querySelector(".submissionstatustable") ?? parsed;
+  if (root.querySelector(".submissionstatusdraft")) return true;
+  if (root.querySelector(".submissionstatussubmitted")) return false;
   return undefined;
 }
 
@@ -391,20 +431,6 @@ function statementOf(form: HTMLElement): { statement?: string } {
   return { statement: text || "Submission statement" };
 }
 
-function filemanagerOptions(html: string, itemid: string): Record<string, unknown> | null {
-  const pattern = /M\.form_filemanager\.init\(\s*Y\s*,\s*/gu;
-  let match: RegExpExecArray | null;
-  while ((match = pattern.exec(html))) {
-    const json = balancedObject(html, match.index + match[0].length);
-    if (!json) continue;
-    try {
-      const options = JSON.parse(json) as unknown;
-      if (isRecord(options) && String(options.itemid) === itemid) return options;
-    } catch { /* Not JSON; keep scanning for the next initialiser. */ }
-  }
-  return null;
-}
-
 // An assignment with no file type restriction renders `"accepted_types":[]`, so an empty
 // list means any type, not none. A PHP array with gaps in its keys arrives as an object.
 function acceptedTypesOf(value: unknown): string[] | "*" {
@@ -413,26 +439,10 @@ function acceptedTypesOf(value: unknown): string[] | "*" {
   return types.length === 0 || types.includes("*") ? "*" : types;
 }
 
-function balancedObject(text: string, start: number): string | null {
-  if (text[start] !== "{") return null;
-  let depth = 0;
-  let quoted = false;
-  for (let index = start; index < text.length; index += 1) {
-    const char = text[index];
-    if (quoted) {
-      if (char === "\\") index += 1;
-      else if (char === '"') quoted = false;
-    } else if (char === '"') quoted = true;
-    else if (char === "{") depth += 1;
-    else if (char === "}") { depth -= 1; if (depth === 0) return text.slice(start, index + 1); }
-  }
-  return null;
-}
-
-function tableCell(root: HTMLElement, label: string): HTMLElement | null {
+function tableCell(root: HTMLElement, label: string, labels?: import("./site-labels.js").SiteLabels): HTMLElement | null {
   for (const row of root.querySelectorAll("tr")) {
     const cells = row.querySelectorAll("th, td");
-    if (cells.length > 1 && cleanText(cells[0].textContent) === label) return cells[1];
+    if (cells.length > 1 && labelTexts(label, labels).includes(cleanText(cells[0].textContent))) return cells[1];
   }
   return null;
 }
@@ -440,7 +450,12 @@ function tableCell(root: HTMLElement, label: string): HTMLElement | null {
 // --- Requests ---------------------------------------------------------------
 
 async function pageText(deps: AssignSubmitDeps, url: string): Promise<string> {
-  return (await deps.request(url)).text();
+  try {
+    return await (await deps.request(url)).text();
+  } catch (error) {
+    if (record(error).moodleErrorCode === "nopermission") throw deps.fail("This assignment is locked, graded, or no longer accepts submissions.", "submissionlocked");
+    throw error;
+  }
 }
 
 /** Posts a form; returns null when Moodle redirected to the view page, else the re-rendered HTML. */
@@ -541,17 +556,13 @@ function checkLimits(deps: AssignSubmitDeps, form: SubmissionForm, kept: DraftFi
   if (form.areaMaxBytes > 0 && total > form.areaMaxBytes) throw deps.usage(`The submission would total ${size(total)}; the limit is ${size(form.areaMaxBytes)}.`, kept.length ? "Use --replace to drop the existing files first." : undefined);
 }
 
-function describeLimits(form: SubmissionForm): SubmissionLimits {
+export function describeLimits(form: SubmissionForm): SubmissionLimits {
   return {
     ...(form.maxBytes > 0 ? { max_bytes: form.maxBytes } : {}),
     ...(form.maxFiles > 0 ? { max_files: form.maxFiles } : {}),
     ...(form.areaMaxBytes > 0 ? { area_max_bytes: form.areaMaxBytes } : {}),
     ...(form.acceptedTypes !== "*" ? { accepted_types: form.acceptedTypes } : {}),
   };
-}
-
-function isSubmitted(status: string): boolean {
-  return /\bsubmitted\b/iu.test(status) && !/\bnot submitted\b/iu.test(status);
 }
 
 function size(bytes: number): string {

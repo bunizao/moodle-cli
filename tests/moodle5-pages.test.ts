@@ -89,10 +89,10 @@ function refusingSite(modname: string) {
 }
 
 describe("Moodle 5.0 pages", () => {
-  it.each(["assign", "quiz", "resource", "url", "page", "folder"])("refuses to read the course page as a %s", async (modname) => {
-    await expect(refusingSite(modname).getActivity(42)).rejects.toMatchObject({
-      message: "Activity 42 is not available to you. Not available unless: It is on or after 30 October 2026, 12:00 AM",
-      moodleErrorCode: "requireloginerror",
+  it.each(["assign", "quiz", "resource", "url", "page", "folder"])("describes restricted %s without reading its course page as content", async (modname) => {
+    await expect(refusingSite(modname).getActivity(42)).resolves.toMatchObject({
+      id: 42, available: false,
+      availability_reason: "Activity 42 is not available to you. Not available unless: It is on or after 30 October 2026, 12:00 AM",
     });
   });
 
