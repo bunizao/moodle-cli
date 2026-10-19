@@ -35,6 +35,7 @@ export interface AttemptOption {
 export interface AttemptField {
   /** The input this field posts to. */
   name: string;
+  label?: string;
   /** A plain text input or an editor-backed textarea. */
   kind: "text" | "textarea";
   /** Current value Moodle rendered for this field. */
@@ -76,6 +77,9 @@ export interface AttemptPage {
   questions: AttemptQuestion[];
   navigation: AttemptNavEntry[];
   url: string;
+  time_left_s?: number;
+  /** Estimated from the server clock when Moodle only provides a countdown. */
+  ends_at?: string;
 }
 
 export interface AttemptSummary {
@@ -124,13 +128,14 @@ export interface StartOptions {
  */
 export async function planQuizStart(deps: QuizDeps, quizId: number): Promise<QuizStartPlan> {
   const { viewUrl, viewHtml, root } = await readQuizView(deps, quizId);
-  const start = formWithAction(root, QUIZ_START_PATH);
+  const resume = resumeControl(root);
+  const start = formWithAction(root, QUIZ_START_PATH) ?? resume;
   if (!start) throw noAttemptButton(deps, root, viewUrl);
   const quiz = parseQuizHtml(viewHtml, quizId, deps.baseUrl);
   const control = start.querySelector("button, input[type=submit]");
   const button = cleanText(control?.getAttribute("value") ?? control?.textContent);
   const cards = root.querySelectorAll("table.quizreviewsummary");
-  const inProgress = /continue/iu.test(button) || cards.some(card => /in progress/iu.test(cleanText(card.textContent)));
+  const inProgress = Boolean(resume) || /continue/iu.test(button) || cards.some(card => /in progress/iu.test(cleanText(card.textContent)));
   return {
     quiz_id: quizId,
     name: quiz.name,
@@ -146,17 +151,23 @@ export async function planQuizStart(deps: QuizDeps, quizId: number): Promise<Qui
 export async function startQuizAttempt(deps: QuizDeps, quizId: number, options: StartOptions = {}): Promise<AttemptPage> {
   const { viewUrl, root } = await readQuizView(deps, quizId);
   // An attempt already under way shows a "Continue" button that lands on the attempt page directly.
-  const resume = formWithAction(root, QUIZ_ATTEMPT_PATH) ?? root.querySelector(`a[href*="${QUIZ_ATTEMPT_PATH}?"]`);
+  let response: Response | undefined;
+  const resume = resumeControl(root);
   if (resume) {
     const target = resume.tagName.toLowerCase() === "form"
       ? `${resolveUrl(deps.baseUrl, resume.getAttribute("action") ?? "")}?${new URLSearchParams(formFields(resume)).toString()}`
       : resolveUrl(deps.baseUrl, resume.getAttribute("href") ?? "");
     const attempt = numberParam(target, "attempt");
-    if (attempt) return getAttemptPage(deps, attempt, quizId);
+    if (attempt) {
+      response = await deps.request(attemptUrl(deps.baseUrl, attempt, quizId, 0));
+      if (!onPath(response.url, QUIZ_START_PATH)) assertAttemptAccess(deps, response.url, attempt, quizId);
+    }
   }
-  const start = formWithAction(root, QUIZ_START_PATH);
-  if (!start) throw noAttemptButton(deps, root, viewUrl);
-  let response = await deps.request(resolveUrl(deps.baseUrl, start.getAttribute("action") ?? ""), postInit(formFields(start)));
+  if (!response) {
+    const start = formWithAction(root, QUIZ_START_PATH);
+    if (!start) throw noAttemptButton(deps, root, viewUrl);
+    response = await deps.request(resolveUrl(deps.baseUrl, start.getAttribute("action") ?? ""), postInit(formFields(start)));
+  }
   let html = await response.text();
   // A timed or password-protected quiz answers with a pre-flight form instead of the attempt.
   if (!onPath(response.url, QUIZ_ATTEMPT_PATH)) {
@@ -173,7 +184,7 @@ export async function startQuizAttempt(deps: QuizDeps, quizId: number, options: 
     html = await response.text();
     if (!onPath(response.url, QUIZ_ATTEMPT_PATH)) throw deps.fail(`Moodle did not start the attempt: ${noticesOf(html) || "it returned the pre-flight form again"}`);
   }
-  return withoutForm(parseAttemptPage(html, response.url, deps));
+  return withoutForm(parseAttemptPage(html, response.url, deps, response.headers?.get("date")));
 }
 
 async function readQuizView(deps: QuizDeps, quizId: number): Promise<{ viewUrl: string; viewHtml: string; root: HTMLElement }> {
@@ -216,9 +227,20 @@ async function loadAttemptPage(deps: QuizDeps, attemptId: number, quizId: number
   const url = attemptUrl(deps.baseUrl, attemptId, quizId, page);
   const response = await deps.request(url);
   const html = await response.text();
-  if (onPath(response.url, QUIZ_REVIEW_PATH)) throw deps.usage(`Attempt ${attemptId} is already finished.`, `Its review is at ${response.url}`);
+  assertAttemptAccess(deps, response.url, attemptId, quizId);
   if (!onPath(response.url, QUIZ_ATTEMPT_PATH)) throw deps.fail(`Moodle did not show attempt ${attemptId}: ${noticesOf(html) || "it redirected elsewhere"}`);
-  return parseAttemptPage(html, response.url, deps);
+  return parseAttemptPage(html, response.url, deps, response.headers?.get("date"));
+}
+
+function assertAttemptAccess(deps: QuizDeps, url: string, attemptId: number, quizId: number): void {
+  if (onPath(url, QUIZ_START_PATH)) throw deps.usage(
+    `Moodle requires the access password again for attempt ${attemptId} in this session.`,
+    `Run moodle quiz start ${quizId} --password <password> to continue, or omit --password at a terminal to be prompted.`,
+  );
+  if (onPath(url, QUIZ_REVIEW_PATH) || onPath(url, QUIZ_SUMMARY_PATH)) throw deps.usage(
+    `Attempt ${attemptId} is already finished or its time ran out; Moodle may have submitted it automatically.`,
+    `Check the attempt at ${url}`,
+  );
 }
 
 // The form carries the sesskey; it never leaves this module.
@@ -256,8 +278,9 @@ export async function answerQuizQuestion(deps: QuizDeps, request: AnswerRequest)
   const replay = fields.map(([name, value]): Field => (name === "nextpage" ? [name, String(page.page)] : [name, value]));
   const response = await deps.request(page.form.action, postInit(replay));
   const html = await response.text();
+  assertAttemptAccess(deps, response.url, request.attemptId, request.quizId);
   if (!onPath(response.url, QUIZ_ATTEMPT_PATH)) throw deps.fail(`Moodle did not save the answer: ${noticesOf(html) || "it left the attempt page"}`);
-  const after = parseAttemptPage(html, response.url, deps);
+  const after = parseAttemptPage(html, response.url, deps, response.headers?.get("date"));
   const saved = after.questions.find(item => item.slot === question.slot);
   if (!saved || /not yet answered|not answered/iu.test(saved.state)) throw deps.fail(`Moodle accepted the post but still reports question ${request.question} as "${saved?.state || "missing"}".`);
   return withoutForm(after);
@@ -318,7 +341,7 @@ interface ParsedAttemptPage extends AttemptPage {
   form: ParsedForm;
 }
 
-export function parseAttemptPage(html: string, url: string, deps: Pick<QuizDeps, "baseUrl" | "fail">): ParsedAttemptPage {
+export function parseAttemptPage(html: string, url: string, deps: Pick<QuizDeps, "baseUrl" | "fail">, serverDate?: string | null): ParsedAttemptPage {
   const root = parse(html);
   const form = root.querySelector("form#responseform");
   if (!form) throw deps.fail(`Moodle did not render an attempt page: ${noticesOf(html) || "no response form found"}`);
@@ -347,6 +370,7 @@ export function parseAttemptPage(html: string, url: string, deps: Pick<QuizDeps,
     pages: Math.max(page + 1, ...navigation.map(entry => entry.page + 1)),
     questions,
     navigation,
+    ...attemptTimer(root, html, serverDate),
     url: attemptUrl(deps.baseUrl, attempt, quizId, page),
     form: { action: resolveUrl(deps.baseUrl, form.getAttribute("action") ?? ""), fields: formFields(form) },
   };
@@ -399,14 +423,16 @@ function parseAttemptQuestion(que: HTMLElement): AttemptQuestion {
     const html = tag(text) === "textarea";
     return { ...base, kind: "text", field: text.getAttribute("name")!, answer: html ? blockText(parse(text.textContent)) : cleanText(text.getAttribute("value") ?? "") };
   }
-  if (texts.length > 1 && only(texts) && isMultiFieldType(base.type)) {
+  if (texts.length > 1 && only(texts) && base.type === "formulas") {
     return {
       ...base,
       kind: "fields",
       fields: texts.map(text => {
         const html = tag(text) === "textarea";
+        const label = fieldLabel(que, text);
         return {
           name: text.getAttribute("name")!,
+          ...(label ? { label } : {}),
           kind: html ? "textarea" : "text",
           answer: html ? blockText(parse(text.textContent)) : cleanText(text.getAttribute("value") ?? ""),
         };
@@ -414,6 +440,25 @@ function parseAttemptQuestion(que: HTMLElement): AttemptQuestion {
     };
   }
   return base;
+}
+
+function fieldLabel(que: HTMLElement, field: HTMLElement): string {
+  const id = field.getAttribute("id");
+  return cleanText(id ? que.querySelectorAll("label[for]").find(label => label.getAttribute("for") === id)?.textContent : "");
+}
+
+function attemptTimer(root: HTMLElement, html: string, serverDate?: string | null): Pick<AttemptPage, "time_left_s" | "ends_at"> {
+  const serverNow = Date.parse(serverDate ?? "");
+  // The Date header avoids client clock skew; both values have one-second precision.
+  const now = Number.isFinite(serverNow) ? serverNow : Date.now();
+  const timer = root.querySelector("#quiz-timer, [data-endtime]");
+  const end = Number(timer?.getAttribute("data-endtime") ?? timer?.getAttribute("endtime"));
+  if (end > 0) return { time_left_s: Math.max(0, Math.ceil(end - now / 1000)), ends_at: new Date(end * 1000).toISOString() };
+  // Moodle initialises its timer from the server's remaining seconds, before JS fills the timer element.
+  const remaining = html.match(/M\.mod_quiz\.timer\.init\(\s*(?:Y\s*,\s*)?(-?\d+)/u)?.[1];
+  if (remaining === undefined) return {};
+  const seconds = Math.max(0, Number(remaining));
+  return { time_left_s: seconds, ends_at: new Date(now + seconds * 1000).toISOString() };
 }
 
 function option(que: HTMLElement, input: HTMLElement, index: number): AttemptOption {
@@ -425,9 +470,6 @@ function option(que: HTMLElement, input: HTMLElement, index: number): AttemptOpt
   return { key: String.fromCharCode(97 + index), field: input.getAttribute("name") ?? "", value: input.getAttribute("value") ?? "", text, chosen: input.hasAttribute("checked") };
 }
 
-function isMultiFieldType(type: string): boolean {
-  return type === "formulas" || type === "calculatedmulti";
-}
 
 function splitFieldAnswers(value: string): string[] {
   const trimmed = value.trim();
@@ -509,6 +551,10 @@ export function noticesOf(html: string): string {
     if (text && !texts.includes(text)) texts.push(text);
   }
   return texts.join(" ");
+}
+
+function resumeControl(root: HTMLElement): HTMLElement | null {
+  return formWithAction(root, QUIZ_ATTEMPT_PATH) ?? root.querySelector(`a[href*="${QUIZ_ATTEMPT_PATH}?"]`);
 }
 
 function formWithAction(root: HTMLElement, path: string): HTMLElement | null {

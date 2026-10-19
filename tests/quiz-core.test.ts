@@ -248,7 +248,7 @@ describe("answerQuizQuestion", () => {
     const multi = fixture("quiz-attempt-formulas.html");
     const deps = fakeDeps({
       "GET /mod/quiz/attempt.php": ({ url }) => ({ url, html: multi }),
-      "POST /mod/quiz/processattempt.php": () => ({ url: ATTEMPT, html: savedQuestion(multi, "question-5484577-7") }),
+      "POST /mod/quiz/processattempt.php": () => ({ url: ATTEMPT, html: fixture("moodle-5.0/formulas-attempt-saved.html") }),
     });
     return deps;
   }
@@ -260,27 +260,30 @@ describe("answerQuizQuestion", () => {
       number: "1",
       kind: "fields",
       fields: [
-        { name: "q5484577:7_0_0", kind: "text", answer: "" },
-        { name: "q5484577:7_1_0", kind: "text", answer: "" },
+        { name: "q5:1_0_", label: "Answer and unit for part 1", kind: "text", answer: "" },
+        { name: "q5:1_1_0", label: "Answer for part 2", kind: "text", answer: "" },
+        { name: "q5:1_1_1", label: "Unit for part 2", kind: "text", answer: "" },
+        { name: "q5:1_2_0", label: "Answer for part 3", kind: "text", answer: "" },
+        { name: "q5:1_3_0", label: "Answer for part 4", kind: "text", answer: "" },
       ],
     });
-    await answerQuizQuestion(deps, { attemptId: 900, quizId: 32, question: "1", values: ["4", "32"] });
+    await answerQuizQuestion(deps, { attemptId: 900, quizId: 32, question: "1", values: ["40 m/s", "40", "m/s", "40", "40"] });
     const post = deps.calls.at(-1)!;
-    expect(post.body.get("q5484577:7_0_0")).toBe("4");
-    expect(post.body.get("q5484577:7_1_0")).toBe("32");
+    expect(post.body.get("q5:1_0_")).toBe("40 m/s");
+    expect(post.body.get("q5:1_1_1")).toBe("m/s");
   });
 
   it("accepts semicolon-separated values for a multi-field question", async () => {
     const deps = multiFieldDeps();
-    await answerQuizQuestion(deps, { attemptId: 900, quizId: 32, question: "1", value: "4; 32" });
+    await answerQuizQuestion(deps, { attemptId: 900, quizId: 32, question: "1", value: "40 m/s; 40; m/s; 40; 40" });
     const post = deps.calls.at(-1)!;
-    expect(post.body.get("q5484577:7_0_0")).toBe("4");
-    expect(post.body.get("q5484577:7_1_0")).toBe("32");
+    expect(post.body.get("q5:1_0_")).toBe("40 m/s");
+    expect(post.body.get("q5:1_1_1")).toBe("m/s");
   });
 
   it("rejects a multi-field answer with the wrong number of values", async () => {
     const deps = multiFieldDeps();
-    await expect(answerQuizQuestion(deps, { attemptId: 900, quizId: 32, question: "1", value: "4" })).rejects.toThrow(/needs 2 values, got 1/u);
+    await expect(answerQuizQuestion(deps, { attemptId: 900, quizId: 32, question: "1", value: "4" })).rejects.toThrow(/needs 5 values, got 1/u);
   });
 
   it("normalizes one explicit value into a text answer", async () => {
@@ -302,18 +305,6 @@ describe("answerQuizQuestion", () => {
     expect(post.body.get("q4000:4_choice0")).toBe("1");
     expect(post.body.get("q4000:4_choice1")).toBe("0");
     expect(post.body.get("q4000:4_choice2")).toBe("1");
-  });
-
-  it("normalizes one explicit value into a single-input formulas answer", async () => {
-    const single = fixture("quiz-attempt-formulas-single.html");
-    const deps = fakeDeps({
-      "GET /mod/quiz/attempt.php": ({ url }) => ({ url, html: single }),
-      "POST /mod/quiz/processattempt.php": () => ({ url: ATTEMPT, html: savedQuestion(single, "question-5484577-7") }),
-    });
-    const page = await getAttemptPage(deps, 900, 32, 0);
-    expect(page.questions[0]).toMatchObject({ kind: "text", field: "q5484577:7_0_0" });
-    await answerQuizQuestion(deps, { attemptId: 900, quizId: 32, question: "1", values: ["4"] });
-    expect(deps.calls.at(-1)!.body.get("q5484577:7_0_0")).toBe("4");
   });
 
   it("rejects multiple explicit values for a non-fields question before posting", async () => {

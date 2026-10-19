@@ -408,6 +408,7 @@ function formatTimestamp(value: number): string {
 
 export function formatAttemptPage(page: AttemptPage): string {
   const lines = [`${page.name}  attempt ${page.attempt}  page ${page.page + 1} of ${page.pages}`, ""];
+  if (page.time_left_s !== undefined) lines.splice(1, 0, `Time left: ${Math.floor(page.time_left_s / 60)}m ${page.time_left_s % 60}s · Ends: ${page.ends_at}`);
   for (const question of page.questions) lines.push(...attemptQuestionLines(question), "");
   const elsewhere = page.navigation.filter(entry => entry.page !== page.page && entry.number !== "i");
   if (elsewhere.length) lines.push(`Other pages: ${elsewhere.map(entry => `Q${entry.number} p${entry.page + 1} (${entry.state.toLowerCase()})`).join(", ")}`);
@@ -425,7 +426,7 @@ function attemptQuestionLines(question: AttemptQuestion): string[] {
   if (question.kind === "text") lines.push(`  Answer: ${question.answer || "(empty)"}`);
   if (question.kind === "fields") {
     for (const [index, field] of (question.fields ?? []).entries()) {
-      lines.push(`  Answer ${index + 1}: ${field.answer || "(empty)"}`);
+      lines.push(`  ${field.label || `Answer ${index + 1}`}: ${field.answer || "(empty)"}`);
     }
   }
   if (question.kind === "unsupported") lines.push(`  (${question.type} questions can only be answered in a browser)`);

@@ -450,7 +450,9 @@ function parseQuizQuestion(que: HTMLElement): QuizQuestion {
   }).filter(Boolean) ?? [];
   // Short answers and numbers sit in a read-only input's value; the gap layout puts that input inside .qtext.
   const typed = cleanText(que.querySelector('input[type="text"], input[type="number"]')?.getAttribute("value") ?? "");
-  const response = picked.length ? picked.join("; ") : typed || blockText(answer?.querySelector(".qtype_essay_response") ?? answer);
+  const selects = que.querySelectorAll("select");
+  const selected = selects.map(select => cleanNodeText(select.querySelector("option[selected]"))).filter(Boolean);
+  const response = selects.length ? selected.join("; ") : picked.length ? picked.join("; ") : typed || blockText(answer?.querySelector(".qtype_essay_response") ?? answer);
   return {
     number: Number(cleanNodeText(que.querySelector(".qno")) || 0),
     type: que.classList.value[1] ?? "",
