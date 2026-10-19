@@ -3,7 +3,8 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { MoodleAPIError } from "../src/errors.js";
-import { ForumModule, filterDiscussionToPost, parseDiscussionReference, parseForumReference } from "../src/forum.js";
+import { ForumModule } from "../src/moodle-forum-core.js";
+import { filterDiscussionToPost, parseDiscussionReference, parseForumReference } from "../src/forum.js";
 import {
   formatForumActivities,
   formatForumDiscussion,
