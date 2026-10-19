@@ -14,6 +14,8 @@ import { parseMoodleConfig } from "./scraper.js";
  * or the site blocks the anonymous service) we follow the pasted address the way a
  * browser would: Moodle's first redirect for a signed-out visitor is always
  * `{wwwroot}/login/index.php`, and any Moodle page it lands on prints `M.cfg.wwwroot`.
+ * When following ends off the site anyway, the paths it passed through on the way are
+ * asked for the site config too.
  */
 
 export type DiscoverySource = "site_config" | "login_redirect" | "page";
@@ -128,12 +130,16 @@ async function askSite(root: string, fetcher: typeof fetch, timeoutMs: number): 
 async function followAddress(input: URL, fetcher: typeof fetch, timeoutMs: number): Promise<Discovery> {
   let current = new URL(input.href);
   current.hash = "";
+  // Same-host hops a bare host passes through on the way out, such as /moodle/ before an SSO
+  // plugin sends the visitor straight to its provider: each names a path Moodle may live under.
+  const hops: URL[] = [];
+  const giveUp = async (outcome: Discovery): Promise<Discovery> => (await askHops(input, hops, fetcher, timeoutMs)) ?? outcome;
   for (let hop = 0; hop <= MAX_REDIRECTS; hop += 1) {
     let response: Response;
     try {
       response = await fetcher(current.href, { redirect: "manual", signal: AbortSignal.timeout(timeoutMs) });
     } catch (error) {
-      return hop === 0 ? { kind: "unreachable", message: describeFailure(current.host, error) } : { kind: "redirected", host: current.host };
+      return hop === 0 ? { kind: "unreachable", message: describeFailure(current.host, error) } : giveUp({ kind: "redirected", host: current.host });
     }
 
     const location = response.status >= 300 && response.status < 400 ? response.headers.get("location") : null;
@@ -146,7 +152,7 @@ async function followAddress(input: URL, fetcher: typeof fetch, timeoutMs: numbe
       // server answers with index.php, so a forced SSO hop never shows the script name.
       const root = loginRoot(next);
       if (root !== null) return confirm(input, root, fetcher, timeoutMs, "login_redirect");
-      current = next;
+      current = follow(next, hops, input);
       continue;
     }
 
@@ -156,9 +162,48 @@ async function followAddress(input: URL, fetcher: typeof fetch, timeoutMs: numbe
     const wwwroot = parseMoodleConfig(html).wwwroot;
     const declared = typeof wwwroot === "string" ? cleanRoot(wwwroot) : null;
     if (declared) return confirm(input, declared, fetcher, timeoutMs, "page");
-    return current.host === input.host ? { kind: "not_found", status: response.status } : { kind: "redirected", host: current.host };
+    // Institution front pages often forward with a meta refresh instead of a 3xx.
+    const refresh = metaRefresh(html, current);
+    if (refresh) {
+      current = follow(refresh, hops, input);
+      continue;
+    }
+    return giveUp(current.host === input.host ? { kind: "not_found", status: response.status } : { kind: "redirected", host: current.host });
   }
-  return { kind: "redirected", host: current.host };
+  return giveUp({ kind: "redirected", host: current.host });
+}
+
+function follow(next: URL, hops: URL[], input: URL): URL {
+  next.hash = "";
+  if (next.host === input.host) hops.push(next);
+  return next;
+}
+
+/** Ask the install-root candidates of every same-host hop that the pasted address did not already cover. */
+async function askHops(input: URL, hops: URL[], fetcher: typeof fetch, timeoutMs: number): Promise<Discovery | null> {
+  const asked = new Set(candidateRoots(input));
+  const roots = [...new Set(hops.flatMap(hop => candidateRoots(hop)))].filter(root => !asked.has(root)).slice(0, MAX_CANDIDATES);
+  if (!roots.length) return null;
+  const probes = await Promise.allSettled(roots.map(root => askSite(root, fetcher, timeoutMs)));
+  for (const probe of probes) {
+    if (probe.status === "fulfilled" && probe.value) return classify(input, probe.value.root, probe.value.sitename, "site_config");
+  }
+  return null;
+}
+
+function metaRefresh(html: string, base: URL): URL | null {
+  for (const tag of html.match(/<meta\b[^>]*>/giu) ?? []) {
+    if (!/http-equiv\s*=\s*["']?refresh\b/iu.test(tag)) continue;
+    const target = /content\s*=\s*(["'])\s*\d*\s*[;,]\s*url\s*=\s*['"]?([^'">]+?)['"]?\s*\1/iu.exec(tag)?.[2];
+    if (!target) return null;
+    try {
+      const url = new URL(target.trim(), base);
+      return url.protocol === "http:" || url.protocol === "https:" ? url : null;
+    } catch {
+      return null;
+    }
+  }
+  return null;
 }
 
 function loginRoot(url: URL): string | null {

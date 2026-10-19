@@ -12,9 +12,11 @@ interface FakeSite {
   wwwroot?: string;
   publicConfig?: boolean;
   /** The host's own front page: a redirect into Moodle, or an unrelated page. */
-  front?: "redirect" | "login" | "other";
+  front?: "redirect" | "login" | "refresh" | "other";
   /** Signed-out visitors go from the login page straight on to a sign-in provider. */
   sso?: boolean;
+  /** An SSO plugin's pre-login hook sends signed-out visitors to the provider from any page. */
+  ssoEverywhere?: boolean;
 }
 
 function fakeMoodle(site: FakeSite = {}): { fetch: typeof fetch; calls: string[] } {
@@ -35,9 +37,12 @@ function fakeMoodle(site: FakeSite = {}): { fetch: typeof fetch; calls: string[]
     if (path === `${root}/login/index.php` || path === `${root}/login/`) {
       return site.sso ? redirect(`${IDP}/authorize`) : html(`<script>M.cfg = {"wwwroot":"${wwwroot}","theme":"boost"};</script>`);
     }
-    if (path.startsWith(`${root}/`)) return redirect(`${root}/login/index.php`);
+    if (path.startsWith(`${root}/`)) return redirect(site.ssoEverywhere ? `${IDP}/authorize` : `${root}/login/index.php`);
     if (url.pathname === "/" && site.front === "redirect") return redirect(`${root}/`);
     if (url.pathname === "/" && site.front === "login") return redirect(`${root}/login/`);
+    if (url.pathname === "/" && site.front === "refresh") {
+      return html(`<html><head><META CONTENT="0; URL='${new URL(root).pathname}/'" HTTP-EQUIV="Refresh"></head></html>`);
+    }
     if (url.pathname === "/" && site.front === "other") return html("<html>University home</html>");
     return new Response("Not found", { status: 404, headers: { "content-type": "text/html" } });
   }) as typeof fetch;
@@ -119,6 +124,18 @@ describe("discoverSite", () => {
       kind: "found",
       site: { root: ROOT, source: "login_redirect" },
     });
+  });
+
+  it("asks the paths a bare host passed through when an SSO plugin skips the login page", async () => {
+    const { fetch } = fakeMoodle({ front: "redirect", ssoEverywhere: true });
+    await expect(discoverSite(HOST, { fetch })).resolves.toMatchObject({ kind: "found", site: { root: ROOT, source: "site_config" } });
+    const blocked = fakeMoodle({ front: "redirect", ssoEverywhere: true, publicConfig: false });
+    await expect(discoverSite(HOST, { fetch: blocked.fetch })).resolves.toEqual({ kind: "redirected", host: "idp.example.org" });
+  });
+
+  it("follows a front page that forwards with a meta refresh", async () => {
+    const { fetch } = fakeMoodle({ front: "refresh" });
+    await expect(discoverSite(HOST, { fetch })).resolves.toMatchObject({ kind: "found", site: { root: ROOT, source: "site_config" } });
   });
 
   it("reads the login redirect when the anonymous service is blocked and sign-in is forced", async () => {
