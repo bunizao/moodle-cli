@@ -22,7 +22,7 @@ export function isoTime(epoch: number | undefined, timezone = "UTC"): string | u
   return `${get("year")}-${get("month")}-${get("day")}T${get("hour")}:${get("minute")}:${get("second")}${get("timeZoneName").replace("GMT", "") || "+00:00"}`;
 }
 export function unitRow(c: Course, tz = "UTC") { return { id: c.id, code: c.shortname, name: c.fullname, start: isoTime(c.startdate, tz), start_at: c.startdate || undefined, end: isoTime(c.enddate, tz), end_at: c.enddate, hidden: c.visible === false ? true : undefined }; }
-export function activityRow(a: Activity, section?: Section) { return { id: a.id, name: a.name, type: a.modname, section_id: section?.id, description: a.description, files: a.file_entries, hidden: a.visible === false ? true : undefined }; }
+export function activityRow(a: Activity, section?: Section) { return { id: a.id, name: a.name, type: a.modname, section_id: section?.id, description: a.description, files: a.file_entries, completion: a.completion, available: a.available, availability_reason: a.availability_reason, hidden: a.visible === false ? true : undefined }; }
 export function itemRow(a: ActivityDetail & { type: string }) {
   const { course_id, file_entries, ...detail } = a as ActivityDetail & { type: string; course_id?: number; file_entries?: unknown[] };
   return { ...detail, unit_id: course_id, files: file_entries };

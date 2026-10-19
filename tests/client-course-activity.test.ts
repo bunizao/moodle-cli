@@ -333,6 +333,7 @@ describe("MoodleClient course/activity modules", () => {
   it("falls back to the modern course-format state service", async () => {
     installFetch([
       dashboardRoute,
+      request => request.url === `${BASE_URL}/course/view.php?id=101` ? htmlResponse("<html></html>") : undefined,
       ajaxErrorRoute("core_course_get_contents"),
       ajaxRoute("core_courseformat_get_state", JSON.stringify({
         section: [
@@ -371,7 +372,7 @@ describe("MoodleClient course/activity modules", () => {
         visible: false,
         summary: "",
         activities: [
-          { id: 23, name: "Hidden page", modname: "page", url: `${BASE_URL}/mod/page/view.php?id=23`, visible: false, description: "" },
+          { id: 23, name: "Hidden page", modname: "page", url: `${BASE_URL}/mod/page/view.php?id=23`, visible: false, description: "", available: false, availability_reason: "" },
         ],
       },
       {
@@ -623,6 +624,7 @@ describe("MoodleClient course/activity modules", () => {
     await expect(client.getActivity(24)).resolves.toEqual({
       id: 24,
       name: "Reading list",
+      course_id: 101,
       modname: "lti",
       url: `${BASE_URL}/mod/lti/view.php?id=24`,
       visible: true,
