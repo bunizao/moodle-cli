@@ -1,0 +1,124 @@
+name: Preview build
+
+# Packages every pull request so a tester can install exactly that commit. The token here
+# is read-only, so a fork's code never runs with write access; preview-comment.yml posts
+# the install instructions afterwards without checking anything out.
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: preview-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  package:
+    name: Package preview
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: npm ci
+
+      # The next patch with a prerelease tag: the update check never calls the release this
+      # was built on newer, and `moodle --version` names the pull request and commit.
+      - name: Stamp preview version
+        id: version
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          node - <<'JS' >> "$GITHUB_OUTPUT"
+          const fs = require("node:fs");
+          const pkg = JSON.parse(fs.readFileSync("package.json", "utf8"));
+          const [major, minor, patch] = pkg.version.split("-")[0].split(".").map(Number);
+          const label = process.env.PR_NUMBER ? `pr.${process.env.PR_NUMBER}` : "dev";
+          const version = `${major}.${minor}.${patch + 1}-${label}.g${process.env.HEAD_SHA.slice(0, 7)}`;
+          pkg.version = version;
+          fs.writeFileSync("package.json", `${JSON.stringify(pkg, null, 2)}\n`);
+          const source = fs.readFileSync("src/version.ts", "utf8");
+          const stamped = source.replace(/VERSION = "[^"]+"/u, `VERSION = "${version}"`);
+          if (stamped === source) throw new Error("src/version.ts has no VERSION to stamp");
+          fs.writeFileSync("src/version.ts", stamped);
+          console.log(`version=${version}`);
+          JS
+
+      - name: Build
+        run: npm run build
+
+      - name: Pack npm package
+        run: |
+          mkdir -p preview
+          npm pack --pack-destination preview
+
+      - name: Smoke test packed CLI
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          tmp="$(mktemp -d)"
+          npm install --prefix "$tmp" "./preview/moodle-cli-${VERSION}.tgz" >/dev/null
+          test "$("$tmp/node_modules/.bin/moodle" --version)" = "$VERSION"
+
+      - name: Build standalone binaries
+        run: |
+          bun scripts/build-standalone.mjs preview/moodle-darwin-arm64 bun-darwin-arm64
+          bun scripts/build-standalone.mjs preview/moodle-linux-x64 bun-linux-x64
+
+      - name: Upload npm package
+        uses: actions/upload-artifact@v4
+        with:
+          name: moodle-cli-${{ steps.version.outputs.version }}-npm
+          path: preview/moodle-cli-${{ steps.version.outputs.version }}.tgz
+          retention-days: 14
+          if-no-files-found: error
+
+      - name: Upload macOS binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: moodle-cli-${{ steps.version.outputs.version }}-darwin-arm64
+          path: preview/moodle-darwin-arm64
+          retention-days: 14
+          if-no-files-found: error
+
+      - name: Upload Linux binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: moodle-cli-${{ steps.version.outputs.version }}-linux-x64
+          path: preview/moodle-linux-x64
+          retention-days: 14
+          if-no-files-found: error
+
+      - name: Summarize
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          RUN_ID: ${{ github.run_id }}
+          REPO: ${{ github.repository }}
+        run: |
+          cat >> "$GITHUB_STEP_SUMMARY" <<EOF
+          ### Preview \`${VERSION}\`
+
+          \`\`\`sh
+          gh run download ${RUN_ID} -R ${REPO} -n moodle-cli-${VERSION}-npm
+          npm install -g ./moodle-cli-${VERSION}.tgz
+          \`\`\`
+
+          Back to the release: \`npm install -g moodle-cli@latest\`
+          EOF
