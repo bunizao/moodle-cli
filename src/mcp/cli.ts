@@ -130,14 +130,20 @@ export function createMcpCommandService(options: McpCommandServiceOptions = {}):
   return new DefaultMcpCommandService(options);
 }
 
+// The install path joins the host so two installs on one host get their own profile and
+// Worker; a root install keeps the host-only name existing deployments were made under.
+function siteSlug(moodleRoot: string): string {
+  const url = new URL(moodleRoot);
+  return `${url.hostname}${url.pathname}`.toLowerCase();
+}
+
 export function deriveMcpProfile(moodleOrigin: string): string {
-  const host = new URL(moodleOrigin).hostname.toLowerCase();
-  const profile = host.replace(/[^a-z0-9_-]+/gu, "-").replace(/^-+|-+$/gu, "");
+  const profile = siteSlug(moodleOrigin).replace(/[^a-z0-9_-]+/gu, "-").replace(/^-+|-+$/gu, "");
   return truncateName(profile || "moodle", 64);
 }
 
 export function deriveMcpWorkerName(moodleOrigin: string): string {
-  const host = new URL(moodleOrigin).hostname.toLowerCase().replace(/[^a-z0-9-]+/gu, "-").replace(/^-+|-+$/gu, "");
+  const host = siteSlug(moodleOrigin).replace(/[^a-z0-9-]+/gu, "-").replace(/^-+|-+$/gu, "");
   return truncateName(`moodle-${host || "site"}-mcp`, 63);
 }
 

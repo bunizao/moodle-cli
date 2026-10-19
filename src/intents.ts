@@ -4,6 +4,7 @@ import { intentContracts, type Intent } from "./intent-contract.js";
 import { currentSection, ReferenceError, resolveSection, resolveUnit, searchSections, sectionLabels, sectionTree, splitUnitPhrase, tokensMatch, withChildSections, type SearchMatch } from "./resolve.js";
 import { activityRow, dueRow, isoTime, itemRow, postRow, stripEmpty, timezoneFor, unitRow } from "./results.js";
 import { hasGrade, pageGradeReports } from "./grades.js";
+import { isSiteUrl } from "./site-root.js";
 
 // Bounded fan-out: these calls hit a live Moodle, so unit lists run a few at a time
 // instead of all at once or one after another.
@@ -34,8 +35,7 @@ export function createIntentService(gateway: MoodleGateway, now = () => Date.now
   const course = async (ref: string | number) => {
     if (String(ref).includes("://")) {
       const url = new URL(String(ref));
-      const site = new URL((await user()).siteurl);
-      if (url.origin !== site.origin) throw new ReferenceError("not_found", "The URL belongs to a different Moodle site.", []);
+      if (!isSiteUrl((await user()).siteurl, url)) throw new ReferenceError("not_found", "The URL belongs to a different Moodle site.", []);
     }
     return resolveUnit(ref, await courses());
   };
@@ -74,7 +74,7 @@ export function createIntentService(gateway: MoodleGateway, now = () => Date.now
     if (/^\d+$/u.test(raw)) return Number(raw);
     if (raw.includes("://")) {
       const url = new URL(raw);
-      if (url.origin !== new URL((await user()).siteurl).origin || !/\/mod\/[^/]+\/view.php$/u.test(url.pathname)) throw new ReferenceError("not_found", "Use an activity URL from the configured Moodle site.", []);
+      if (!isSiteUrl((await user()).siteurl, url) || !/\/mod\/[^/]+\/view.php$/u.test(url.pathname)) throw new ReferenceError("not_found", "Use an activity URL from the configured Moodle site.", []);
       const id = Number(url.searchParams.get("id"));
       if (Number.isSafeInteger(id) && id > 0) return id;
       throw new ReferenceError("not_found", "The activity URL has no valid id.", []);

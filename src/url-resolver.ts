@@ -1,3 +1,4 @@
+import { isSiteUrl } from "./site-root.js";
 import { resolveUnit } from "./resolve.js";
 import { UsageError } from "./errors.js";
 
@@ -44,9 +45,11 @@ export function resolveTopLevelUrl(
     throw new UsageError(`No such command '${target}'.`);
   }
 
-  const configuredHost = new URL(baseUrl).host.toLowerCase();
-  if (parsed.host.toLowerCase() !== configuredHost) {
-    throw new UsageError(`URL host '${parsed.host.toLowerCase()}' does not match configured Moodle site '${configuredHost}'.`);
+  // Scheme is not compared: an http link to an https site still names the same page.
+  const site = new URL(baseUrl);
+  site.protocol = parsed.protocol;
+  if (!isSiteUrl(site.href, parsed)) {
+    throw new UsageError(`URL '${parsed.origin}${parsed.pathname}' is not part of the configured Moodle site '${baseUrl}'.`);
   }
 
   const path = parsed.pathname.replace(/\/$/, "");

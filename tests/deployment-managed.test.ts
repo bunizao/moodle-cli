@@ -171,9 +171,12 @@ describe("ManagedMcpDeployment planning", () => {
 
   it("rejects invalid roots and workers owned by another deployment", async () => {
     const manager = new ManagedMcpDeployment(dependencies());
-    await expect(manager.plan({ ...INTENT, moodleOrigin: "https://moodle.example.edu/login" })).rejects.toMatchObject({
-      code: "INVALID_INTENT",
-    });
+    for (const moodleOrigin of ["http://moodle.example.edu", "https://moodle.example.edu/moodle?x=1", "https://moodle.example.edu/#top"]) {
+      await expect(manager.plan({ ...INTENT, moodleOrigin })).rejects.toMatchObject({ code: "INVALID_INTENT" });
+    }
+    // An install path passes validation; the fixture's receipt then decides ownership.
+    const subdirectory = await manager.plan({ ...INTENT, moodleOrigin: "https://moodle.example.edu/elearning/moodle" }).catch((error: unknown) => error);
+    expect((subdirectory as { code?: string }).code).not.toBe("INVALID_INTENT");
 
     const conflict = new ManagedMcpDeployment(dependencies({
       remote: { ...REMOTE, ownershipTag: "another-deployment" },

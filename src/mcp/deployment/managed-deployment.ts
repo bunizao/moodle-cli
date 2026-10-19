@@ -844,12 +844,13 @@ function validateIntent(intent: DeploymentIntent): void {
     throw new DeploymentPlanError("INVALID_INTENT", "Worker name is invalid");
   }
   try {
-    const origin = new URL(intent.moodleOrigin);
-    if (origin.protocol !== "https:" || origin.pathname !== "/") {
-      throw new Error("invalid origin");
+    // A site root: the origin plus the install path, if Moodle lives under one.
+    const root = new URL(intent.moodleOrigin);
+    if (root.protocol !== "https:" || root.search || root.hash || root.username || root.password) {
+      throw new Error("invalid site root");
     }
   } catch {
-    throw new DeploymentPlanError("INVALID_INTENT", "Moodle origin must be an HTTPS root URL");
+    throw new DeploymentPlanError("INVALID_INTENT", "The Moodle site must be an HTTPS address with no query or fragment");
   }
   if (!intent.accountId || !intent.releaseDigest) {
     throw new DeploymentPlanError("INVALID_INTENT", "Cloudflare account and release digest are required");

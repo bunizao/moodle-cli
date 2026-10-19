@@ -70,7 +70,7 @@ moodle auth login
 moodle
 ```
 
-On first use, enter your Moodle site origin, such as `https://moodle.example.edu`. `moodle-cli` validates it and saves it to `~/.config/moodle-cli/config.yaml`. If the CLI cannot find an active session, it opens your university's sign-in page and waits for you to finish.
+On first use, paste the address of any Moodle page: the front page, your dashboard, or a course. `moodle-cli` asks the site for its own address, including any path such as `/moodle`, and saves it to `~/.config/moodle-cli/config.yaml`. Run `moodle auth site <address>` to change it later. If the CLI cannot find an active session, it opens your university's sign-in page and waits for you to finish.
 
 On macOS the cookie store sits behind Full Disk Access, which is granted to your terminal application rather than to the CLI. If `moodle doctor` reports that the store cannot be opened, either grant that access and restart the terminal, or hand the cookie over once:
 
@@ -329,7 +329,7 @@ Version `0.7.0` supports MCP `2026-07-28`, a stateless compatibility lane for `2
 
 | Variable | Purpose |
 | --- | --- |
-| `MOODLE_BASE_URL` | Set the Moodle site origin without writing a config file. |
+| `MOODLE_BASE_URL` | Set the Moodle site address, with its path if it has one, without writing a config file. |
 | `MOODLE_CONFIG` | Use another YAML config file. |
 | `MOODLE_TOKEN` | Provide a `MoodleSession` cookie value in a non-browser environment. |
 | `MOODLE_SESSION` | Compatibility alias for `MOODLE_TOKEN`. |

@@ -7,7 +7,7 @@ import { createProgressReporter } from "./mcp/deployment/progress.js";
 import { mkdir, readFile, rm, readdir, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { DefaultRenewalIntegration } from "./mcp/renewal/index.js";
-import { CACHE_DIR_NAME, CONFIG_DIR_NAME, MOODLE_SESSION_COOKIE_PREFIX } from "./constants.js";
+import { CACHE_DIR_NAME, CONFIG_DIR_NAME, ENV_MOODLE_BASE_URL, ENV_MOODLE_URL, MOODLE_SESSION_COOKIE_PREFIX } from "./constants.js";
 import { runtimeSupportsCookies } from "./mcp/self-command.js";
 import { createMoodleGateway } from "./mcp/gateway.js";
 import { createIntentService, type IntentService } from "./intents.js";
@@ -48,8 +48,9 @@ import { fileURLToPath } from "node:url";
 import { createMoodleClient, type MoodleClient } from "./client.js";
 import { refreshLatestVersion, runUpdate, startupUpdateNotice } from "./update-check.js";
 import { isNewerVersion } from "./update-core.js";
-import { loadConfig } from "./config.js";
-import { AuthError, CliError, MoodleAPIError, UsageError, asNetworkError } from "./errors.js";
+import { correctBaseUrl, loadConfig, saveBaseUrl } from "./config.js";
+import { discoverSite } from "./site-discovery.js";
+import { AuthError, CliError, ConfigError, MoodleAPIError, UsageError, asNetworkError } from "./errors.js";
 import {
   formatActivityDetail,
   formatActivityList,
@@ -104,6 +105,7 @@ import { looksLikeUrl, resolveTopLevelUrl } from "./url-resolver.js";
 import { createMcpCommandService, type McpCommandOutput, type McpCommandService } from "./mcp/cli.js";
 import { describeProgram } from "./command-contract.js";
 import { ONBOARDING_COPY } from "./mcp/deployment/onboarding.js";
+import { isSiteUrl } from "./site-root.js";
 
 interface CliIO {
   stdout?: NodeJS.WriteStream | { write(chunk: string): boolean };
@@ -190,15 +192,16 @@ export function buildProgram(io: CliIO = {}): Command {
   // then the command's own default.
   const count = (key: "limit" | "days", local?: number, fallback?: number) => (program.opts()[key] as number | undefined) ?? local ?? fallback;
 
+  const configOptions = () => ({ env: io.env, cwd: io.cwd, homeDir: io.homeDir, stdin: io.stdin, stderr: stderr as NodeJS.WritableStream, fetch: io.fetchImpl });
   const runtime: Runtime = {
     client: null,
     busy: false,
     screen,
     count,
-    baseUrl: async () => (await loadConfig({ env: io.env, cwd: io.cwd, homeDir: io.homeDir, stdin: io.stdin, stderr: stderr as NodeJS.WritableStream, fetch: io.fetchImpl })).baseUrl,
+    baseUrl: async () => (await loadConfig(configOptions())).baseUrl,
     getClient: async () => {
       if (!runtime.client) {
-        const baseUrl = await runtime.baseUrl();
+        let baseUrl = await runtime.baseUrl();
         // One indicator for the whole command, however many requests run at once.
         let inflight = 0;
         let displayed = false;
@@ -228,6 +231,27 @@ export function buildProgram(io: CliIO = {}): Command {
         try {
           runtime.client = await connect();
         } catch (error) {
+          // A saved address that is not the install root fails here first; the site says
+          // where it really lives, so fix the address before asking anyone to sign in.
+          const correction = await correctBaseUrl(baseUrl, configOptions());
+          if (correction?.kind === "absent") {
+            // A firewall page can look like "not Moodle", so a person still gets the sign-in
+            // attempt; an agent gets the likelier cause instead of an auth error it cannot fix.
+            const hint = "Run `moodle auth site <address of any Moodle page>`, or check that the site is up.";
+            if (!human()) throw new ConfigError(`No Moodle answered at ${correction.from}.`, hint);
+            stderr.write(`No Moodle answered at ${correction.from}. ${hint}\n`);
+          } else if (correction?.envVar) {
+            throw new ConfigError(`${correction.envVar} points to ${correction.from}, but Moodle lives at ${correction.to}.`, `Set ${correction.envVar}=${correction.to}`);
+          } else if (correction) {
+            stderr.write(`Moodle lives at ${correction.to}; updated ${correction.savedTo}.\n`);
+            baseUrl = correction.to;
+            try {
+              runtime.client = await connect();
+              return runtime.client;
+            } catch (retryError) {
+              error = retryError;
+            }
+          }
           // A person with no session is walked through the browser sign-in once; an agent gets the auth error.
           if (!(error instanceof AuthError) || !human()) throw error;
           await signIn(baseUrl);
@@ -396,7 +420,7 @@ export function buildProgram(io: CliIO = {}): Command {
   dev.command("fetch").description("Print a same-site page as HTML with the session; sesskey values are redacted.").argument("<url>")
     .action(async (url: string) => {
       const client = await runtime.getClient();
-      if (new URL(url).origin !== new URL(client.baseUrl).origin) throw new UsageError("The URL must belong to the configured Moodle site.");
+      if (!isSiteUrl(client.baseUrl, url)) throw new UsageError("The URL must belong to the configured Moodle site.");
       const html = await (await client.requestAbsolute(url)).text();
       stdout.write(`${redactSesskey(html)}\n`);
     });
@@ -1004,6 +1028,39 @@ export function buildProgram(io: CliIO = {}): Command {
       await runtime.output({ ...status, runtime: note }, () => `${formatAuthStatus(status)}\n${note}`, options);
     },
   );
+
+  addOutputOptions(
+    auth
+      .command("site")
+      .description("Find the Moodle site from any page address and save it; with no address, show the saved one.")
+      .summary("Find and save the Moodle site")
+      .argument("[address]", "Any Moodle page address: front page, dashboard, course, or login page"),
+  ).action(async (address: string | undefined, options: OutputCommandOptions) => {
+    if (!address) {
+      const baseUrl = await runtime.baseUrl();
+      await runtime.output({ base_url: baseUrl }, () => baseUrl, options, false);
+      return;
+    }
+    const result = await discoverSite(address, { fetch: io.fetchImpl });
+    if (result.kind === "redirected") {
+      throw new ConfigError(`${address} leads to ${result.host}, which is not Moodle.`, "Sign in, then pass the address of any Moodle page you land on.");
+    }
+    if (result.kind === "unreachable") throw new ConfigError(result.message);
+    if (result.kind === "not_found") {
+      throw new ConfigError(`No Moodle found at ${address}.`, "Pass the address of any page inside Moodle, such as a course page.");
+    }
+    if (result.kind === "elsewhere" && !await confirm({ summary: `${address} leads to Moodle at ${result.site.root}. Save that address.` }, { yes: Boolean(program.opts().yes), dryRun: false, interactive: human() })) {
+      throw new ConfigError(`Moodle reports its address as ${result.site.root}.`, `Run moodle auth site ${result.site.root} --yes to use it.`);
+    }
+    const savedTo = await saveBaseUrl(result.site.root, configOptions());
+    const env = io.env ?? process.env;
+    const overriddenBy = [ENV_MOODLE_BASE_URL, ENV_MOODLE_URL].find(name => env[name]);
+    const data = { base_url: result.site.root, ...(result.site.sitename ? { sitename: result.site.sitename } : {}), found_by: result.site.source, saved_to: savedTo, ...(overriddenBy ? { overridden_by: overriddenBy } : {}) };
+    await runtime.output(data, () => [
+      `Saved ${result.site.sitename ? `${result.site.sitename} at ` : ""}${result.site.root} to ${savedTo}.`,
+      ...(overriddenBy ? [`${overriddenBy} is set and takes precedence; unset it or set it to ${result.site.root}.`] : []),
+    ].join("\n"), options, false);
+  });
 
   addOutputOptions(
     auth

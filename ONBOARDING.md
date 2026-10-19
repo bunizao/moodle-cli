@@ -20,8 +20,8 @@ Wait for the answer before doing setup work. Do not ask the student to find the 
 Once the student shares a URL, complete the setup on their computer:
 
 - Check for Node.js 22.13+ and Bun (older Node cannot read browser cookies). Install `moodle-cli` with the runtime available on the computer. Use `bunx --bun moodle-cli` as the command prefix when Bun is the only runtime.
-- Follow redirects and resolve the URL to the final Moodle origin in the form `https://host`. Remove the path, query, and fragment. Confirm that the origin serves Moodle before saving it.
-- Read `~/.config/moodle-cli/config.yaml` if it exists. Set `base_url` to the verified origin and preserve the other settings.
+- Run `moodle auth site <the URL they pasted> --json`. It asks the site for its own address, which can include a path such as `/moodle`, and saves it to the config, keeping other settings. Do not trim the URL yourself.
+- If it reports another host, show the student the address it found and rerun with `--yes` once they agree. If it reports a sign-in page or no Moodle, ask the student for the address of a page they see inside Moodle after signing in.
 - Tell the student that Moodle may open in their browser and that you will wait while they complete their university sign-in. Run `moodle auth login`. If a browser opens, let the student finish SSO there, then continue when the command returns.
 - Verify the account with `moodle user --json` and `moodle overview --json`. Diagnose configuration or authentication failures and retry before reporting success. If browser sign-in times out, run `moodle auth login` again after the student is ready.
 - Set up session renewal after verification. On macOS, run `moodle auth keepalive install` and confirm it with `moodle auth keepalive status --json`. On Linux, schedule `moodle auth keepalive --json` every 30 minutes with cron. On other systems, use the operating system scheduler for the same command or explain how to renew with `moodle auth keepalive`.

@@ -1,3 +1,5 @@
+import { isSiteUrl } from "./site-root.js";
+
 const MAX_REDIRECTS = 5;
 const REQUEST_TIMEOUT_MS = 30_000;
 const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
@@ -5,13 +7,12 @@ const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
 export async function fetchWithSession(
   input: string,
   init: RequestInit,
-  moodleOrigin: string,
+  siteRoot: string,
   cookie: { name: string; value: string },
   fetchImpl: typeof fetch = (url, options) => fetch(url, options),
 ): Promise<Response> {
   let url = new URL(input);
   const initialOrigin = url.origin;
-  const trustedOrigin = new URL(moodleOrigin).origin;
   let method = (init.method ?? "GET").toUpperCase();
   let body = init.body;
   const headers = new Headers(init.headers);
@@ -33,7 +34,8 @@ export async function fetchWithSession(
       throw new Error("The request destination is not allowed.");
     }
     headers.delete("cookie");
-    if (url.origin === trustedOrigin) headers.set("cookie", `${cookie.name}=${cookie.value}`);
+    // Matches the cookie's own scope: Moodle sets its path to the install path.
+    if (isSiteUrl(siteRoot, url)) headers.set("cookie", `${cookie.name}=${cookie.value}`);
     if (url.origin !== initialOrigin) {
       headers.delete("authorization");
       headers.delete("proxy-authorization");

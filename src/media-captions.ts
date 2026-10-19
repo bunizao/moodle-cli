@@ -1,5 +1,6 @@
 import type { EmbeddedMedia } from "./models.js";
 import type { MoodleSessionCookie } from "./auth.js";
+import { isSiteUrl } from "./site-root.js";
 
 // Matches the Moodle transport's budget; external hosts get no longer to stall.
 const CAPTION_TIMEOUT_MS = 30_000;
@@ -36,7 +37,8 @@ export async function fetchMediaCaptions(
   const caption = media.captions?.[0];
   if (!caption) throw new Error("This video has no caption track exposed by Moodle.");
   const url = new URL(caption.url);
-  const response = url.origin === new URL(moodleBaseUrl).origin
+  // Only a track inside this install gets the Moodle session; a sibling path on the same host does not.
+  const response = isSiteUrl(moodleBaseUrl, url)
     ? await requestMoodle(url.toString())
     : await fetchImpl(url, { redirect: "manual", signal: AbortSignal.timeout(CAPTION_TIMEOUT_MS) });
   const text = await captionBody(response);

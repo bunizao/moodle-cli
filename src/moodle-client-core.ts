@@ -97,6 +97,7 @@ import {
   parseResourceHtml,
   parseUnavailableNotice,
 } from "./scraper.js";
+import { isSiteLoginUrl } from "./site-root.js";
 
 // Moodle's own activity modules. Anything else without a reader may be an alias whose
 // page redirects to the real activity.
@@ -1066,7 +1067,7 @@ export class MoodleClientCore {
       },
       body: JSON.stringify(payload),
     }, this.baseUrl, this.cookie, this.fetchImpl);
-    if (response.url.includes("/login/")) {
+    if (isSiteLoginUrl(this.baseUrl, response.url)) {
       if (this.onLoginRequired && allowRetry) {
         await this.reauthenticate(sentGeneration);
         return this.callBatchInternal(requests, false);
@@ -1136,7 +1137,7 @@ export class MoodleClientCore {
   private async requestAbsoluteInternal(url: string, init: RequestInit, allowRetry: boolean, allowErrorStatus = false): Promise<Response> {
     const sentGeneration = this.authGeneration;
     const response = await fetchWithSession(url, init, this.baseUrl, this.cookie, this.fetchImpl);
-    if (response.url.includes("/login/")) {
+    if (isSiteLoginUrl(this.baseUrl, response.url)) {
       if (this.onLoginRequired && allowRetry) {
         await this.reauthenticate(sentGeneration);
         return this.requestAbsoluteInternal(url, init, false, allowErrorStatus);

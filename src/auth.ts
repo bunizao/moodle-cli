@@ -20,6 +20,7 @@ import {
   writeCachedSession,
   type CachedSession,
 } from "./session-cache.js";
+import { isSiteLoginUrl, siteRootPath, siteUrl } from "./site-root.js";
 
 export interface MoodleSessionCookie {
   name: string;
@@ -335,7 +336,10 @@ export function loadSessionFromEnv(env: Record<string, string | undefined> = pro
 
 export function matchingMoodleSessionCookies(cookies: MoodleSessionCookie[], baseUrl: string): MoodleSessionCookie[] {
   const host = new URL(baseUrl).hostname.toLowerCase();
-  const ranked: Array<{ cookie: MoodleSessionCookie; rank: number; index: number }> = [];
+  // Moodle scopes its cookie to the install path, so a host with two installs holds two
+  // MoodleSession cookies; only one whose path covers ours belongs to this site.
+  const sitePathWithSlash = `${siteRootPath(baseUrl)}/`;
+  const ranked: Array<{ cookie: MoodleSessionCookie; rank: number; depth: number; index: number }> = [];
   const seen = new Set<string>();
 
   cookies.forEach((cookie, index) => {
@@ -346,16 +350,20 @@ export function matchingMoodleSessionCookies(cookies: MoodleSessionCookie[], bas
     if (rank === null) {
       return;
     }
+    const cookiePath = cookie.path || "/";
+    if (!sitePathWithSlash.startsWith(cookiePath.endsWith("/") ? cookiePath : `${cookiePath}/`)) {
+      return;
+    }
     const key = `${cookie.name}\0${cookie.value}`;
     if (seen.has(key)) {
       return;
     }
     seen.add(key);
-    ranked.push({ cookie, rank, index });
+    ranked.push({ cookie, rank, depth: cookiePath.length, index });
   });
 
   return ranked
-    .sort((left, right) => left.rank - right.rank || left.index - right.index)
+    .sort((left, right) => left.rank - right.rank || right.depth - left.depth || left.index - right.index)
     .map(({ cookie }) => cookie);
 }
 
@@ -756,15 +764,11 @@ function cookieHostRank(domain: string | undefined, host: string): number | null
 }
 
 export function loginUrl(baseUrl: string): string {
-  return new URL(LOGIN_PATH, `${baseUrl.replace(/\/+$/, "")}/`).toString();
+  return siteUrl(baseUrl, LOGIN_PATH);
 }
 
 export function isLoginRedirect(responseUrl: string, baseUrl: string): boolean {
-  if (!responseUrl) {
-    return false;
-  }
-  const path = new URL(responseUrl, baseUrl).pathname;
-  return path === LOGIN_PATH || path.startsWith("/login/");
+  return Boolean(responseUrl) && isSiteLoginUrl(baseUrl, new URL(responseUrl, baseUrl));
 }
 
 function looksLikeLoginPage(html: string): boolean {

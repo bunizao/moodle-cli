@@ -37,6 +37,15 @@ describe("inline label media", () => {
     expect(parseLabelMedia(html, 7, base)).toEqual({ media: [], restriction: "Not available unless: You belong to Group A" });
   });
 
+  it("keeps the Moodle session from a sibling install on the same host", async () => {
+    const requestMoodle = vi.fn();
+    const fetchImpl = vi.fn(async () => new Response("WEBVTT\n\n00:00:01.000 --> 00:00:02.000\nHi", { status: 200 }));
+    const video = { title: "Lecture", url: `${base}/other/v.mp4`, captions: [{ url: `${base}/other/v.vtt` }] };
+    await fetchMediaCaptions(video, `${base}/moodle`, requestMoodle, vi.fn(), fetchImpl as typeof fetch);
+    expect(requestMoodle).not.toHaveBeenCalled();
+    expect(fetchImpl).toHaveBeenCalledOnce();
+  });
+
   it("bounds caption requests to external hosts", async () => {
     const fetchImpl = vi.fn(async (_url: URL | RequestInfo, init?: RequestInit) => {
       expect(init?.signal).toBeInstanceOf(AbortSignal);

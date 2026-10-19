@@ -23,6 +23,7 @@ import type {
 } from "./models.js";
 import { cleanText, htmlToStructuredContent, resolveUrl } from "./html-utils.js";
 import { parseGradeItem } from "./parsers.js";
+import { isSiteUrl } from "./site-root.js";
 
 export interface MoodlePageError {
   message: string;
@@ -852,7 +853,7 @@ export function parseSiteTheme(html: string): string | undefined {
   return stringValue(parseMoodleConfig(html).theme) || undefined;
 }
 
-function parseMoodleConfig(html: string): Record<string, unknown> {
+export function parseMoodleConfig(html: string): Record<string, unknown> {
   const match = html.match(/M\.cfg\s*=\s*({[\s\S]*?});/);
   if (!match) {
     return {};
@@ -978,7 +979,7 @@ function fileEntry(name: string, url: string, baseUrl: string): FileEntry {
   return {
     name,
     url,
-    requires_authentication: new URL(url).origin === new URL(baseUrl).origin,
+    requires_authentication: isSiteUrl(baseUrl, url),
   };
 }
 

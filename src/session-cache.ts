@@ -10,6 +10,7 @@ import {
   DEFAULT_SESSION_CACHE_TTL_MS,
   SESSION_CACHE_FILENAME,
 } from "./constants.js";
+import { sameSiteRoot } from "./site-root.js";
 
 export interface CachedSession {
   baseUrl: string;
@@ -185,11 +186,7 @@ function parseCachedSession(raw: string): CachedSession | null {
 }
 
 function sameBaseUrl(left: string, right: string): boolean {
-  try {
-    return new URL(left).origin === new URL(right).origin;
-  } catch {
-    return left === right;
-  }
+  return sameSiteRoot(left, right) || left === right;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

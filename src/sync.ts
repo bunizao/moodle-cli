@@ -15,6 +15,7 @@ import { CliError, ConfigError, NotFoundError } from "./errors.js";
 import type { Activity, Course, FileEntry, Section } from "./models.js";
 import { parseResourceHtml, parseSavedDocumentHtml } from "./scraper.js";
 import { RequestFailed } from "./session-fetch.js";
+import { sitePath } from "./site-root.js";
 
 // `moodle sync` keeps one local folder per unit in step with Moodle. Each unit folder holds
 // a manifest recording what every file was when it was last written; that record is what
@@ -127,7 +128,7 @@ export async function syncUnits(client: MoodleClient, courses: readonly Course[]
 
 async function syncUnit(client: MoodleClient, course: Course, root: string, options: SyncOptions): Promise<SyncUnitResult> {
   const label = course.shortname || course.fullname || String(course.id);
-  const site = new URL(client.baseUrl).origin;
+  const site = client.baseUrl.replace(/\/+$/u, "");
   const directory = await unitDirectory(root, course, site);
   const manifest = await readManifest(directory, course.id, site);
   const run: UnitRun = {
@@ -410,10 +411,9 @@ async function prepareTarget(run: UnitRun, relative: string): Promise<string> {
 // Images Moodle serves only to a signed-in browser are embedded, so the saved page reads
 // the same offline. One that fails or is too large stays a link.
 async function inlineImages(run: UnitRun, content: HTMLElement): Promise<void> {
-  const origin = new URL(run.client.baseUrl).origin;
   for (const image of content.querySelectorAll("img[src]")) {
     const src = image.getAttribute("src") ?? "";
-    if (!src.startsWith(`${origin}/`) || !src.includes("/pluginfile.php/")) continue;
+    if (!sitePath(run.client.baseUrl, src)?.startsWith("/pluginfile.php/")) continue;
     try {
       const response = await requestWithRetry(run, src, {});
       const type = response.headers.get("content-type")?.split(";")[0].trim() ?? "";
