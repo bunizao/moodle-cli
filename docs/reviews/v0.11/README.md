@@ -1,6 +1,6 @@
 # v0.11 implementation validation
 
-Validation and review follow-up: 2026-10-19, Australia/Melbourne. Runtime implementation revision: `e5e3495c038cc01e9e2380d8f6e35c99ae08af80` (reachable in the activity-state PR; later commits isolate the test fixtures); implementation starts after `47a548f58ab3ebcd1c3d54fcb2102ffbd2a2d77a` on main. Both revisions are reachable in the PR series. The original working branch and unrelated untracked PDF were preserved. Changes are published as PRs #58–#67; no release or production deployment was performed.
+Validation and review follow-up: 2026-10-19, Australia/Melbourne. Runtime implementation revision: `e5e3495c038cc01e9e2380d8f6e35c99ae08af80`, a pre-merge stack commit that GitHub's stacked-PR rebase did not keep; its `src/` tree is identical to `src/` at merge commits `667f1a8` (#66) and `21c60fc` (#67) on main, and later commits only isolate the test fixtures. Implementation starts after `47a548f58ab3ebcd1c3d54fcb2102ffbd2a2d77a` on main. The original working branch and unrelated untracked PDF were preserved. Changes are published as PRs #58–#67; no release or production deployment was performed.
 
 ## Checks
 
