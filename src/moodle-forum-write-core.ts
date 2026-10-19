@@ -4,6 +4,7 @@ import { cleanText, filemanagerOptions } from "./html-utils.js";
 import { asArray, asRecord, numberValue, stringValue } from "./parsers.js";
 import { parseForumDiscussionRefsHtml, parseMoodleConfig } from "./scraper.js";
 import { noticesOf } from "./moodle-quiz-core.js";
+import { isSiteUrl } from "./site-root.js";
 import type { ForumDiscussion } from "./models.js";
 import type { SubmitFile } from "./moodle-assign-core.js";
 
@@ -90,7 +91,8 @@ export async function setForumSubscription(deps: ForumWriteDeps, forumCmid: numb
     const root = parse(html);
     for (const element of root.querySelectorAll('a[href], form[action]')) {
       const url = new URL(element.getAttribute("href") ?? element.getAttribute("action") ?? "", deps.baseUrl);
-      if (!url.pathname.endsWith("/mod/forum/subscribe.php")) continue;
+      // Intro text can hold a look-alike link; only this install's control gets the sesskey.
+      if (!isSiteUrl(deps.baseUrl, url) || !url.pathname.endsWith("/mod/forum/subscribe.php")) continue;
       if (element.tagName === "FORM") for (const [key, value] of formFields(element)) url.searchParams.set(key, value);
       if (url.searchParams.has("d") || url.searchParams.has("mode") || url.searchParams.has("user")) continue;
       const label = cleanText(element.textContent);
