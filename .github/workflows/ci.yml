@@ -3,7 +3,33 @@ name: CI
 on:
   push:
     branches: ["**"]
+    # Prose nobody installs. README, ONBOARDING, SKILL and references still run CI: they
+    # ship in the package and the build checks their vocabulary and skill drift.
+    paths-ignore:
+      - "docs/**"
+      - ".github/release-notes/**"
+      - ".github/ISSUE_TEMPLATE/**"
+      - ".github/assets/**"
+      - ".github/pull_request_template.md"
+      - "AGENTS.md"
+      - "CLAUDE.md"
+      - "CODE_OF_CONDUCT.md"
+      - "CONTRIBUTING.md"
+      - "SECURITY.md"
+      - "LICENSE"
   pull_request:
+    paths-ignore:
+      - "docs/**"
+      - ".github/release-notes/**"
+      - ".github/ISSUE_TEMPLATE/**"
+      - ".github/assets/**"
+      - ".github/pull_request_template.md"
+      - "AGENTS.md"
+      - "CLAUDE.md"
+      - "CODE_OF_CONDUCT.md"
+      - "CONTRIBUTING.md"
+      - "SECURITY.md"
+      - "LICENSE"
   workflow_call:
 
 permissions:
