@@ -12,7 +12,9 @@ interface FakeSite {
   wwwroot?: string;
   publicConfig?: boolean;
   /** The host's own front page: a redirect into Moodle, or an unrelated page. */
-  front?: "redirect" | "login" | "refresh" | "other";
+  front?: "redirect" | "login" | "refresh" | "portal" | "other";
+  /** Where a "portal" front page sends visitors to sign in; a non-Moodle page. */
+  portalLogin?: string;
   /** Signed-out visitors go from the login page straight on to a sign-in provider. */
   sso?: boolean;
   /** An SSO plugin's pre-login hook sends signed-out visitors to the provider from any page. */
@@ -46,6 +48,8 @@ function fakeMoodle(site: FakeSite = {}): { fetch: typeof fetch; calls: string[]
       const tag = site.refreshTag ?? `<META CONTENT="0; URL='{path}/'" HTTP-EQUIV="Refresh">`;
       return html(`<html><head>${tag.replace("{path}", new URL(root).pathname)}</head></html>`);
     }
+    if (url.pathname === "/" && site.front === "portal") return redirect(site.portalLogin ?? "/login/");
+    if (path === `${HOST}/login/` && site.front === "portal") return html("<html><form>Portal sign-in</form></html>");
     if (url.pathname === "/" && site.front === "other") return html("<html>University home</html>");
     return new Response("Not found", { status: 404, headers: { "content-type": "text/html" } });
   }) as typeof fetch;
@@ -122,11 +126,17 @@ describe("discoverSite", () => {
   it("follows a bare host whose front page points at the login directory before forced sign-in", async () => {
     const { fetch } = fakeMoodle({ front: "login", sso: true });
     await expect(discoverSite(HOST, { fetch })).resolves.toMatchObject({ kind: "found", site: { root: ROOT, source: "site_config" } });
+  });
+
+  it("does not take a login directory for Moodle without Moodle's own answer", async () => {
+    // A portal or sign-in provider at /login/ looks the same as Moodle's login directory.
+    const portal = fakeMoodle({ front: "portal" });
+    await expect(discoverSite(HOST, { fetch: portal.fetch })).resolves.toEqual({ kind: "not_found", status: 200 });
+    const provider = fakeMoodle({ front: "portal", portalLogin: `${IDP}/login/` });
+    await expect(discoverSite(HOST, { fetch: provider.fetch })).resolves.toEqual({ kind: "redirected", host: "idp.example.org" });
+    // Known limit: with the anonymous service blocked, nothing on the way names the root.
     const blocked = fakeMoodle({ front: "login", sso: true, publicConfig: false });
-    await expect(discoverSite(HOST, { fetch: blocked.fetch })).resolves.toEqual({
-      kind: "found",
-      site: { root: ROOT, source: "login_redirect" },
-    });
+    await expect(discoverSite(HOST, { fetch: blocked.fetch })).resolves.toEqual({ kind: "redirected", host: "idp.example.org" });
   });
 
   it("asks the paths a bare host passed through when an SSO plugin skips the login page", async () => {
@@ -141,6 +151,12 @@ describe("discoverSite", () => {
     await expect(discoverSite(HOST, { fetch })).resolves.toMatchObject({ kind: "found", site: { root: ROOT, source: "site_config" } });
     const unquoted = fakeMoodle({ front: "refresh", refreshTag: "<meta http-equiv=refresh content=0;url={path}/>" });
     await expect(discoverSite(HOST, { fetch: unquoted.fetch })).resolves.toMatchObject({ kind: "found", site: { root: ROOT, source: "site_config" } });
+  });
+
+  it("treats a meta refresh back to the same page as a reload", async () => {
+    const { fetch, calls } = fakeMoodle({ front: "refresh", refreshTag: `<meta http-equiv="refresh" content="300; url=/#top">` });
+    await expect(discoverSite(HOST, { fetch })).resolves.toEqual({ kind: "not_found", status: 200 });
+    expect(calls.filter(call => call === `GET ${HOST}/`)).toHaveLength(1);
   });
 
   it("reads the login redirect when the anonymous service is blocked and sign-in is forced", async () => {

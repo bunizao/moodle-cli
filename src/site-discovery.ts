@@ -147,11 +147,18 @@ async function followAddress(input: URL, fetcher: typeof fetch, timeoutMs: numbe
       await response.body?.cancel();
       const next = new URL(location, current);
       // require_login always sends a signed-out visitor to {wwwroot}/login/index.php first;
-      // a sign-in provider, if the site forces one, only comes after that. A host's own
-      // front-page redirect often names just the directory, {wwwroot}/login/, which the
-      // server answers with index.php, so a forced SSO hop never shows the script name.
-      const root = loginRoot(next);
-      if (root !== null) return confirm(input, root, fetcher, timeoutMs, "login_redirect");
+      // a sign-in provider, if the site forces one, only comes after that.
+      if (next.pathname.endsWith(LOGIN_PATH)) {
+        return confirm(input, parentOf(next, LOGIN_PATH), fetcher, timeoutMs, "login_redirect");
+      }
+      // A host's own front-page redirect often names just the directory, {wwwroot}/login/,
+      // which the server answers with index.php, so a forced SSO hop never shows the script
+      // name. Portals and sign-in providers use /login/ too, so only Moodle's own answer
+      // makes its parent a root; otherwise keep following.
+      if (next.pathname.endsWith(LOGIN_DIR)) {
+        const answer = await askSite(parentOf(next, LOGIN_DIR), fetcher, timeoutMs).catch(() => null);
+        if (answer) return classify(input, answer.root, answer.sitename, "site_config");
+      }
       current = follow(next, hops, input);
       continue;
     }
@@ -163,8 +170,9 @@ async function followAddress(input: URL, fetcher: typeof fetch, timeoutMs: numbe
     const declared = typeof wwwroot === "string" ? cleanRoot(wwwroot) : null;
     if (declared) return confirm(input, declared, fetcher, timeoutMs, "page");
     // Institution front pages often forward with a meta refresh instead of a 3xx.
+    // A refresh back to the same page is a timed reload, not a forward.
     const refresh = metaRefresh(html, current);
-    if (refresh) {
+    if (refresh && refresh.href !== current.href) {
       current = follow(refresh, hops, input);
       continue;
     }
@@ -201,6 +209,7 @@ function metaRefresh(html: string, base: URL): URL | null {
     if (!target) return null;
     try {
       const url = new URL(target.trim(), base);
+      url.hash = "";
       return url.protocol === "http:" || url.protocol === "https:" ? url : null;
     } catch {
       return null;
@@ -209,11 +218,8 @@ function metaRefresh(html: string, base: URL): URL | null {
   return null;
 }
 
-function loginRoot(url: URL): string | null {
-  const { pathname } = url;
-  if (pathname.endsWith(LOGIN_PATH)) return `${url.origin}${pathname.slice(0, -LOGIN_PATH.length)}`;
-  if (pathname.endsWith(LOGIN_DIR)) return `${url.origin}${pathname.slice(0, -LOGIN_DIR.length)}`;
-  return null;
+function parentOf(url: URL, suffix: string): string {
+  return `${url.origin}${url.pathname.slice(0, -suffix.length)}`;
 }
 
 /** Prefer Moodle's own answer at a root found by following; keep the evidence when the service is off. */
