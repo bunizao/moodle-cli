@@ -29,6 +29,9 @@ export class ForumModule {
   // The forum view page answers both "what type is this forum" and "which
   // discussions does it list"; load it once per forum.
   private readonly forumViewCache = new Map<number, Promise<string>>();
+  // Instance id -> module id. The pair never changes, so it survives clearCache and
+  // lets every later thread in the same forum skip the discussion page.
+  private readonly forumCmids = new Map<number, number>();
 
   constructor(options: ForumAdapter) {
     this.baseUrl = options.baseUrl.replace(/\/$/, "");
@@ -47,6 +50,7 @@ export class ForumModule {
 
   // The posts service returns an instance id; the discussion page carries the module
   // id accepted by every public forum command, as well as optional group details.
+  // mod_forum_get_forums_by_courses would map the two, but stock Moodle keeps it off AJAX.
   async getForumDiscussion(discussionId: number, options: { group?: boolean } = {}): Promise<ForumDiscussion> {
     const wantGroup = options.group !== false;
     const cached = this.forumDiscussionCache.get(discussionId);
@@ -63,7 +67,10 @@ export class ForumModule {
         includeinlineattachments: true,
       });
       const discussion = parseForumDiscussion(data, discussionId, this.baseUrl);
+      const instanceId = Number((data as { forumid?: unknown } | null)?.forumid) || 0;
+      discussion.forum_id ||= this.forumCmids.get(instanceId) ?? 0;
       if (!discussion.forum_id || (wantGroup && discussion.group_id <= 0)) await this.resolveGroup(discussion);
+      if (instanceId && discussion.forum_id) this.forumCmids.set(instanceId, discussion.forum_id);
       this.forumDiscussionCache.set(discussionId, discussion);
       return discussion;
     } catch (error) {
