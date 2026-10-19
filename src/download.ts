@@ -1,3 +1,4 @@
+import { storedPath, pathSegment } from "./file-paths.js";
 import { createWriteStream } from "node:fs";
 import { link, lstat, mkdir, readFile, rename, unlink } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
@@ -58,6 +59,7 @@ export interface ResolvedDownload {
 }
 
 interface DownloadTarget {
+  directory?: string;
   url: string;
   sourceUrl: string;
   name?: string;
@@ -134,7 +136,9 @@ async function downloadAll(client: MoodleClient, request: DownloadRequest, signa
     try {
       resolved = await responseOrWrapper(client, target.url, target.sourceUrl, target.name, signal);
       // --dest already names the file, so a response without a usable name is fine then.
-      upstream = explicitDestination ? path.basename(explicitDestination) : chooseUpstreamFilename(resolved);
+      const stored = storedPath(target.url);
+      const subdirectories = stored?.[0] === "mod_folder" ? stored.slice(2, -1).map(pathSegment) : [];
+      upstream = explicitDestination ? path.basename(explicitDestination) : path.join(target.directory ?? "", ...subdirectories, chooseUpstreamFilename(resolved));
     } catch (error) {
       await resolved?.response.body?.cancel().catch(() => undefined);
       // One broken link in a folder should not cost the rest of the section.
@@ -157,6 +161,21 @@ async function downloadAll(client: MoodleClient, request: DownloadRequest, signa
     }
     // Only the response headers name the file, so a dry run still asks for each one.
     if (request.dryRun) await resolved.response.body?.cancel().catch(() => undefined);
+    if (!explicitDestination && !request.dryRun) {
+      let parent = directory;
+      for (const segment of path.dirname(filename).split(path.sep).filter(part => part !== ".")) {
+        parent = path.join(parent, segment);
+        try {
+          const stat = await lstat(parent).catch(error => { if (error.code !== "ENOENT") throw error; return undefined; });
+          if (stat?.isSymbolicLink()) throw new ConfigError(`Cannot download through symbolic link '${parent}'.`);
+          await mkdir(parent, { recursive: true });
+        } catch (error) {
+          await resolved.response.body?.cancel().catch(() => undefined);
+          if (error instanceof ConfigError) throw error;
+          throw new ConfigError(`Cannot create local directory '${parent}'.`);
+        }
+      }
+    }
     const bytesWritten = request.dryRun ? 0 : await writeResponse(resolved.response, destination, Boolean(request.force), signal);
     if (!first) firstByName.set(upstream.toLowerCase(), destination);
     else if (!explicitDestination && !request.dryRun && await sameBytes(first, destination)) {
@@ -222,7 +241,8 @@ async function sectionTargets(client: MoodleClient, url: URL, bySectionId: boole
     throwIfCancelled(signal);
     const batch = await Promise.all(activities.slice(index, index + 4).map(async (activity) => {
       try {
-        return await activityTargets(client, activity.id, false);
+        const directory = pathSegment(activity.name || `Activity ${activity.id}`);
+        return (await activityTargets(client, activity.id, false)).map(target => ({ ...target, directory }));
       } catch (error) {
         // A restricted or broken activity is reported, not fatal: the rest of the section still saves.
         if (!(error instanceof CliError) || !["not_found", "upstream", "usage"].includes(error.code)) throw error;
