@@ -53,6 +53,13 @@ describe("coverage checks", () => {
     expect(submitted).toEqual([]);
   });
 
+  it("accepts actionable overdue deadlines but still rejects closed past work", async () => {
+    const item = { id: 1, name: "Overdue prep", activity_name: "Overdue prep", modname: "assign", course_id: 1, course_name: "Unit", due_at: -2 * 86400, overdue: true, actionable: true, action_name: "Submit", action_url: "", url: "", event_type: "due" };
+    const gateway = { ...fixtureGateway(), getDue: async () => [item] };
+    expect(byName(await collect(gateway)).due.status).toBe("ok");
+    expect(byName(await collect({ ...gateway, getDue: async () => [{ ...item, actionable: false }] })).due.status).toBe("mismatch");
+  });
+
   it("names the services a check went around and keeps failures to their own line", async () => {
     const base = fixtureGateway();
     let refused: string[] = [];
