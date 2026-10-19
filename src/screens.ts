@@ -1,3 +1,4 @@
+import { isoTime, timezoneFor } from "./results.js";
 import { createTheme, type Tone } from "@bunizao/cli-kit";
 
 import { renderTerminalTable, sanitizeTerminalText, type TerminalTableCell, type TerminalTableColumn } from "./terminal-table.js";
@@ -36,6 +37,7 @@ export function tryLines(commands: readonly string[]): string {
 export function renderScreen(data: Record<string, unknown>, options: { width?: number; color?: boolean; now?: number; intent?: string } = {}): string {
   const lines: string[] = [];
   const now = options.now ?? Date.now();
+  const timestamp = (value: unknown, timezone?: string) => moment(isoTime(Number(value), timezone ?? (typeof data.timezone === "string" ? data.timezone : timezoneFor().timezone)), now);
   // Three levels on every row: the code a person types next, the name they read, the facts they glance at.
   const theme = createTheme(Boolean(options.color));
   // Text and tone stay apart until the last moment: a line paints them itself, a table cell hands both over.
@@ -69,10 +71,27 @@ export function renderScreen(data: Record<string, unknown>, options: { width?: n
     const h = record(data.home);
     lines.push(`${text(h.name)} · ${moment(h.today, now)} · ${text(h.timezone)}${h.timezone_source === "site" ? "" : ` (${text(h.timezone_source)})`}`, text(h.siteurl), "");
     rows(array(h.due), "Due soon");
+    if (array(h.calendar).length) {
+      lines.push("", theme.subject("Calendar"));
+      lines.push(table([[{ label: "When" }, e => timestamp(e.starts_at, String(h.timezone))], [{ label: "Event", flex: true }, e => text(e.name)], [{ label: "Unit" }, e => text(e.course_name)]], array(h.calendar)));
+    }
     lines.push("", `Unread  ${Object.entries(record(h.unread)).map(([k, v]) => `${v} ${k.replace(/_count$/u, "").replaceAll("_", " ")}${Number(v) === 1 ? "" : "s"}`).join(" · ") || "nothing"}`, "", `Units  ${array(h.units).map(u => text(u.code || u.name)).join(" · ")}`);
     for (const u of array(h.units)) { const c = record(u.current_section); if (c.id) lines.push(`  ${text(u.code || u.name)} · ${text(c.name)}`); }
     for (const e of Array.isArray(h.errors) ? h.errors : []) lines.push(`Unavailable: ${text(e)}`);
     if (Number(h.total) > array(h.due).length) lines.push(`${h.total} due items in this window; showing ${array(h.due).length}.`);
+  } else if (data.conversations || options.intent === "messages") {
+    lines.push(theme.subject("Messages"), table([[{ label: "ID" }, c => text(c.id)], [{ label: "Conversation", flex: true }, c => text(c.name)], [{ label: "Type" }, c => text(c.type)], [{ label: "Unread" }, c => text(c.unread_count)], [{ label: "Latest", flex: true }, c => text(array(c.messages).at(-1)?.text)]], array(data.conversations)));
+    next = ["moodle messages show ID"];
+  } else if (data.conversation) {
+    const c = record(data.conversation);
+    const people = new Map(array(c.members).map(m => [m.id, m.name]));
+    lines.push(theme.subject(`Conversation #${c.id}`));
+    for (const m of array(c.messages)) lines.push("", `${text(people.get(m.sender_id) || m.sender_id)} · ${timestamp(m.created_at)}`, text(m.text));
+    next = [`moodle messages send ${c.id} "TEXT"`, `moodle messages read ${c.id}`];
+  } else if (data.events || options.intent === "calendar") {
+    lines.push(theme.subject("Calendar"), table([[{ label: "When" }, e => timestamp(e.starts_at)], [{ label: "Event", flex: true }, e => text(e.name)], [{ label: "Type" }, e => text(e.event_type)], [{ label: "Unit" }, e => text(e.course_name)], [{ label: "Location" }, e => text(e.location)]], array(data.events)));
+    if (data.total !== undefined) lines.push(`${data.total} events`);
+    next = ["moodle calendar --days 30", "moodle calendar --ics"];
   } else if (data.unit) {
     const u = record(data.unit); const c = record(u.current_section);
     lines.push(`${theme.key(text(u.code))} · ${text(u.name)}`);

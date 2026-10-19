@@ -6,6 +6,9 @@ import type {
   Activity,
   ActivityDetail,
   QuizAttemptReview,
+  CalendarEvent,
+  Conversation,
+  ConversationDetail,
   Course,
   CourseGrades,
   ForumActivityRef,
@@ -81,6 +84,9 @@ export const MAX_MCP_FILE_BYTES = 16 * 1024 * 1024;
 
 export interface MoodleGateway {
   getUser(): Promise<UserInfo>;
+  getConversations?(limit?: number, offset?: number): Promise<Conversation[]>;
+  getConversation?(id: number, limit?: number, offset?: number): Promise<ConversationDetail>;
+  getCalendar?(days?: number, courseId?: number): Promise<CalendarEvent[]>;
   getOverview(input: OverviewInput): Promise<Overview>;
   getDue?(days: number, courseId?: number): Promise<TodoItem[]>;
   listCourses(): Promise<Course[]>;
@@ -102,6 +108,9 @@ export interface MoodleGateway {
 export interface MoodleClientPort {
   readonly baseUrl: string;
   getSiteInfo(): Promise<UserInfo>;
+  getConversations?(limit?: number, offset?: number): Promise<Conversation[]>;
+  getConversation?(id: number, limit?: number, offset?: number): Promise<ConversationDetail>;
+  getCalendar?(days?: number, courseId?: number): Promise<CalendarEvent[]>;
   getOverview(todoLimit?: number, todoDays?: number, alertsLimit?: number): Promise<Overview>;
   getTodo?(limit?: number, days?: number, courseId?: number): Promise<TodoItem[]>;
   getCourses(): Promise<Course[]>;
@@ -152,6 +161,9 @@ export interface GatewayHooks {
 export function createMoodleGateway(client: MoodleClientPort, hooks: GatewayHooks = {}): MoodleGateway {
   return {
     getUser: () => client.getSiteInfo(),
+    ...(client.getConversations ? { getConversations: (limit?: number, offset?: number) => client.getConversations!(limit, offset) } : {}),
+    ...(client.getConversation ? { getConversation: (id: number, limit?: number, offset?: number) => client.getConversation!(id, limit, offset) } : {}),
+    ...(client.getCalendar ? { getCalendar: (days?: number, courseId?: number) => client.getCalendar!(days, courseId) } : {}),
     listThreads: (id) => client.getForumDiscussionRefs ? client.getForumDiscussionRefs(id) : Promise.resolve([]),
     listNewsForums: (id) => client.getNewsForums ? client.getNewsForums(id) : Promise.resolve([]),
     getOverview: (input) => client.getOverview(input.todoLimit, input.todoDays, input.alertsLimit),

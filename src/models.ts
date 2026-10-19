@@ -67,6 +67,7 @@ export interface AlertNotification {
   id: number;
   subject: string;
   short_subject: string;
+  body?: string;
   event_type: string;
   component: string;
   created_at: number;
@@ -90,11 +91,53 @@ export interface AlertSummary {
   unread_self_message_count: number;
 }
 
+export interface MessageMember {
+  id: number;
+  name: string;
+}
+
+export interface ConversationMessage {
+  id: number;
+  sender_id: number;
+  text: string;
+  created_at: number;
+}
+
+export interface Conversation {
+  id: number;
+  name: string;
+  type: "direct" | "group" | "self";
+  unread_count: number;
+  members: MessageMember[];
+  messages: ConversationMessage[];
+}
+
+export interface ConversationDetail {
+  id: number;
+  members: MessageMember[];
+  messages: ConversationMessage[];
+  offset: number;
+}
+
+export interface CalendarEvent {
+  id: number;
+  name: string;
+  description: string;
+  starts_at: number;
+  duration: number;
+  event_type: string;
+  course_id: number;
+  course_name: string;
+  location: string;
+  url: string;
+}
+
 export interface Overview {
   user: UserInfo;
   courses: Course[];
   todo: TodoItem[];
   alerts?: AlertSummary;
+  calendar?: CalendarEvent[];
   errors: string[];
 }
 

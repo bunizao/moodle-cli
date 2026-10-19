@@ -1,3 +1,4 @@
+import { calendarIcs } from "./moodle-calendar-core.js";
 import { activitySchema } from "./intent-contract.js";
 import { activityRow, itemRow, postRow, stripEmpty } from "./results.js";
 import { doctor, ownedJobs } from "./doctor.js";
@@ -136,6 +137,7 @@ interface OutputCommandOptions {
 }
 
 const NOUNS: readonly NounSpec[] = [
+  { name: "messages", verbs: ["list", "show", "send", "read"], defaultByArity: { 0: "list", 1: "show" }, valueFlags: ["--limit", "--offset"] },
   { name: "units", aliases: ["courses"], verbs: ["list", "show"], defaultByArity: { 0: "list", 1: "show" } },
   { name: "activities", verbs: ["list", "show"], defaultByArity: { 0: "list", 1: "list" }, valueFlags: ["--limit", "--section"] },
   { name: "grades", verbs: ["list"], defaultByArity: { 0: "list", 1: "list" }, valueFlags: ["--mode", "--types", "--limit", "--offset"] },
@@ -596,11 +598,77 @@ export function buildProgram(io: CliIO = {}): Command {
       await execute("due", { limit: count("limit", options.limit), days: count("days", options.days) }, options);
     });
 
-  addOutputOptions(program.command("alerts").description("List notifications and message counts."))
+  const alerts = program.command("alerts").description("List notifications and message counts.");
+  addOutputOptions(alerts)
     .option("--limit <number>", "Maximum number of notifications.", parsePositiveInt, 20)
     .action(async (options: OutputCommandOptions & { limit: number }) => {
       const alerts = await (await runtime.getClient()).getAlerts(count("limit", options.limit)!);
       await runtime.output(stripEmpty({ alerts }), () => formatAlerts(alerts), options);
+    });
+
+  addOutputOptions(mutating(alerts.command("read").description("Mark one notification, or all notifications, as read.").argument("[notification]", "Notification id")))
+    .option("--all", "Mark every notification as read.")
+    .action(async (notification: string | undefined, options: OutputCommandOptions & { all?: boolean }) => {
+      if (Boolean(notification) === Boolean(options.all)) throw new UsageError("Provide a notification id or --all.");
+      const id = notification === undefined ? undefined : parsePositiveInt(notification);
+      const summary = id === undefined ? "Mark all notifications as read." : `Mark notification ${id} as read.`;
+      if (program.opts().dryRun) return runtime.output({ planned: "read", notification_id: id, all: Boolean(options.all) }, () => summary, options, false);
+      if (!await confirm({ summary }, { yes: Boolean(program.opts().yes), dryRun: false, interactive: human() })) return;
+      await (await runtime.getClient()).markAlertsRead(id);
+      await runtime.output({ read: true, notification_id: id, all: Boolean(options.all) }, () => summary, options, false);
+    });
+
+  const messages = program.command("messages").description("Read and send direct or group messages.");
+  addOutputOptions(messages.command("list").description(humanDescription("messages")))
+    .option("--limit <number>", "Maximum conversations.", parsePositiveInt, 20)
+    .option("--offset <number>", "Skip this many conversations.", parseNonNegativeInt, 0)
+    .action(async (options: OutputCommandOptions & { limit: number; offset: number }) => {
+      await execute("messages", { limit: count("limit", options.limit), offset: options.offset }, options);
+    });
+  addOutputOptions(messages.command("show").description(humanDescription("conversation")).argument("<conversation>", "Conversation id"))
+    .option("--limit <number>", "Maximum messages.", parsePositiveInt, 50)
+    .option("--offset <number>", "Skip this many newest messages.", parseNonNegativeInt, 0)
+    .action(async (conversation: string, options: OutputCommandOptions & { limit: number; offset: number }) => {
+      await execute("conversation", { conversation_id: parsePositiveInt(conversation), limit: count("limit", options.limit), offset: options.offset }, options);
+    });
+  addOutputOptions(mutating(messages.command("send").description("Send a message to a conversation id or user:ID.").argument("<recipient>", "Conversation id, conversation:ID or user:ID").argument("<text>", "Message text")))
+    .action(async (recipient: string, text: string, options: OutputCommandOptions) => {
+      const match = /^(?:(user|conversation):)?([1-9]\d*)$/u.exec(recipient);
+      if (!match || !Number.isSafeInteger(Number(match[2]))) throw new UsageError("Use a conversation id, conversation:ID or user:ID.");
+      if (!text.trim()) throw new UsageError("Message text cannot be empty.");
+      const id = Number(match[2]);
+      const user = match[1] === "user";
+      const summary = `Send to ${user ? "user" : "conversation"} ${id}: ${text}`;
+      if (program.opts().dryRun) return runtime.output({ planned: "send", recipient, text }, () => summary, options, false);
+      if (!await confirm({ summary }, { yes: Boolean(program.opts().yes), dryRun: false, interactive: human() })) return;
+      const sent = await (await runtime.getClient()).sendMessage(id, text, { user });
+      await runtime.output({ message: sent }, () => `Message ${sent.id} sent.`, options, false);
+    });
+  addOutputOptions(mutating(messages.command("read").description("Mark one conversation, or all conversations, as read.").argument("[conversation]", "Conversation id")))
+    .option("--all", "Mark every unread conversation as read.")
+    .action(async (conversation: string | undefined, options: OutputCommandOptions & { all?: boolean }) => {
+      if (Boolean(conversation) === Boolean(options.all)) throw new UsageError("Provide a conversation id or --all.");
+      const id = conversation === undefined ? undefined : parsePositiveInt(conversation);
+      const summary = id === undefined ? "Mark all conversations as read." : `Mark conversation ${id} as read.`;
+      if (program.opts().dryRun) return runtime.output({ planned: "read", conversation_id: id, all: Boolean(options.all) }, () => summary, options, false);
+      if (!await confirm({ summary }, { yes: Boolean(program.opts().yes), dryRun: false, interactive: human() })) return;
+      const read = await (await runtime.getClient()).markMessagesRead(id);
+      await runtime.output({ read }, () => `${read.conversations.length} conversations marked read.`, options, false);
+    });
+
+  addOutputOptions(program.command("calendar").description(humanDescription("calendar")))
+    .option("--days <number>", "Events within the next N days (1–365).", parsePositiveInt, 14)
+    .option("--unit <unit>", "Only events for this unit.")
+    .option("--ics", "Export an iCalendar file to stdout or --output.")
+    .action(async (options: OutputCommandOptions & { days: number; unit?: string; ics?: boolean }) => {
+      if (!options.ics) return execute("calendar", { days: count("days", options.days), unit: options.unit }, options);
+      const merged = { ...program.opts(), ...options };
+      if (merged.json || merged.yaml || merged.fields) throw new UsageError("Use --ics separately from structured output options.");
+      const client = await runtime.getClient();
+      const events = await client.getCalendar(count("days", options.days), options.unit ? await client.resolveCourseReference(options.unit) : undefined);
+      const content = calendarIcs(events, client.baseUrl);
+      if (io.stdout && !merged.output) stdout.write(content);
+      else await writeOutput(content, { output: merged.output });
     });
 
   addOutputOptions(program.command("overview").description("Show a compact multi-source overview."))
@@ -1077,8 +1145,8 @@ export function buildProgram(io: CliIO = {}): Command {
 
 // Grouped the way `gh` does: what a person reaches for daily, then the rest, then what only an agent runs.
 const HELP_SECTIONS: Readonly<Record<string, readonly string[]>> = {
-  "Core commands": ["due", "news", "find", "get", "open", "submit", "quiz", "units", "activities", "grades", "threads", "forums"],
-  "Additional commands": ["sync", "user", "todo", "alerts", "overview", "download", "auth", "doctor", "coverage", "completion", "uninstall"],
+  "Core commands": ["due", "news", "find", "get", "open", "submit", "messages", "calendar", "quiz", "units", "activities", "grades", "threads", "forums"],
+  "Additional commands": ["sync", "user", "todo", "alerts", "messages", "calendar", "overview", "download", "auth", "doctor", "coverage", "completion", "uninstall"],
   "Agent commands": ["mcp", "commands", "skills"],
 };
 
@@ -1263,6 +1331,12 @@ function submissionSummary(plan: SubmissionReceipt, final: boolean, theme: Theme
       ? theme.tone("warning", "This assignment has no draft stage: saving submits it for grading. Moodle does not allow undoing this.")
       : theme.tone("warning", `Then submit ${plan.group ? "the group's work " : ""}for grading. Moodle does not allow undoing this.`));
   return lines.join("\n");
+}
+
+function parseNonNegativeInt(value: string): number {
+  const number = Number(value);
+  if (!Number.isSafeInteger(number) || number < 0) throw new UsageError("Expected a nonnegative integer.");
+  return number;
 }
 
 function parsePositiveInt(value: string): number {

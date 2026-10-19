@@ -1,3 +1,5 @@
+import { listConversations, getConversation, sendMessage, markConversationRead } from "./moodle-messages-core.js";
+import { readCalendar, readCalendarMonth, calendarMonthOf } from "./moodle-calendar-core.js";
 import { resolveUnit } from "./resolve.js";
 import { fetchWithSession } from "./session-fetch.js";
 import { z } from "zod";
@@ -16,6 +18,8 @@ import {
   FUNC_GET_COURSES,
   FUNC_GET_COURSES_BY_TIMELINE,
   FUNC_GET_POPUP_NOTIFICATIONS,
+  FUNC_MARK_NOTIFICATION_READ,
+  FUNC_MARK_ALL_NOTIFICATIONS_READ,
   FUNC_GET_SITE_INFO,
   FUNC_GET_STRINGS,
   FUNC_GET_UNREAD_CONVERSATION_COUNTS,
@@ -38,6 +42,9 @@ import type {
   AlertSummary,
   ActivityDetail,
   Assignment,
+  CalendarEvent,
+  Conversation,
+  ConversationDetail,
   Course,
   CourseGrades,
   Folder,
@@ -463,6 +470,43 @@ export class MoodleClientCore {
     return items;
   }
 
+  async getConversations(limit = 20, offset = 0): Promise<Conversation[]> {
+    await this.ensureSession();
+    return listConversations((name, args) => this.call(name, args), this.userid!, this.baseUrl, limit, offset);
+  }
+
+  async getConversation(id: number, limit = 50, offset = 0): Promise<ConversationDetail> {
+    await this.ensureSession();
+    return getConversation((name, args) => this.call(name, args), this.userid!, this.baseUrl, id, limit, offset);
+  }
+
+  async sendMessage(id: number, text: string, options: { user?: boolean } = {}): Promise<{ id: number }> {
+    if (!text.trim()) throw this.errors.usage?.("Message text cannot be empty.") ?? new MoodleClientCoreError("usage", "Message text cannot be empty.");
+    await this.ensureSession();
+    return { id: await sendMessage((name, args) => this.call(name, args), id, text, Boolean(options.user)) };
+  }
+
+  async markMessagesRead(conversationId?: number): Promise<{ conversations: number[] }> {
+    await this.ensureSession();
+    const ids: number[] = [];
+    if (conversationId !== undefined) ids.push(conversationId);
+    else {
+      for (let offset = 0; ; offset += 100) {
+        const page = await this.getConversations(100, offset);
+        ids.push(...page.filter(c => c.unread_count > 0).map(c => c.id));
+        if (page.length < 100) break;
+      }
+    }
+    for (const id of ids) await markConversationRead((name, args) => this.call(name, args), this.userid!, id);
+    return { conversations: ids };
+  }
+
+  async getCalendar(days = 14, courseId?: number): Promise<CalendarEvent[]> {
+    if (!Number.isInteger(days) || days < 1 || days > 365) throw new MoodleClientCoreError("usage", "Calendar days must be between 1 and 365.");
+    await this.ensureSession();
+    return readCalendar((name, args) => this.call(name, args), params => this.get("/calendar/view.php", params), this.baseUrl, days, courseId);
+  }
+
   async getAlerts(limit = 20): Promise<AlertSummary> {
     await this.ensureSession();
     const [notifications, counts, unread] = await this.callBatchValues([
@@ -471,6 +515,12 @@ export class MoodleClientCore {
       { methodname: FUNC_GET_UNREAD_CONVERSATION_COUNTS, args: { userid: this.userid } },
     ]);
     return parseAlertSummary(notifications, counts, unread);
+  }
+
+  async markAlertsRead(notificationId?: number): Promise<void> {
+    await this.ensureSession();
+    if (notificationId === undefined) await this.call(FUNC_MARK_ALL_NOTIFICATIONS_READ, { useridto: this.userid });
+    else await this.call(FUNC_MARK_NOTIFICATION_READ, { notificationid: notificationId });
   }
 
   async getOverview(todoLimit = 5, todoDays?: number, alertsLimit = 5): Promise<Overview> {
@@ -521,7 +571,7 @@ export class MoodleClientCore {
             unread && unread.ok ? unread.data : undefined,
           ))
         : this.getAlerts(alertsLimit);
-    const settled = await Promise.allSettled([userPromise, coursesPromise, todoPromise, alertsPromise] as const);
+    const settled = await Promise.allSettled([userPromise, coursesPromise, todoPromise, alertsPromise, this.getCalendar(todoDays ?? 14)] as const);
     const labels = [
       "user",
       "courses",
@@ -529,16 +579,18 @@ export class MoodleClientCore {
       alertFailureIndex >= 0
         ? ["notifications", "conversation counts", "unread conversation counts"][alertFailureIndex]!
         : "alerts",
+      "calendar",
     ];
     const errors = settled.flatMap((result, index) => result.status === "rejected"
       ? [`${labels[index]}: ${errorMessage(result.reason)}`]
       : []);
-    const [userResult, coursesResult, todoResult, alertsResult] = settled;
+    const [userResult, coursesResult, todoResult, alertsResult, calendarResult] = settled;
     return {
       user: userResult.status === "fulfilled" ? userResult.value : this.userInfo!,
       courses: coursesResult.status === "fulfilled" ? coursesResult.value : [],
       todo: todoResult.status === "fulfilled" ? todoResult.value : [],
       ...(alertsResult.status === "fulfilled" ? { alerts: alertsResult.value } : {}),
+      ...(calendarResult.status === "fulfilled" ? { calendar: calendarResult.value } : {}),
       errors,
     };
   }
