@@ -9,6 +9,7 @@ import type { MobileToken } from "../mobile-login-core.js";
 import { FetchMoodleSessionUpstream } from "./moodle-upstream.js";
 import { problemResponse } from "./problems.js";
 import { WORKER_SERVICE_ID, WORKER_SERVICE_VERSION } from "./http.js";
+import { sameSiteRoot } from "../site-root.js";
 
 const SESSION_STORAGE_KEY = "session";
 const DEFAULT_TOUCH_DELAY_MS = 30 * 60 * 1000;
@@ -233,7 +234,7 @@ export class SessionBroker {
     if (!isSessionCandidate(input)) {
       return problemResponse(400, "SESSION_CANDIDATE_INVALID", "Bad Request", "The session candidate is invalid.");
     }
-    if (normalizeOrigin(input.moodleOrigin) !== normalizeOrigin(this.env.MOODLE_ORIGIN)) {
+    if (!sameSiteRoot(input.moodleOrigin, this.env.MOODLE_ORIGIN)) {
       return problemResponse(403, "MOODLE_ORIGIN_MISMATCH", "Forbidden", "The session candidate belongs to a different Moodle origin.");
     }
     return this.storeSession(input, (current) => (current?.revision ?? null) === input.expectedRevision ? "ok" : "revision_conflict");
@@ -609,14 +610,6 @@ function nextTouchAt(now: number, remainingSeconds: number | null): number {
 
 function expiresAt(now: number, remainingSeconds: number | null): number | null {
   return remainingSeconds === null ? null : now + Math.max(0, remainingSeconds) * 1000;
-}
-
-function normalizeOrigin(value: string): string {
-  try {
-    return new URL(value).origin;
-  } catch {
-    return "";
-  }
 }
 
 function isSessionCandidate(value: unknown): value is SessionCandidate {

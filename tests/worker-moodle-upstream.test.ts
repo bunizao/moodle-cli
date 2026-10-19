@@ -52,6 +52,29 @@ describe("Worker Moodle session upstream", () => {
     });
   });
 
+  it("keeps a Moodle install path for validation, touch, and mobile renewal", async () => {
+    const root = `${ORIGIN}/elearning/moodle`;
+    const urls: string[] = [];
+    const fetchImpl = vi.fn(async (url: string | URL | Request) => {
+      urls.push(String(url));
+      if (String(url).includes("/lib/ajax/service.php")) return Response.json([{ error: false, data: {} }, { error: false, data: { timeremaining: 60 } }]);
+      if (String(url).includes("service-nologin.php")) return Response.json([{ error: false, data: { enablemobilewebservice: 0 } }]);
+      return new Response('<script>window.M = {"sesskey":"sess-123","userid":42}</script>');
+    });
+    const upstream = new FetchMoodleSessionUpstream(`${root}/`, fetchImpl as unknown as typeof fetch);
+    const candidate = { moodleOrigin: root, cookieName: "MoodleSession", cookieValue: "c", expectedRevision: 0 };
+
+    await expect(upstream.validate(candidate)).resolves.toMatchObject({ valid: true });
+    await expect(upstream.validate({ ...candidate, moodleOrigin: ORIGIN })).resolves.toEqual({ valid: false, code: "SESSION_INVALID" });
+    await expect(upstream.touch({ ...candidate, sesskey: "sess-123" })).resolves.toMatchObject({ alive: true });
+    await expect(upstream.captureMobileToken({ name: "MoodleSession", value: "c" })).resolves.toBeNull();
+    expect(urls.map(url => url.split("?")[0])).toEqual([
+      `${root}/my/`,
+      `${root}/lib/ajax/service.php`,
+      `${root}/lib/ajax/service-nologin.php`,
+    ]);
+  });
+
   it("touches the AJAX session services and reports the remaining server time", async () => {
     const fetchImpl = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
       expect(String(url)).toContain("/lib/ajax/service.php?sesskey=sess-123");

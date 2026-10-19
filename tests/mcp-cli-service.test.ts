@@ -23,6 +23,10 @@ describe("managed MCP CLI service", () => {
   it("derives stable Cloudflare-safe profile and Worker names", () => {
     expect(deriveMcpProfile("https://lms.example.edu")).toBe("lms-example-edu");
     expect(deriveMcpWorkerName("https://lms.example.edu")).toBe("moodle-lms-example-edu-mcp");
+    // A root install keeps its old name; an install path gets its own.
+    expect(deriveMcpProfile("https://lms.example.edu/")).toBe("lms-example-edu");
+    expect(deriveMcpProfile("https://lms.example.edu/elearning/moodle")).toBe("lms-example-edu-elearning-moodle");
+    expect(deriveMcpWorkerName("https://lms.example.edu/elearning/moodle")).toBe("moodle-lms-example-edu-elearning-moodle-mcp");
 
     const long = deriveMcpWorkerName(`https://${"long-segment-".repeat(8)}example.edu`);
     expect(long).toMatch(/^moodle-[a-z0-9-]+-[a-f0-9]{8}$/u);

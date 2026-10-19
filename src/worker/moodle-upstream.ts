@@ -6,6 +6,7 @@ import type {
   SessionValidationSuccess,
 } from "./session-broker.js";
 import { fetchMobileToken, mintSessionFromMobileToken, readSiteAuthProfile, type MobileToken } from "../mobile-login-core.js";
+import { sameSiteRoot, siteRootPath, siteUrl } from "../site-root.js";
 
 const DASHBOARD_PATH = "/my/";
 const AJAX_PATH = "/lib/ajax/service.php";
@@ -14,17 +15,18 @@ const SESSION_TIME_REMAINING = "core_session_time_remaining";
 const MINT_DEADLINE_MS = 30_000;
 
 export class FetchMoodleSessionUpstream implements MoodleSessionUpstream {
-  private readonly origin: string;
+  /** The Moodle site root (MOODLE_ORIGIN): origin plus install path, no trailing slash. */
+  private readonly root: string;
   private readonly fetchImpl: typeof fetch;
 
-  constructor(origin: string, fetchImpl?: typeof fetch) {
-    this.origin = new URL(origin).origin;
+  constructor(root: string, fetchImpl?: typeof fetch) {
+    this.root = `${new URL(root).origin}${siteRootPath(root)}`;
     this.fetchImpl = fetchImpl ?? ((input, init) => fetch(input, init));
   }
 
   async validate(candidate: SessionCandidate): Promise<SessionValidationSuccess | SessionValidationFailure> {
-    if (new URL(candidate.moodleOrigin).origin !== this.origin) return { valid: false, code: "SESSION_INVALID" };
-    const response = await this.fetchImpl(`${this.origin}${DASHBOARD_PATH}`, {
+    if (!sameSiteRoot(candidate.moodleOrigin, this.root)) return { valid: false, code: "SESSION_INVALID" };
+    const response = await this.fetchImpl(siteUrl(this.root, DASHBOARD_PATH), {
       method: "GET",
       headers: { cookie: `${candidate.cookieName}=${candidate.cookieValue}` },
       redirect: "manual",
@@ -63,10 +65,10 @@ export class FetchMoodleSessionUpstream implements MoodleSessionUpstream {
     // Optional renewal setup must not hold the owner login or OAuth verification queue.
     const signal = AbortSignal.timeout(30_000);
     const fetchImpl: typeof fetch = (input, init) => this.fetchImpl(input, { ...init, signal });
-    const profile = await readSiteAuthProfile(this.origin, fetchImpl);
+    const profile = await readSiteAuthProfile(this.root, fetchImpl);
     signal.throwIfAborted();
     if (profile && !profile.mobileService) return null;
-    const token = await fetchMobileToken(this.origin, cookie, fetchImpl);
+    const token = await fetchMobileToken(this.root, cookie, fetchImpl);
     signal.throwIfAborted();
     return token;
   }
@@ -77,7 +79,7 @@ export class FetchMoodleSessionUpstream implements MoodleSessionUpstream {
   async mintSession(moodleUserId: number, token: MobileToken): Promise<{ name: string; value: string } | null> {
     const signal = AbortSignal.timeout(MINT_DEADLINE_MS);
     const fetchImpl: typeof fetch = (input, init) => this.fetchImpl(input, { ...init, signal });
-    const minted = await mintSessionFromMobileToken(this.origin, moodleUserId, token, fetchImpl);
+    const minted = await mintSessionFromMobileToken(this.root, moodleUserId, token, fetchImpl);
     return minted ? { name: minted.cookie.name, value: minted.cookie.value } : null;
   }
 
@@ -87,10 +89,10 @@ export class FetchMoodleSessionUpstream implements MoodleSessionUpstream {
     cookieValue: string;
     sesskey: string;
   }): Promise<SessionTouchResult> {
-    if (new URL(session.moodleOrigin).origin !== this.origin) return { alive: false, remainingSeconds: null };
+    if (!sameSiteRoot(session.moodleOrigin, this.root)) return { alive: false, remainingSeconds: null };
     const methods = [SESSION_TOUCH, SESSION_TIME_REMAINING];
     const search = new URLSearchParams({ sesskey: session.sesskey, info: methods.join(",") });
-    const response = await this.fetchImpl(`${this.origin}${AJAX_PATH}?${search}`, {
+    const response = await this.fetchImpl(siteUrl(this.root, `${AJAX_PATH}?${search}`), {
       method: "POST",
       headers: {
         "content-type": "application/json",

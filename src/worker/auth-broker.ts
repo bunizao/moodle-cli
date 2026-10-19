@@ -109,7 +109,9 @@ export class AuthBroker {
       now: this.now,
       createSecret: randomSecret,
       pairing: { check: (code) => router.checkPairingCode(code), close: () => router.closePairing() },
-      ...(this.env.MOODLE_ORIGIN ? { moodleOrigin: new URL(this.env.MOODLE_ORIGIN).origin } : {}),
+      // MOODLE_ORIGIN is the site root, install path included; cutting it to the origin
+      // would open sign-in on the wrong page and miss the path-scoped cookie.
+      ...(this.env.MOODLE_ORIGIN ? { moodleOrigin: this.env.MOODLE_ORIGIN.replace(/\/+$/u, "") } : {}),
       ...(this.browser ? { browser: this.browser } : {}),
       ...(this.adopt ? { adopt: this.adopt } : {}),
     });

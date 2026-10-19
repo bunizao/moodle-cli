@@ -75,7 +75,9 @@ export function createBrowserRunLogin(binding: BrowserRunBinding): LoginBrowser 
 
     readMoodleCookie(handle, moodleOrigin) {
       return withPage(handle, async (send) => {
-        const result = await send("Network.getCookies", { urls: [moodleOrigin] }) as { cookies?: Array<{ name?: unknown; value?: unknown }> };
+        // A page URL inside the install: Moodle scopes the cookie to the install path, and
+        // CDP only returns cookies whose path matches one of these URLs.
+        const result = await send("Network.getCookies", { urls: [`${moodleOrigin.replace(/\/+$/u, "")}/my/`] }) as { cookies?: Array<{ name?: unknown; value?: unknown }> };
         const cookie = result.cookies?.find((item) => typeof item.name === "string" && item.name.startsWith("MoodleSession"));
         return typeof cookie?.name === "string" && typeof cookie.value === "string" && cookie.value
           ? { name: cookie.name, value: cookie.value }
