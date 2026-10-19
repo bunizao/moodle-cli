@@ -170,8 +170,10 @@ async function confirm(input: URL, root: string, fetcher: typeof fetch, timeoutM
 function classify(input: URL, root: string, sitename: string | undefined, source: DiscoverySource): Discovery {
   const site: DiscoveredSite = { root, ...(sitename ? { sitename } : {}), source };
   // The session cookie is later sent wherever this points, so a host the person did not
-  // name is only ever offered, never taken silently.
-  return new URL(root).host === input.host ? { kind: "found", site } : { kind: "elsewhere", site };
+  // name, or a drop from https to http, is only ever offered, never taken silently.
+  const target = new URL(root);
+  const downgrade = input.protocol === "https:" && target.protocol === "http:";
+  return target.host === input.host && !downgrade ? { kind: "found", site } : { kind: "elsewhere", site };
 }
 
 function cleanRoot(value: string): string | null {

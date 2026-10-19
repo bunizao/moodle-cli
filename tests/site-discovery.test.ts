@@ -134,6 +134,14 @@ describe("discoverSite", () => {
     });
   });
 
+  it("offers, rather than takes, a root that drops https for http", async () => {
+    const { fetch } = fakeMoodle({ wwwroot: ROOT.replace("https:", "http:") });
+    await expect(discoverSite(`${ROOT}/my/`, { fetch })).resolves.toMatchObject({
+      kind: "elsewhere",
+      site: { root: ROOT.replace("https:", "http:") },
+    });
+  });
+
   it("reports a bare host that is not Moodle", async () => {
     const { fetch } = fakeMoodle({ front: "other" });
     await expect(discoverSite(HOST, { fetch })).resolves.toMatchObject({ kind: "not_found" });

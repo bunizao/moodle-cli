@@ -885,7 +885,7 @@ export function buildProgram(io: CliIO = {}): Command {
     if (result.kind === "not_found") {
       throw new ConfigError(`No Moodle found at ${address}.`, "Pass the address of any page inside Moodle, such as a course page.");
     }
-    if (result.kind === "elsewhere" && !await confirm({ summary: `${address} leads to Moodle at ${result.site.root}, on another host. Save that address.` }, { yes: Boolean(program.opts().yes), dryRun: false, interactive: human() })) {
+    if (result.kind === "elsewhere" && !await confirm({ summary: `${address} leads to Moodle at ${result.site.root}. Save that address.` }, { yes: Boolean(program.opts().yes), dryRun: false, interactive: human() })) {
       throw new ConfigError(`Moodle reports its address as ${result.site.root}.`, `Run moodle auth site ${result.site.root} --yes to use it.`);
     }
     const savedTo = await saveBaseUrl(result.site.root, configOptions());
