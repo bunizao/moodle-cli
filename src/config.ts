@@ -155,6 +155,14 @@ function describeSite(site: DiscoveredSite): string {
   return site.sitename ? `${site.sitename} at ${site.root}` : site.root;
 }
 
+/** Save a site root to the config file in use (or the user config), keeping other settings. */
+export async function saveBaseUrl(baseUrl: string, options: ConfigOptions = {}): Promise<string> {
+  const loaded = await loadExistingConfig(options);
+  const path = loaded.path ?? userConfigPath(options.homeDir);
+  await saveConfigFile(path, { ...loaded.config, base_url: normalizeBaseUrl(baseUrl) }, options);
+  return path;
+}
+
 export interface SiteCorrection {
   from: string;
   to: string;

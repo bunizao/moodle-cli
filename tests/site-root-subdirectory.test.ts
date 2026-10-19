@@ -84,3 +84,30 @@ describe("a saved address that is a page, not the install root", () => {
     expect(await readFile(configPath, "utf8")).toBe(`base_url: ${ROOT}\n`);
   });
 });
+
+describe("moodle auth site", () => {
+  it("saves the install root found from a pasted course link", async () => {
+    const { mkdtemp, readFile } = await import("node:fs/promises");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const { runCli } = await import("../src/cli.js");
+    const home = await mkdtemp(join(tmpdir(), "moodle-auth-site-"));
+    const fetchImpl = (async (input: RequestInfo | URL) => String(input).startsWith(`${ROOT}/lib/ajax/service-nologin.php`)
+      ? Response.json([{ error: false, data: { wwwroot: ROOT, sitename: "School" } }])
+      : new Response("Not found", { status: 404 })) as typeof fetch;
+    const stdout: string[] = [];
+    const code = await runCli(["node", "moodle", "auth", "site", `${ROOT}/course/view.php?id=3`, "--json"], {
+      env: { MOODLE_NO_UPDATE_CHECK: "1" },
+      homeDir: home,
+      cwd: home,
+      fetchImpl,
+      stdin: { isTTY: false } as NodeJS.ReadStream,
+      stdout: { write: (text: string) => stdout.push(text) } as unknown as NodeJS.WriteStream,
+      stderr: { write: () => true } as unknown as NodeJS.WriteStream,
+    });
+    const configPath = join(home, ".config/moodle-cli/config.yaml");
+    expect(code).toBe(0);
+    expect(JSON.parse(stdout.join(""))).toEqual({ base_url: ROOT, sitename: "School", found_by: "site_config", saved_to: configPath });
+    expect(await readFile(configPath, "utf8")).toBe(`base_url: ${ROOT}\n`);
+  });
+});

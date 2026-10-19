@@ -6,7 +6,7 @@ import { createProgressReporter } from "./mcp/deployment/progress.js";
 import { readFile, rm, readdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import { DefaultRenewalIntegration } from "./mcp/renewal/index.js";
-import { CACHE_DIR_NAME, CONFIG_DIR_NAME, MOODLE_SESSION_COOKIE_PREFIX } from "./constants.js";
+import { CACHE_DIR_NAME, CONFIG_DIR_NAME, ENV_MOODLE_BASE_URL, ENV_MOODLE_URL, MOODLE_SESSION_COOKIE_PREFIX } from "./constants.js";
 import { runtimeSupportsCookies } from "./mcp/self-command.js";
 import { createMoodleGateway } from "./mcp/gateway.js";
 import { createIntentService, type IntentService } from "./intents.js";
@@ -47,7 +47,8 @@ import { fileURLToPath } from "node:url";
 import { createMoodleClient, type MoodleClient } from "./client.js";
 import { refreshLatestVersion, runUpdate, startupUpdateNotice } from "./update-check.js";
 import { isNewerVersion } from "./update-core.js";
-import { correctBaseUrl, loadConfig } from "./config.js";
+import { correctBaseUrl, loadConfig, saveBaseUrl } from "./config.js";
+import { discoverSite } from "./site-discovery.js";
 import { AuthError, CliError, ConfigError, MoodleAPIError, UsageError, asNetworkError } from "./errors.js";
 import {
   formatActivityDetail,
@@ -858,6 +859,39 @@ export function buildProgram(io: CliIO = {}): Command {
       await runtime.output({ ...status, runtime: note }, () => `${formatAuthStatus(status)}\n${note}`, options);
     },
   );
+
+  addOutputOptions(
+    auth
+      .command("site")
+      .description("Find the Moodle site from any page address and save it; with no address, show the saved one.")
+      .summary("Find and save the Moodle site")
+      .argument("[address]", "Any Moodle page address: front page, dashboard, course, or login page"),
+  ).action(async (address: string | undefined, options: OutputCommandOptions) => {
+    if (!address) {
+      const baseUrl = await runtime.baseUrl();
+      await runtime.output({ base_url: baseUrl }, () => baseUrl, options, false);
+      return;
+    }
+    const result = await discoverSite(address, { fetch: io.fetchImpl });
+    if (result.kind === "redirected") {
+      throw new ConfigError(`${address} leads to ${result.host}, which is not Moodle.`, "Sign in, then pass the address of any Moodle page you land on.");
+    }
+    if (result.kind === "unreachable") throw new ConfigError(result.message);
+    if (result.kind === "not_found") {
+      throw new ConfigError(`No Moodle found at ${address}.`, "Pass the address of any page inside Moodle, such as a course page.");
+    }
+    if (result.kind === "elsewhere" && !await confirm({ summary: `${address} leads to Moodle at ${result.site.root}, on another host. Save that address.` }, { yes: Boolean(program.opts().yes), dryRun: false, interactive: human() })) {
+      throw new ConfigError(`Moodle reports its address as ${result.site.root}.`, `Run moodle auth site ${result.site.root} --yes to use it.`);
+    }
+    const savedTo = await saveBaseUrl(result.site.root, configOptions());
+    const env = io.env ?? process.env;
+    const overriddenBy = [ENV_MOODLE_BASE_URL, ENV_MOODLE_URL].find(name => env[name]);
+    const data = { base_url: result.site.root, ...(result.site.sitename ? { sitename: result.site.sitename } : {}), found_by: result.site.source, saved_to: savedTo, ...(overriddenBy ? { overridden_by: overriddenBy } : {}) };
+    await runtime.output(data, () => [
+      `Saved ${result.site.sitename ? `${result.site.sitename} at ` : ""}${result.site.root} to ${savedTo}.`,
+      ...(overriddenBy ? [`${overriddenBy} is set and takes precedence; unset it or set it to ${result.site.root}.`] : []),
+    ].join("\n"), options, false);
+  });
 
   addOutputOptions(
     auth

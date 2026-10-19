@@ -26,6 +26,7 @@ asks for confirmation (`--yes` skips it) and prints the receipt Moodle shows aft
 | moodle auth keepalive status | Show whether the keepalive launch agent is installed. |  | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required) |
 | moodle auth keepalive uninstall | Remove the keepalive launch agent. |  | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required) |
 | moodle auth login | Sign in through a browser the CLI controls, then capture the session. |  | --paste<br>--pretty<br>--json<br>--yaml<br>--table<br>--fields (value required) |
+| moodle auth site | Find the Moodle site from any page address and save it; with no address, show the saved one. | [address] | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required) |
 | moodle auth status | Show cached session freshness and keepalive state. |  | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required) |
 | moodle commands | Describe the complete command tree. |  | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required) |
 | moodle completion | Print shell completion for zsh, bash or fish. | <shell> |  |
