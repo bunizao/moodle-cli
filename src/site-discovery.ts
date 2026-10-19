@@ -45,6 +45,7 @@ export interface DiscoveryOptions {
 const MAX_CANDIDATES = 10;
 const MAX_REDIRECTS = 8;
 const DEFAULT_TIMEOUT_MS = 10_000;
+const LOGIN_DIR = "/login/";
 
 /** Parse what a person typed. A missing scheme means https; query and fragment are kept for following. */
 export function parseSiteInput(value: string): URL {
@@ -140,11 +141,11 @@ async function followAddress(input: URL, fetcher: typeof fetch, timeoutMs: numbe
       await response.body?.cancel();
       const next = new URL(location, current);
       // require_login always sends a signed-out visitor to {wwwroot}/login/index.php first;
-      // a sign-in provider, if the site forces one, only comes after that.
-      if (next.pathname.endsWith(LOGIN_PATH)) {
-        const root = `${next.origin}${next.pathname.slice(0, -LOGIN_PATH.length)}`;
-        return confirm(input, root, fetcher, timeoutMs, "login_redirect");
-      }
+      // a sign-in provider, if the site forces one, only comes after that. A host's own
+      // front-page redirect often names just the directory, {wwwroot}/login/, which the
+      // server answers with index.php, so a forced SSO hop never shows the script name.
+      const root = loginRoot(next);
+      if (root !== null) return confirm(input, root, fetcher, timeoutMs, "login_redirect");
       current = next;
       continue;
     }
@@ -158,6 +159,13 @@ async function followAddress(input: URL, fetcher: typeof fetch, timeoutMs: numbe
     return current.host === input.host ? { kind: "not_found", status: response.status } : { kind: "redirected", host: current.host };
   }
   return { kind: "redirected", host: current.host };
+}
+
+function loginRoot(url: URL): string | null {
+  const { pathname } = url;
+  if (pathname.endsWith(LOGIN_PATH)) return `${url.origin}${pathname.slice(0, -LOGIN_PATH.length)}`;
+  if (pathname.endsWith(LOGIN_DIR)) return `${url.origin}${pathname.slice(0, -LOGIN_DIR.length)}`;
+  return null;
 }
 
 /** Prefer Moodle's own answer at a root found by following; keep the evidence when the service is off. */

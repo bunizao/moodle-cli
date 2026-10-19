@@ -12,7 +12,7 @@ interface FakeSite {
   wwwroot?: string;
   publicConfig?: boolean;
   /** The host's own front page: a redirect into Moodle, or an unrelated page. */
-  front?: "redirect" | "other";
+  front?: "redirect" | "login" | "other";
   /** Signed-out visitors go from the login page straight on to a sign-in provider. */
   sso?: boolean;
 }
@@ -32,11 +32,12 @@ function fakeMoodle(site: FakeSite = {}): { fetch: typeof fetch; calls: string[]
       return Response.json([{ error: false, data: { wwwroot, sitename: "<b>School</b> Moodle" } }]);
     }
     if (url.origin === IDP) return html("<html><form>Sign in</form></html>");
-    if (path === `${root}/login/index.php`) {
+    if (path === `${root}/login/index.php` || path === `${root}/login/`) {
       return site.sso ? redirect(`${IDP}/authorize`) : html(`<script>M.cfg = {"wwwroot":"${wwwroot}","theme":"boost"};</script>`);
     }
     if (path.startsWith(`${root}/`)) return redirect(`${root}/login/index.php`);
     if (url.pathname === "/" && site.front === "redirect") return redirect(`${root}/`);
+    if (url.pathname === "/" && site.front === "login") return redirect(`${root}/login/`);
     if (url.pathname === "/" && site.front === "other") return html("<html>University home</html>");
     return new Response("Not found", { status: 404, headers: { "content-type": "text/html" } });
   }) as typeof fetch;
@@ -108,6 +109,16 @@ describe("discoverSite", () => {
   it("follows a bare host into its Moodle subdirectory", async () => {
     const { fetch } = fakeMoodle({ front: "redirect" });
     await expect(discoverSite(HOST, { fetch })).resolves.toMatchObject({ kind: "found", site: { root: ROOT, source: "site_config" } });
+  });
+
+  it("follows a bare host whose front page points at the login directory before forced sign-in", async () => {
+    const { fetch } = fakeMoodle({ front: "login", sso: true });
+    await expect(discoverSite(HOST, { fetch })).resolves.toMatchObject({ kind: "found", site: { root: ROOT, source: "site_config" } });
+    const blocked = fakeMoodle({ front: "login", sso: true, publicConfig: false });
+    await expect(discoverSite(HOST, { fetch: blocked.fetch })).resolves.toEqual({
+      kind: "found",
+      site: { root: ROOT, source: "login_redirect" },
+    });
   });
 
   it("reads the login redirect when the anonymous service is blocked and sign-in is forced", async () => {
