@@ -432,6 +432,94 @@ $DB->set_field('quiz_attempts', 'timestart', $DB->get_field('quiz_attempts', 'ti
 
 as_user($admin);
 
+// v0.11 acceptance data: drafts, extensions, grades, conversations and general events.
+as_user($admin);
+$peer = lab_ensure_user($gen, ['username' => 'student2', 'password' => 'Student#2026lab',
+    'firstname' => 'Pat', 'lastname' => 'Peer', 'email' => 'student2@example.com']);
+$gen->enrol_user($peer->id, $course1->id, 'student');
+$group = $gen->create_group(['courseid' => $course1->id, 'name' => 'Team Alpha']);
+$gen->create_group_member(['groupid' => $group->id, 'userid' => $student->id]);
+$gen->create_group_member(['groupid' => $group->id, 'userid' => $peer->id]);
+$draftsettings = ['course' => $course1->id, 'submissiondrafts' => 1, 'requiresubmissionstatement' => 1,
+    'duedate' => $now + 7 * $DAY, 'cutoffdate' => $now + 10 * $DAY];
+$draftessay = $assigngen->create_instance(['name' => 'Essay 1',
+    'intro' => '<p>Save a draft, then submit for grading.</p>', 'introformat' => FORMAT_HTML] + $draftsettings + lab_assign_defaults(), ['section' => 1]);
+$groupassign = $assigngen->create_instance(['name' => 'Group project', 'teamsubmission' => 1,
+    'requireallteammemberssubmit' => 1] + $draftsettings + lab_assign_defaults(), ['section' => 1]);
+$reflection = $assigngen->create_instance(['name' => 'Reflection (online text)',
+    'assignsubmission_onlinetext_enabled' => 1, 'assignsubmission_onlinetext_wordlimit' => 500,
+    'assignsubmission_onlinetext_wordlimitenabled' => 1] + $draftsettings + lab_assign_defaults(), ['section' => 1]);
+$overdue = $assigngen->create_instance(['course' => $course1->id, 'name' => 'Overdue quiz prep',
+    'duedate' => $now - 2 * $DAY, 'cutoffdate' => $now + 5 * $DAY] + lab_assign_defaults(), ['section' => 1]);
+$DB->insert_record('assign_user_flags', (object) ['assignment' => $draftessay->id, 'userid' => $student->id,
+    'extensionduedate' => $now + 9 * $DAY]);
+
+$exams = new grade_category(['courseid' => $course1->id, 'fullname' => 'Exams', 'aggregation' => GRADE_AGGREGATE_SUM], false);
+$exams->insert();
+$midterm = new grade_item(['courseid' => $course1->id, 'categoryid' => $exams->id,
+    'itemname' => 'Midterm exam', 'itemtype' => 'manual', 'gradetype' => GRADE_TYPE_VALUE, 'grademax' => 100], false);
+$midterm->insert();
+$midterm->update_final_grade($student->id, 78, 'lab', 'Solid midterm', FORMAT_HTML);
+grade_regrade_final_grades($course1->id);
+
+$fs = get_file_storage();
+$fs->create_file_from_string(['contextid' => context_module::instance($forum->cmid)->id,
+    'component' => 'mod_forum', 'filearea' => 'attachment', 'itemid' => $reply->id,
+    'filepath' => '/', 'filename' => 'course-notes.txt'], "Forum attachment.\n");
+$DB->set_field('forum_posts', 'attachment', '1', ['id' => $reply->id]);
+$gen->get_plugin_generator('mod_bigbluebuttonbn')->create_instance([
+    'course' => $course1->id, 'name' => 'BBB study session',
+    'openingtime' => $now + 4 * $DAY, 'closingtime' => $now + 4 * $DAY + 3600,
+], ['section' => 2]);
+foreach (['week-one', 'week-two'] as $subpath) {
+    $fs->create_file_from_string(['contextid' => context_module::instance($readings->cmid)->id,
+        'component' => 'mod_folder', 'filearea' => 'content', 'itemid' => 0,
+        'filepath' => '/' . $subpath . '/', 'filename' => 'readme.txt'], $subpath . "\n");
+}
+$DB->set_field('course', 'enablecompletion', 1, ['id' => $course1->id]);
+$DB->set_field('course_modules', 'completion', 1, ['id' => $welcomepage->cmid]);
+
+$messages = [];
+foreach ([[$teacher, 'Teacher direct message'], [$peer, 'Peer direct message']] as [$sender, $text]) {
+    $conversation = \core_message\api::create_conversation(1, [$student->id, $sender->id]);
+    as_user($sender);
+    \core_message\api::send_message_to_conversation($sender->id, $conversation->id, $text, FORMAT_PLAIN);
+    $messages[] = (int) $conversation->id;
+}
+as_user($admin);
+$teamchat = \core_message\api::create_conversation(2, [$student->id, $teacher->id, $peer->id], 'Team Alpha chat');
+as_user($teacher);
+\core_message\api::send_message_to_conversation($teacher->id, $teamchat->id, 'Welcome to Team Alpha', FORMAT_PLAIN);
+as_user($admin);
+$generalEventIds = [];
+foreach ([['Guest lecture', 'course', $course1->id, 0], ['Dentist', 'user', 0, $student->id],
+        ['Public holiday', 'site', SITEID, 0]] as [$name, $kind, $courseid, $userid]) {
+    $event = calendar_event::create((object) ['name' => $name, 'description' => '<p>Calendar acceptance event.</p>',
+        'format' => FORMAT_HTML, 'courseid' => $courseid, 'userid' => $userid, 'eventtype' => $kind,
+        'timestart' => $now + 3 * $DAY, 'timeduration' => 3600, 'visible' => 1]);
+    $generalEventIds[] = (int) $event->id;
+}
+
+$formulas = $quizgen->create_instance(['course' => $course1->id, 'name' => 'Formulas quiz',
+    'timelimit' => 3600, 'timeclose' => $now + 14 * $DAY, 'grade' => 10,
+    'preferredbehaviour' => 'adaptive'], ['section' => 1]);
+$formulascat = $qgen->create_question_category(['name' => 'Formulas questions',
+    'contextid' => context_module::instance($formulas->cmid)->id]);
+require_once($CFG->dirroot . '/vendor/autoload.php');
+require_once($CFG->dirroot . '/question/behaviour/adaptive/behaviourtype.php');
+$formulaquestion = $qgen->create_question('formulas', 'testmethodsinparts', ['category' => $formulascat->id]);
+quiz_add_quiz_question($formulaquestion->id, $formulas);
+$DB->set_field('quiz_slots', 'maxmark', $formulaquestion->defaultmark, ['quizid' => $formulas->id]);
+quiz_settings::create($formulas->id)->get_grade_calculator()->recompute_quiz_sumgrades();
+as_user($student);
+$formulasattempt = $quizgen->create_attempt($formulas->id, $student->id);
+as_user($admin);
+$v011 = ['draft_essay' => (int) $draftessay->cmid, 'group_project' => (int) $groupassign->cmid,
+    'reflection' => (int) $reflection->cmid, 'overdue' => (int) $overdue->cmid,
+    'manual_grade' => (int) $midterm->id, 'calendar_events' => $generalEventIds, 'conversations' => $messages, 'team_chat' => (int) $teamchat->id,
+    'formulas_quiz' => (int) $formulas->cmid, 'formulas_attempt' => (int) $formulasattempt->id,
+    'completion_page' => (int) $welcomepage->cmid, 'forum' => (int) $forum->cmid];
+
 // The calendar events (assign due dates, quiz close) are created by the module generators, but
 // refresh anyway so the result does not depend on that.
 assign_refresh_events($course1->id);
@@ -580,10 +668,11 @@ foreach ([[$forum, $disc], [$news, $newsdisc]] as [$f, $d]) {
     ];
 }
 
-// Calendar events (course-module events only).
+// Calendar ground truth includes module events and every general event seeded above.
 [$insql, $inparams] = $DB->get_in_or_equal([$course1->id, $course2->id]);
 $events = [];
-foreach ($DB->get_records_select('event', "courseid $insql AND modulename <> ''", $inparams, 'timestart, id') as $e) {
+[$eventsql, $eventparams] = $DB->get_in_or_equal($generalEventIds);
+foreach ($DB->get_records_select('event', "(courseid $insql AND modulename <> '') OR id $eventsql", array_merge($inparams, $eventparams), 'timestart, id') as $e) {
     $events[] = [
         'id' => (int) $e->id, 'name' => $e->name, 'courseid' => (int) $e->courseid, 'modulename' => $e->modulename,
         'instance' => (int) $e->instance, 'eventtype' => $e->eventtype, 'timestart' => (int) $e->timestart,
@@ -604,6 +693,7 @@ $truth = [
         'admin' => ['id' => (int) $admin->id, 'username' => 'admin', 'password' => 'Admin#2026lab'],
     ],
     'student1_userid' => (int) $student->id,
+    'v011' => $v011,
     'courses' => [
         [
             'id' => (int) $course1->id, 'shortname' => 'LAB101', 'fullname' => 'Lab Course One', 'format' => 'topics',
