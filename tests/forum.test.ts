@@ -39,6 +39,28 @@ describe("forum read paths", () => {
     expect(filterDiscussionToPost(discussion, parsed.postId).posts).toEqual([discussion.posts[1]]);
   });
 
+  it("loads the discussion page once per forum to learn its module id", async () => {
+    const pages: number[] = [];
+    const client = new ForumModule({
+      baseUrl: BASE_URL,
+      call: async (_name, args) => ({
+        courseid: 101,
+        forumid: 501,
+        posts: [{ id: Number(args.discussionid) * 10, discussionid: args.discussionid, subject: "Topic", message: "<p>Hi</p>", timecreated: 1 }],
+      }),
+      getPage: async (_path, params) => {
+        pages.push(Number(params.d));
+        return `<a href="${BASE_URL}/mod/forum/view.php?id=9001">Forum</a>`;
+      },
+    });
+
+    expect((await client.getForumDiscussion(7001, { group: false })).forum_id).toBe(9001);
+    client.clearCache();
+    expect((await client.getForumDiscussion(7002, { group: false })).forum_id).toBe(9001);
+    expect((await client.getForumDiscussion(7001, { group: false })).forum_id).toBe(9001);
+    expect(pages).toEqual([7001]);
+  });
+
   it("loads a discussion through AJAX and extracts images, links, and tables", async () => {
     const calledFunctions: string[] = [];
     const client = new ForumModule({
