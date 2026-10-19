@@ -3,7 +3,7 @@ import { activityRow, itemRow, postRow, stripEmpty } from "./results.js";
 import { doctor, ownedJobs } from "./doctor.js";
 import { COVERAGE_FAILURES, coverageReport } from "./coverage.js";
 import { createProgressReporter } from "./mcp/deployment/progress.js";
-import { readFile, rm, readdir } from "node:fs/promises";
+import { mkdir, readFile, rm, readdir, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { DefaultRenewalIntegration } from "./mcp/renewal/index.js";
 import { CACHE_DIR_NAME, CONFIG_DIR_NAME, MOODLE_SESSION_COOKIE_PREFIX } from "./constants.js";
@@ -76,6 +76,8 @@ import {
   formatUser,
 } from "./formatters.js";
 import { downloadMoodleFiles } from "./download.js";
+import { fetchMediaCaptions } from "./media-captions.js";
+import type { EmbeddedMedia } from "./models.js";
 import { chooseDownloadSource } from "./download-source.js";
 import { syncUnits, type SyncResult } from "./sync.js";
 import { submissionReceiptOf, type SubmissionReceipt } from "./moodle-assign-core.js";
@@ -89,7 +91,7 @@ import {
   keepaliveStatus,
   uninstallKeepalive,
 } from "./keepalive.js";
-import { authenticateWithPastedCookie, getAuthenticatedSession, getAuthenticatedSessionWithBrowserFallback, invalidateCachedSession } from "./auth.js";
+import { authenticateWithPastedCookie, defaultBrowserCookieProvider, getAuthenticatedSession, getAuthenticatedSessionWithBrowserFallback, invalidateCachedSession } from "./auth.js";
 import { browserCookieStores, cookieStoresBlocked } from "./cookie-stores.js";
 import { signInInteractively } from "./onboarding.js";
 import { readSecretLine } from "./secret-input.js";
@@ -137,7 +139,7 @@ interface OutputCommandOptions {
 
 const NOUNS: readonly NounSpec[] = [
   { name: "units", aliases: ["courses"], verbs: ["list", "show"], defaultByArity: { 0: "list", 1: "show" } },
-  { name: "activities", verbs: ["list", "show"], defaultByArity: { 0: "list", 1: "list" }, valueFlags: ["--limit", "--section"] },
+  { name: "activities", verbs: ["list", "show", "captions"], defaultByArity: { 0: "list", 1: "list" }, valueFlags: ["--limit", "--section", "--to"] },
   { name: "grades", verbs: ["list"], defaultByArity: { 0: "list", 1: "list" }, valueFlags: ["--mode", "--types", "--limit", "--offset"] },
   {
     name: "forums",
@@ -630,6 +632,21 @@ export function buildProgram(io: CliIO = {}): Command {
       await execute("item", { ref: parsePositiveInt(id) }, options);
     },
   );
+  addOutputOptions(activities.command("captions").description("Export timestamped captions from an inline video label.").argument("<id>", "Label course-module ID").argument("[media]", "Media ID or 1-based position when the label has multiple videos").requiredOption("--to <file>", "Text file to create."))
+    .action(async (id: string, mediaRef: string | undefined, options: OutputCommandOptions & { to: string }) => {
+      const client = await runtime.getClient();
+      const activityId = parsePositiveInt(id);
+      const activity = await client.getActivity(activityId);
+      if (activity.type !== "label") throw new UsageError("Captions are available through this command for inline video labels.");
+      const media = (activity as { media?: EmbeddedMedia[] }).media ?? [];
+      const selected = mediaRef ? media.find(item => item.id === mediaRef) ?? media[Number(mediaRef) - 1] : media.length === 1 ? media[0] : undefined;
+      if (!selected) throw new UsageError(media.length ? "Choose a media ID or 1-based position from activities show." : "This label has no embedded video.");
+      const captions = await fetchMediaCaptions(selected, client.baseUrl, url => client.requestAbsolute(url), url => defaultBrowserCookieProvider(url), io.fetchImpl ?? fetch);
+      const target = path.resolve(options.to);
+      await mkdir(path.dirname(target), { recursive: true });
+      await writeFile(target, `Source ID: ${selected.id ?? activityId}\nSource URL: ${selected.url}\nMoodle activity ID: ${activityId}\n\n${captions}\n`, { flag: "wx" });
+      await runtime.output({ captions: { file: target, source_id: selected.id ?? String(activityId), source_url: selected.url } }, () => `Saved captions → ${target}`, options);
+    });
 
   addOutputOptions(
     program
