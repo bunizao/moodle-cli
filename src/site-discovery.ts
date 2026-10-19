@@ -49,7 +49,7 @@ const DEFAULT_TIMEOUT_MS = 10_000;
 export function parseSiteInput(value: string): URL {
   const raw = value.trim();
   if (!raw) throw new ConfigError("Enter the address of your Moodle site.");
-  const withScheme = /^[a-z][a-z0-9+.-]*:\/\//iu.test(raw) ? raw : `https://${raw}`;
+  const withScheme = hasScheme(raw) ? raw : `https://${raw}`;
   let parsed: URL;
   try {
     parsed = new URL(withScheme);
@@ -78,8 +78,25 @@ export function candidateRoots(input: URL): string[] {
   return origins.flatMap(origin => kept.map(path => `${origin}${path}`));
 }
 
-export async function discoverSite(value: string | URL, options: DiscoveryOptions = {}): Promise<Discovery> {
-  const input = typeof value === "string" ? parseSiteInput(value) : value;
+export async function discoverSite(value: string, options: DiscoveryOptions = {}): Promise<Discovery> {
+  const input = parseSiteInput(value);
+  const result = await discoverAt(input, options);
+  // An address typed without a scheme was assumed https; a site that only speaks http
+  // is still found, but only when the person did not ask for https themselves.
+  if (result.kind === "unreachable" && !hasScheme(value)) {
+    const plain = new URL(input.href);
+    plain.protocol = "http:";
+    const fallback = await discoverAt(plain, options);
+    if (fallback.kind !== "unreachable") return fallback;
+  }
+  return result;
+}
+
+function hasScheme(value: string): boolean {
+  return /^[a-z][a-z0-9+.-]*:\/\//iu.test(value.trim());
+}
+
+async function discoverAt(input: URL, options: DiscoveryOptions): Promise<Discovery> {
   const fetcher = options.fetch ?? globalThis.fetch;
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
 

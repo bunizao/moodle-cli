@@ -251,3 +251,18 @@ describe("correctBaseUrl", () => {
     expect(written).toEqual([]);
   });
 });
+
+describe("scheme fallback", () => {
+  it("finds a plain-http site only when no scheme was typed", async () => {
+    const plainRoot = "http://lab.example.test/moodle";
+    const fetchImpl = (async (input: RequestInfo | URL) => {
+      const url = new URL(String(input));
+      if (url.protocol === "https:") throw Object.assign(new TypeError("fetch failed"), { cause: { code: "ECONNREFUSED" } });
+      return url.pathname === "/moodle/lib/ajax/service-nologin.php"
+        ? Response.json([{ error: false, data: { wwwroot: plainRoot } }])
+        : new Response("Not found", { status: 404 });
+    }) as typeof fetch;
+    await expect(discoverSite("lab.example.test/moodle/my/", { fetch: fetchImpl })).resolves.toMatchObject({ kind: "found", site: { root: plainRoot } });
+    await expect(discoverSite("https://lab.example.test/moodle/my/", { fetch: fetchImpl })).resolves.toMatchObject({ kind: "unreachable" });
+  });
+});

@@ -117,9 +117,11 @@ export async function promptForBaseUrl(options: ConfigOptions = {}): Promise<str
   ].join("\n"), "Connect to Moodle");
 
   while (true) {
+    let raw: string;
     let input: URL;
     try {
-      input = parseSiteInput(await prompt("Moodle address"));
+      raw = await prompt("Moodle address");
+      input = parseSiteInput(raw);
     } catch (error) {
       ui.warn(error instanceof Error ? error.message : String(error));
       continue;
@@ -127,7 +129,7 @@ export async function promptForBaseUrl(options: ConfigOptions = {}): Promise<str
 
     const spin = ui.spinner();
     spin.start(`Looking for Moodle at ${input.host}`);
-    const result = await discoverSite(input, { fetch: options.fetch });
+    const result = await discoverSite(raw, { fetch: options.fetch });
     switch (result.kind) {
       case "found":
         spin.stop(`Found ${describeSite(result.site)}`);
