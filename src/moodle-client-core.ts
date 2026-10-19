@@ -40,6 +40,7 @@ import { createForumDiscussion, replyForumPost, setForumSubscription, type Forum
 import type { SubmitFile } from "./moodle-assign-core.js";
 import { ForumModule } from "./moodle-forum-core.js";
 import { labelRequests, siteLabelsFrom, type SiteLabels } from "./site-labels.js";
+import { parseLabelMedia } from "./label-media.js";
 import { searchForumContent as searchForumModule } from "./moodle-forum-search-core.js";
 import type {
   Activity,
@@ -434,6 +435,7 @@ export class MoodleClientCore {
       url: () => this.getLink(id),
       page: () => this.getPage(id),
       folder: () => this.getFolder(id),
+      label: () => this.getLabel(id, courseId),
     };
     const load = loaders[type];
     if (!load) {
@@ -829,6 +831,17 @@ export class MoodleClientCore {
 
   async getFolder(id: number): Promise<Folder> {
     return parseFolderHtml(await this.getActivityPage(FOLDER_VIEW_PATH, "folder", id), id, this.baseUrl);
+  }
+
+  private async getLabel(id: number, courseId?: number): Promise<Activity> {
+    const activity = await this.findActivity(id, courseId);
+    const html = await this.get("/mod/label/view.php", { id });
+    const label = parseLabelMedia(html, id, this.baseUrl);
+    if (!label || (label.restriction && !label.media.length)) {
+      const reason = label?.restriction || parseUnavailableNotice(html);
+      throw this.errors.api(`Activity ${id} is not available to you${reason ? `. ${reason}` : "."}`, "requireloginerror");
+    }
+    return { ...activity, media: label.media };
   }
 
   private async getActivityPage(pathname: string, type: string, id: number, params: Record<string, number> = {}): Promise<string> {

@@ -35,6 +35,14 @@ export interface Activity {
   available?: boolean;
   availability_reason?: string;
   file_entries?: FileEntry[];
+  media?: EmbeddedMedia[];
+}
+
+export interface EmbeddedMedia {
+  id?: string;
+  title: string;
+  url: string;
+  captions?: Array<{ url: string; language?: string }>;
 }
 
 export interface Section {

@@ -964,6 +964,48 @@ describe("MoodleClient course/activity modules", () => {
     expect(JSON.parse(result.stdout)).toMatchObject({ item: { id: 31, name: "Essay 1", type: "assign" } });
   });
 
+  it("shows media from the requested inline label", async () => {
+    const fetchImpl = cliFetch([
+      dashboardRoute,
+      ajaxRoute("core_course_get_course_module", { cm: { id: 42, modname: "label", course: 101 } }),
+      ajaxRoute("core_course_get_contents", [{ id: 10, name: "Week 12", section: 12, visible: true, modules: [
+        { id: 42, name: "Lecture review", modname: "label", visible: true },
+      ] }]),
+      (request) => request.url === `${BASE_URL}/mod/label/view.php?id=42`
+        ? htmlResponse(`<body id="page-course-view"><li id="module-41"><a href="https://video.example.edu/Panopto/Pages/Viewer.aspx?id=other">Other video</a></li><li id="module-42"><div class="activityinline"><a href="https://video.example.edu/Panopto/Pages/Viewer.aspx?id=abc&amp;instance=Moodle">Lecture review video</a><iframe src="https://video.example.edu/Panopto/Pages/Embed.aspx?id=abc"></iframe></div></li></body>`)
+        : undefined,
+    ]);
+
+    const result = await runJsonCommand(["activities", "show", "42", "--json"], fetchImpl);
+
+    expect(result).toMatchObject({ code: 0, stderr: "" });
+    expect(JSON.parse(result.stdout)).toMatchObject({ item: { id: 42, type: "label", media: [{ id: "abc", title: "Lecture review video", url: "https://video.example.edu/Panopto/Pages/Viewer.aspx?id=abc" }] } });
+  });
+
+  it("exports an exposed caption track with timestamps and source provenance", async () => {
+    const fetchImpl = cliFetch([
+      dashboardRoute,
+      ajaxRoute("core_course_get_course_module", { cm: { id: 42, modname: "label", course: 101 } }),
+      ajaxRoute("core_course_get_contents", [{ id: 10, name: "Week 12", section: 12, visible: true, modules: [
+        { id: 42, name: "Lecture review", modname: "label", visible: true },
+      ] }]),
+      (request) => request.url === `${BASE_URL}/mod/label/view.php?id=42`
+        ? htmlResponse('<body id="page-course-view"><li id="module-42"><video src="/video/42.mp4" title="Lecture review"><track kind="captions" src="/captions/42.vtt" srclang="en"></video></li></body>')
+        : undefined,
+      (request) => request.url === `${BASE_URL}/captions/42.vtt`
+        ? new Response("WEBVTT\n\n00:00:01.000 --> 00:00:02.000\nHello", { status: 200 })
+        : undefined,
+    ]);
+    const directory = await mkdtemp(join(tmpdir(), "moodle-captions-"));
+    const target = join(directory, "lecture.txt");
+
+    const result = await runJsonCommand(["activities", "captions", "42", "--to", target, "--json"], fetchImpl);
+
+    expect(result).toMatchObject({ code: 0, stderr: "" });
+    expect(JSON.parse(result.stdout)).toMatchObject({ captions: { file: target, source_id: "42", source_url: `${BASE_URL}/video/42.mp4` } });
+    expect(readFileSync(target, "utf8")).toContain(`Source URL: ${BASE_URL}/video/42.mp4\nMoodle activity ID: 42\n\nWEBVTT\n\n00:00:01.000 --> 00:00:02.000`);
+  });
+
   it("returns usage errors for invalid URL --fields", async () => {
     const fetchImpl = cliFetch([
       dashboardRoute,

@@ -16,6 +16,7 @@ asks for confirmation (`--yes` skips it) and prints the receipt Moodle shows aft
 | Command | Description | Arguments | Flags |
 | --- | --- | --- | --- |
 | moodle activities | Inspect activities. |  |  |
+| moodle activities captions | Export timestamped captions from an inline video label. | <id> [media] | --to (value required)<br>--pretty<br>--json<br>--yaml<br>--table<br>--fields (value required) |
 | moodle activities list | List activities in a unit; narrow by section. | <unit> | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required)<br>--section (value required)<br>--limit (value required)<br>--include-labels |
 | moodle activities show | Show activity details, including the files moodle download would save. | <id> | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required) |
 | moodle alerts | List notifications and message counts. |  | --pretty<br>--json<br>--yaml<br>--table<br>--fields (value required)<br>--limit (value required) |

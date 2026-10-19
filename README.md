@@ -126,6 +126,18 @@ moodle download 'https://moodle.example.edu/mod/resource/view.php?id=91234' --de
 
 You can paste the same links into your agent and ask it to inspect the page, find related material, or download the file.
 
+#### Embedded lecture videos
+
+Inline Moodle labels stay out of the compact section view. Include them when looking for a video, then inspect the label for its media title and viewer URL:
+
+```bash
+moodle activities list UNIT --section 'Week 12' --include-labels --json
+moodle activities show LABEL_ID --json
+moodle activities captions LABEL_ID --to ./lecture-captions.txt
+```
+
+`activities captions` saves timestamped SRT or VTT text with the video ID and source URL. If a label has several videos, pass the media ID or its 1-based position after `LABEL_ID`. Panopto captions require a signed-in Panopto browser session whose cookies the CLI can read; sign in through the viewer URL shown by `activities show` first. A recording with no captions, an expired Panopto session, or a response that is not caption text creates no file. The command does not overwrite an existing file.
+
 #### Download course files
 
 `moodle download` (alias `dl`) saves what the web page offers:
