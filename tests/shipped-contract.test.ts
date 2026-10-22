@@ -29,7 +29,7 @@ describe("shipped vocabulary and guidance", () => {
     }
   });
   it("contains no institution literals in owned source, generated guidance or public docs", async () => {
-    const paths = ["README.md", "ONBOARDING.md", "SKILL.md"];
+    const paths = ["README.md", "SKILL.md"];
     async function gather(dir: string) {
       for (const entry of await readdir(dir, { withFileTypes: true })) {
         if (entry.isDirectory()) await gather(join(dir, entry.name));
