@@ -27,7 +27,7 @@ A pull request is ready when:
 - `npm run check`, `npm test` and `npm run build` pass.
 - New behaviour has a test. A fix to a page reader adds a fixture under `tests/fixtures/`, saved from a real page with personal data removed.
 - Commit messages follow [Conventional Commits](https://www.conventionalcommits.org/), such as `fix(grades): keep the course total on an empty gradebook`.
-- If you changed a command or an option, the skill bundle is regenerated: `npm run build && npm run skill:generate`. CI fails when `SKILL.md`, `references/` or `agents/openai.yaml` drift.
+- If you changed a command or an option, the skill bundle is regenerated: `npm run build && npm run skill:generate`. CI fails when `skills/` or `.claude-plugin/` drift. A version bump needs the same step, because the plugin manifest carries the version.
 - It does one thing. Two unrelated fixes are two pull requests.
 
 ## Project rules

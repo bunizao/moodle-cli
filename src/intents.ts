@@ -1,6 +1,6 @@
 import type { Course, Overview } from "./models.js";
 import { MoodleGatewayError, type MoodleGateway } from "./mcp/gateway.js";
-import { intentContracts, type Intent } from "./intent-contract.js";
+import { intentContracts, type ToolName } from "./intent-contract.js";
 import { currentSection, ReferenceError, resolveSection, resolveUnit, searchSections, sectionLabels, sectionTree, splitUnitPhrase, tokensMatch, withChildSections, type SearchMatch } from "./resolve.js";
 import { activityRow, dueRow, isoTime, itemRow, postRow, stripEmpty, timezoneFor, unitRow } from "./results.js";
 import { hasGrade, pageGradeReports } from "./grades.js";
@@ -88,7 +88,7 @@ export function createIntentService(gateway: MoodleGateway, now = () => Date.now
     throw new ReferenceError(matches.length ? "ambiguous" : "not_found", `${matches.length ? "Several items match" : "No item matches"} '${raw}'.`, matches.map(({ id, name, type, unit_code }) => ({ id, name, type, code: unit_code })));
   }
 
-  async function run(name: Intent, args: Record<string, unknown> = {}): Promise<Record<string, unknown>> {
+  async function run(name: ToolName, args: Record<string, unknown> = {}): Promise<Record<string, unknown>> {
     const input = intentContracts[name].input.parse(args) as Record<string, unknown>;
     const ref = input.unit as string | number | undefined;
     const limit = Number(input.limit ?? 20);

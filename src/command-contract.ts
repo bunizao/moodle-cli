@@ -1,4 +1,4 @@
-import { VERBS, type CommandDescription, type ProgramDescription } from "@bunizao/cli-kit";
+import { VERBS, isMutating, type CommandDescription, type ProgramDescription } from "@bunizao/cli-kit";
 import type { Argument, Command, Option } from "commander";
 
 const VERB_SET = new Set<string>(VERBS);
@@ -50,13 +50,6 @@ function describeOption(option: Option): CommandDescription["options"][number] {
     variadic: option.variadic,
     ...(option.argChoices ? { enumValues: option.argChoices } : {}),
   };
-}
-
-function isMutating(command: Command): boolean {
-  if (VERB_SET.has(command.name())) {
-    return ["send", "submit", "set", "mark-read"].includes(command.name());
-  }
-  return ["install", "uninstall", "login", "deploy", "connect", "pair", "revoke", "remove", "push", "update", "start", "answer", "finish"].includes(command.name());
 }
 
 export { intentContracts, intentDescription } from "./intent-contract.js";

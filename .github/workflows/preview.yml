@@ -6,8 +6,8 @@ name: Preview build
 
 on:
   pull_request:
-    # Only changes that can alter what a tester installs; later patterns win. SKILL.md,
-    # references/ and the templates under src/ ship or feed the build, so they still count.
+    # Only changes that can alter what a tester installs; later patterns win. skills/ and
+    # the templates under src/ ship or feed the build, so they still count.
     paths:
       - "**"
       - "!docs/**"

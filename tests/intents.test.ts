@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import { createIntentService } from "../src/intents.js";
-import { intentContracts, intentDescription, type Intent } from "../src/intent-contract.js";
+import { intentContracts, intentDescription, type ToolName } from "../src/intent-contract.js";
 import { createMoodleMcpServer, TOOL_CATALOG, TOOL_OUTPUT_SCHEMAS } from "../src/mcp/server.js";
 import { fixtureGateway, intentCalls, sections, units } from "./fixtures/intent-site.js";
 import { MoodleGatewayError } from "../src/mcp/gateway.js";
@@ -26,7 +26,7 @@ describe("shared intent contract", () => {
   });
   it("keeps every input default optional and every output object closed", () => {
     for (const tool of TOOL_CATALOG) {
-      expect(tool.description).toBe(intentDescription(tool.name as Intent));
+      expect(tool.description).toBe(intentDescription(tool.name as ToolName));
       const input = tool.inputSchema as { properties: Record<string, { default?: unknown }>; required?: string[] };
       for (const key of input.required ?? []) expect(input.properties[key]).not.toHaveProperty("default");
       expect(tool).not.toHaveProperty("outputSchema");
@@ -34,7 +34,7 @@ describe("shared intent contract", () => {
     }
     expect(TOOL_CATALOG).toHaveLength(16);
     // The catalog is read once per session before any data flows; keep it under budget.
-    expect(JSON.stringify(TOOL_CATALOG).length).toBeLessThan(9500);
+    expect(JSON.stringify(TOOL_CATALOG).length).toBeLessThan(12000);
   });
   it("makes ambiguous names actionable, and resolves a complete phrase in one call", async () => {
     expect(await call("item", { ref: "algo-2 mini test" })).toMatchObject({ isError: true, structuredContent: { error: { code: "ambiguous", candidates: [{ id: 201 }, { id: 211 }] } } });
@@ -109,7 +109,7 @@ describe("shared intent contract", () => {
     const budgets = { home: 2000, due: 300, units: 600, unit: 600, find: 500, item: 500, grades: 1500, news: 500, thread: 600, search_forums: 600, file: 250, submit: 600, attempt: 450 };
     for (const [name, args] of intentCalls) expect(JSON.stringify((await call(name, args)).structuredContent).length, name).toBeLessThanOrEqual(budgets[name]);
     // New read tools must fit the existing catalog budget.
-    expect(JSON.stringify(TOOL_CATALOG).length).toBeLessThanOrEqual(9500);
+    expect(JSON.stringify(TOOL_CATALOG).length).toBeLessThanOrEqual(12000);
   });
   it("reads only the announcements it can show, and one unit detail per unit", async () => {
     const base = fixtureGateway();

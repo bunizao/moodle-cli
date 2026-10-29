@@ -1,3 +1,4 @@
+import { toolDescription, type Intent } from "@bunizao/cli-kit/intents";
 import { z } from "zod";
 import { normalizeGradeType } from "./parsers.js";
 
@@ -34,7 +35,7 @@ const calendarEvent = z.object({ id, name: s, description: s, starts_at: id, dur
 export const intentContracts = {
   home: { when: "dashboard", command: "moodle", what: "Today's date and timezone, items due soon, unread counts and the current section of each unit.", instead: "due for longer deadline lists", refs: "days defaults to 14", then: "unit or item", cost: "small dashboard", input: input({ days: z.number().int().min(1).max(365).default(14) }), output: z.object({ home: z.object({ today: z.string(), timezone: z.string(), timezone_source: s, name: s, siteurl: s, units: z.array(unitSchema).optional(), due: z.array(dueSchema).optional(), total: id, calendar: z.array(calendarEvent).optional(), unread: counts.optional(), errors: z.array(z.string()).optional() }) }) },
   due: { when: "deadlines", command: "moodle due [UNIT] --days 14", what: "Items due in a date window.", instead: "item for submission details", refs: "unit code, name, id or URL", then: "item with activity_id", cost: "up to 20 rows by default", input: input({ unit: ref.optional(), days: z.number().int().min(1).max(365).default(14), limit }), output: list("due", dueSchema) },
-  units: { when: "unit names", command: "moodle units", what: "Enrolled units with ids, codes and names.", instead: "unit for sections", refs: "none", then: "unit with a name or id", cost: "small list", input: input({ limit: limit.default(200) }), output: list("units", unitSchema) },
+  units: { when: "unit names", command: "moodle courses", what: "Enrolled units with ids, codes and names.", instead: "unit for sections", refs: "none", then: "unit with a name or id", cost: "small list", input: input({ limit: limit.default(200) }), output: list("units", unitSchema) },
   unit: { when: "a unit or section", command: "moodle UNIT [SECTION]", what: "Section index and current section; section argument returns activities and files.", instead: "find for a named item", refs: "unit code, name, id or URL; section number or name", then: "item or file with activity id", cost: "index about 4 KB; section about 0.5 KB", input: input({ unit: ref, section: ref.optional() }), output: z.object({ unit: unitSchema, sections: z.array(sectionSchema).optional(), total: id }) },
   find: { when: "find slides or a task", command: 'moodle find "QUERY" [UNIT]', what: "Ranked sections, activities and discussion subjects.", instead: "search_forums for post text; due for deadlines", refs: "query and optional unit code, name, id or URL", then: "item or file with id", cost: "up to 20 rows by default", input: input({ query: z.string().trim().min(1), unit: ref.optional(), types: z.array(z.string()).optional(), limit }), output: list("results", activityListSchema) },
   item: { when: "submission or item detail", command: 'moodle UNIT "TASK"', what: "One activity in full: due date, status, grade, marker feedback with rubric or marking-guide rows and feedback files, attached files, quiz attempts, or a forum's latest threads.", instead: "file for binary content; attempt for quiz answers", refs: "id, same-site URL, or UNIT TASK phrase", then: "file with a file id, or attempt with an attempt id", cost: "one item", input: input({ ref }), output: z.object({ item: activitySchema, threads: z.array(z.object({ id, name: s })).optional(), total: n }) },
@@ -48,15 +49,19 @@ export const intentContracts = {
   messages: { when: "messages", command: "moodle messages list", what: "Direct and group conversations with unread counts and the latest message.", instead: "conversation for messages", refs: "limit and offset", then: "conversation with id", cost: "20 conversations", input: input({ limit, offset: z.number().int().nonnegative().default(0) }), output: z.object({ conversations: z.array(z.object({ id, name: s, type: z.enum(["direct", "group", "self"]), unread_count: id, members: z.array(messageMember).optional(), messages: z.array(conversationMessage).optional() })).optional(), returned: id, offset: id, timezone: z.string() }) },
   conversation: { when: "read a conversation", command: "moodle messages show ID", what: "A conversation's latest messages in chronological order; does not mark them read.", instead: "messages for conversation ids", refs: "conversation_id, limit and offset (from newest)", then: "increase offset for older messages", cost: "50 messages by default", input: input({ conversation_id: z.number().int().positive(), limit: limit.default(50), offset: z.number().int().nonnegative().default(0) }), output: z.object({ conversation: z.object({ id, members: z.array(messageMember).optional(), messages: z.array(conversationMessage).optional(), offset: id }), timezone: z.string() }) },
   calendar: { when: "calendar events", command: "moodle calendar --days 14", what: "All course, user and site calendar events in the date window.", instead: "due for actionable deadlines", refs: "days and optional unit", then: "item for an activity", cost: "one page plus one view per month", input: input({ days: z.number().int().min(1).max(365).default(14), unit: ref.optional() }), output: list("events", calendarEvent).extend({ timezone: z.string() }) },
-} as const;
-export type Intent = keyof typeof intentContracts;
+} as const satisfies Record<string, Omit<Intent, "tool"> & { input: z.ZodType; output: z.ZodType }>;
+export type ToolName = keyof typeof intentContracts;
+
+// cli-kit's view of the contracts: one Intent per MCP tool, with the tool name as the key.
+export const intents: readonly Intent[] = Object.entries(intentContracts).map(([tool, c]) => ({
+  tool, when: c.when, what: c.what, command: c.command, instead: c.instead, refs: c.refs, then: c.then, cost: c.cost,
+}));
 // Humans get the plain sentence; the agent contract is only useful in a tool catalog.
-export function humanDescription(name: Intent): string {
+export function humanDescription(name: ToolName): string {
   return intentContracts[name].what;
 }
 // The catalog reads as prose because that is what a model reads; the fields stay
 // separate so the skill table and the CLI help can reuse them.
-export function intentDescription(name: Intent): string {
-  const c = intentContracts[name];
-  return `${c.what} Input: ${c.refs}.${name === "submit" ? ` ${c.then}.` : ""}`;
+export function intentDescription(name: ToolName): string {
+  return toolDescription(intents.find((intent) => intent.tool === name) as Intent);
 }

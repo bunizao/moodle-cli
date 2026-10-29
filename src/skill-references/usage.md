@@ -1,6 +1,6 @@
-# Command Reference
+# Usage notes
 
-Generated from the live command tree. UNIT is a code/name, id or URL from `moodle units`.
+Every command, argument and option is in [commands.md](commands.md). UNIT is a code/name, id or URL from `moodle courses`.
 `moodle UNIT SECTION` resolves a section; `moodle UNIT "TASK"` resolves an item.
 Resources, folders and assignments return `files` with names and URLs.
 `moodle download REF --to DIR` saves one file, every file of an activity, or a whole
@@ -12,10 +12,6 @@ it never overwrites a file you edited (the new version lands beside it as a `con
 `moodle submit "UNIT TASK" FILE... --dry-run` shows the upload plan; without `--dry-run` it
 asks for confirmation (`--yes` skips it) and prints the receipt Moodle shows afterwards.
 `--final` also submits for grading, which Moodle does not let anyone undo.
-
-{{generated_command_reference}}
-
-{{generated_output_contract}}
 
 MCP 0.8 discovers home, due, units, unit, find, item, grades, news, thread,
 search_forums and file; a local server also lists submit, the only tool that writes.

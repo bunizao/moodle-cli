@@ -53,7 +53,7 @@ Request: `POST /lib/ajax/service.php?sesskey={sesskey}&info={function}` with bod
 
 ### CLI layout
 
-- **cli.ts** — Commander program. Top-level: `user`, `units` (alias `courses`), `todo`, `alerts`, `overview`, `activities`, `download` (alias `dl`), `grades`, `threads`, `forums`, `auth`, `mcp`, `commands`, `skills`. Session handling sits under `auth`; deployment under `mcp`.
+- **cli.ts** — Commander program. Top-level: `user`, `courses` (aliases `units`, `projects`), `todo`, `alerts`, `overview`, `activities`, `download` (alias `dl`), `grades`, `threads`, `forums`, `auth`, `mcp`, `commands`, `skills`. Session handling sits under `auth`; deployment under `mcp`.
 - **auth.ts** — session resolution. `MOODLE_SESSION` env var, then browser cookie extraction, then an interactive browser login. Browser cookies need Node >= 22.13 (`MINIMUM_NODE_FOR_BROWSER_COOKIES`).
 - **client.ts** / **moodle-client-core.ts** — the API surface; core holds transport-free logic so it runs in both Node and the Worker.
 - **parsers.ts**, **models.ts** — Moodle JSON to typed models.

@@ -1,5 +1,5 @@
 import { createIntentService } from "../intents.js";
-import { activitySchema, intentContracts, intentDescription, type Intent } from "../intent-contract.js";
+import { activitySchema, intentContracts, intentDescription, type ToolName } from "../intent-contract.js";
 import { ReferenceError } from "../resolve.js";
 import { activityRow, stripEmpty } from "../results.js";
 import { z, ZodError } from "zod";
@@ -36,11 +36,11 @@ const WRITE_ANNOTATIONS = {
   idempotentHint: false,
   openWorldHint: true,
 } as const;
-const WRITE_TOOLS: ReadonlySet<string> = new Set<Intent>(["submit"]);
+const WRITE_TOOLS: ReadonlySet<string> = new Set<ToolName>(["submit"]);
 
-const aliases: Partial<Record<string, Intent>> = { get_overview: "home", list_courses: "units", get_course: "unit", get_activity: "item", get_grades: "grades", get_thread: "thread", get_file: "file" };
+const aliases: Partial<Record<string, ToolName>> = { get_overview: "home", list_courses: "units", get_course: "unit", get_activity: "item", get_grades: "grades", get_thread: "thread", get_file: "file" };
 export const TOOL_CATALOG = Object.entries(intentContracts).map(([name, contract]) => ({
-  name, description: intentDescription(name as Intent),
+  name, description: intentDescription(name as ToolName),
   inputSchema: compactSchema(z.toJSONSchema(contract.input, { io: "input" })), annotations: WRITE_TOOLS.has(name) ? WRITE_ANNOTATIONS : READ_ONLY_ANNOTATIONS,
 }));
 
@@ -186,7 +186,7 @@ async function callTool(gateway: MoodleGateway, params: Record<string, unknown> 
     for (const [old, key] of Object.entries(renames)) if (old in args) { args[key] = args[old]; delete args[old]; }
     delete args.alertsLimit; delete args.todoLimit;
   }
-  const contract = intentContracts[name as Intent];
+  const contract = intentContracts[name as ToolName];
   if (contract) {
     const checked = contract.input.safeParse(args);
     if (!checked.success) throw new McpCallError("INVALID_TOOL_ARGUMENTS", `Invalid arguments for ${requested}.`, checked.error.issues);
@@ -214,7 +214,7 @@ async function callTool(gateway: MoodleGateway, params: Record<string, unknown> 
       const rows = await gateway.listForums({ courseId: input.courseId });
       structuredContent = stripEmpty({ forums: rows.slice(0, input.limit).map(f => ({ id: f.id, name: f.name, unit_id: f.course_id })), total: rows.length }) as Record<string, unknown>;
     } else {
-      structuredContent = await service.run(name as Intent, args);
+      structuredContent = await service.run(name as ToolName, args);
     }
     return { content: toolContent(name === "file" ? "get_file" : name, payload, structuredContent), structuredContent, resultType: "complete", _meta: RESULT_META };
   } catch (error) {

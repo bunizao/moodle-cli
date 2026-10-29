@@ -1,20 +1,20 @@
 import { spawnSync } from "node:child_process";
-import { readFile } from "node:fs/promises";
+import { mkdtemp, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Command } from "commander";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import { buildProgram } from "../src/cli.js";
 import {
   addSkill,
   buildSkillsAddCommand,
-  extractCommanderCommands,
   formatSkillSummary,
-  generateSkillMarkdown,
+  skillFiles,
   writeGeneratedSkill,
 } from "../src/skills.js";
 
-vi.mock("node:child_process", () => ({
+vi.mock("node:child_process", async (importOriginal) => ({
+  ...await importOriginal<typeof import("node:child_process")>(),
   spawnSync: vi.fn(),
 }));
 
@@ -78,88 +78,48 @@ describe("skill generation", () => {
     expect(formatSkillSummary()).toContain("Moodle units");
   });
 
-  it("extracts public commands from a commander-like tree", () => {
-    const program = new Command("moodle");
-    program.command("courses").description("List enrolled courses.").option("-j, --json", "Output as JSON.").option("--fields <fields>", "Keep only these fields.");
-    const commands = extractCommanderCommands(program);
+  it("builds every agent file from the command tree and the intents", () => {
+    const files = skillFiles(buildProgram());
 
-    expect(commands).toEqual([
-      {
-        name: "courses",
-        path: ["courses"],
-        description: "List enrolled courses.",
-        arguments: [],
-        flags: [
-          { name: "--json", alias: "-j", description: "Output as JSON.", required: false },
-          { name: "--fields", alias: undefined, description: "Keep only these fields.", required: true },
-        ],
-      },
+    expect(Object.keys(files).sort()).toEqual([
+      ".claude-plugin/marketplace.json",
+      ".claude-plugin/plugin.json",
+      "skills/moodle-cli/SKILL.md",
+      "skills/moodle-cli/agents/openai.yaml",
+      "skills/moodle-cli/references/commands.md",
+      "skills/moodle-cli/references/setup-and-auth.md",
+      "skills/moodle-cli/references/usage.md",
     ]);
-  });
-
-  it("renders deterministic SKILL.md content from command specs", () => {
-    const markdown = generateSkillMarkdown({
-      template: "{{generated_frontmatter}}\n\n{{generated_command_reference}}\n\n{{generated_output_contract}}\n",
-      commands: [
-        {
-          name: "todo",
-          path: ["todo"],
-          description: "List upcoming actionable timeline items.",
-          flags: [
-            { name: "--limit", description: "Maximum number of items.", defaultValue: 20 },
-            { name: "--fields", description: "Keep only these fields." },
-          ],
-        },
-      ],
+    const skill = files["skills/moodle-cli/SKILL.md"]!;
+    // An agent loads SKILL.md whole; the command tree lives in references/commands.md.
+    expect(Buffer.byteLength(skill)).toBeLessThan(6000);
+    expect(skill).toMatch(/^---\nname: moodle-cli\ndescription: .*Use when the user names Moodle.*belong to edstem-cli\./mu);
+    expect(skill).toContain("### Submit an assignment");
+    expect(skill).toContain("`--final`: it submits for grading and Moodle cannot undo it");
+    expect(skill).toContain("`moodle:due`");
+    expect(skill).toContain("A pairing code is a sign-in too");
+    expect(skill).toContain("references/setup-and-auth.md");
+    expect(skill).toContain("`moodle courses`");
+    expect(files["skills/moodle-cli/agents/openai.yaml"]).toContain("display_name: Moodle CLI");
+    expect(JSON.parse(files[".claude-plugin/plugin.json"])).toMatchObject({
+      name: "moodle-cli",
+      mcpServers: { moodle: { command: "npx", args: ["-y", "moodle-cli", "mcp", "serve"] } },
     });
-
-    expect(markdown).toContain("name: moodle-cli");
-    expect(markdown).toContain("| moodle todo | List upcoming actionable timeline items. |  | --limit (default: 20)<br>--fields |");
-    expect(markdown).toContain("`--fields a,b,c` keeps only listed top-level fields");
-    expect(markdown).toBe(generateSkillMarkdown({
-      template: "{{generated_frontmatter}}\n\n{{generated_command_reference}}\n\n{{generated_output_contract}}\n",
-      commands: [
-        {
-          name: "todo",
-          path: ["todo"],
-          description: "List upcoming actionable timeline items.",
-          flags: [
-            { name: "--limit", description: "Maximum number of items.", defaultValue: 20 },
-            { name: "--fields", description: "Keep only these fields." },
-          ],
-        },
-      ],
-    }));
   });
 
-  it("writes a progressively disclosed skill bundle", async () => {
-    const targetDir = join(tmpdir(), `moodle-skill-${process.pid}-${Date.now()}`);
-    const program = new Command("moodle");
-    program.command("todo").description("List upcoming actionable timeline items.").option("--limit <number>", "Maximum number of items.", "20");
-    program.command("courses").description("List enrolled courses.").option("--json", "Output as JSON.");
-    program.command("download").alias("dl").description("Download one authenticated Moodle file.")
-      .argument("<source>")
-      .option("--dest <path>")
-      .option("--force");
+  it("reports stale files in check mode and writes them otherwise", async () => {
+    const root = await mkdtemp(join(tmpdir(), "moodle-skill-"));
+    const program = buildProgram();
+    const all = Object.keys(skillFiles(program)).sort();
 
-    writeGeneratedSkill(program, join(targetDir, "SKILL.md"));
+    expect(writeGeneratedSkill(program, root, { check: true }).sort()).toEqual(all);
+    await expect(readFile(join(root, "skills/moodle-cli/SKILL.md"), "utf8")).rejects.toThrow();
+    expect(writeGeneratedSkill(program, root).sort()).toEqual(all);
+    expect(writeGeneratedSkill(program, root, { check: true })).toEqual([]);
+  });
 
-    const root = await readFile(join(targetDir, "SKILL.md"), "utf8");
-    const commandReference = await readFile(join(targetDir, "references", "command-reference.md"), "utf8");
-    const downloadsReference = commandReference;
-    const outputReference = commandReference;
-    const agentMetadata = await readFile(join(targetDir, "agents", "openai.yaml"), "utf8");
-
-    expect(root).toContain("references/setup-and-auth.md");
-    expect(root).toContain("references/command-reference.md");
-    expect(commandReference).toContain("| moodle todo | List upcoming actionable timeline items. |");
-    expect(commandReference).toContain("| moodle download | Download one authenticated Moodle file. | <source> | --dest (value required)<br>--force |");
-    expect(downloadsReference).toContain("moodle download");
-    expect(downloadsReference).toContain("files");
-    expect(downloadsReference).toContain("--force");
-    expect(downloadsReference).toContain("whole");
-    expect(outputReference).toContain("`--fields a,b,c` keeps only listed top-level fields");
-    expect(agentMetadata).toContain('display_name: "Moodle CLI"');
-    expect(agentMetadata).toContain("retrieve authenticated course files");
+  it("matches the committed skill bundle", () => {
+    // Fails when a command, intent, version or reference changed without `npm run skill:generate`.
+    expect(writeGeneratedSkill(buildProgram(), process.cwd(), { check: true })).toEqual([]);
   });
 });

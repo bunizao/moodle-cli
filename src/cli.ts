@@ -11,7 +11,7 @@ import { CACHE_DIR_NAME, CONFIG_DIR_NAME, ENV_MOODLE_BASE_URL, ENV_MOODLE_URL, M
 import { runtimeSupportsCookies } from "./mcp/self-command.js";
 import { createMoodleGateway } from "./mcp/gateway.js";
 import { createIntentService, type IntentService } from "./intents.js";
-import { humanDescription, type Intent } from "./intent-contract.js";
+import { humanDescription, type ToolName } from "./intent-contract.js";
 import { ReferenceError, normalize, resolveSection, splitUnitPhrase, withChildSections, type Candidate } from "./resolve.js";
 import { renderScreen, tryLines } from "./screens.js";
 import type { Writable } from "node:stream";
@@ -35,6 +35,7 @@ import {
   normalizeError,
   resolveFormat,
   mutating,
+  SHARED_NOUNS,
   writeOutput,
   type ArgumentFiller,
   type NounSpec,
@@ -140,12 +141,12 @@ interface OutputCommandOptions {
   pretty?: boolean;
 }
 
-const NOUNS: readonly NounSpec[] = [
+export const NOUNS: readonly NounSpec[] = [
   { name: "submission", verbs: ["show", "remove"], defaultByArity: { 1: "show" } },
   { name: "messages", verbs: ["list", "show", "send", "read"], defaultByArity: { 0: "list", 1: "show" }, valueFlags: ["--limit", "--offset"] },
-  { name: "units", aliases: ["courses"], verbs: ["list", "show"], defaultByArity: { 0: "list", 1: "show" } },
+  SHARED_NOUNS.courses,
   { name: "activities", verbs: ["list", "show", "captions"], defaultByArity: { 0: "list", 1: "list" }, valueFlags: ["--limit", "--section", "--to"] },
-  { name: "grades", verbs: ["list"], defaultByArity: { 0: "list", 1: "list" }, valueFlags: ["--mode", "--types", "--limit", "--offset"] },
+  { ...SHARED_NOUNS.grades, valueFlags: ["--mode", "--types", "--limit", "--offset"] },
   {
     name: "forums",
     verbs: ["list", "show", "search", "post", "subscribe", "unsubscribe"],
@@ -179,7 +180,7 @@ export function buildProgram(io: CliIO = {}): Command {
 
   // Screens are the only place the terminal's real width matters; one helper keeps
   // every call site honest about it.
-  const screen = (data: Record<string, unknown>, options: OutputCommandOptions = {}, intent?: Intent) => renderScreen(data, {
+  const screen = (data: Record<string, unknown>, options: OutputCommandOptions = {}, intent?: ToolName) => renderScreen(data, {
     intent,
     // Terminals without a size report 0 columns; the default is better than 40.
     width: (stdout as Partial<NodeJS.WriteStream>).columns || undefined,
@@ -265,7 +266,7 @@ export function buildProgram(io: CliIO = {}): Command {
       const format = outputFormat(merged, stdout);
       const human = format === "table" ? formatter() : "";
       const text = format === "table"
-        ? `${human}${!hints || human.includes("Try  ") ? "" : `\n\n${tryLines(["moodle due", "moodle units", "moodle --help"])}`}\n`
+        ? `${human}${!hints || human.includes("Try  ") ? "" : `\n\n${tryLines(["moodle due", "moodle courses", "moodle --help"])}`}\n`
         : format === "json"
           ? `${JSON.stringify(JSON.parse(render(data, { format, fields: parseFields(data, merged.fields) })), null, merged.pretty ? 2 : undefined)}\n`
           : render(data, { format, fields: parseFields(data, merged.fields) });
@@ -294,7 +295,7 @@ export function buildProgram(io: CliIO = {}): Command {
     return mcpService;
   };
 
-  const execute = async (name: Intent, args: Record<string, unknown>, options: OutputCommandOptions = {}, service?: IntentService) => {
+  const execute = async (name: ToolName, args: Record<string, unknown>, options: OutputCommandOptions = {}, service?: IntentService) => {
     const runner = service ?? createIntentService(createMoodleGateway(await runtime.getClient()));
     const result = await runner.run(name, args);
     await runtime.output(result, () => screen(result, options, name), options);
@@ -348,7 +349,7 @@ export function buildProgram(io: CliIO = {}): Command {
     const merged = { ...parseRootOutputOptions(io.rootArgs ?? []), ...options };
     if (!targets.length) return execute("home", { days: program.opts().days }, merged);
     if (targets.length === 1 && looksLikeUrl(targets[0])) return dispatchUrl(runtime, targets[0], merged);
-    if (targets[0] === "unit") throw new UsageError("Unknown command 'unit'.", "Did you mean 'units'? Run moodle units.");
+    if (targets[0] === "unit") throw new UsageError("Unknown command 'unit'.", "Did you mean 'courses'? Run moodle courses.");
     const client = await runtime.getClient();
     const courses = await client.getCourses();
     const service = createIntentService(createMoodleGateway(client));
@@ -366,7 +367,7 @@ export function buildProgram(io: CliIO = {}): Command {
     }
     const unit = parsed.course.id;
     const query = parsed.query;
-    if (["grades", "news", "due"].includes(query)) return execute(query as Intent, { unit, limit: program.opts().limit }, merged, service);
+    if (["grades", "news", "due"].includes(query)) return execute(query as ToolName, { unit, limit: program.opts().limit }, merged, service);
     if (query === "files") return execute("find", { query: "*", unit, types: ["resource", "folder"], limit: program.opts().limit }, merged, service);
     if (query === "forums") { const rows = await createMoodleGateway(client).listForums({ courseId: unit }); return runtime.output({ forums: rows.map(f => ({ id: f.id, name: f.name, unit_id: f.course_id })), total: rows.length }, () => formatForumActivities(rows), merged); }
     if (!query) {
@@ -643,7 +644,7 @@ export function buildProgram(io: CliIO = {}): Command {
     await runtime.output({ user: { id: user.userid, name: user.fullname, siteurl: user.siteurl, timezone: user.timezone } }, () => formatUser(user), options);
   });
 
-  const units = program.command("units").aliases(["courses"]).description("Inspect enrolled units.");
+  const units = program.command("courses").aliases([...SHARED_NOUNS.courses.aliases]).description("Inspect enrolled units.");
   addOutputOptions(units.command("list").description("List enrolled units.")).action(async (options: OutputCommandOptions) => {
     await execute("units", {}, options);
   });
@@ -1298,7 +1299,7 @@ export function buildProgram(io: CliIO = {}): Command {
 
 // Grouped the way `gh` does: what a person reaches for daily, then the rest, then what only an agent runs.
 const HELP_SECTIONS: Readonly<Record<string, readonly string[]>> = {
-  "Core commands": ["due", "news", "find", "get", "open", "submit", "submission", "complete", "messages", "calendar", "quiz", "units", "activities", "grades", "threads", "forums"],
+  "Core commands": ["due", "news", "find", "get", "open", "submit", "submission", "complete", "messages", "calendar", "quiz", "courses", "activities", "grades", "threads", "forums"],
   "Additional commands": ["sync", "user", "todo", "alerts", "messages", "calendar", "overview", "download", "auth", "doctor", "coverage", "completion", "uninstall"],
   "Agent commands": ["mcp", "commands", "skills"],
 };
@@ -1330,7 +1331,7 @@ export async function runCli(argv = process.argv, io: CliIO = {}): Promise<numbe
     const reference = error instanceof ReferenceError ? error : undefined;
     const reported = reportError(asNetworkError(error) ?? error, "json");
     const envelope = JSON.parse(reported.text);
-    const hint = reference?.hint || normalized.hint || ({ auth: "Run moodle auth login, or moodle doctor.", config: "Run moodle doctor to check configuration.", not_found: "Run moodle units or moodle find QUERY.", usage: "Run moodle --help or moodle commands --json.", upstream: "Run moodle doctor, then retry.", network: "Check the connection, then retry.", unexpected: "Run moodle doctor; use --verbose for request timings.", cancelled: "Retry when ready." }[normalized.code]);
+    const hint = reference?.hint || normalized.hint || ({ auth: "Run moodle auth login, or moodle doctor.", config: "Run moodle doctor to check configuration.", not_found: "Run moodle courses or moodle find QUERY.", usage: "Run moodle --help or moodle commands --json.", upstream: "Run moodle doctor, then retry.", network: "Check the connection, then retry.", unexpected: "Run moodle doctor; use --verbose for request timings.", cancelled: "Retry when ready." }[normalized.code]);
     envelope.error.hint = hint;
     if (error && typeof error === "object" && "submission" in error) envelope.submission = error.submission;
     if (reference) { envelope.error.code = reference.code; envelope.error.message = reference.message; envelope.error.candidates = reference.candidates; envelope.exit_code = reference.code === "ambiguous" ? 2 : 4; }
@@ -1358,7 +1359,7 @@ function doctorNextSteps(checks: ReadonlyArray<{ name: string; status: string }>
   if (failing.has("browser")) steps.push("grant Full Disk Access, then rerun moodle doctor");
   else if (failing.has("session")) steps.push("moodle auth login");
   if (failing.has("sqlite")) steps.push("install Node 22.13+ or Bun");
-  if (failing.has("config")) steps.push("moodle units");
+  if (failing.has("config")) steps.push("moodle courses");
   if (failing.has("job")) steps.push("moodle auth keepalive install");
   return steps.length ? steps : ["moodle todo", "moodle mcp status"];
 }

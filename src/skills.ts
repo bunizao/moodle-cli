@@ -1,51 +1,22 @@
 import { spawnSync, type SpawnSyncReturns } from "node:child_process";
-import { mkdirSync, readFileSync, writeFileSync, rmSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import path from "node:path";
+import { agentFiles, writeAgentFiles, type AgentFilesOptions } from "@bunizao/cli-kit";
 import type { Command } from "commander";
-import type { CommandDescription } from "@bunizao/cli-kit";
-import { describeProgram, intentContracts } from "./command-contract.js";
+import { describeProgram } from "./command-contract.js";
+import { intents } from "./intent-contract.js";
+import { VERSION } from "./version.js";
 
 export const SKILL_NAME = "moodle-cli";
 export const SKILL_SOURCE = "https://github.com/bunizao/moodle-cli";
 export const SKILLS_SPEC_URL = "https://github.com/vercel-labs/skills";
-export const SKILL_DESCRIPTION = "Read Moodle units, deadlines, grades and files; submit coursework, manage messages and forums, and run a private MCP server.";
+export const SKILL_DESCRIPTION = "Reads Moodle units, deadlines, grades and files; submits coursework, manages messages and forums, and runs a private MCP server.";
 
-export interface SkillFlag {
-  name: string;
-  alias?: string;
-  description?: string;
-  defaultValue?: unknown;
-  required?: boolean;
-}
-
-export interface SkillArgument {
-  name: string;
-  required?: boolean;
-  variadic?: boolean;
-}
-
-export interface SkillCommand {
-  name: string;
-  path?: string[];
-  description?: string;
-  arguments?: SkillArgument[];
-  flags?: SkillFlag[];
-  children?: SkillCommand[];
-}
-
-interface GenerateOptions {
-  commands: SkillCommand[];
-  template: string;
-}
+// OnTrack and Ed Discussion skills sit next to this one, so name the overlap and send it there.
+// Tuned with a Codex trigger eval: without the default-home sentence, quiz and unit-page requests went to Ed.
+const USE_WHEN = `the user names Moodle, or asks about deadlines, assignments, quiz results, grades and marker feedback, announcements, lecture slides, workshop or unit pages, unit files or Moodle messages: "what's due this week", "did my marks come back", "what did I get wrong on the week 5 quiz", "download the week 8 slides", "any new announcements", "submit my assignment". Moodle is the default home of a unit's pages, quizzes, announcements and deadlines unless the user names Ed or OnTrack. OnTrack portfolio tasks belong to ontrack-cli; Ed forum threads and Ed lessons belong to edstem-cli. Not for writing Moodle plugins or running a Moodle server`;
 
 type RunCommand = typeof spawnSync;
-
-const SKILL_BUNDLE_TEMPLATES = [
-  ["SKILL.md", "skill.template.md"],
-  ["references/setup-and-auth.md", "skill-references/setup-and-auth.md"],
-  ["references/command-reference.md", "skill-references/command-reference.md"],
-  ["agents/openai.yaml", "skill-agents/openai.yaml"],
-] as const;
 
 export function formatSkillSummary(): string {
   return [
@@ -97,176 +68,73 @@ export function installSkill(extraArgs: string[] = [], options: Parameters<typeo
   addSkill(extraArgs, options);
 }
 
-export function extractCommanderCommands(program: Command): SkillCommand[] {
-  return describeProgram(program).commands.flatMap((command) => commandDescriptionRows(command));
-}
+// Hand-written reference pages the skill links to; they ship next to references/commands.md.
+// Like `skills generate`, this reads them from ./src relative to the repository root.
+const REFERENCES = ["setup-and-auth.md", "usage.md"] as const;
 
-function commandDescriptionRows(command: CommandDescription, parentPath: string[] = []): SkillCommand[] {
-  const path = [...parentPath, command.name];
-  const row: SkillCommand = {
-    name: command.name,
-    path,
-    description: command.description,
-    arguments: command.positionals.map((argument) => ({
-      name: argument.name,
-      required: argument.required,
-      variadic: argument.variadic,
-    })),
-    flags: command.options.map((option) => {
-      const names = option.flags.match(/-{1,2}[\w-]+/g) ?? [];
-      const name = names.find((value) => value.startsWith("--")) ?? names[0] ?? option.flags;
-      const alias = names.find((value) => value !== name);
-      return { name, alias, description: option.description, required: option.required };
-    }),
+const INTRO = `UNIT is a code/name, id or URL; SECTION is a number/name. Discover with \`moodle courses\`.
+
+Details live in two reference files: [setup, sign-in and the private MCP server](references/setup-and-auth.md), and [downloads, sync, grades options and MCP behaviour](references/usage.md).`;
+
+const RULES = [
+  "Ambiguity returns `candidates`: refine the reference or pick one. Ids differ per site, so a guessed one can open the wrong unit.",
+  "Lists report `total`: narrow the request or page with `--limit` and `--offset`.",
+  "A pairing code is a sign-in too: keep it out of replies and never paste one into a web form.",
+  "`alerts read` and `messages read` are the exception to the `read` rule: they mark items read on Moodle, so they take `--dry-run` and `--yes` like any other change.",
+];
+
+const WORKFLOWS = [
+  {
+    title: "Submit an assignment",
+    steps: [
+      'Open it with `moodle UNIT "TASK"` and check the status, file limits and accepted types',
+      'Run `moodle submit "UNIT TASK" FILE... --dry-run` and show the plan: files, statement, draft or final',
+      "Get the user's yes, and a separate yes for `--final`: it submits for grading and Moodle cannot undo it",
+      "Run it again with `--yes`, plus `--final` only when the user said so. Without a draft stage, saving is the submission, so Moodle needs `--final`",
+      'Open it again with `moodle UNIT "TASK"` and confirm the files and submission status',
+    ],
+  },
+];
+
+const SETUP = `Sign in with \`moodle doctor\`; when a remote MCP session has expired, run \`moodle mcp login\`. \`moodle mcp serve\` starts the local stdio MCP server; \`moodle mcp deploy\` sets up a private remote one. See [setup](references/setup-and-auth.md).`;
+
+export function skillFiles(program: Command): Record<string, string> {
+  const options: AgentFilesOptions = {
+    skill: {
+      name: SKILL_NAME,
+      description: SKILL_DESCRIPTION,
+      useWhen: USE_WHEN,
+      title: "Moodle CLI",
+      intro: INTRO,
+      intents,
+      mcpServer: "moodle",
+      workflows: WORKFLOWS,
+      rules: RULES,
+      setup: SETUP,
+      program: describeProgram(program),
+    },
+    version: VERSION,
+    repository: SKILL_SOURCE,
+    author: { name: "bunizao", url: "https://github.com/bunizao" },
+    license: "MIT",
+    keywords: ["moodle", "mcp", "university", "deadlines", "grades"],
+    mcpServers: { moodle: { command: "npx", args: ["-y", "moodle-cli", "mcp", "serve"] } },
+    openai: {
+      displayName: "Moodle CLI",
+      shortDescription: "Inspect Moodle, retrieve authenticated course files and submit assignment files",
+      defaultPrompt: "Use $moodle-cli to inspect my Moodle data, retrieve a file through MCP, or download selected files locally with the narrowest relevant operation.",
+    },
+    references: Object.fromEntries(REFERENCES.map((name) => [name, readFileSync(path.join(process.cwd(), "src", "skill-references", name), "utf8")])),
   };
-  return [row, ...command.commands.flatMap((child) => commandDescriptionRows(child, path))];
+  return agentFiles(options);
 }
 
-export function generateSkillMarkdown(program: Command): string;
-export function generateSkillMarkdown(options: GenerateOptions): string;
-export function generateSkillMarkdown(input: Command | GenerateOptions): string {
-  if (isGenerateOptions(input)) {
-    return renderSkillMarkdown(input.commands, input.template);
-  }
-
-  const template = readSkillTemplate();
-  return renderSkillMarkdown(extractCommanderCommands(input), template);
-}
-
-export function writeGeneratedSkill(program: Command, target = "SKILL.md"): void {
-  const commands = extractCommanderCommands(program);
-  const targetDir = path.dirname(target);
-  for (const obsolete of ["profile-and-courses", "deadlines-and-alerts", "coursework-and-grades", "downloads", "forums", "output-and-errors", "maintenance"]) rmSync(path.join(targetDir, "references", `${obsolete}.md`), { force: true });
-  for (const [relativeTarget, relativeTemplate] of SKILL_BUNDLE_TEMPLATES) {
-    const outputPath = relativeTarget === "SKILL.md" ? target : path.join(targetDir, relativeTarget);
-    mkdirSync(path.dirname(outputPath), { recursive: true });
-    const template = readSkillTemplate(relativeTemplate);
-    writeFileSync(outputPath, renderSkillMarkdown(commands, template), "utf8");
-  }
-}
-
-function renderSkillMarkdown(commands: SkillCommand[], template: string): string {
-  const replacements: Record<string, string> = {
-    generated_frontmatter: renderFrontmatter(),
-    generated_intent_table: renderIntentTable(),
-    generated_command_reference: renderCommandReference(commands),
-    generated_output_contract: renderOutputContract(),
-  };
-
-  let markdown = template;
-  for (const [key, value] of Object.entries(replacements)) {
-    markdown = markdown.replaceAll(`{{${key}}}`, value.trimEnd());
-  }
-  return `${markdown.trimEnd()}\n`;
-}
-
-function renderFrontmatter(): string {
-  return [
-    "---",
-    `name: ${SKILL_NAME}`,
-    `description: ${SKILL_DESCRIPTION}`,
-    "---",
-  ].join("\n");
-}
-
-function renderIntentTable(): string {
-  return renderMarkdownTable(["Intent", "Run"], Object.values(intentContracts).filter(c => c.command !== "moodle threads show ID").map(c => [c.when, c.command]));
-}
-
-function renderCommandReference(commands: SkillCommand[]): string {
-  const rows = flattenCommands(commands)
-    .sort((left, right) => commandPath(left).localeCompare(commandPath(right)))
-    .map((command) => [
-      `moodle ${commandPath(command)}`.trim(),
-      command.description ?? "",
-      renderArguments(command.arguments ?? []),
-      renderFlags(command.flags ?? []),
-    ]);
-
-  return renderMarkdownTable(["Command", "Description", "Arguments", "Flags"], rows);
-}
-
-function renderOutputContract(): string {
-  return [
-    "### Output Contract",
-    "",
-    "- `--json` and piped output write compact JSON. `--pretty` indents it.",
-    "- `--yaml` writes YAML to stdout when supported.",
-    "- `--table` forces human-readable table/tree output.",
-    "- When stdout is not a TTY, commands default to JSON unless `--table` is set.",
-    "- `--fields a,b,c` keeps only listed top-level fields. Use envelope keys such as `units`, `due`, `item`, and `total`.",
-    "- Invalid `--fields` values are usage errors and list valid fields.",
-    "- Structured errors use `{ok:false,error:{code,message,hint},exit_code}` on stderr.",
-    "",
-    "Exit codes:",
-    "",
-    renderMarkdownTable(
-      ["Code", "Meaning"],
-      [
-        ["0", "Success"],
-        ["1", "Network, configuration, or unexpected error"],
-        ["2", "Usage error"],
-        ["3", "Authentication error"],
-        ["4", "Requested course, activity, forum, or discussion was not found"],
-        ["5", "Moodle rejected a well-formed request"],
-      ],
-    ),
-  ].join("\n");
-}
-
-function flattenCommands(commands: SkillCommand[]): SkillCommand[] {
-  return commands.flatMap((command) => [command, ...flattenCommands(command.children ?? [])]);
-}
-
-function commandPath(command: SkillCommand): string {
-  return (command.path?.length ? command.path : [command.name]).join(" ");
-}
-
-function renderArguments(args: SkillArgument[]): string {
-  return args.map((arg) => {
-    const name = arg.variadic ? `${arg.name}...` : arg.name;
-    return arg.required ? `<${name}>` : `[${name}]`;
-  }).join(" ");
-}
-
-function renderFlags(flags: SkillFlag[]): string {
-  return flags.map((flag) => {
-    const names = [flag.alias, flag.name].filter(Boolean).join(", ");
-    const defaultValue = formatDefault(flag.defaultValue);
-    const required = flag.required ? "value required" : "";
-    const suffix = [defaultValue, required].filter(Boolean).join("; ");
-    return suffix ? `${names} (${suffix})` : names;
-  }).join("<br>");
-}
-
-function formatDefault(value: unknown): string {
-  if (value === undefined || value === false) {
-    return "";
-  }
-  return `default: ${Array.isArray(value) ? value.join(",") : String(value)}`;
-}
-
-function renderMarkdownTable(headers: string[], rows: string[][]): string {
-  return [
-    `| ${headers.map(escapeCell).join(" | ")} |`,
-    `| ${headers.map(() => "---").join(" | ")} |`,
-    ...rows.map((row) => `| ${row.map(escapeCell).join(" | ")} |`),
-  ].join("\n");
-}
-
-function escapeCell(value: string): string {
-  return value.replace(/\|/g, "\\|").replace(/\n/g, "<br>");
+/** Write the agent bundle under root. With `check`, write nothing and return the stale paths. */
+export function writeGeneratedSkill(program: Command, root = process.cwd(), options: { check?: boolean } = {}): string[] {
+  return writeAgentFiles(root, skillFiles(program), options);
 }
 
 function isCommandAvailable(name: string, runCommand: RunCommand): boolean {
   const result = runCommand(name, ["--version"], { stdio: "ignore" }) as SpawnSyncReturns<Buffer>;
   return !result.error && result.status === 0;
-}
-
-function isGenerateOptions(value: Command | GenerateOptions): value is GenerateOptions {
-  return "template" in value && "commands" in value;
-}
-
-function readSkillTemplate(relativePath = "skill.template.md"): string {
-  return readFileSync(path.join(process.cwd(), "src", relativePath), "utf8");
 }

@@ -1,0 +1,15 @@
+{
+  "name": "moodle-cli",
+  "description": "Reads Moodle units, deadlines, grades and files; submits coursework, manages messages and forums, and runs a private MCP server.",
+  "owner": {
+    "name": "bunizao",
+    "url": "https://github.com/bunizao"
+  },
+  "plugins": [
+    {
+      "name": "moodle-cli",
+      "source": "./",
+      "description": "Reads Moodle units, deadlines, grades and files; submits coursework, manages messages and forums, and runs a private MCP server."
+    }
+  ]
+}

@@ -9,7 +9,7 @@ export default defineConfig({
   target: "es2022",
   platform: "browser",
   bundle: true,
-  noExternal: ["node-html-parser", "zod"],
+  noExternal: ["node-html-parser", "zod", "@bunizao/cli-kit"],
   clean: false,
   sourcemap: false,
   dts: false,
