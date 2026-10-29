@@ -1,13 +1,9 @@
-import { insertDefaultVerb, VERBS, type CommandDescription, type NounSpec } from "@bunizao/cli-kit";
+import { insertDefaultVerb, SHARED_NOUNS, VERBS, type CommandDescription, type NounSpec } from "@bunizao/cli-kit";
 import { describe, expect, it, vi } from "vitest";
 
-import { buildProgram, runCli } from "../src/cli.js";
+import { buildProgram, NOUNS, runCli } from "../src/cli.js";
 import { describeProgram } from "../src/command-contract.js";
 import type { McpCommandService } from "../src/mcp/cli.js";
-
-const NOUNS: readonly NounSpec[] = [
-  { name: "units", aliases: ["courses"], verbs: ["list", "show"], defaultByArity: { 0: "list", 1: "show" } },
-];
 
 describe("shared CLI contract", () => {
   it.each([["--help"], ["-h"], ["-V"], ["help", "units"]])("supports %s", async (...args: string[]) => {
@@ -30,7 +26,7 @@ describe("shared CLI contract", () => {
     const tree = describeProgram(buildProgram({ stdout: buffer(false), stderr: buffer(false) }));
     const commands = flatten(tree.commands);
 
-    expect(commands.find((command) => command.name === "units")).toMatchObject({ aliases: ["courses"] });
+    expect(commands.find((command) => command.name === "courses")).toMatchObject({ aliases: ["units", "projects"] });
     expect(commands.every((command) => typeof command.mutating === "boolean")).toBe(true);
     expect(commands.filter((command) => command.verb).every((command) => VERBS.includes(command.verb as never))).toBe(true);
 
@@ -39,10 +35,33 @@ describe("shared CLI contract", () => {
     expect(JSON.parse(stdout.text())).toMatchObject({ name: "moodle", commands: expect.any(Array) });
   });
 
-  it("normalizes all enrolment nouns to units", () => {
-    expect(insertDefaultVerb(["units"], NOUNS)).toEqual(["units", "list"]);
-    expect(insertDefaultVerb(["courses", "UNIT"], NOUNS)).toEqual(["units", "show", "UNIT"]);
+  it("normalizes all enrolment nouns to courses", () => {
+    expect(insertDefaultVerb(["units"], NOUNS)).toEqual(["courses", "list"]);
+    expect(insertDefaultVerb(["courses", "UNIT"], NOUNS)).toEqual(["courses", "show", "UNIT"]);
+    expect(insertDefaultVerb(["projects", "UNIT"], NOUNS)).toEqual(["courses", "show", "UNIT"]);
+  });
 
+  it.each([["units"], ["courses"], ["projects"]])("lists enrolled units with `moodle %s --help`", async (noun) => {
+    const stdout = buffer(true);
+    await expect(runCli(["node", "moodle", noun, "--help"], { stdout, stderr: buffer(false) })).resolves.toBe(0);
+    expect(stdout.text()).toContain("moodle courses");
+  });
+
+  it("keeps shared noun names and verbs on the commands that own them", () => {
+    // moodle describes its own tree (it has verbs outside cli-kit's list), so enforce kit's rules here.
+    const shared: readonly NounSpec[] = Object.values(SHARED_NOUNS);
+    const program = buildProgram({ stdout: buffer(false), stderr: buffer(false) });
+    for (const command of program.commands) {
+      for (const word of [command.name(), ...command.aliases()]) {
+        const owner = shared.find((spec) => spec.name === word || spec.aliases?.includes(word));
+        if (owner) expect(command.name(), `"${word}" belongs to "${owner.name}"`).toBe(owner.name);
+      }
+      const spec = shared.find((noun) => noun.name === command.name());
+      if (spec) {
+        expect(command.aliases()).toEqual(spec.aliases ?? []);
+        for (const child of command.commands) expect(spec.verbs).toContain(child.name());
+      }
+    }
   });
 
   it("exposes the managed MCP command contract", () => {

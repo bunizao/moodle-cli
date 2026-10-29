@@ -3,7 +3,7 @@ import type { Activity, Course, Section } from "./models.js";
 export interface Candidate { id: number; name: string; code?: string; type?: string }
 
 export class ReferenceError extends Error {
-  readonly hint = "Run `moodle units` to see this site's names, or refine the reference.";
+  readonly hint = "Run `moodle courses` to see this site's names, or refine the reference.";
   constructor(readonly code: "ambiguous" | "not_found", message: string, readonly candidates: Candidate[]) {
     super(message);
     this.name = "ReferenceError";
