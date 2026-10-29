@@ -65,7 +65,7 @@ Copy the checklist into your reply and tick each step as it is done; the last st
 - Ambiguity returns `candidates`: refine the reference or pick one. Ids differ per site, so a guessed one can open the wrong unit.
 - Lists report `total`: narrow the request or page with `--limit` and `--offset`.
 - A pairing code is a sign-in too: keep it out of replies and never paste one into a web form.
-- `alerts read` and `messages read` are the exception to the `read` rule: they mark items read on Moodle, so run them only when asked.
+- `alerts read` and `messages read` are the exception to the `read` rule: they mark items read on Moodle, so they take `--dry-run` and `--yes` like any other change.
 - Every command, argument, option and exit code is in [references/commands.md](references/commands.md); `moodle commands --json` is the source of truth.
 
 ## Setup

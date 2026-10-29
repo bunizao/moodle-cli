@@ -36,6 +36,17 @@ describe("shared CLI contract", () => {
     expect(JSON.parse(stdout.text())).toMatchObject({ name: "moodle", commands: expect.any(Array) });
   });
 
+  it("marks commands wrapped in mutating() as mutating, not by name", () => {
+    const tree = describeProgram(buildProgram({ stdout: buffer(false), stderr: buffer(false) }));
+    const byName = new Map(tree.commands.flatMap((command) => [[command.name, command], ...command.commands.map((child) => [`${command.name} ${child.name}`, child] as const)]));
+    for (const name of ["threads reply", "forums post", "forums subscribe", "forums unsubscribe", "complete", "alerts read", "messages read", "messages send", "submit"]) {
+      expect(byName.get(name)?.mutating, name).toBe(true);
+    }
+    for (const name of ["threads show", "forums show", "due", "auth login"]) {
+      expect(byName.get(name)?.mutating, name).toBe(false);
+    }
+  });
+
   it("normalizes all enrolment nouns to courses", () => {
     expect(insertDefaultVerb(["units"], NOUNS)).toEqual(["courses", "list"]);
     expect(insertDefaultVerb(["courses", "UNIT"], NOUNS)).toEqual(["courses", "show", "UNIT"]);

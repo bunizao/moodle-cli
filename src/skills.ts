@@ -80,7 +80,7 @@ const RULES = [
   "Ambiguity returns `candidates`: refine the reference or pick one. Ids differ per site, so a guessed one can open the wrong unit.",
   "Lists report `total`: narrow the request or page with `--limit` and `--offset`.",
   "A pairing code is a sign-in too: keep it out of replies and never paste one into a web form.",
-  "`alerts read` and `messages read` are the exception to the `read` rule: they mark items read on Moodle, so run them only when asked.",
+  "`alerts read` and `messages read` are the exception to the `read` rule: they mark items read on Moodle, so they take `--dry-run` and `--yes` like any other change.",
 ];
 
 const WORKFLOWS = [
