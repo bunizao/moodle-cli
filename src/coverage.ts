@@ -1,5 +1,5 @@
 import { DASHBOARD_PATH, FUNC_GET_SITE_INFO, STOCK_AJAX_UNAVAILABLE } from "./constants.js";
-import { intentContracts, type Intent } from "./intent-contract.js";
+import { intentContracts, type ToolName } from "./intent-contract.js";
 import { createIntentService, type IntentService } from "./intents.js";
 import { createMoodleGateway, MAX_MCP_FILE_BYTES, type MoodleGateway } from "./mcp/gateway.js";
 import { readSiteAuthProfile } from "./mobile-login-core.js";
@@ -15,7 +15,7 @@ export const COVERAGE_FAILURES: readonly CoverageStatus[] = ["empty", "mismatch"
 
 export interface CoverageCheck {
   /** The intent under test: the MCP tool of the same name and the CLI command behind it. */
-  name: Intent;
+  name: ToolName;
   /** The activity type an item check read. */
   target?: string;
   status: CoverageStatus;
@@ -60,7 +60,7 @@ export interface CoverageReport {
 export interface CoverageOptions {
   /** Services refused since the previous call, so each check names its own fallbacks. */
   takeDisabled?: () => string[];
-  onStart?: (name: Intent, target?: string) => void;
+  onStart?: (name: ToolName, target?: string) => void;
   now?: () => number;
   /** A check that runs longer fails instead of stalling the report. */
   timeoutMs?: number;
@@ -109,7 +109,7 @@ export async function* checkCoverage(service: IntentService, gateway: MoodleGate
   const now = options.now ?? Date.now;
   const timeoutMs = options.timeoutMs ?? CHECK_TIMEOUT_MS;
   const retryDelayMs = options.retryDelayMs ?? 1000;
-  const run = async (name: Intent, args: Row, describe: (result: Row) => Outcome | Promise<Outcome>, extra: { target?: string; ref?: number; accept?: (error: unknown) => Outcome | undefined } = {}): Promise<{ check: CoverageCheck; result?: Row }> => {
+  const run = async (name: ToolName, args: Row, describe: (result: Row) => Outcome | Promise<Outcome>, extra: { target?: string; ref?: number; accept?: (error: unknown) => Outcome | undefined } = {}): Promise<{ check: CoverageCheck; result?: Row }> => {
     options.onStart?.(name, extra.target);
     // Anything refused while sampling between checks belongs to no check.
     take();
@@ -150,7 +150,7 @@ export async function* checkCoverage(service: IntentService, gateway: MoodleGate
       }
     }
   };
-  const skip = (name: Intent, detail: string, target?: string): CoverageCheck => ({ name, ...(target ? { target } : {}), status: "skip", detail });
+  const skip = (name: ToolName, detail: string, target?: string): CoverageCheck => ({ name, ...(target ? { target } : {}), status: "skip", detail });
   const untested: CoverageCheck = { name: "submit", status: "untested", detail: "Not exercised: it writes to Moodle. moodle submit REF FILE plans without uploading." };
 
   const units = await run("units", { limit: 200 }, r => counted(num(r.total), "unit", "No enrolled units."));

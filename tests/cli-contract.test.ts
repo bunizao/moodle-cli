@@ -1,8 +1,9 @@
-import { insertDefaultVerb, SHARED_NOUNS, VERBS, type CommandDescription, type NounSpec } from "@bunizao/cli-kit";
+import { checkIntentCommands, insertDefaultVerb, SHARED_NOUNS, VERBS, type CommandDescription, type NounSpec } from "@bunizao/cli-kit";
 import { describe, expect, it, vi } from "vitest";
 
 import { buildProgram, NOUNS, runCli } from "../src/cli.js";
 import { describeProgram } from "../src/command-contract.js";
+import { intents } from "../src/intent-contract.js";
 import type { McpCommandService } from "../src/mcp/cli.js";
 
 describe("shared CLI contract", () => {
@@ -62,6 +63,10 @@ describe("shared CLI contract", () => {
         for (const child of command.commands) expect(spec.verbs).toContain(child.name());
       }
     }
+  });
+
+  it("keeps every intent command parseable against the program", () => {
+    expect(() => checkIntentCommands(buildProgram({ stdout: buffer(false), stderr: buffer(false) }), NOUNS, intents)).not.toThrow();
   });
 
   it("exposes the managed MCP command contract", () => {

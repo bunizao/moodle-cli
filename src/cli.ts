@@ -11,7 +11,7 @@ import { CACHE_DIR_NAME, CONFIG_DIR_NAME, ENV_MOODLE_BASE_URL, ENV_MOODLE_URL, M
 import { runtimeSupportsCookies } from "./mcp/self-command.js";
 import { createMoodleGateway } from "./mcp/gateway.js";
 import { createIntentService, type IntentService } from "./intents.js";
-import { humanDescription, type Intent } from "./intent-contract.js";
+import { humanDescription, type ToolName } from "./intent-contract.js";
 import { ReferenceError, normalize, resolveSection, splitUnitPhrase, withChildSections, type Candidate } from "./resolve.js";
 import { renderScreen, tryLines } from "./screens.js";
 import type { Writable } from "node:stream";
@@ -180,7 +180,7 @@ export function buildProgram(io: CliIO = {}): Command {
 
   // Screens are the only place the terminal's real width matters; one helper keeps
   // every call site honest about it.
-  const screen = (data: Record<string, unknown>, options: OutputCommandOptions = {}, intent?: Intent) => renderScreen(data, {
+  const screen = (data: Record<string, unknown>, options: OutputCommandOptions = {}, intent?: ToolName) => renderScreen(data, {
     intent,
     // Terminals without a size report 0 columns; the default is better than 40.
     width: (stdout as Partial<NodeJS.WriteStream>).columns || undefined,
@@ -295,7 +295,7 @@ export function buildProgram(io: CliIO = {}): Command {
     return mcpService;
   };
 
-  const execute = async (name: Intent, args: Record<string, unknown>, options: OutputCommandOptions = {}, service?: IntentService) => {
+  const execute = async (name: ToolName, args: Record<string, unknown>, options: OutputCommandOptions = {}, service?: IntentService) => {
     const runner = service ?? createIntentService(createMoodleGateway(await runtime.getClient()));
     const result = await runner.run(name, args);
     await runtime.output(result, () => screen(result, options, name), options);
@@ -367,7 +367,7 @@ export function buildProgram(io: CliIO = {}): Command {
     }
     const unit = parsed.course.id;
     const query = parsed.query;
-    if (["grades", "news", "due"].includes(query)) return execute(query as Intent, { unit, limit: program.opts().limit }, merged, service);
+    if (["grades", "news", "due"].includes(query)) return execute(query as ToolName, { unit, limit: program.opts().limit }, merged, service);
     if (query === "files") return execute("find", { query: "*", unit, types: ["resource", "folder"], limit: program.opts().limit }, merged, service);
     if (query === "forums") { const rows = await createMoodleGateway(client).listForums({ courseId: unit }); return runtime.output({ forums: rows.map(f => ({ id: f.id, name: f.name, unit_id: f.course_id })), total: rows.length }, () => formatForumActivities(rows), merged); }
     if (!query) {
