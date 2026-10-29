@@ -9,10 +9,10 @@ function flatten(rows: readonly CommandDescription[], prefix = "moodle"): Array<
   return rows.flatMap(row => [{ path: `${prefix} ${row.name}`, options: row.options.map(o => o.flags) }, ...flatten(row.commands, `${prefix} ${row.name}`)]);
 }
 describe("shipped vocabulary and guidance", () => {
-  it("lists every intent command in the skill and ships only the two references", async () => {
+  it("lists every intent command in the skill and ships only its three references", async () => {
     const skill = await readFile("SKILL.md", "utf8");
     for (const c of Object.values(intentContracts)) expect(skill).toContain(c.command);
-    expect((await readdir("references")).sort()).toEqual(["command-reference.md", "setup-and-auth.md"]);
+    expect((await readdir("references")).sort()).toEqual(["commands.md", "setup-and-auth.md", "usage.md"]);
   });
   it("checks every documented full command and flag in the remaining references", async () => {
     const tree = describeProgram(buildProgram());

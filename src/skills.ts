@@ -66,17 +66,18 @@ export function installSkill(extraArgs: string[] = [], options: Parameters<typeo
 
 // Hand-written reference pages the skill links to; they ship as references/<name>.
 // Like `skills generate`, this reads them from ./src relative to the repository root.
-const REFERENCES = ["setup-and-auth.md", "command-reference.md"] as const;
+const REFERENCES = ["setup-and-auth.md", "usage.md"] as const;
 
 const INTRO = `UNIT is a code/name, id or URL; SECTION is a number/name. Discover with \`moodle courses\`; never guess ids.
 
-Details live in two reference files: [setup, sign-in and the private MCP server](references/setup-and-auth.md), and [downloads, sync, grades options and MCP behaviour](references/command-reference.md).`;
+Details live in two reference files: [setup, sign-in and the private MCP server](references/setup-and-auth.md), and [downloads, sync, grades options and MCP behaviour](references/usage.md).`;
 
 const RULES = [
   "Ambiguity returns `candidates`: refine the reference or pick one; never guess ids.",
   "Lists report `total`: narrow the request or page with `--limit` and `--offset`.",
   "Dry-run submissions first (`moodle submit ... --dry-run`), show the plan, then confirm. `--final` submits for grading and is irreversible.",
   "Never expose cookies, tokens or pairing codes. Never paste a pairing code into a web form.",
+  "`alerts read` and `messages read` are the exception to the `read` rule: they mark items read on Moodle, so run them only when asked.",
   "`--json` forces JSON, `--pretty` indents it and `--yaml` writes YAML. Errors are `{ok:false,error:{code,message,hint},exit_code}` on stderr.",
 ];
 

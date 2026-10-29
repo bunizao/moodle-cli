@@ -1,6 +1,6 @@
-# Command Reference
+# Usage notes
 
-The full command table is in SKILL.md. UNIT is a code/name, id or URL from `moodle courses`.
+Every command, argument and option is in [commands.md](commands.md). UNIT is a code/name, id or URL from `moodle courses`.
 `moodle UNIT SECTION` resolves a section; `moodle UNIT "TASK"` resolves an item.
 Resources, folders and assignments return `files` with names and URLs.
 `moodle download REF --to DIR` saves one file, every file of an activity, or a whole

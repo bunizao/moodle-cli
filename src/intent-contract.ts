@@ -1,4 +1,4 @@
-import { toolDescription, type Intent } from "@bunizao/cli-kit";
+import { toolDescription, type Intent } from "@bunizao/cli-kit/intents";
 import { z } from "zod";
 import { normalizeGradeType } from "./parsers.js";
 

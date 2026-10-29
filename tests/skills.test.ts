@@ -86,9 +86,12 @@ describe("skill generation", () => {
       ".claude-plugin/plugin.json",
       "SKILL.md",
       "agents/openai.yaml",
-      "references/command-reference.md",
+      "references/commands.md",
       "references/setup-and-auth.md",
+      "references/usage.md",
     ]);
+    // An agent loads SKILL.md whole; the command tree lives in references/commands.md.
+    expect(Buffer.byteLength(files["SKILL.md"]!)).toBeLessThan(5000);
     expect(files["SKILL.md"]).toContain("`--final` submits for grading and is irreversible");
     expect(files["SKILL.md"]).toContain("Never expose cookies, tokens or pairing codes");
     expect(files["SKILL.md"]).toContain("references/setup-and-auth.md");
