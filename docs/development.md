@@ -40,7 +40,7 @@ The repo ships two things that share most of their code:
 | `src/worker/` | The Worker: routing, OAuth, the session Durable Object, its own Moodle calls. |
 | `tests/` | Vitest suites. `tests/fixtures/` holds saved Moodle responses and pages, with `moodle-5.0/` covering Boost, Classic and edge cases. |
 | `scripts/` | Build checks, smoke tests and the Moodle lab, described below. |
-| `SKILL.md`, `references/`, `agents/`, `.claude-plugin/` | The generated agent skill bundle and Claude Code plugin. Do not edit by hand; `references/` is copied from `src/skill-references/`. |
+| `skills/moodle-cli/`, `.claude-plugin/` | The generated agent skill and Claude Code plugin. Do not edit by hand; the skill's hand-written references are copied from `src/skill-references/`. |
 | `docs/` | Plans, research and decision records. |
 
 A module ending in `-core.ts` is the runtime-neutral half of a feature. Put logic there when the Worker needs it too, and keep `fs`, `child_process` and keychain access in the Node sibling.
@@ -79,7 +79,7 @@ Most scripts run in CI. You will usually only run them when you touch the part t
 | `npm run test:worker:runtime` | `smoke-worker.mjs` | Runs the built Worker in Miniflare and drives the MCP and OAuth flows end to end. |
 | `npm run test:worker:browser` | `smoke-worker-browser.mjs` | Opens the OAuth consent page in headless Chromium. Run `npx playwright install chromium` once first. |
 | `npm run measure:mcp` | `measure-mcp.mjs` | Prints the size of `tools/list` and of each tool's answer on the fixture site, in characters and estimated tokens. Run it before and after changing tool output. |
-| `npm run skill:generate` | (CLI) | Regenerates `SKILL.md`, `references/`, `agents/openai.yaml` and `.claude-plugin/` from the command tree and the intents. Needs a build first. |
+| `npm run skill:generate` | (CLI) | Regenerates `skills/moodle-cli/` and `.claude-plugin/` from the command tree and the intents. Needs a build first. |
 
 ## The Moodle lab
 

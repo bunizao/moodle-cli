@@ -83,3 +83,19 @@ Generated from `moodle commands --json` for version 0.11.1.
 | `moodle skills` | Show skill metadata or delegate to the shared skills CLI. |  |  | no |
 | `moodle skills generate` | Regenerate the agent skill bundle from the CLI command tree. |  |  | no |
 | `moodle skills add` | Install the published skill through npx skills add. |  |  | no |
+
+## Exit codes
+
+With `--json`, a failure is one `{ ok: false, error: { code, message, hint } }` object on stderr.
+
+| Exit | Error code |
+| --- | --- |
+| 0 | success |
+| 2 | usage |
+| 3 | auth |
+| 1 | config |
+| 4 | not_found |
+| 5 | upstream |
+| 1 | network |
+| 130 | cancelled |
+| 1 | unexpected |

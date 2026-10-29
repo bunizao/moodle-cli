@@ -84,22 +84,25 @@ describe("skill generation", () => {
     expect(Object.keys(files).sort()).toEqual([
       ".claude-plugin/marketplace.json",
       ".claude-plugin/plugin.json",
-      "SKILL.md",
-      "agents/openai.yaml",
-      "references/commands.md",
-      "references/setup-and-auth.md",
-      "references/usage.md",
+      "skills/moodle-cli/SKILL.md",
+      "skills/moodle-cli/agents/openai.yaml",
+      "skills/moodle-cli/references/commands.md",
+      "skills/moodle-cli/references/setup-and-auth.md",
+      "skills/moodle-cli/references/usage.md",
     ]);
+    const skill = files["skills/moodle-cli/SKILL.md"]!;
     // An agent loads SKILL.md whole; the command tree lives in references/commands.md.
-    expect(Buffer.byteLength(files["SKILL.md"]!)).toBeLessThan(5000);
-    expect(files["SKILL.md"]).toContain("`--final` submits for grading and is irreversible");
-    expect(files["SKILL.md"]).toContain("Never expose cookies, tokens or pairing codes");
-    expect(files["SKILL.md"]).toContain("references/setup-and-auth.md");
-    expect(files["SKILL.md"]).toContain("`moodle courses`");
-    expect(files["agents/openai.yaml"]).toContain("display_name: Moodle CLI");
+    expect(Buffer.byteLength(skill)).toBeLessThan(6000);
+    expect(skill).toMatch(/^---\nname: moodle-cli\ndescription: .*Use when the user names Moodle.*belong to edstem-cli\./mu);
+    expect(skill).toContain("### Submit an assignment");
+    expect(skill).toContain("`--final`: it submits for grading and Moodle cannot undo it");
+    expect(skill).toContain("`moodle:due`");
+    expect(skill).toContain("A pairing code is a sign-in too");
+    expect(skill).toContain("references/setup-and-auth.md");
+    expect(skill).toContain("`moodle courses`");
+    expect(files["skills/moodle-cli/agents/openai.yaml"]).toContain("display_name: Moodle CLI");
     expect(JSON.parse(files[".claude-plugin/plugin.json"])).toMatchObject({
       name: "moodle-cli",
-      skills: "./",
       mcpServers: { moodle: { command: "npx", args: ["-y", "moodle-cli", "mcp", "serve"] } },
     });
   });
@@ -110,7 +113,7 @@ describe("skill generation", () => {
     const all = Object.keys(skillFiles(program)).sort();
 
     expect(writeGeneratedSkill(program, root, { check: true }).sort()).toEqual(all);
-    await expect(readFile(join(root, "SKILL.md"), "utf8")).rejects.toThrow();
+    await expect(readFile(join(root, "skills/moodle-cli/SKILL.md"), "utf8")).rejects.toThrow();
     expect(writeGeneratedSkill(program, root).sort()).toEqual(all);
     expect(writeGeneratedSkill(program, root, { check: true })).toEqual([]);
   });

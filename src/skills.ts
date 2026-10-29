@@ -10,7 +10,10 @@ import { VERSION } from "./version.js";
 export const SKILL_NAME = "moodle-cli";
 export const SKILL_SOURCE = "https://github.com/bunizao/moodle-cli";
 export const SKILLS_SPEC_URL = "https://github.com/vercel-labs/skills";
-export const SKILL_DESCRIPTION = "Read Moodle units, deadlines, grades and files; submit coursework, manage messages and forums, and run a private MCP server.";
+export const SKILL_DESCRIPTION = "Reads Moodle units, deadlines, grades and files; submits coursework, manages messages and forums, and runs a private MCP server.";
+
+// OnTrack and Ed Discussion skills sit next to this one, so name the overlap and send it there.
+const USE_WHEN = `the user names Moodle or a unit's Moodle page, or asks about deadlines, assignments, quizzes, grades, announcements, lecture slides, unit files or Moodle messages: "what's due this week", "did my marks come back", "download the week 8 slides", "any new announcements", "submit my assignment". OnTrack portfolio tasks belong to ontrack-cli; Ed forum threads and lessons belong to edstem-cli`;
 
 type RunCommand = typeof spawnSync;
 
@@ -64,21 +67,32 @@ export function installSkill(extraArgs: string[] = [], options: Parameters<typeo
   addSkill(extraArgs, options);
 }
 
-// Hand-written reference pages the skill links to; they ship as references/<name>.
+// Hand-written reference pages the skill links to; they ship next to references/commands.md.
 // Like `skills generate`, this reads them from ./src relative to the repository root.
 const REFERENCES = ["setup-and-auth.md", "usage.md"] as const;
 
-const INTRO = `UNIT is a code/name, id or URL; SECTION is a number/name. Discover with \`moodle courses\`; never guess ids.
+const INTRO = `UNIT is a code/name, id or URL; SECTION is a number/name. Discover with \`moodle courses\`.
 
 Details live in two reference files: [setup, sign-in and the private MCP server](references/setup-and-auth.md), and [downloads, sync, grades options and MCP behaviour](references/usage.md).`;
 
 const RULES = [
-  "Ambiguity returns `candidates`: refine the reference or pick one; never guess ids.",
+  "Ambiguity returns `candidates`: refine the reference or pick one. Ids differ per site, so a guessed one can open the wrong unit.",
   "Lists report `total`: narrow the request or page with `--limit` and `--offset`.",
-  "Dry-run submissions first (`moodle submit ... --dry-run`), show the plan, then confirm. `--final` submits for grading and is irreversible.",
-  "Never expose cookies, tokens or pairing codes. Never paste a pairing code into a web form.",
+  "A pairing code is a sign-in too: keep it out of replies and never paste one into a web form.",
   "`alerts read` and `messages read` are the exception to the `read` rule: they mark items read on Moodle, so run them only when asked.",
-  "`--json` forces JSON, `--pretty` indents it and `--yaml` writes YAML. Errors are `{ok:false,error:{code,message,hint},exit_code}` on stderr.",
+];
+
+const WORKFLOWS = [
+  {
+    title: "Submit an assignment",
+    steps: [
+      'Open it with `moodle UNIT "TASK"` and check the status, file limits and accepted types',
+      'Run `moodle submit "UNIT TASK" FILE... --dry-run` and show the plan: files, statement, draft or final',
+      "Get the user's yes, and a separate yes for `--final`: it submits for grading and Moodle cannot undo it",
+      "Run it again with `--yes`, plus `--final` only when the user said so. Without a draft stage, saving is the submission, so Moodle needs `--final`",
+      'Open it again with `moodle UNIT "TASK"` and confirm the files and submission status',
+    ],
+  },
 ];
 
 const SETUP = `Sign in with \`moodle doctor\`; when a remote MCP session has expired, run \`moodle mcp login\`. \`moodle mcp serve\` starts the local stdio MCP server; \`moodle mcp deploy\` sets up a private remote one. See [setup](references/setup-and-auth.md).`;
@@ -88,9 +102,12 @@ export function skillFiles(program: Command): Record<string, string> {
     skill: {
       name: SKILL_NAME,
       description: SKILL_DESCRIPTION,
+      useWhen: USE_WHEN,
       title: "Moodle CLI",
       intro: INTRO,
       intents,
+      mcpServer: "moodle",
+      workflows: WORKFLOWS,
       rules: RULES,
       setup: SETUP,
       program: describeProgram(program),
@@ -106,11 +123,9 @@ export function skillFiles(program: Command): Record<string, string> {
       shortDescription: "Inspect Moodle, retrieve authenticated course files and submit assignment files",
       defaultPrompt: "Use $moodle-cli to inspect my Moodle data, retrieve a file through MCP, or download selected files locally with the narrowest relevant operation.",
     },
+    references: Object.fromEntries(REFERENCES.map((name) => [name, readFileSync(path.join(process.cwd(), "src", "skill-references", name), "utf8")])),
   };
-  return {
-    ...agentFiles(options),
-    ...Object.fromEntries(REFERENCES.map((name) => [`references/${name}`, readFileSync(path.join(process.cwd(), "src", "skill-references", name), "utf8")])),
-  };
+  return agentFiles(options);
 }
 
 /** Write the agent bundle under root. With `check`, write nothing and return the stale paths. */
