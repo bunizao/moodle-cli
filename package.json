@@ -33,7 +33,7 @@
     "measure:mcp": "node scripts/measure-mcp.mjs"
   },
   "dependencies": {
-    "@bunizao/cli-kit": "^0.6.0",
+    "@bunizao/cli-kit": "github:bunizao/cli-kit#1f10222a4972410e89e676ac46f6405ec20fe9a6",
     "@steipete/sweet-cookie": "^0.4.0",
     "commander": "^13.1.0",
     "node-html-parser": "^7.0.1",
