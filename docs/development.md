@@ -118,7 +118,7 @@ node dist/moodle.js mcp status
 
 Releases are cut from `main` by a maintainer.
 
-1. Bump the version in `package.json`, `package-lock.json` and `src/version.ts`.
+1. Bump the version in `package.json`, `package-lock.json` and `src/version.ts`, then run `npm run build && npm run skill:generate` so `.claude-plugin/plugin.json` carries it. The release CI fails otherwise.
 2. Write `.github/release-notes/<version>.md`. It becomes the GitHub release body. Put one paragraph on each line, because GitHub keeps single line breaks. Lead with one sentence on what the release is, then `## Highlights`, then a section per change.
 3. Commit as `chore(release): <version>` and merge it to `main`.
 4. Tag it and push the tag: `git tag -s v<version> && git push origin v<version>`.
