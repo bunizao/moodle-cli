@@ -40,7 +40,7 @@ The repo ships two things that share most of their code:
 | `src/worker/` | The Worker: routing, OAuth, the session Durable Object, its own Moodle calls. |
 | `tests/` | Vitest suites. `tests/fixtures/` holds saved Moodle responses and pages, with `moodle-5.0/` covering Boost, Classic and edge cases. |
 | `scripts/` | Build checks, smoke tests and the Moodle lab, described below. |
-| `SKILL.md`, `references/`, `agents/` | The generated agent skill bundle. Do not edit by hand. |
+| `SKILL.md`, `references/`, `agents/`, `.claude-plugin/` | The generated agent skill bundle and Claude Code plugin. Do not edit by hand; `references/` is copied from `src/skill-references/`. |
 | `docs/` | Plans, research and decision records. |
 
 A module ending in `-core.ts` is the runtime-neutral half of a feature. Put logic there when the Worker needs it too, and keep `fs`, `child_process` and keychain access in the Node sibling.
@@ -63,7 +63,7 @@ npm run test:watch   # rerun on save
 npx vitest run tests/grades.test.ts
 ```
 
-`tests/intents.test.ts` holds the MCP tool catalog under a character budget, because every hosted client pays for the catalog on every request. If a description change breaks the budget, shorten the text rather than raising the limit.
+`tests/intents.test.ts` holds the MCP tool catalog under a character budget, because every hosted client pays for the catalog on every request. If a description change breaks the budget, shorten the text rather than raising the limit. Descriptions render through cli-kit's `toolDescription` (what, when, instead, input, then, cost), which is why the budget is 12000.
 
 ## Scripts
 
@@ -79,7 +79,7 @@ Most scripts run in CI. You will usually only run them when you touch the part t
 | `npm run test:worker:runtime` | `smoke-worker.mjs` | Runs the built Worker in Miniflare and drives the MCP and OAuth flows end to end. |
 | `npm run test:worker:browser` | `smoke-worker-browser.mjs` | Opens the OAuth consent page in headless Chromium. Run `npx playwright install chromium` once first. |
 | `npm run measure:mcp` | `measure-mcp.mjs` | Prints the size of `tools/list` and of each tool's answer on the fixture site, in characters and estimated tokens. Run it before and after changing tool output. |
-| `npm run skill:generate` | (CLI) | Regenerates `SKILL.md`, `references/` and `agents/openai.yaml` from the command tree. Needs a build first. |
+| `npm run skill:generate` | (CLI) | Regenerates `SKILL.md`, `references/`, `agents/openai.yaml` and `.claude-plugin/` from the command tree and the intents. Needs a build first. |
 
 ## The Moodle lab
 

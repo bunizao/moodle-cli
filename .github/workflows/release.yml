@@ -84,7 +84,7 @@ jobs:
       - name: Check skill bundle drift
         run: |
           npm run skill:generate
-          git diff --exit-code -- SKILL.md references agents/openai.yaml
+          git diff --exit-code -- SKILL.md references agents/openai.yaml .claude-plugin
 
       - name: Check npm publication state
         id: npm

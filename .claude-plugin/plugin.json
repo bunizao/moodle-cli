@@ -1,0 +1,31 @@
+{
+  "name": "moodle-cli",
+  "version": "0.11.1",
+  "description": "Read Moodle units, deadlines, grades and files; submit coursework, manage messages and forums, and run a private MCP server.",
+  "author": {
+    "name": "bunizao",
+    "url": "https://github.com/bunizao"
+  },
+  "homepage": "https://github.com/bunizao/moodle-cli",
+  "repository": "https://github.com/bunizao/moodle-cli",
+  "license": "MIT",
+  "keywords": [
+    "moodle",
+    "mcp",
+    "university",
+    "deadlines",
+    "grades"
+  ],
+  "skills": "./",
+  "mcpServers": {
+    "moodle": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "moodle-cli",
+        "mcp",
+        "serve"
+      ]
+    }
+  }
+}

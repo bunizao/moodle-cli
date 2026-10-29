@@ -91,7 +91,7 @@ jobs:
       - name: Check skill bundle drift
         run: |
           npm run skill:generate
-          git diff --exit-code -- SKILL.md references agents/openai.yaml
+          git diff --exit-code -- SKILL.md references agents/openai.yaml .claude-plugin
 
   bun:
     name: Bun latest
@@ -130,7 +130,7 @@ jobs:
       - name: Check skill bundle drift
         run: |
           bun run skill:generate
-          git diff --exit-code -- SKILL.md references agents/openai.yaml
+          git diff --exit-code -- SKILL.md references agents/openai.yaml .claude-plugin
 
   windows-credentials:
     name: Windows protected credentials

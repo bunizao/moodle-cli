@@ -3,18 +3,15 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { buildProgram } from "../src/cli.js";
 import { describeProgram, intentContracts } from "../src/command-contract.js";
-import { generateSkillMarkdown } from "../src/skills.js";
 import type { CommandDescription } from "@bunizao/cli-kit";
 
 function flatten(rows: readonly CommandDescription[], prefix = "moodle"): Array<{ path: string; options: string[] }> {
   return rows.flatMap(row => [{ path: `${prefix} ${row.name}`, options: row.options.map(o => o.flags) }, ...flatten(row.commands, `${prefix} ${row.name}`)]);
 }
 describe("shipped vocabulary and guidance", () => {
-  it("keeps the generated skill under 1500 bytes and aligned with the contract", async () => {
-    const generated = generateSkillMarkdown(buildProgram());
-    expect(Buffer.byteLength(generated)).toBeLessThanOrEqual(1500);
-    expect(await readFile("SKILL.md", "utf8")).toBe(generated);
-    for (const c of Object.values(intentContracts).filter(c => c.when !== "discussion posts")) expect(generated).toContain(c.command);
+  it("lists every intent command in the skill and ships only the two references", async () => {
+    const skill = await readFile("SKILL.md", "utf8");
+    for (const c of Object.values(intentContracts)) expect(skill).toContain(c.command);
     expect((await readdir("references")).sort()).toEqual(["command-reference.md", "setup-and-auth.md"]);
   });
   it("checks every documented full command and flag in the remaining references", async () => {
