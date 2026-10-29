@@ -1,6 +1,6 @@
 ---
 name: moodle-cli
-description: "Reads Moodle units, deadlines, grades and files; submits coursework, manages messages and forums, and runs a private MCP server. Use when the user names Moodle or a unit's Moodle page, or asks about deadlines, assignments, quizzes, grades, announcements, lecture slides, unit files or Moodle messages: \"what's due this week\", \"did my marks come back\", \"download the week 8 slides\", \"any new announcements\", \"submit my assignment\". OnTrack portfolio tasks belong to ontrack-cli; Ed forum threads and lessons belong to edstem-cli."
+description: "Reads Moodle units, deadlines, grades and files; submits coursework, manages messages and forums, and runs a private MCP server. Use when the user names Moodle, or asks about deadlines, assignments, quiz results, grades and marker feedback, announcements, lecture slides, workshop or unit pages, unit files or Moodle messages: \"what's due this week\", \"did my marks come back\", \"what did I get wrong on the week 5 quiz\", \"download the week 8 slides\", \"any new announcements\", \"submit my assignment\". Moodle is the default home of a unit's pages, quizzes, announcements and deadlines unless the user names Ed or OnTrack. OnTrack portfolio tasks belong to ontrack-cli; Ed forum threads and Ed lessons belong to edstem-cli. Not for writing Moodle plugins or running a Moodle server."
 ---
 
 # Moodle CLI
