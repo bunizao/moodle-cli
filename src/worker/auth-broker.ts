@@ -6,6 +6,9 @@ import { createOwnerLogin, createSessionAdopter, type OwnerLogin, type OwnerLogi
 export const OAUTH_ROUTE_PREFIXES = ["/oauth/", "/.well-known/oauth-"] as const;
 export const INTERNAL_VERIFY_PATH = "/internal/verify";
 export const INTERNAL_PAIR_PATH = "/internal/pair";
+// The handler tells the broker where it is mounted. Durable Objects are reachable only
+// through the host Worker's own code, and the handler overwrites any value a client sent.
+export const BASE_PATH_HEADER = "moodle-base-path";
 
 export interface AuthBrokerStateLike {
   storage: OAuthStorage;
@@ -24,6 +27,11 @@ export interface AuthBrokerDependencies {
   now?: () => number;
   browser?: LoginBrowser;
   adopt?: OwnerLoginOptions["adopt"];
+}
+
+// "" or "/a/b": absolute, no trailing slash, plain path segments only.
+export function isBasePath(value: string): boolean {
+  return /^(?:\/[A-Za-z0-9._~-]+)*$/u.test(value) && !/\/\.\.?(?:\/|$)/u.test(value);
 }
 
 export function isOAuthRoute(pathname: string): boolean {
@@ -62,7 +70,7 @@ export class AuthBroker {
 
   private async route(request: Request): Promise<Response> {
     const url = new URL(request.url);
-    const { router, owner } = this.router(this.issuer(url));
+    const { router, owner } = this.router(this.issuer(url, request.headers.get(BASE_PATH_HEADER)));
     if (this.env.SESSION_SYNC_TOKEN_DIGEST) {
       const previous = await this.state.storage.get<string>("oauth:owner-credential");
       if (previous !== this.env.SESSION_SYNC_TOKEN_DIGEST) await router.revokeClients();
@@ -95,8 +103,9 @@ export class AuthBroker {
     return response ?? new Response(null, { status: 404 });
   }
 
-  private issuer(url: URL): string {
-    return this.env.EXPECTED_HOST ? `https://${this.env.EXPECTED_HOST}` : url.origin;
+  private issuer(url: URL, basePath: string | null): string {
+    const origin = this.env.EXPECTED_HOST ? `https://${this.env.EXPECTED_HOST}` : url.origin;
+    return `${origin}${basePath && isBasePath(basePath) ? basePath : ""}`;
   }
 
   private router(issuer: string): { router: OAuthRouter; owner: OwnerLogin } {
@@ -137,17 +146,23 @@ export interface AuthBrokerStubLike {
   fetch(request: Request): Promise<Response>;
 }
 
-export function createAuthBrokerApi(stub: AuthBrokerStubLike, issuer = "https://auth-broker"): AuthBrokerApi {
+export function createAuthBrokerApi(stub: AuthBrokerStubLike, issuer = "https://auth-broker", basePath = ""): AuthBrokerApi {
+  const mounted = (headers?: HeadersInit) => {
+    const result = new Headers(headers);
+    result.delete(BASE_PATH_HEADER);
+    if (basePath) result.set(BASE_PATH_HEADER, basePath);
+    return result;
+  };
   return {
     manageClients: (request) => {
       const url = new URL(request.url);
-      return stub.fetch(new Request(`${issuer}/internal/clients${url.search}`, { method: request.method }));
+      return stub.fetch(new Request(`${issuer}/internal/clients${url.search}`, { method: request.method, headers: mounted() }));
     },
-    handleOAuth: (request) => stub.fetch(new Request(request.url, request)),
+    handleOAuth: (request) => stub.fetch(new Request(request, { headers: mounted(request.headers) })),
     async verifyAccessToken(token, resource) {
       const response = await stub.fetch(new Request(issuer + INTERNAL_VERIFY_PATH, {
         method: "POST",
-        headers: { "content-type": "application/json" },
+        headers: mounted({ "content-type": "application/json" }),
         body: JSON.stringify({ token, resource }),
       }));
       if (!response.ok) return null;
@@ -157,7 +172,7 @@ export function createAuthBrokerApi(stub: AuthBrokerStubLike, issuer = "https://
         : null;
     },
     async createPairing() {
-      const response = await stub.fetch(new Request(issuer + INTERNAL_PAIR_PATH, { method: "POST" }));
+      const response = await stub.fetch(new Request(issuer + INTERNAL_PAIR_PATH, { method: "POST", headers: mounted() }));
       const issue = await safeJson(response);
       if (!response.ok || typeof issue?.code !== "string" || typeof issue.expiresAt !== "number") {
         throw new Error("The authorization broker could not create a pairing code.");

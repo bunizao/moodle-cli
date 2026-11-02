@@ -1,6 +1,6 @@
 import {
-  createDurableObjectBrokerApi,
   createWorkerHandler,
+  durableObjectMcpServer,
   type MoodleMcpServerLike,
   type WorkerEnv,
   type WorkerHandler,
@@ -9,14 +9,7 @@ import {
 export { AuthBroker } from "./auth-broker.js";
 export { SessionBroker } from "./session-broker.js";
 
-const worker = createWorkerHandler({
-  mcpServer: (env) => ({
-    handle(body, context) {
-      if (!env.SESSION_BROKER) throw new Error("The session broker binding is unavailable.");
-      return createDurableObjectBrokerApi(env.SESSION_BROKER).handleMcp(body, context);
-    },
-  }),
-});
+const worker = createWorkerHandler({ mcpServer: durableObjectMcpServer });
 
 export default worker;
 

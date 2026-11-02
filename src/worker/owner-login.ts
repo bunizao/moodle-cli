@@ -1,6 +1,6 @@
 import { digestBearerToken } from "./auth.js";
 import type { LoginBrowser, LoginBrowserHandle, MoodleCookie } from "./browser-login.js";
-import type { DurableObjectNamespaceLike } from "./http.js";
+import { BROKER_INSTANCE_NAME, type DurableObjectNamespaceLike } from "./http.js";
 import { AUTHORIZE_PATH, LOGIN_PATH, type OAuthStorage, type OwnerVerifier } from "./oauth.js";
 import { escapeHtml, htmlResponse, page } from "./pages.js";
 
@@ -69,6 +69,9 @@ interface LaunchCount {
 }
 
 export function createOwnerLogin(options: OwnerLoginOptions): OwnerLogin {
+  // A host Worker can mount this under a path; every link and redirect keeps it.
+  const basePath = new URL(options.mcpUrl).pathname.replace(/\/mcp$/u, "");
+  const loginPath = `${basePath}${LOGIN_PATH}`;
   const { storage, browser, adopt, moodleOrigin, now } = options;
   const signInAvailable = Boolean(browser && adopt && moodleOrigin);
 
@@ -117,14 +120,14 @@ export function createOwnerLogin(options: OwnerLoginOptions): OwnerLogin {
     if (!signInAvailable) {
       return htmlResponse(noticePage("Browser sign-in unavailable", "This deployment cannot start a remote browser. Run `moodle mcp deploy` to update it, or approve with `moodle mcp pair`."), 503);
     }
-    const returnTo = safeReturnTo(form.get("return_to"));
+    const returnTo = safeReturnTo(form.get("return_to"), basePath);
     const { record, mine } = await readLogin(request);
-    if (record && mine) return redirect(LOGIN_PATH);
+    if (record && mine) return redirect(loginPath);
 
     const code = form.get("pairing_code")?.trim() ?? "";
     const claim = code ? await options.pairing.check(code) : false;
     if (code && !claim) {
-      return htmlResponse(startPage({ returnTo, askCode: true, message: "That code is not correct, or its window has closed. Run `moodle mcp pair` for a new one." }), 403);
+      return htmlResponse(startPage({ returnTo, askCode: true, message: "That code is not correct, or its window has closed. Run `moodle mcp pair` for a new one." }, loginPath), 403);
     }
     const trusted = claim || Boolean(await readOwner(request));
     // A trusted request may take over an anonymous attempt, so a stranger holding
@@ -154,20 +157,20 @@ export function createOwnerLogin(options: OwnerLoginOptions): OwnerLogin {
       claim,
       trusted,
     });
-    return redirect(LOGIN_PATH, [cookie(LOGIN_COOKIE, secret, LOGIN_TTL_MS)]);
+    return redirect(loginPath, [cookie(LOGIN_COOKIE, secret, LOGIN_TTL_MS)]);
   }
 
   async function poll(request: Request, url: URL): Promise<Response> {
     const { record, mine } = await readLogin(request);
     if (!record || !mine) {
       const owner = await readOwner(request);
-      if (owner) return htmlResponse(signedInPage(options.mcpUrl));
+      if (owner) return htmlResponse(signedInPage(options.mcpUrl, loginPath));
       const pairing = url.searchParams.get("pairing") ?? undefined;
-      return htmlResponse(startPage({ pairing, unavailable: !signInAvailable }));
+      return htmlResponse(startPage({ pairing, unavailable: !signInAvailable }, loginPath));
     }
     if (record.expiresAt <= now()) {
       await endLogin(record);
-      return withCookies(htmlResponse(startPage({ returnTo: record.returnTo, message: "The sign-in window closed before Moodle finished. Start again." }), 408), [cookie(LOGIN_COOKIE, "", 0)]);
+      return withCookies(htmlResponse(startPage({ returnTo: record.returnTo, message: "The sign-in window closed before Moodle finished. Start again." }, loginPath), 408), [cookie(LOGIN_COOKIE, "", 0)]);
     }
 
     let found: MoodleCookie | null;
@@ -175,7 +178,7 @@ export function createOwnerLogin(options: OwnerLoginOptions): OwnerLogin {
       found = await browser!.readMoodleCookie(record.browser, moodleOrigin!);
     } catch {
       await endLogin(record);
-      return withCookies(htmlResponse(startPage({ returnTo: record.returnTo, message: "The remote browser closed. Start again." }), 410), [cookie(LOGIN_COOKIE, "", 0)]);
+      return withCookies(htmlResponse(startPage({ returnTo: record.returnTo, message: "The remote browser closed. Start again." }, loginPath), 410), [cookie(LOGIN_COOKIE, "", 0)]);
     }
     if (!found) return htmlResponse(waitingPage(record, now()));
 
@@ -199,7 +202,7 @@ export function createOwnerLogin(options: OwnerLoginOptions): OwnerLogin {
       const message = result === "wrong_account"
         ? "That Moodle account does not own this server. Sign in with the account it was set up for."
         : "This server has no owner yet. Enter the code from `moodle mcp deploy` or `moodle mcp pair` to claim it.";
-      return withCookies(htmlResponse(startPage({ returnTo: record.returnTo, askCode: result === "claim_required", message }), 403), [cookie(LOGIN_COOKIE, "", 0)]);
+      return withCookies(htmlResponse(startPage({ returnTo: record.returnTo, askCode: result === "claim_required", message }, loginPath), 403), [cookie(LOGIN_COOKIE, "", 0)]);
     }
     // Not signed in yet, or Moodle blipped: keep waiting, and only remember a cookie
     // Moodle actually looked at.
@@ -227,7 +230,7 @@ export function createOwnerLogin(options: OwnerLoginOptions): OwnerLogin {
 }
 
 export function createSessionAdopter(namespace: DurableObjectNamespaceLike): NonNullable<OwnerLoginOptions["adopt"]> {
-  const stub = namespace.get(namespace.idFromName("primary"));
+  const stub = namespace.get(namespace.idFromName(BROKER_INSTANCE_NAME));
   return async (cookie, allowNewOwner) => {
     const response = await stub.fetch(new Request("https://session-broker/session/adopt", {
       method: "POST",
@@ -245,15 +248,16 @@ export function createSessionAdopter(namespace: DurableObjectNamespaceLike): Non
 
 // Only the authorization endpoint may be a return target, so the sign-in cannot be
 // turned into an open redirect.
-function safeReturnTo(value: string | null): string {
-  if (!value) return LOGIN_PATH;
+function safeReturnTo(value: string | null, basePath: string): string {
+  const loginPath = `${basePath}${LOGIN_PATH}`;
+  if (!value) return loginPath;
   try {
     const parsed = new URL(value, "https://worker.invalid");
-    return parsed.origin === "https://worker.invalid" && parsed.pathname === AUTHORIZE_PATH
+    return parsed.origin === "https://worker.invalid" && parsed.pathname === `${basePath}${AUTHORIZE_PATH}`
       ? `${parsed.pathname}${parsed.search}`
-      : LOGIN_PATH;
+      : loginPath;
   } catch {
-    return LOGIN_PATH;
+    return loginPath;
   }
 }
 
@@ -278,7 +282,7 @@ function withCookies(response: Response, cookies: string[]): Response {
   return response;
 }
 
-function startPage(options: { returnTo?: string; pairing?: string; askCode?: boolean; message?: string; unavailable?: boolean }): string {
+function startPage(options: { returnTo?: string; pairing?: string; askCode?: boolean; message?: string; unavailable?: boolean }, loginPath: string): string {
   if (options.unavailable) {
     return noticePage("Browser sign-in unavailable", "This deployment cannot start a remote browser. Run `moodle mcp deploy` to update it, or approve with `moodle mcp pair`.");
   }
@@ -288,13 +292,13 @@ function startPage(options: { returnTo?: string; pairing?: string; askCode?: boo
       ? `<label for="pairing_code">Setup code</label>
 <input id="pairing_code" name="pairing_code" placeholder="XXXX-XXXX" maxlength="9" required autocomplete="one-time-code" autocapitalize="characters" autocorrect="off" spellcheck="false">`
       : "";
-  const returnField = options.returnTo && options.returnTo !== LOGIN_PATH
+  const returnField = options.returnTo && options.returnTo !== loginPath
     ? `<input type="hidden" name="return_to" value="${escapeHtml(options.returnTo)}">`
     : "";
   return page("Sign in with Moodle", `<h1>Sign in with Moodle</h1>
 ${options.message ? `<p class="error">${escapeHtml(options.message)}</p>` : ""}
 <p>This opens a private browser in your Cloudflare account on your Moodle sign-in page. Sign in as usual, including MFA.</p>
-<form method="post" action="${LOGIN_PATH}">${returnField}${codeField}
+<form method="post" action="${loginPath}">${returnField}${codeField}
 <button type="submit">Sign in with Moodle</button></form>
 <p class="note">This server never reads what you type there. Once Moodle's dashboard loads, it keeps the Moodle session and closes the browser.</p>`);
 }
@@ -307,12 +311,12 @@ function waitingPage(record: LoginRecord, now: number): string {
 <p class="note">${minutes} ${minutes === 1 ? "minute" : "minutes"} left. Keep this tab open.</p>`).replace("<head>", `<head><meta http-equiv="refresh" content="${POLL_SECONDS}">`);
 }
 
-function signedInPage(mcpUrl: string): string {
+function signedInPage(mcpUrl: string, loginPath: string): string {
   return page("Moodle MCP is ready", `<h1>Moodle MCP is ready</h1>
 <p class="open">You are signed in as this server's owner.</p>
 <dl><dt>Connector URL</dt><dd><code>${escapeHtml(mcpUrl)}</code></dd></dl>
 <p>Add it as a custom connector in your MCP client. In Claude: Settings → Connectors → Add custom connector.</p>
-<form method="post" action="${LOGIN_PATH}"><button type="submit" class="quiet">Sign in again to renew the Moodle session</button></form>`);
+<form method="post" action="${loginPath}"><button type="submit" class="quiet">Sign in again to renew the Moodle session</button></form>`);
 }
 
 function noticePage(title: string, message: string): string {

@@ -767,3 +767,52 @@ describe("SessionBroker renewal from a Moodle mobile token", () => {
     expect(JSON.stringify(await response.json())).not.toContain("not signed in");
   });
 });
+
+describe("SessionBroker.callTool", () => {
+  function moodle(courses: unknown[]) {
+    return vi.fn<typeof fetch>(async (input, init) => {
+      if (String(input) === LATEST_VERSION_URL) return Response.json({ latest: VERSION });
+      const [call] = JSON.parse(String(init?.body ?? "[]")) as Array<{ methodname: string }>;
+      if (call?.methodname === "core_enrol_get_users_courses") {
+        return Response.json([{ error: false, data: courses }]);
+      }
+      return Response.json([{ error: false, data: { userid: 42, username: "ada", fullname: "Ada", sitename: "S", siteurl: MOODLE_ORIGIN, sesskey: "sess" } }]);
+    });
+  }
+
+  it("returns the units contract as structured content", async () => {
+    const fetchImpl = moodle([{ id: 7, shortname: "UNIT1001", fullname: "Unit One", startdate: 1_700_000_000, enddate: 1_710_000_000, hidden: false }]);
+    const broker = new SessionBroker(state(), env(), { upstream: validUpstream(), fetchImpl, now: () => 1_000 });
+    expect((await putSession(broker, candidate(OLD_COOKIE, null))).status).toBe(201);
+
+    const result = await broker.callTool("units", {});
+
+    expect(result.isError).toBe(false);
+    expect(result.structuredContent).toMatchObject({ total: 1, units: [{ id: 7, code: "UNIT1001", name: "Unit One" }] });
+    expect(JSON.stringify(result)).not.toContain(OLD_COOKIE);
+  });
+
+  it("reports a missing session as MOODLE_AUTH_REQUIRED with the host's sign-in link", async () => {
+    const fetchImpl = moodle([]);
+    const broker = new SessionBroker(state(), env(), { upstream: validUpstream(), fetchImpl, now: () => 1_000 });
+    const signInUrl = "https://host.example.workers.dev/moodle/oauth/login";
+
+    const result = await broker.callTool("due", { days: 7 }, { signInUrl });
+
+    expect(result).toMatchObject({
+      isError: true,
+      structuredContent: { error: { type: "MOODLE_AUTH_REQUIRED", recovery: { action: "open_url", url: signInUrl } } },
+    });
+    expect(fetchImpl.mock.calls.every(([input]) => String(input) === LATEST_VERSION_URL)).toBe(true);
+  });
+
+  it("reports an unknown tool as an error envelope instead of throwing", async () => {
+    const broker = new SessionBroker(state(), env(), { upstream: validUpstream(), fetchImpl: moodle([]), now: () => 1_000 });
+    expect((await putSession(broker, candidate(OLD_COOKIE, null))).status).toBe(201);
+
+    const result = await broker.callTool("nope", {});
+
+    expect(result.isError).toBe(true);
+    expect(result.structuredContent).toMatchObject({ error: { type: expect.any(String), message: expect.any(String) } });
+  });
+});

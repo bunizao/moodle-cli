@@ -1,10 +1,11 @@
+import { DurableObject } from "cloudflare:workers";
 import { createEncryptionKeyring, decryptValue, encryptValue, type EncryptionKeyring } from "./crypto.js";
 import { createMoodleClientCore, MoodleClientCoreApiError } from "../moodle-client-core.js";
 import { createMoodleGateway, MoodleGatewayError, type MoodleGateway } from "../mcp/gateway.js";
 import { createMoodleMcpServer } from "../mcp/server.js";
 import { fetchLatestVersion, isNewerVersion, updateHint, UPDATE_CHECK_TTL_MS, type LatestVersionRecord } from "../update-core.js";
 import { VERSION } from "../version.js";
-import type { McpRequestContext } from "../mcp/protocol.js";
+import { LEGACY_PROTOCOL_VERSION, type McpRequestContext } from "../mcp/protocol.js";
 import type { MobileToken } from "../mobile-login-core.js";
 import { FetchMoodleSessionUpstream } from "./moodle-upstream.js";
 import { problemResponse } from "./problems.js";
@@ -106,17 +107,39 @@ interface StoredSession {
   mobile_token_failed?: boolean;
 }
 
-export class SessionBroker {
+export interface MoodleToolError {
+  type: string;
+  message: string;
+  hint?: string;
+  recovery?: Record<string, string>;
+  [key: string]: unknown;
+}
+
+export type MoodleToolResult<T = Record<string, unknown>> =
+  | { isError: false; structuredContent: T }
+  | { isError: true; structuredContent: { error: MoodleToolError } };
+
+export interface CallToolOptions {
+  /** Where the owner signs in to Moodle; auth errors point there instead of at the CLI. */
+  signInUrl?: string;
+}
+
+// Extends the runtime base class because Workers RPC is only offered on Durable
+// Objects that do; a host Worker calls callTool on the stub directly.
+export class SessionBroker extends DurableObject<SessionBrokerEnv> {
   private readonly now: () => number;
   private readonly dependencies: SessionBrokerDependencies;
   private keyringPromise: Promise<EncryptionKeyring> | undefined;
   private renewing: Promise<StoredSession | null> | null = null;
+  private readonly state: DurableObjectStateLike;
 
   constructor(
-    private readonly state: DurableObjectStateLike,
-    private readonly env: SessionBrokerEnv,
+    state: DurableObjectStateLike,
+    protected readonly env: SessionBrokerEnv,
     dependencies?: SessionBrokerDependencies,
   ) {
+    super(state, env);
+    this.state = state;
     this.dependencies = dependencies ?? { upstream: new FetchMoodleSessionUpstream(env.MOODLE_ORIGIN) };
     this.now = this.dependencies.now ?? Date.now;
   }
@@ -151,6 +174,41 @@ export class SessionBroker {
     }
 
     const { signInUrl, ...context } = envelope.context;
+    const initializing = isRecord(envelope.request) && envelope.request.method === "initialize";
+    const server = await this.mcpServer(signInUrl, initializing);
+    const response = await server.handle(envelope.request, context);
+    return Response.json({ response }, { headers: { "cache-control": "private, no-store" } });
+  }
+
+  // The read a host Worker makes over RPC: the tool result an MCP client would get,
+  // with no HTTP hop and no token. A refused call (unknown tool, bad arguments, an
+  // unreadable session) comes back in the same isError envelope as a Moodle failure,
+  // so the caller handles one shape.
+  async callTool(name: string, args: Record<string, unknown> = {}, options: CallToolOptions = {}): Promise<MoodleToolResult> {
+    try {
+      const server = await this.mcpServer(options.signInUrl, false);
+      const response = await server.handle(
+        { jsonrpc: "2.0", id: 1, method: "tools/call", params: { name, arguments: args } },
+        { protocolVersion: LEGACY_PROTOCOL_VERSION },
+      );
+      if (response && "result" in response && isRecord(response.result) && isRecord(response.result.structuredContent)) {
+        const structuredContent = response.result.structuredContent;
+        return response.result.isError === true
+          ? { isError: true, structuredContent: structuredContent as { error: MoodleToolError } }
+          : { isError: false, structuredContent };
+      }
+      const failure: Record<string, unknown> = response && "error" in response && isRecord(response.error) ? response.error : {};
+      const data = isRecord(failure.data) ? failure.data : {};
+      return toolFailure(
+        typeof data.type === "string" ? data.type : "MCP_REQUEST_FAILED",
+        typeof failure.message === "string" ? failure.message : "The tool call could not be completed.",
+      );
+    } catch {
+      return toolFailure("SESSION_UNAVAILABLE", "The encrypted session could not be read. Restore its encryption key before retrying.");
+    }
+  }
+
+  private async mcpServer(signInUrl: string | undefined, initializing: boolean) {
     const session = await this.loadSession();
     // Without a usable session the connector still initializes and lists tools, so a
     // hosted client shows it as connected and every tool call says where to sign in.
@@ -162,15 +220,12 @@ export class SessionBroker {
       : signedOutGateway();
     // Only initialize pays for the registry lookup, and only once a day; every
     // session then starts with the notice until the Worker is redeployed.
-    const initializing = isRecord(envelope.request) && envelope.request.method === "initialize";
     const latest = initializing ? await this.latestVersion(true) : undefined;
     const instructions = [
       ...(signedIn ? [] : [signInUrl ? `Moodle is not signed in yet; ask the user to open ${signInUrl} and sign in.` : "Moodle is not signed in yet; ask the user to run moodle mcp login."]),
       ...(latest && isNewerVersion(latest, VERSION) ? [`${updateHint(VERSION, latest)} to redeploy this server.`] : []),
     ];
-    const server = createMoodleMcpServer(gateway, { instructions, ...(signInUrl ? { signInUrl } : {}) });
-    const response = await server.handle(envelope.request, context);
-    return Response.json({ response }, { headers: { "cache-control": "private, no-store" } });
+    return createMoodleMcpServer(gateway, { instructions, ...(signInUrl ? { signInUrl } : {}) });
   }
 
   // The record can call a session live after Moodle has dropped it, so a refused
@@ -658,6 +713,10 @@ function sameSession(a: StoredSession, b: StoredSession): boolean {
 
 // Every read fails the same way, so the MCP server maps it to one auth error that
 // names the sign-in link. The Worker never offers submit, signed in or not.
+function toolFailure(type: string, message: string): MoodleToolResult {
+  return { isError: true, structuredContent: { error: { type, message } } };
+}
+
 function signedOutGateway(): MoodleGateway {
   const fail = async (): Promise<never> => {
     throw new MoodleGatewayError("auth", "No Moodle session is signed in.");

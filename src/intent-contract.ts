@@ -26,7 +26,8 @@ const searchSchema = z.object({ unit_id: id, forum_id: id, discussion_id: id, na
 const submissionFile = z.object({ name: z.string(), bytes: n, url: s });
 const receiptSchema = z.object({ id, name: s, unit_id: n, url: s, action: z.enum(["planned", "saved", "submitted"]), draft_stage: z.boolean().optional(), group: s, awaiting: z.array(z.string()).optional(), submission_status: s, submission_state: z.enum(["new", "draft", "submitted"]).optional(), text: s, grading_status: s, due: s, time_remaining: s, last_modified: s, statement: s, statement_accepted: z.boolean().optional(), statement_pending: z.boolean().optional(), files: z.array(submissionFile).optional(), uploads: z.array(z.object({ name: z.string(), bytes: id, path: s })).optional(), removed: z.array(z.string()).optional(), limits: z.object({ max_bytes: n, max_files: n, area_max_bytes: n, accepted_types: z.array(z.string()).optional() }).optional(), checked_at: z.string() });
 const input = (shape: z.ZodRawShape) => z.object(shape).strict();
-const list = (key: string, value: z.ZodType) => z.object({ [key]: z.array(value).optional(), total: id });
+// Typed by key so hosts importing these schemas get { units?: Unit[] } rather than an index signature.
+const list = <K extends string, V extends z.ZodType>(key: K, value: V) => z.object({ [key]: z.array(value).optional(), total: id } as Record<K, z.ZodOptional<z.ZodArray<V>>> & { total: typeof id });
 
 const messageMember = z.object({ id, name: s });
 const conversationMessage = z.object({ id, sender_id: id, text: s, created_at: id });

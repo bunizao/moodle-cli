@@ -129,6 +129,8 @@ export function createOAuthRouter(options: OAuthRouterOptions): OAuthRouter {
   const storage = options.storage;
   const issuer = options.issuer.replace(/\/$/u, "");
   const resourceUrl = `${issuer}/mcp`;
+  // Pages link with absolute paths, so a host Worker's mount path has to be in them.
+  const basePath = new URL(issuer).pathname.replace(/\/$/u, "");
   const now = options.now ?? Date.now;
   const allowedRedirectHosts = options.allowedRedirectHosts ?? DEFAULT_CLIENT_HOSTS;
   const createSecret = options.createSecret ?? randomSecret;
@@ -377,7 +379,7 @@ export function createOAuthRouter(options: OAuthRouterOptions): OAuthRouter {
     const pairing = await readPairing();
     const pairingWindow = pairing ? { minutesLeft: Math.max(1, Math.ceil((pairing.expiresAt - now()) / 60000)), attemptsLeft: PAIRING_CODE_MAX_ATTEMPTS - pairing.attempts } : undefined;
     if (request.method === "GET") {
-      return htmlResponse(approvalPage(authorizeRequest, params, { window: pairingWindow, owner, signIn }), 200, authorizeRequest.redirectUri);
+      return htmlResponse(approvalPage(authorizeRequest, params, basePath, { window: pairingWindow, owner, signIn }), 200, authorizeRequest.redirectUri);
     }
 
     const approvedClients = [...(await storage.list<ClientRecord>({ prefix: CLIENT_PREFIX })).values()]
@@ -387,7 +389,7 @@ export function createOAuthRouter(options: OAuthRouterOptions): OAuthRouter {
     }
     if (params.has("owner_csrf")) {
       if (!owner || !await sameSecret(params.get("owner_csrf") ?? "", owner.csrf)) {
-        return htmlResponse(approvalPage(authorizeRequest, params, {
+        return htmlResponse(approvalPage(authorizeRequest, params, basePath, {
           window: pairingWindow,
           signIn,
           owner,
@@ -398,14 +400,14 @@ export function createOAuthRouter(options: OAuthRouterOptions): OAuthRouter {
     }
 
     if (!pairing || !pairingWindow) {
-      return htmlResponse(approvalPage(authorizeRequest, params, {
+      return htmlResponse(approvalPage(authorizeRequest, params, basePath, {
         signIn,
         message: "That pairing window has closed. Run `moodle mcp pair` again and enter the new code.",
       }), 403, authorizeRequest.redirectUri);
     }
     if (!await consumePairingAttempt(pairing, params.get("pairing_code") ?? "")) {
       const remaining = PAIRING_CODE_MAX_ATTEMPTS - pairing.attempts - 1;
-      return htmlResponse(approvalPage(authorizeRequest, params, {
+      return htmlResponse(approvalPage(authorizeRequest, params, basePath, {
         window: remaining > 0 ? { ...pairingWindow, attemptsLeft: remaining } : undefined,
         signIn,
         message: remaining > 0
@@ -716,6 +718,7 @@ function hiddenFields(request: AuthorizeRequest, params: URLSearchParams): strin
 function approvalPage(
   request: AuthorizeRequest,
   params: URLSearchParams,
+  basePath: string,
   options: { window?: PairingWindowView; message?: string; owner?: { csrf: string } | null; signIn?: boolean },
 ): string {
   const hidden = hiddenFields(request, params);
@@ -731,34 +734,34 @@ function approvalPage(
   if (options.owner) {
     return page("Approve MCP access", `${header}
 ${message}<p class="open">You are signed in as this server's owner.</p>
-<form method="post" action="${AUTHORIZE_PATH}">${hidden}<input type="hidden" name="owner_csrf" value="${escapeHtml(options.owner.csrf)}">
+<form method="post" action="${basePath}${AUTHORIZE_PATH}">${hidden}<input type="hidden" name="owner_csrf" value="${escapeHtml(options.owner.csrf)}">
 <button type="submit">Approve access</button></form>
 <p class="note">Approve only if you started this connection yourself just now. Someone else's link would hand them your Moodle.</p>`);
   }
 
   const pairingSection = options.window
     ? `<p class="open">A pairing window is open for ${options.window.minutesLeft} more ${options.window.minutesLeft === 1 ? "minute" : "minutes"}.</p>
-<form method="post" action="${AUTHORIZE_PATH}">${hidden}
+<form method="post" action="${basePath}${AUTHORIZE_PATH}">${hidden}
 <label for="pairing_code">Enter the code that <code>moodle mcp pair</code> printed</label>
 <input id="pairing_code" name="pairing_code" placeholder="XXXX-XXXX" maxlength="9" required autocomplete="one-time-code" autocapitalize="characters" autocorrect="off" spellcheck="false"${options.signIn ? "" : " autofocus"}>
 <button type="submit"${options.signIn ? ' class="quiet"' : ""}>Approve with code</button></form>
 <p class="note">${options.message ? "" : `${options.window.attemptsLeft} attempts allowed. `}The code works once and only while the window is open.</p>`
     : options.signIn
       ? `<p class="note">Or, from a computer with moodle-cli, run <code>moodle mcp pair</code> and reload this page to approve with a code.</p>
-<form method="get" action="${AUTHORIZE_PATH}">${hidden}<button type="submit" class="quiet">Reload this page</button></form>`
+<form method="get" action="${basePath}${AUTHORIZE_PATH}">${hidden}<button type="submit" class="quiet">Reload this page</button></form>`
       : `${options.message ? "" : "<p>Nothing can be approved until you open a pairing window from your own computer.</p>"}
 <ol>
   <li>Open a terminal on the computer where you installed moodle-cli.</li>
   <li>Run <code>moodle mcp pair</code>. It prints an eight-character code.</li>
   <li>Come back here, reload, and enter the code.</li>
 </ol>
-<form method="get" action="${AUTHORIZE_PATH}">${hidden}<button type="submit" class="quiet">Reload this page</button></form>
+<form method="get" action="${basePath}${AUTHORIZE_PATH}">${hidden}<button type="submit" class="quiet">Reload this page</button></form>
 <p class="note">Anyone who reaches this page without your code is refused, which is what keeps this server private.</p>`;
 
-  const returnTo = `${AUTHORIZE_PATH}?${new URLSearchParams(authorizeValues(request, params))}`;
+  const returnTo = `${basePath}${AUTHORIZE_PATH}?${new URLSearchParams(authorizeValues(request, params))}`;
   const signInSection = options.signIn
     ? `<p>Sign in to the Moodle account this server belongs to. Anyone else is refused.</p>
-<form method="post" action="${LOGIN_PATH}"><input type="hidden" name="return_to" value="${escapeHtml(returnTo)}">
+<form method="post" action="${basePath}${LOGIN_PATH}"><input type="hidden" name="return_to" value="${escapeHtml(returnTo)}">
 <button type="submit">Sign in with Moodle</button></form>
 <hr>`
     : "";

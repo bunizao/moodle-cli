@@ -7,6 +7,13 @@
   "bin": {
     "moodle": "dist/moodle.js"
   },
+  "exports": {
+    "./worker": {
+      "types": "./dist/lib/types/worker/library.d.ts",
+      "import": "./dist/lib/worker.js"
+    },
+    "./package.json": "./package.json"
+  },
   "files": [
     "dist",
     "README.md",
@@ -15,10 +22,10 @@
   ],
   "scripts": {
     "build": "tsc --noEmit && tsup && npm run build:worker && rm -f dist/.gitignore && node scripts/check-shipped-vocabulary.mjs",
-    "build:worker": "tsup --config tsup.worker.config.ts && node scripts/check-worker-bundle.mjs",
+    "build:worker": "tsup --config tsup.worker.config.ts && rm -rf dist/lib/types && tsc -p tsconfig.lib.json && node scripts/check-worker-bundle.mjs",
     "bin:smoke": "bun scripts/smoke-standalone.mjs",
     "check": "tsc --noEmit",
-    "pack:check": "npm pack --dry-run --json | node -e \"let data = ''; process.stdin.on('data', chunk => data += chunk); process.stdin.on('end', () => { const files = JSON.parse(data)[0]?.files?.map(file => file.path) ?? []; for (const required of ['dist/moodle.js', 'dist/worker/worker.js', 'dist/worker/recovery.js', 'README.md', 'skills/moodle-cli/SKILL.md', 'skills/moodle-cli/references/commands.md', 'skills/moodle-cli/references/usage.md', 'skills/moodle-cli/agents/openai.yaml']) if (!files.includes(required)) throw new Error('npm package is missing ' + required); });\"",
+    "pack:check": "npm pack --dry-run --json | node -e \"let data = ''; process.stdin.on('data', chunk => data += chunk); process.stdin.on('end', () => { const files = JSON.parse(data)[0]?.files?.map(file => file.path) ?? []; for (const required of ['dist/moodle.js', 'dist/worker/worker.js', 'dist/worker/recovery.js', 'dist/lib/worker.js', 'dist/lib/types/worker/library.d.ts', 'README.md', 'skills/moodle-cli/SKILL.md', 'skills/moodle-cli/references/commands.md', 'skills/moodle-cli/references/usage.md', 'skills/moodle-cli/agents/openai.yaml']) if (!files.includes(required)) throw new Error('npm package is missing ' + required); });\"",
     "pack:smoke": "tmp=\"$(mktemp -d)\" && npm pack --pack-destination \"$tmp\" >/dev/null && npm install --prefix \"$tmp/install\" \"$tmp\"/moodle-cli-*.tgz >/dev/null && test \"$(\"$tmp/install/node_modules/.bin/moodle\" --version)\" = \"$(node -p \"JSON.parse(require('node:fs').readFileSync('package.json', 'utf8')).version\")\" && \"$tmp/install/node_modules/.bin/moodle\" download --help >/dev/null && \"$tmp/install/node_modules/.bin/moodle\" mcp --help >/dev/null && node scripts/smoke-packed-output.mjs \"$tmp/install/node_modules/moodle-cli/dist/moodle.js\" && npm audit --prefix \"$tmp/install\" --omit=dev --audit-level=low",
     "test": "vitest run",
     "test:mcp": "vitest run tests/mcp-*.test.ts tests/deployment-*.test.ts tests/renewal-*.test.ts tests/connectors-*.test.ts",
