@@ -37,6 +37,7 @@ import {
   remoteLoginDeploymentCopy,
   successfulDeploymentCopy,
   type DeploymentCredentialRepository,
+  planHostedInstall,
   type DeploymentEvent,
   type DeploymentIntent,
   type DeploymentPlan,
@@ -84,6 +85,8 @@ export interface McpDeployInput {
   rollback: boolean;
   yes: boolean;
   remoteLogin?: boolean;
+  /** Install into an existing Worker that imports `moodle-cli/worker` instead of deploying one. */
+  host?: { worker: string; url: string; basePath: string };
 }
 
 export interface McpCommandService {
@@ -183,6 +186,7 @@ class DefaultMcpCommandService implements McpCommandService {
     // Every step here waits on Wrangler, Cloudflare, or Moodle, so the terminal reports
     // the running step instead of staying blank until the whole run finishes.
     await this.prepareToolchain(input.yes);
+    if (input.host) return this.deployIntoHost(input, input.host);
     const theme = this.theme();
     const progress = this.progress();
     try {
@@ -245,6 +249,93 @@ class DefaultMcpCommandService implements McpCommandService {
       return await this.deploymentSuccess(identity, events, status);
     } finally {
       // A failure must not leave a half-drawn spinner in front of the error message.
+      progress.clear();
+    }
+  }
+
+  private async deployIntoHost(input: McpDeployInput, host: NonNullable<McpDeployInput["host"]>): Promise<McpCommandOutput> {
+    if (input.repair || input.rotateToken || input.rotateKey || input.rollback) {
+      throw new UsageError("--host-worker cannot be combined with --repair, --rotate-token, --rotate-key or --rollback.");
+    }
+    const theme = this.theme();
+    const progress = this.progress();
+    try {
+      progress.begin("Reading Cloudflare account and deployment state");
+      const identity = await this.resolveDeploymentIdentity(input.yes);
+      const plan = planHostedInstall({
+        profile: identity.profile,
+        accountId: identity.accountId,
+        hostWorker: host.worker,
+        hostUrl: host.url,
+        basePath: host.basePath,
+        moodleOrigin: identity.moodleOrigin,
+        releaseDigest: await this.releaseDigest(),
+        remoteLogin: input.remoteLogin,
+      }, await this.receipts.read(identity.profile));
+      const fragment = JSON.stringify(plan.wranglerFragment, null, 2);
+      const summary = {
+        operation: plan.operation,
+        hostWorker: plan.intent.hostWorker,
+        accountId: plan.intent.accountId,
+        endpoint: plan.endpoint,
+        secretNames: plan.secretNames,
+        wranglerFragment: plan.wranglerFragment,
+      };
+      if (input.dryRun) {
+        return {
+          data: summary,
+          text: [
+            theme.subject("Moodle MCP host install plan"),
+            `  ${theme.dim("Operation:")} ${plan.operation}`,
+            `  ${theme.dim("Host Worker:")} ${theme.key(plan.intent.hostWorker)} ${theme.dim("(secrets only; its code is not deployed)")}`,
+            `  ${theme.dim("Endpoint:")} ${theme.target(plan.endpoint)}`,
+            `  ${theme.dim("Secrets:")} ${plan.secretNames.join(", ")}`,
+            "",
+            theme.subject("Add to the host's wrangler config"),
+            fragment,
+          ].join("\n"),
+          next: [`moodle mcp deploy --host-worker ${plan.intent.hostWorker} --host-url ${plan.intent.hostUrl} --base-path ${plan.intent.basePath}`],
+        };
+      }
+
+      const result = { serving: false, moodleUser: null as string | null };
+      const events: DeploymentEvent[] = [];
+      for await (const event of this.deployment(false).installIntoHost(plan, result)) {
+        events.push(event);
+        if (event.status === "started") progress.begin(formatOnboardingStage(event.stageId, "pending", theme));
+        else if (event.status === "completed") progress.end(formatOnboardingStage(event.stageId, "completed", theme));
+        else if (event.status === "skipped") progress.end(formatOnboardingStage(event.stageId, "skipped", theme));
+        else progress.clear();
+      }
+      if (result.serving && input.remoteLogin) {
+        progress.begin("Opening a sign-in window");
+        return await this.remoteLoginSuccess(identity, events);
+      }
+      const mcpUrl = `${plan.endpoint}/mcp`;
+      const lines = result.serving
+        ? [
+            theme.tone("success", "Moodle MCP is ready inside the host Worker."),
+            "",
+            theme.subject("Endpoint"),
+            `  ${theme.key(mcpUrl)}`,
+            "",
+            theme.subject("Moodle"),
+            `  ${theme.dim("User:")} ${result.moodleUser ?? "Unknown Moodle user"}`,
+          ]
+        : [
+            theme.tone("warning", `Secrets are in ${plan.intent.hostWorker}, but it does not serve ${plan.endpoint} yet.`),
+            "",
+            theme.subject("Add to the host's wrangler config, then deploy the host"),
+            fragment,
+            "",
+            `${theme.dim("Then run")} ${theme.key(input.remoteLogin ? "moodle mcp pair" : "moodle mcp login")} ${theme.dim("to finish.")}`,
+          ];
+      return {
+        data: { events, ...summary, serving: result.serving },
+        text: lines.join("\n"),
+        next: result.serving ? ["moodle mcp status", "moodle mcp pair"] : [input.remoteLogin ? "moodle mcp pair" : "moodle mcp login", "moodle mcp status"],
+      };
+    } finally {
       progress.clear();
     }
   }
@@ -404,7 +495,7 @@ class DefaultMcpCommandService implements McpCommandService {
       text: [
         row("Moodle MCP", managed.readiness),
         ...(managed.sessionRenewal ? [`  ${theme.dim(managed.sessionRenewal === "mobile_token" ? "renews itself with a Moodle mobile token" : "needs a new sign-in when Moodle signs you out")}`] : []),
-        row("Worker", managed.worker?.workerName ?? "not deployed"),
+        row("Worker", managed.worker ? `${managed.worker.workerName}${receipt?.host ? ` (host Worker, ${receipt.host.basePath})` : ""}` : "not deployed"),
         row("Credentials", credentialsState),
         row("Renewal", managed.renewalInstalled ? "installed" : "missing"),
         ...(managed.renewalInstalled && job ? [`  ${theme.dim(`${job.schedule}; you only hear from it when Moodle signs you out`)}`] : []),
@@ -910,7 +1001,8 @@ class DefaultMcpCommandService implements McpCommandService {
   private async remoteWorkerBehindLocal(profile: string): Promise<boolean> {
     try {
       const receipt = await this.receipts.read(profile);
-      if (!receipt) return false;
+      // A host Worker updates by bumping its own moodle-cli dependency, not through this CLI.
+      if (!receipt || receipt.host) return false;
       return receipt.releaseDigest !== (await this.releaseDigest());
     } catch {
       return false;
@@ -1025,7 +1117,9 @@ function renewalRunText(lastRun: { at: string; state: string; reasonCode: string
 }
 
 function remoteLoginUrl(pairing: WorkerPairing): string {
-  const url = new URL("/oauth/login", pairing.authorizationServer);
+  // The issuer carries the host's mount path when the server is embedded, so append
+  // rather than resolve against it.
+  const url = new URL(`${pairing.authorizationServer.replace(/\/+$/u, "")}/oauth/login`);
   url.searchParams.set("pairing", pairing.code);
   return url.toString();
 }

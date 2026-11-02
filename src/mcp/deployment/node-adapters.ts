@@ -34,6 +34,7 @@ import {
   type WorkerPairing,
   type WorkerSmokeResult,
 } from "./managed-deployment.js";
+import type { HostSecretUploader } from "./hosted-install.js";
 
 const MODERN_MCP_VERSION = "2026-07-28";
 
@@ -120,7 +121,7 @@ export interface CloudflareDevicePrompt {
   code: string;
 }
 
-export class NodeWranglerDeploymentAdapter implements WranglerDeploymentAdapter {
+export class NodeWranglerDeploymentAdapter implements WranglerDeploymentAdapter, HostSecretUploader {
   readonly atomicSecrets = true;
   private readonly wranglerBinPath?: string;
   private readonly runner: DeploymentCommandRunner;
@@ -332,6 +333,26 @@ export class NodeWranglerDeploymentAdapter implements WranglerDeploymentAdapter 
       throw new DeploymentApplyError("REMOVAL_SCOPE_MISMATCH", "The Worker removal receipt is invalid");
     }
     await this.wrangler(["delete", input.workerName, "--force"], input.accountId);
+  }
+
+  async hostExists(accountId: string, workerName: string): Promise<boolean> {
+    return (await this.inspect(accountId, workerName)) !== null;
+  }
+
+  async putHostSecrets(input: { accountId: string; workerName: string; secrets: Record<string, string> }): Promise<void> {
+    const directory = await mkdtemp(join(tmpdir(), "moodle-mcp-host-"));
+    try {
+      await chmod(directory, 0o700);
+      const secretsFile = join(directory, "secrets.json");
+      // A config of our own keeps Wrangler from reading whatever wrangler.toml sits in
+      // the current directory, which may well be the host's.
+      const configFile = join(directory, "wrangler.json");
+      await writeFile(secretsFile, `${JSON.stringify(input.secrets)}\n`, { mode: 0o600 });
+      await writeFile(configFile, `${JSON.stringify({ name: input.workerName, account_id: input.accountId })}\n`, { mode: 0o600 });
+      await this.wrangler(["secret", "bulk", secretsFile, "--name", input.workerName, "--config", configFile], input.accountId);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
   }
 
   /** Locate or download Wrangler now, so a first-use prompt is not drawn under a spinner later. */
@@ -598,10 +619,21 @@ export class FetchManagedWorkerClient implements ManagedWorkerClient {
 
   async checkRemoteLogin(input: ReleaseCheck): Promise<void> {
     await this.checkRelease(input);
-    const response = await this.fetchImpl(endpointUrl(input.endpoint, "/oauth/login"));
+    const loginUrl = endpointUrl(input.endpoint, "/oauth/login");
+    const response = await this.fetchImpl(loginUrl);
     // The start page only carries its form when the Worker has a browser binding.
-    if (!response.ok || !(await response.text()).includes('action="/oauth/login"')) {
+    if (!response.ok || !(await response.text()).includes(`action="${new URL(loginUrl).pathname}"`)) {
       throw new DeploymentApplyError("REMOTE_LOGIN_UNAVAILABLE", "The Worker cannot start a remote Moodle sign-in");
+    }
+  }
+
+  async isServing(endpoint: string): Promise<boolean> {
+    try {
+      const response = await this.fetchImpl(endpointUrl(endpoint, "/healthz"));
+      const body = await safeJson(response);
+      return response.ok && isRecord(body) && body.serviceId === "moodle-mcp";
+    } catch {
+      return false;
     }
   }
 

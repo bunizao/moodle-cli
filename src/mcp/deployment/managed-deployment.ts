@@ -5,6 +5,7 @@ import {
   type DeploymentCredentials,
 } from "../credentials/index.js";
 import { CliError } from "../../errors.js";
+import { applyHostedInstall, type HostedInstallPlan, type HostedInstallResult, type HostSecretUploader } from "./hosted-install.js";
 import { ONBOARDING_STAGES, type OnboardingStageId } from "./onboarding.js";
 
 export const MANAGED_SESSION_ENDPOINTS = {
@@ -62,6 +63,9 @@ export interface DeploymentReceipt {
   // What the scheduled renewal last found, so status can show the job is alive
   // without anyone opening its log.
   lastRenewal?: { at: string; state: string; reasonCode: string | null };
+  // Set when the server runs inside another Worker (`deploy --host-worker`). That
+  // Worker's owner deploys and rolls it back, so this CLI never touches its versions.
+  host?: { url: string; basePath: string };
 }
 
 export interface DeploymentPlan {
@@ -150,6 +154,8 @@ export interface WranglerDeploymentAdapter {
     workerName: string;
     deploymentId: string;
   }): Promise<void>;
+  hostExists?: HostSecretUploader["hostExists"];
+  putHostSecrets?: HostSecretUploader["putHostSecrets"];
 }
 
 export interface ReleaseMaterializer {
@@ -178,6 +184,8 @@ export interface ManagedWorkerClient {
   // Readiness only reflects the last scheduled keepalive touch, so callers that need
   // the live Moodle verdict ask the Worker to touch the session first.
   touchSession(input: { endpoint: string; sessionSyncToken: string }): Promise<void>;
+  /** Whether the endpoint answers as this server, without credentials. */
+  isServing?(endpoint: string): Promise<boolean>;
   runSmoke(input: {
     endpoint: string;
     mcpAccessToken: string;
@@ -268,7 +276,7 @@ export interface RemovalResult {
 }
 
 export class DeploymentPlanError extends Error {
-  constructor(public readonly code: "INVALID_INTENT" | "WORKER_NAME_CONFLICT", message: string) {
+  constructor(public readonly code: "INVALID_INTENT" | "WORKER_NAME_CONFLICT" | "HOSTED_PROFILE", message: string) {
     super(message);
     this.name = "DeploymentPlanError";
   }
@@ -292,6 +300,9 @@ export class ManagedMcpDeployment {
       this.dependencies.credentials.read(intent.profile),
     ]);
 
+    if (storedReceipt?.host) {
+      throw new DeploymentPlanError("HOSTED_PROFILE", `Profile ${intent.profile} runs inside Worker ${storedReceipt.workerName}; rerun with --host-worker, or run moodle mcp remove first`);
+    }
     const matchingReceipt = receiptMatchesIntent(storedReceipt, intent) ? storedReceipt : null;
     const replacingExisting = remote !== null && !isOwnedByProfile(remote, matchingReceipt, intent.profile);
     if (replacingExisting && !intent.replaceExisting) {
@@ -587,6 +598,17 @@ export class ManagedMcpDeployment {
     }
   }
 
+  installIntoHost(plan: HostedInstallPlan, result: HostedInstallResult): AsyncIterable<DeploymentEvent> {
+    const { wrangler } = this.dependencies;
+    if (!wrangler.hostExists || !wrangler.putHostSecrets) {
+      throw new DeploymentApplyError("HOST_INSTALL_UNSUPPORTED", "This Wrangler adapter cannot write secrets into another Worker");
+    }
+    return applyHostedInstall(plan, {
+      ...this.dependencies,
+      wrangler: { checkAccess: (id) => wrangler.checkAccess(id), hostExists: wrangler.hostExists.bind(wrangler), putHostSecrets: wrangler.putHostSecrets.bind(wrangler) },
+    }, result);
+  }
+
   async inspect(profile: string): Promise<DeploymentStatus> {
     const receipt = await this.dependencies.receipts.read(profile);
     if (!receipt) {
@@ -605,7 +627,7 @@ export class ManagedMcpDeployment {
     }
 
     const [worker, credentials, renewalInstalled, clientsConnected] = await Promise.all([
-      this.dependencies.wrangler.inspect(receipt.accountId, receipt.workerName),
+      this.remoteWorker(receipt),
       // Reporting is not worth failing over: an unopenable keychain is reported, not thrown.
       readCredentialsForReport(() => this.dependencies.credentials.read(profile)),
       this.dependencies.renewal.inspect(profile),
@@ -651,7 +673,7 @@ export class ManagedMcpDeployment {
       throw new DeploymentApplyError("DEPLOYMENT_NOT_FOUND", `No Moodle MCP deployment exists for profile ${profile}`);
     }
     const [worker, credentials, session] = await Promise.all([
-      this.dependencies.wrangler.inspect(receipt.accountId, receipt.workerName),
+      this.remoteWorker(receipt),
       this.dependencies.credentials.read(profile),
       this.dependencies.sessions.loadValidated(profile, receipt.moodleOrigin),
     ]);
@@ -674,7 +696,8 @@ export class ManagedMcpDeployment {
       await this.dependencies.receipts.write({ ...receipt, sessionRevision: upload.revision });
       await this.reconcileLocalIntegrations(profile);
       return { status: "ready", versionId: worker.productionVersionId };
-    } catch {
+    } catch (error) {
+      if (receipt.host) throw error;
       if (!receipt.recoveryVersionId && !worker.previousHealthyVersionId) {
         throw new DeploymentApplyError("RECOVERY_FAILED", "No previous healthy Worker release is available");
       }
@@ -709,6 +732,9 @@ export class ManagedMcpDeployment {
     const receipt = await this.dependencies.receipts.read(profile);
     if (!receipt) {
       throw new DeploymentApplyError("DEPLOYMENT_NOT_FOUND", `No Moodle MCP deployment exists for profile ${profile}`);
+    }
+    if (receipt.host) {
+      throw new DeploymentApplyError("HOSTED_ROLLBACK", `Moodle MCP runs inside Worker ${receipt.workerName}; roll back that Worker with its own tooling`);
     }
     const [worker, credentials] = await Promise.all([
       this.dependencies.wrangler.inspect(receipt.accountId, receipt.workerName),
@@ -759,6 +785,11 @@ export class ManagedMcpDeployment {
       await this.removeLocalState(profile);
       return { profile, workerRemoved: false, localStateRemoved: true };
     }
+    if (receipt.host) {
+      // The host Worker belongs to someone else's deployment; only this machine's state goes.
+      await this.removeLocalState(profile);
+      return { profile, workerRemoved: false, localStateRemoved: true };
+    }
     const worker = await this.dependencies.wrangler.inspect(receipt.accountId, receipt.workerName);
     if (worker && worker.ownershipTag !== receipt.deploymentId) {
       throw new DeploymentApplyError(
@@ -779,6 +810,21 @@ export class ManagedMcpDeployment {
     await this.dependencies.credentials.delete(profile);
     await this.dependencies.receipts.delete(profile);
     return { profile, workerRemoved: worker !== null, localStateRemoved: true };
+  }
+
+  // A hosted server has no Worker of its own to inspect; the receipt is all there is.
+  private async remoteWorker(receipt: DeploymentReceipt): Promise<RemoteWorker | null> {
+    if (!receipt.host) return this.dependencies.wrangler.inspect(receipt.accountId, receipt.workerName);
+    return {
+      accountId: receipt.accountId,
+      workerName: receipt.workerName,
+      deploymentId: receipt.deploymentId,
+      ownershipTag: receipt.deploymentId,
+      productionEndpoint: receipt.productionEndpoint,
+      productionVersionId: receipt.productionVersionId,
+      previousHealthyVersionId: null,
+      releaseDigest: receipt.releaseDigest,
+    };
   }
 
   private async resolveCredentials(
@@ -937,6 +983,14 @@ function previousDigest(digest: string | undefined): Pick<DeploymentReceipt, "pr
 // the next deploy re-upload instead of treating the Worker as already current.
 function swappedDigests(receipt: DeploymentReceipt): Pick<DeploymentReceipt, "releaseDigest" | "previousReleaseDigest" | "restoredRelease"> {
   return { releaseDigest: receipt.previousReleaseDigest ?? "", previousReleaseDigest: receipt.releaseDigest, restoredRelease: true };
+}
+
+export function stageEvent(
+  stageId: OnboardingStageId,
+  status: DeploymentEvent["status"],
+  details?: Pick<DeploymentEvent, "moodleUser">,
+): DeploymentEvent {
+  return { ...event(stageId, status), ...details };
 }
 
 function started(stageId: OnboardingStageId): DeploymentEvent {
