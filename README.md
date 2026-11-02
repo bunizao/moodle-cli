@@ -75,6 +75,55 @@ Ask in plain language, or run the command yourself:
 - [Troubleshooting](https://unicorn.tuuhub.com/docs/moodle/troubleshooting) and [uninstalling](https://unicorn.tuuhub.com/docs/moodle/uninstall)
 - [Command reference](https://unicorn.tuuhub.com/docs/moodle/reference)
 
+## Embedding in another Worker
+
+A Cloudflare Worker you already run can serve Moodle MCP under a path, so nobody deploys a second Worker. Import `moodle-cli/worker`:
+
+```ts
+import { createMoodleHandler, callMoodleTool, type MoodleWorkerEnv } from "moodle-cli/worker";
+export { SessionBroker, AuthBroker } from "moodle-cli/worker";
+
+const moodle = createMoodleHandler({ basePath: "/moodle" });
+
+export default {
+  async fetch(request: Request, env: MoodleWorkerEnv & YourEnv) {
+    // Before your own routes: it also answers /.well-known/oauth-*/moodle...
+    const response = await moodle.fetch(request, env);
+    if (response) return response;
+    // Your routes. Read Moodle without going through MCP:
+    const due = await callMoodleTool(env.SESSION_BROKER, "due", { days: 14 });
+    return due.isError ? Response.json(due.structuredContent.error, { status: 502 }) : Response.json(due.structuredContent);
+  },
+};
+```
+
+Add these to the host's wrangler config. `compatibility_date` must be 2024-04-03 or later for Durable Object RPC, and the host needs `@cloudflare/workers-types` for `cloudflare:workers`.
+
+```json
+{
+  "durable_objects": {
+    "bindings": [
+      { "name": "SESSION_BROKER", "class_name": "SessionBroker" },
+      { "name": "AUTH_BROKER", "class_name": "AuthBroker" }
+    ]
+  },
+  "migrations": [{ "tag": "moodle-cli-v1", "new_sqlite_classes": ["SessionBroker", "AuthBroker"] }],
+  "browser": { "binding": "BROWSER" }
+}
+```
+
+Append the migration to any the host already has. Deploy the host, then put the secrets into it and sign in:
+
+```bash
+moodle mcp deploy --host-worker <name> --host-url https://<host> --base-path /moodle
+```
+
+That uploads secrets into the named Worker and never deploys code to it. `moodle mcp login`, `pair`, `status` and session renewal then target `https://<host>/moodle`; connect clients to `https://<host>/moodle/mcp`. `moodle mcp remove` forgets the local profile and leaves the host alone.
+
+The secrets use the names in `MoodleWorkerEnv`, such as `MOODLE_ORIGIN`, `EXPECTED_HOST` and `SESSION_ENCRYPTION_KEY`. A host that already binds one of those names for itself will have it overwritten.
+
+`callMoodleTool` returns the same envelope as the MCP tool: `{ isError: false, structuredContent }`, or `{ isError: true, structuredContent: { error: { type, message } } }` with `type` such as `MOODLE_AUTH_REQUIRED`. `unitsOutputSchema`, `dueOutputSchema` and `toolContracts` are the zod contracts behind it.
+
 ## Contributing
 
 Bug reports from real Moodle sites help most: run `moodle coverage --json` and attach the output. Read [CONTRIBUTING.md](CONTRIBUTING.md) before a pull request and [SECURITY.md](SECURITY.md) for vulnerabilities. Everyone follows the [Code of Conduct](CODE_OF_CONDUCT.md).
