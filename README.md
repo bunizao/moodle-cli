@@ -124,6 +124,13 @@ The secrets use the names in `MoodleWorkerEnv`, such as `MOODLE_ORIGIN`, `EXPECT
 
 `callMoodleTool` returns the same envelope as the MCP tool: `{ isError: false, structuredContent }`, or `{ isError: true, structuredContent: { error: { type, message } } }` with `type` such as `MOODLE_AUTH_REQUIRED`. `unitsOutputSchema`, `dueOutputSchema` and `toolContracts` are the zod contracts behind it.
 
+Two helpers manage the stored session without reaching into the broker:
+
+- `sessionState(env)` returns `{ state: "live" | "expiring" | "expired" | "missing", renewable, expiresAt, lastErrorCode }`. `renewable` means a mobile token is stored and Moodle has not refused it. It never carries cookie or token values.
+- `adoptSession(env, { cookieName, cookieValue })` hands over a MoodleSession cookie the host obtained itself. Moodle validates it as it would a browser sign-in, it must belong to the account already signed in, and the broker captures a mobile token from it. The result's `status` is `adopted` (with `moodleUserId` and `expiresAt`), `owner_mismatch`, `no_owner` (nobody has signed in through `/moodle/oauth/login` yet), `invalid` or `unreachable`.
+
+Both talk to the broker instance named `BROKER_INSTANCE_NAME`, as the routes do.
+
 ## Contributing
 
 Bug reports from real Moodle sites help most: run `moodle coverage --json` and attach the output. Read [CONTRIBUTING.md](CONTRIBUTING.md) before a pull request and [SECURITY.md](SECURITY.md) for vulnerabilities. Everyone follows the [Code of Conduct](CODE_OF_CONDUCT.md).

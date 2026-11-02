@@ -4,11 +4,11 @@ import type { z } from "zod";
 import { intentContracts, type ToolName } from "../intent-contract.js";
 import type { BrowserRunBinding } from "./browser-login.js";
 import { BROKER_INSTANCE_NAME, createWorkerRouter, durableObjectMcpServer, type WorkerEnv } from "./http.js";
-import type { CallToolOptions, MoodleToolResult } from "./session-broker.js";
+import type { AdoptSessionResult, CallToolOptions, SessionCookie, MoodleToolResult, SessionState } from "./session-broker.js";
 
 export { AuthBroker } from "./auth-broker.js";
 export { SessionBroker } from "./session-broker.js";
-export type { CallToolOptions, MoodleToolError, MoodleToolResult } from "./session-broker.js";
+export type { AdoptSessionResult, CallToolOptions, SessionCookie, MoodleToolError, MoodleToolResult, SessionState } from "./session-broker.js";
 export { BROKER_INSTANCE_NAME };
 
 /**
@@ -77,7 +77,16 @@ export type MoodleDueItem = NonNullable<DueOutput["due"]>[number];
 
 export interface SessionBrokerNamespaceLike {
   idFromName(name: string): unknown;
-  get(id: unknown): { callTool(name: string, args?: Record<string, unknown>, options?: CallToolOptions): Promise<unknown> };
+  get(id: unknown): {
+    callTool(name: string, args?: Record<string, unknown>, options?: CallToolOptions): Promise<unknown>;
+    adoptCookie(cookie: SessionCookie): Promise<AdoptSessionResult>;
+    sessionState(): Promise<SessionState>;
+  };
+}
+
+// Every route and helper talks to the one broker instance named BROKER_INSTANCE_NAME.
+function broker(namespace: SessionBrokerNamespaceLike) {
+  return namespace.get(namespace.idFromName(BROKER_INSTANCE_NAME));
 }
 
 /**
@@ -91,6 +100,20 @@ export async function callMoodleTool<N extends ReadToolName>(
   args: ToolInput<N>,
   options: CallToolOptions = {},
 ): Promise<MoodleToolResult<ToolOutput<N>>> {
-  const stub = namespace.get(namespace.idFromName(BROKER_INSTANCE_NAME));
-  return await stub.callTool(name, args as Record<string, unknown>, options) as MoodleToolResult<ToolOutput<N>>;
+  return await broker(namespace).callTool(name, args as Record<string, unknown>, options) as MoodleToolResult<ToolOutput<N>>;
+}
+
+/**
+ * Hands the broker a MoodleSession cookie the host obtained itself. Moodle validates
+ * it as for a browser sign-in, it must belong to the account already signed in, and
+ * the broker captures a mobile token from it for later renewal. Never a first sign-in:
+ * a broker with no owner answers no_owner.
+ */
+export async function adoptSession(env: { SESSION_BROKER: SessionBrokerNamespaceLike }, cookie: SessionCookie): Promise<AdoptSessionResult> {
+  return await broker(env.SESSION_BROKER).adoptCookie({ cookieName: cookie.cookieName, cookieValue: cookie.cookieValue });
+}
+
+/** Whether the stored session is usable and can renew itself. Never carries cookie or token values. */
+export async function sessionState(env: { SESSION_BROKER: SessionBrokerNamespaceLike }): Promise<SessionState> {
+  return await broker(env.SESSION_BROKER).sessionState();
 }

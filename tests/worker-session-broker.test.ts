@@ -8,6 +8,7 @@ import {
   type SessionBrokerEnv,
   type SessionCandidate,
 } from "../src/worker/index.js";
+import { adoptSession, sessionState } from "../src/worker/library.js";
 
 const MOODLE_ORIGIN = "https://lms.example.edu";
 const OLD_COOKIE = "old-cookie-secret";
@@ -814,5 +815,94 @@ describe("SessionBroker.callTool", () => {
 
     expect(result.isError).toBe(true);
     expect(result.structuredContent).toMatchObject({ error: { type: expect.any(String), message: expect.any(String) } });
+  });
+});
+
+describe("adoptSession and sessionState", () => {
+  const MOBILE_TOKEN = { wstoken: "ws-secret", privatetoken: "private-secret" };
+
+  // The runtime hands back an RPC stub; calling the object directly is the same contract.
+  function hostEnv(broker: SessionBroker) {
+    return { SESSION_BROKER: { idFromName: (name: string) => name, get: () => broker } };
+  }
+
+  function upstream(moodleUserId = 42): MoodleSessionUpstream {
+    return {
+      validate: vi.fn(async () => ({ valid: true as const, sesskey: "sess", moodleUserId, remainingSeconds: 7200 })),
+      touch: vi.fn(async () => ({ alive: true, remainingSeconds: 7200 })),
+      captureMobileToken: vi.fn(async () => MOBILE_TOKEN),
+    };
+  }
+
+  it("reports a broker without a session as missing", async () => {
+    const broker = new SessionBroker(state(), env(), { upstream: upstream(), now: () => 1_000 });
+    expect(await sessionState(hostEnv(broker))).toEqual({ state: "missing", renewable: false, expiresAt: null, lastErrorCode: null });
+  });
+
+  it("refuses a first sign-in, so only a claimed browser sign-in can choose the owner", async () => {
+    const broker = new SessionBroker(state(), env(), { upstream: upstream(), now: () => 1_000 });
+    expect(await adoptSession(hostEnv(broker), { cookieName: "MoodleSession", cookieValue: NEW_COOKIE })).toEqual({ status: "no_owner" });
+    expect((await sessionState(hostEnv(broker))).state).toBe("missing");
+  });
+
+  it("adopts a cookie for the same account and captures a mobile token", async () => {
+    const check = upstream();
+    let now = 1_000;
+    const broker = new SessionBroker(state(), env(), { upstream: check, now: () => now });
+    expect((await putSession(broker, candidate(OLD_COOKIE, null))).status).toBe(201);
+    now = 2_000_000;
+
+    const adopted = await adoptSession(hostEnv(broker), { cookieName: "MoodleSession", cookieValue: NEW_COOKIE });
+
+    expect(adopted).toEqual({ status: "adopted", moodleUserId: 42, expiresAt: new Date(now + 7200 * 1000).toISOString() });
+    expect(check.validate).toHaveBeenLastCalledWith(expect.objectContaining({ moodleOrigin: MOODLE_ORIGIN, cookieValue: NEW_COOKIE }));
+    const status = await sessionState(hostEnv(broker));
+    expect(status).toEqual({ state: "live", renewable: true, expiresAt: adopted.status === "adopted" ? adopted.expiresAt : null, lastErrorCode: null });
+    expect(JSON.stringify(status)).not.toMatch(/secret/u);
+  });
+
+  it("refuses a cookie for another Moodle account and keeps the stored session", async () => {
+    const check = upstream();
+    const broker = new SessionBroker(state(), env(), { upstream: check, now: () => 1_000 });
+    expect((await putSession(broker, candidate(OLD_COOKIE, null))).status).toBe(201);
+    vi.mocked(check.validate).mockResolvedValueOnce({ valid: true, sesskey: "other", moodleUserId: 99, remainingSeconds: 7200 });
+
+    expect(await adoptSession(hostEnv(broker), { cookieName: "MoodleSession", cookieValue: NEW_COOKIE })).toEqual({ status: "owner_mismatch" });
+    expect((await sessionState(hostEnv(broker))).state).toBe("live");
+  });
+
+  it("reports a cookie Moodle rejects, a malformed one and an unreachable Moodle without storing them", async () => {
+    const check = upstream();
+    const broker = new SessionBroker(state(), env(), { upstream: check, now: () => 1_000 });
+    expect((await putSession(broker, candidate(OLD_COOKIE, null))).status).toBe(201);
+
+    vi.mocked(check.validate).mockResolvedValueOnce({ valid: false, code: "SESSION_EXPIRED" });
+    expect(await adoptSession(hostEnv(broker), { cookieName: "MoodleSession", cookieValue: NEW_COOKIE })).toEqual({ status: "invalid" });
+    expect(await adoptSession(hostEnv(broker), { cookieName: "Other", cookieValue: NEW_COOKIE })).toEqual({ status: "invalid" });
+    expect(await adoptSession(hostEnv(broker), { cookieName: "MoodleSession", cookieValue: "a;b" })).toEqual({ status: "invalid" });
+    vi.mocked(check.validate).mockRejectedValueOnce(new Error("offline"));
+    expect(await adoptSession(hostEnv(broker), { cookieName: "MoodleSession", cookieValue: NEW_COOKIE })).toEqual({ status: "unreachable" });
+  });
+
+  it("reports expiring and expired sessions and a refused mobile token", async () => {
+    let now = 1_000;
+    const check = upstream();
+    vi.mocked(check.captureMobileToken!).mockResolvedValue(null);
+    const broker = new SessionBroker(state(), env(), { upstream: check, now: () => now });
+    expect((await putSession(broker, candidate(OLD_COOKIE, null))).status).toBe(201);
+
+    now += (7200 - 10 * 60) * 1000;
+    expect(await sessionState(hostEnv(broker))).toMatchObject({ state: "expiring", renewable: false });
+    now += 20 * 60 * 1000;
+    expect(await sessionState(hostEnv(broker))).toMatchObject({ state: "expired", renewable: false });
+  });
+
+  it("reports an unreadable session as expired without throwing", async () => {
+    const storage = new MemoryStorage();
+    const writer = new SessionBroker(state(storage), env("key-a"), { upstream: upstream(), now: () => 1_000 });
+    expect((await putSession(writer, candidate(OLD_COOKIE, null))).status).toBe(201);
+    const reader = new SessionBroker(state(storage), env("key-b"), { upstream: upstream(), now: () => 1_000 });
+
+    expect(await sessionState(hostEnv(reader))).toEqual({ state: "expired", renewable: false, expiresAt: null, lastErrorCode: "SESSION_DECRYPTION_FAILED" });
   });
 });

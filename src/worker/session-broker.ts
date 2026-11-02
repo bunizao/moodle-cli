@@ -119,6 +119,31 @@ export type MoodleToolResult<T = Record<string, unknown>> =
   | { isError: false; structuredContent: T }
   | { isError: true; structuredContent: { error: MoodleToolError } };
 
+export interface SessionCookie {
+  /** MoodleSession, or MoodleSession plus the site's suffix. */
+  cookieName: string;
+  cookieValue: string;
+}
+
+export type AdoptSessionResult =
+  | { status: "adopted"; moodleUserId: number; expiresAt: string | null }
+  /** The cookie belongs to a different Moodle account than the one this broker serves. */
+  | { status: "owner_mismatch" }
+  /** No owner has signed in yet; the first session must come from a claimed sign-in. */
+  | { status: "no_owner" }
+  /** Moodle rejected the cookie, or it is malformed. */
+  | { status: "invalid" }
+  /** Moodle could not be reached to check the cookie; the stored session is untouched. */
+  | { status: "unreachable" };
+
+export interface SessionState {
+  state: "live" | "expiring" | "expired" | "missing";
+  /** A mobile token is stored and Moodle has not refused it, so the broker can mint a new cookie by itself. */
+  renewable: boolean;
+  expiresAt: string | null;
+  lastErrorCode: string | null;
+}
+
 export interface CallToolOptions {
   /** Where the owner signs in to Moodle; auth errors point there instead of at the CLI. */
   signInUrl?: string;
@@ -157,7 +182,7 @@ export class SessionBroker extends DurableObject<SessionBrokerEnv> {
     if (url.pathname === "/mcp" && request.method === "POST") return this.handleMcp(request);
     if (url.pathname === "/readyz" && request.method === "GET") return this.ready();
     if (url.pathname === "/session" && request.method === "PUT") return this.replaceSession(request);
-    if (url.pathname === "/session/adopt" && request.method === "POST") return this.adoptSession(request);
+    if (url.pathname === "/session/adopt" && request.method === "POST") return this.handleAdopt(request);
     if (url.pathname === "/session/touch" && request.method === "POST") return this.touchNow();
     return problemResponse(404, "NOT_FOUND", "Not Found", "The requested session route does not exist.");
   }
@@ -206,6 +231,42 @@ export class SessionBroker extends DurableObject<SessionBrokerEnv> {
     } catch {
       return toolFailure("SESSION_UNAVAILABLE", "The encrypted session could not be read. Restore its encryption key before retrying.");
     }
+  }
+
+  // RPC for a host that obtained a cookie by its own means. Same checks as a browser
+  // sign-in: Moodle validates it, the account must match, and a mobile token is captured.
+  async adoptCookie(cookie: SessionCookie): Promise<AdoptSessionResult> {
+    const candidate = { moodleOrigin: this.env.MOODLE_ORIGIN, cookieName: cookie?.cookieName, cookieValue: cookie?.cookieValue, expectedRevision: null };
+    if (!isSessionCandidate(candidate)) return { status: "invalid" };
+    const result = await this.admitSession(candidate, (current) => current ? "ok" : "owner_claim_required");
+    if (result === "identity_mismatch") return { status: "owner_mismatch" };
+    if (result === "owner_claim_required") return { status: "no_owner" };
+    if (result === "unreachable") return { status: "unreachable" };
+    if (typeof result === "string") return { status: "invalid" };
+    const expiresAt = result.session.expires_at;
+    return { status: "adopted", moodleUserId: result.session.moodle_user_id, expiresAt: expiresAt === null ? null : new Date(expiresAt).toISOString() };
+  }
+
+  // A read-only view for deciding whether to sign in again; never carries cookie or token values.
+  async sessionState(): Promise<SessionState> {
+    let session: StoredSession | undefined;
+    try {
+      session = await this.loadSession();
+    } catch {
+      return { state: "expired", renewable: false, expiresAt: null, lastErrorCode: "SESSION_DECRYPTION_FAILED" };
+    }
+    if (!session) return { state: "missing", renewable: false, expiresAt: null, lastErrorCode: null };
+    const now = this.now();
+    const expires = session.expires_at;
+    const state = session.last_error_code === "SESSION_EXPIRED" || (expires !== null && expires <= now)
+      ? "expired"
+      : expires !== null && expires - now <= SESSION_EXPIRING_MS ? "expiring" : "live";
+    return {
+      state,
+      renewable: Boolean(session.mobile_token) && !session.mobile_token_failed,
+      expiresAt: expires === null ? null : new Date(expires).toISOString(),
+      lastErrorCode: session.last_error_code,
+    };
   }
 
   private async mcpServer(signInUrl: string | undefined, initializing: boolean) {
@@ -297,7 +358,7 @@ export class SessionBroker extends DurableObject<SessionBrokerEnv> {
 
   // A browser sign-in replaces whatever session is stored, so it skips the revision
   // check. The account check still applies, and only a claimed sign-in may be first.
-  private async adoptSession(request: Request): Promise<Response> {
+  private async handleAdopt(request: Request): Promise<Response> {
     const input = await readJson(request);
     if (input instanceof Response) return input;
     const candidate = isRecord(input)
@@ -314,21 +375,51 @@ export class SessionBroker extends DurableObject<SessionBrokerEnv> {
     input: SessionCandidate,
     admit: (current: StoredSession | undefined) => "ok" | "revision_conflict" | "owner_claim_required",
   ): Promise<Response> {
+    const result = await this.admitSession(input, admit);
+    if (result === "unreachable") {
+      return problemResponse(503, "MOODLE_UNREACHABLE", "Service Unavailable", "Moodle could not be reached to validate the session candidate.");
+    }
+    if (result === "invalid") {
+      return problemResponse(422, "SESSION_CANDIDATE_INVALID", "Unprocessable Content", "Moodle rejected the session candidate.");
+    }
+    if (result === "identity_unknown") {
+      return problemResponse(422, "SESSION_IDENTITY_UNKNOWN", "Unprocessable Content", "Moodle did not provide a valid account identity.");
+    }
+    if (result === "identity_mismatch") {
+      return problemResponse(409, "SESSION_ACCOUNT_MISMATCH", "Conflict", "This Worker belongs to another Moodle account. Create a separate deployment for that account.");
+    }
+    if (result === "revision_conflict") {
+      return problemResponse(409, "SESSION_REVISION_CONFLICT", "Conflict", "The remote Moodle session has a newer revision.");
+    }
+    if (result === "owner_claim_required") {
+      return problemResponse(403, "OWNER_CLAIM_REQUIRED", "Forbidden", "This Worker has no owner yet. Sign in with the pairing code from the deployment.");
+    }
+    return Response.json(
+      { status: "accepted", revision: result.session.revision, lastVerifiedAt: new Date(result.session.last_verified_at).toISOString(), renewal: result.renewal },
+      { status: 201, headers: { "cache-control": "no-store" } },
+    );
+  }
+
+  // Validates against Moodle, stores the session and captures a mobile token, so every
+  // way a cookie arrives (CLI upload, browser sign-in, host RPC) is checked the same.
+  private async admitSession(
+    input: SessionCandidate,
+    admit: (current: StoredSession | undefined) => "ok" | "revision_conflict" | "owner_claim_required",
+  ): Promise<
+    | { session: StoredSession; renewal: "mobile_token" | "sign_in" }
+    | "unreachable" | "invalid" | "identity_unknown" | "identity_mismatch" | "revision_conflict" | "owner_claim_required"
+  > {
     let validation: SessionValidationSuccess | SessionValidationFailure;
     try {
       validation = await this.dependencies.upstream.validate(input);
     } catch {
-      return problemResponse(503, "MOODLE_UNREACHABLE", "Service Unavailable", "Moodle could not be reached to validate the session candidate.");
+      return "unreachable";
     }
-    if (!validation.valid) {
-      return problemResponse(422, "SESSION_CANDIDATE_INVALID", "Unprocessable Content", "Moodle rejected the session candidate.");
-    }
+    if (!validation.valid) return "invalid";
 
     const now = this.now();
     const nextAlarmAt = nextTouchAt(now, validation.remainingSeconds);
-    if (!Number.isSafeInteger(validation.moodleUserId) || validation.moodleUserId <= 0) {
-      return problemResponse(422, "SESSION_IDENTITY_UNKNOWN", "Unprocessable Content", "Moodle did not provide a valid account identity.");
-    }
+    if (!Number.isSafeInteger(validation.moodleUserId) || validation.moodleUserId <= 0) return "identity_unknown";
     const result = await this.transaction(async (storage) => {
       const current = await this.readSession(storage);
       const admission = admit(current);
@@ -355,21 +446,10 @@ export class SessionBroker extends DurableObject<SessionBrokerEnv> {
       return session;
     });
 
-    if (result === "identity_mismatch") {
-      return problemResponse(409, "SESSION_ACCOUNT_MISMATCH", "Conflict", "This Worker belongs to another Moodle account. Create a separate deployment for that account.");
-    }
-    if (result === "revision_conflict") {
-      return problemResponse(409, "SESSION_REVISION_CONFLICT", "Conflict", "The remote Moodle session has a newer revision.");
-    }
-    if (result === "owner_claim_required") {
-      return problemResponse(403, "OWNER_CLAIM_REQUIRED", "Forbidden", "This Worker has no owner yet. Sign in with the pairing code from the deployment.");
-    }
+    if (typeof result === "string") return result;
     await this.state.storage.setAlarm(nextAlarmAt);
     const renewal = result.mobile_token || await this.captureMobileToken(result) ? "mobile_token" : "sign_in";
-    return Response.json(
-      { status: "accepted", revision: result.revision, lastVerifiedAt: new Date(result.last_verified_at).toISOString(), renewal },
-      { status: 201, headers: { "cache-control": "no-store" } },
-    );
+    return { session: result, renewal };
   }
 
   private async touchNow(): Promise<Response> {
