@@ -21,6 +21,7 @@ import {
   type CachedSession,
 } from "./session-cache.js";
 import { isSiteLoginUrl, siteRootPath, siteUrl } from "./site-root.js";
+import { sessionFromOkta, type OktaSourceOptions } from "./okta.js";
 
 export interface MoodleSessionCookie {
   name: string;
@@ -44,7 +45,7 @@ export interface AuthenticatedSession extends SessionValidation {
 export type CookieProvider = (baseUrl: string, options: AuthOptions) => Promise<MoodleSessionCookie[]>;
 export type SessionValidator = (baseUrl: string, cookie: MoodleSessionCookie) => Promise<SessionValidation | null>;
 
-export interface AuthOptions {
+export interface AuthOptions extends OktaSourceOptions {
   env?: Record<string, string | undefined>;
   fetch?: typeof fetch;
   validateSession?: SessionValidator;
@@ -148,6 +149,17 @@ export async function getAuthenticatedSession(
   if (browserSession) {
     await refreshSessionCache(baseUrl, browserSession.cookie, browserSession.context, options);
     return { baseUrl, cookie: browserSession.cookie, ...browserSession.context, fromCache: false };
+  }
+
+  // Opt-in, and silent for anyone without `okta` installed.
+  const oktaSession = await sessionFromOkta(loginUrl(baseUrl), options, (cookies) => firstValidSession(
+    baseUrl,
+    matchingMoodleSessionCookies(cookies.map((cookie) => ({ ...cookie, source: "okta" })), baseUrl),
+    validate,
+  ));
+  if (oktaSession) {
+    await refreshSessionCache(baseUrl, oktaSession.cookie, oktaSession.context, options);
+    return { baseUrl, cookie: oktaSession.cookie, ...oktaSession.context, fromCache: false };
   }
 
   // Every command lands here, so it must name the same cause as auth login does.

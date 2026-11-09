@@ -59,7 +59,7 @@ Generated from `moodle commands --json` for version 0.12.0.
 | `moodle auth` | Session and keepalive utilities. |  |  | no |
 | `moodle auth status` | Show cached session freshness and keepalive state. |  | --pretty<br>--json<br>--yaml<br>--table<br>--fields <fields> | no |
 | `moodle auth site` | Find the Moodle site from any page address and save it; with no address, show the saved one. | [address] | --pretty<br>--json<br>--yaml<br>--table<br>--fields <fields> | no |
-| `moodle auth login` | Sign in through a browser the CLI controls, then capture the session. |  | --paste<br>--pretty<br>--json<br>--yaml<br>--table<br>--fields <fields> | no |
+| `moodle auth login` | Sign in through a browser the CLI controls, then capture the session. |  | --paste<br>--okta<br>--no-okta<br>--pretty<br>--json<br>--yaml<br>--table<br>--fields <fields> | no |
 | `moodle auth keepalive` | Renew the Moodle session once; used by the background keepalive agent. |  | --no-renew<br>--pretty<br>--json<br>--yaml<br>--table<br>--fields <fields> | no |
 | `moodle auth keepalive install` | Install a macOS launch agent that renews the session periodically. |  | --interval <minutes><br>--pretty<br>--json<br>--yaml<br>--table<br>--fields <fields> | yes |
 | `moodle auth keepalive uninstall` | Remove the keepalive launch agent. |  | --pretty<br>--json<br>--yaml<br>--table<br>--fields <fields> | yes |

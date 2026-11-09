@@ -37,6 +37,20 @@ The CLI tries these session sources:
 When no browser cookie is readable, `moodle auth login` opens the Moodle sign-in
 page and waits for the session to appear.
 
+Sites behind Okta can use the okta-auth CLI (`okta`) instead, only when the user
+asks for it:
+
+```bash
+moodle auth login --okta     # sign in through okta now and on every later renewal
+moodle auth login --no-okta  # stop using okta
+```
+
+Without `--okta`, an installed `okta` is only read: its saved session for the site
+is reused, and `okta login` never runs. Background renewal never runs `okta login`.
+When Okta rejects the password, the CLI stops calling `okta login` until the user
+fixes the credentials (`okta config`) and runs `moodle auth login --okta` again;
+repeated attempts can lock the account.
+
 Validate setup with:
 
 ```bash

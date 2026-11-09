@@ -49,7 +49,8 @@ import { fileURLToPath } from "node:url";
 import { createMoodleClient, type MoodleClient } from "./client.js";
 import { refreshLatestVersion, runUpdate, startupUpdateNotice } from "./update-check.js";
 import { isNewerVersion } from "./update-core.js";
-import { correctBaseUrl, loadConfig, saveBaseUrl } from "./config.js";
+import { correctBaseUrl, loadConfig, saveBaseUrl, saveConfigSetting } from "./config.js";
+import { OKTA_CONFIG_KEY } from "./okta.js";
 import { discoverSite } from "./site-discovery.js";
 import { AuthError, CliError, ConfigError, MoodleAPIError, UsageError, asNetworkError } from "./errors.js";
 import {
@@ -1067,17 +1068,22 @@ export function buildProgram(io: CliIO = {}): Command {
     auth
       .command("login")
       .description("Sign in through a browser the CLI controls, then capture the session.")
-      .option("--paste", "Take the MoodleSession cookie from a prompt instead of the browser store."),
+      .option("--paste", "Take the MoodleSession cookie from a prompt instead of the browser store.")
+      .option("--okta", "Sign in through the okta-auth CLI (okta) from now on, for sites behind Okta.")
+      .option("--no-okta", "Stop using the okta-auth CLI as a session source."),
   ).action(
-    async (options: OutputCommandOptions & { paste?: boolean }) => {
+    async (options: OutputCommandOptions & { paste?: boolean; okta?: boolean }) => {
       const baseUrl = await runtime.baseUrl();
       const humanOutput = outputFormat(options, stdout) === "table";
+      // Remembered, so later commands renew through okta (or never touch it) too.
+      if (options.okta !== undefined) await saveConfigSetting(OKTA_CONFIG_KEY, options.okta, configOptions());
       const session = options.paste
         ? await pasteLogin(baseUrl, humanOutput)
         : await getAuthenticatedSessionWithBrowserFallback(baseUrl, {
           env: io.env,
           fetch: io.fetchImpl,
           homeDir: io.homeDir,
+          okta: options.okta,
           captureMobileToken: true,
           onBrowserOpened: humanOutput
             ? () => stderr.write("A browser window opened. Sign in there; I'll capture the session automatically.\n")

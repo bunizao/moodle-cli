@@ -159,9 +159,19 @@ function describeSite(site: DiscoveredSite): string {
 
 /** Save a site root to the config file in use (or the user config), keeping other settings. */
 export async function saveBaseUrl(baseUrl: string, options: ConfigOptions = {}): Promise<string> {
+  return saveConfigSetting("base_url", normalizeBaseUrl(baseUrl), options);
+}
+
+/** Read one top-level setting from the config file in use; undefined when it is not set. */
+export async function readConfigSetting(key: string, options: ConfigOptions = {}): Promise<unknown> {
+  return (await loadExistingConfig(options)).config[key];
+}
+
+/** Save one top-level setting to the config file in use (or the user config), keeping the rest. */
+export async function saveConfigSetting(key: string, value: unknown, options: ConfigOptions = {}): Promise<string> {
   const loaded = await loadExistingConfig(options);
   const path = loaded.path ?? userConfigPath(options.homeDir);
-  await saveConfigFile(path, { ...loaded.config, base_url: normalizeBaseUrl(baseUrl) }, options);
+  await saveConfigFile(path, { ...loaded.config, [key]: value }, options);
   return path;
 }
 
