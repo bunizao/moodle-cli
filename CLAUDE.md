@@ -85,7 +85,7 @@ Credentials live in the OS keychain via `src/mcp/credentials/`. Session renewal 
 
 - English comments only; explain why, not what. Conventional Commits.
 - Never log or print the Moodle session cookie, `sesskey`, or an MCP access token.
-- Browser-cookie auth is the general path. Do not add site-specific or provider-specific login flows.
+- Browser-cookie auth is the general path. Do not add site-specific or provider-specific login flows. The one exception is Okta, and only opt-in: `okta.ts` runs the okta-auth CLI when the user enabled it or `okta` already holds a session for the site, and the Worker signs in through okta-auth only when its `OKTA_*` secrets are set (`src/worker/okta-sign-in.ts`). Generic hints and errors stay Okta-free.
 - No new dependencies without a concrete reason.
 
 ## Release Notes

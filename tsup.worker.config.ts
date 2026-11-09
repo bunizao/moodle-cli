@@ -9,7 +9,7 @@ export default defineConfig({
   target: "es2022",
   platform: "browser",
   bundle: true,
-  noExternal: ["node-html-parser", "zod", "@bunizao/cli-kit"],
+  noExternal: ["node-html-parser", "zod", "@bunizao/cli-kit", "okta-auth-cli"],
   clean: false,
   sourcemap: false,
   dts: false,
