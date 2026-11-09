@@ -311,7 +311,9 @@ export class ManagedMcpDeployment {
 
     const rotate = (intent.rotateToken === true || intent.rotateKey === true) && credentials !== null;
     const releaseChanged = existing?.releaseDigest !== intent.releaseDigest || receipt?.restoredRelease === true;
-    const uploadCandidate = !existing || replacingExisting || releaseChanged || intent.repair === true || rotate;
+    // Secrets only reach Cloudflare with a release, so --okta needs one even when
+    // the code has not changed.
+    const uploadCandidate = !existing || replacingExisting || releaseChanged || intent.repair === true || rotate || intent.okta === true;
     return {
       intent: { ...intent },
       operation: !existing ? "create" : rotate ? "rotate" : uploadCandidate ? "update" : "reconcile",
