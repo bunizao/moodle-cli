@@ -45,6 +45,12 @@ moodle auth login --okta     # sign in through okta now and on every later renew
 moodle auth login --no-okta  # stop using okta
 ```
 
+The first `--okta` for a site asks the user to confirm it, because okta sends the
+Okta password and one-time code to whichever identity provider that site redirects
+to. Never pass `--yes` for the user here; let them confirm in their own terminal.
+The choice is saved for that site's origin in the user's own config file only; a
+project's `config.yaml` or `MOODLE_CONFIG` cannot turn okta on.
+
 Without `--okta`, an installed `okta` is only read: its saved session for the site
 is reused, and `okta login` never runs. Background renewal never runs `okta login`.
 When Okta rejects the password, the CLI stops calling `okta login` until the user

@@ -3,7 +3,7 @@ import { mkdir, rm, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
-import { readConfigSetting } from "./config.js";
+import { readUserConfigSetting, saveUserConfigSetting, type ConfigOptions } from "./config.js";
 import { CACHE_DIR_NAME } from "./constants.js";
 import { AuthError, UsageError } from "./errors.js";
 import { findExecutable } from "./mcp/self-command.js";
@@ -27,7 +27,7 @@ export interface OktaCli {
 }
 
 export interface OktaSourceOptions {
-  /** True after `moodle auth login --okta` or `okta: true` in the config; false opts out. */
+  /** True for `moodle auth login --okta`, false for --no-okta; otherwise the saved consent for the site decides. */
   okta?: boolean;
   /** Injected in tests; null means `okta` is not installed. */
   oktaCli?: OktaCli | null;
@@ -54,7 +54,7 @@ export async function sessionFromOkta<T>(
   options: OktaSourceOptions,
   accept: (cookies: OktaCookie[]) => Promise<T | null>,
 ): Promise<T | null> {
-  const enabled = options.okta ?? await enabledInConfig(options);
+  const enabled = options.okta ?? await oktaConsent(url, options);
   if (enabled === false) return null;
   const cli = options.oktaCli === undefined ? defaultOktaCli(options.env) : options.oktaCli;
   if (!cli) return null;
@@ -92,13 +92,35 @@ const OKTA_REJECTED_HINT = [
   "Not retried automatically: repeated attempts can lock the account.",
 ].join("\n");
 
-async function enabledInConfig(options: OktaSourceOptions): Promise<boolean | undefined> {
+/**
+ * The user's Okta choice for the site's origin: true signs in through okta, false
+ * never consults it. okta sends the Okta password and one-time code to whichever
+ * identity provider the site redirects to, so consent names one origin and lives
+ * only in the user's own config file, never in a project's config.yaml.
+ */
+export async function oktaConsent(url: string, options: ConfigOptions): Promise<boolean | undefined> {
   try {
-    const value = await readConfigSetting(OKTA_CONFIG_KEY, { env: options.env, cwd: options.cwd, homeDir: options.homeDir });
-    return typeof value === "boolean" ? value : undefined;
+    const sites = await readUserConfigSetting(OKTA_CONFIG_KEY, options);
+    const choice = isRecord(sites) ? sites[new URL(url).origin] : undefined;
+    return typeof choice === "boolean" ? choice : undefined;
   } catch {
     return undefined;
   }
+}
+
+export async function saveOktaConsent(url: string, enabled: boolean, options: ConfigOptions): Promise<string> {
+  const sites = await readUserConfigSetting(OKTA_CONFIG_KEY, options).catch(() => undefined);
+  return saveUserConfigSetting(OKTA_CONFIG_KEY, { ...(isRecord(sites) ? sites : {}), [new URL(url).origin]: enabled }, options);
+}
+
+/** What the user agrees to the first time they turn okta on for a site. */
+export function oktaConsentSummary(url: string): string {
+  const origin = new URL(url).origin;
+  return [
+    `Sign in to ${origin} through okta from now on?`,
+    `okta sends your Okta username, password and one-time code to the identity provider ${origin} redirects to.`,
+    `Continue only if you trust ${origin}.`,
+  ].join("\n");
 }
 
 export function defaultOktaCli(env: Record<string, string | undefined> = process.env): OktaCli | null {

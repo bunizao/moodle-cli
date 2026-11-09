@@ -49,8 +49,8 @@ import { fileURLToPath } from "node:url";
 import { createMoodleClient, type MoodleClient } from "./client.js";
 import { refreshLatestVersion, runUpdate, startupUpdateNotice } from "./update-check.js";
 import { isNewerVersion } from "./update-core.js";
-import { correctBaseUrl, loadConfig, saveBaseUrl, saveConfigSetting } from "./config.js";
-import { OKTA_CONFIG_KEY } from "./okta.js";
+import { correctBaseUrl, loadConfig, saveBaseUrl } from "./config.js";
+import { oktaConsent, oktaConsentSummary, saveOktaConsent } from "./okta.js";
 import { discoverSite } from "./site-discovery.js";
 import { AuthError, CliError, ConfigError, MoodleAPIError, UsageError, asNetworkError } from "./errors.js";
 import {
@@ -1075,8 +1075,12 @@ export function buildProgram(io: CliIO = {}): Command {
     async (options: OutputCommandOptions & { paste?: boolean; okta?: boolean }) => {
       const baseUrl = await runtime.baseUrl();
       const humanOutput = outputFormat(options, stdout) === "table";
-      // Remembered, so later commands renew through okta (or never touch it) too.
-      if (options.okta !== undefined) await saveConfigSetting(OKTA_CONFIG_KEY, options.okta, configOptions());
+      // A project's config can point base_url anywhere, so the first --okta for a
+      // site is confirmed. The choice is remembered per site, in the user's config.
+      if (options.okta === true && await oktaConsent(baseUrl, configOptions()) !== true) {
+        if (!await confirm({ summary: oktaConsentSummary(baseUrl) }, { yes: Boolean(program.opts().yes), dryRun: false, interactive: human() })) return;
+      }
+      if (options.okta !== undefined) await saveOktaConsent(baseUrl, options.okta, configOptions());
       const session = options.paste
         ? await pasteLogin(baseUrl, humanOutput)
         : await getAuthenticatedSessionWithBrowserFallback(baseUrl, {
