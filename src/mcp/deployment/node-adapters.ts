@@ -11,6 +11,7 @@ import {
   getAuthenticatedSessionWithBrowserFallback,
   type BrowserLoginOptions,
 } from "../../auth.js";
+import { exportOktaSecrets, type OktaWorkerSecrets } from "../../okta.js";
 import { VERSION } from "../../version.js";
 import { DefaultClientIntegration, type DefaultConnectorOptions } from "../connectors/index.js";
 import { createDefaultCredentialStore, type DeploymentCredentials } from "../credentials/index.js";
@@ -377,9 +378,14 @@ export interface NodeReleaseMaterializerOptions {
   workerBundlePath: string;
   compatibilityDate: string;
   temporaryRoot?: string;
+  /** Reads the OKTA_* secrets for a deploy with --okta; `okta export` by default. */
+  oktaSecrets?: () => Promise<OktaWorkerSecrets>;
 }
 
 export class NodeReleaseMaterializer implements ReleaseMaterializer {
+  // Read once per deploy, even when a key rotation prepares a second release.
+  private okta: Promise<OktaWorkerSecrets> | undefined;
+
   constructor(private readonly options: NodeReleaseMaterializerOptions) {}
 
   async prepare(plan: DeploymentPlan, credentials: DeploymentCredentials): Promise<PreparedRelease> {
@@ -434,6 +440,12 @@ export class NodeReleaseMaterializer implements ReleaseMaterializer {
       && Number.isFinite(credentials.previousTokensExpireAt)
     ) {
       secrets.TOKEN_OVERLAP_EXPIRES_AT = String(credentials.previousTokensExpireAt);
+    }
+    // Wrangler keeps secrets a deploy leaves out, so later deploys without --okta
+    // keep these too.
+    if (plan.intent.okta) {
+      this.okta ??= (this.options.oktaSecrets ?? exportOktaSecrets)();
+      Object.assign(secrets, await this.okta);
     }
     await writeFile(wranglerConfigPath, `${JSON.stringify(config, null, 2)}\n`, { mode: 0o600 });
     await writeFile(secretsFilePath, `${JSON.stringify(secrets)}\n`, { mode: 0o600 });

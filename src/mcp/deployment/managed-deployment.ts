@@ -28,6 +28,9 @@ export interface DeploymentIntent {
   // Worker's remote browser instead, which is how a cloud session without a desktop
   // browser sets this up.
   remoteLogin?: boolean;
+  // Store okta's username, password and TOTP secret as Worker secrets, so the
+  // Worker signs in to Moodle through Okta by itself.
+  okta?: boolean;
 }
 
 export interface RemoteWorker {

@@ -43,6 +43,12 @@ export const ONBOARDING_COPY = {
     "",
     "The credentials will be stored in your operating system credential store. They will not appear in Wrangler arguments, logs, or project files.",
   ].join("\n"),
+  oktaSecrets: [
+    "--okta also stores your Okta username, password and TOTP secret (from okta export) as Worker secrets.",
+    "The Worker then signs in to Moodle by itself, but your university identity becomes only as safe as your Cloudflare account:",
+    "anyone who controls that account can read or replace the Worker and sign in as you, MFA included.",
+    "Remove them with: npx wrangler secret delete OKTA_PASSWORD --name <worker> (and OKTA_USERNAME, OKTA_TOTP_SECRET).",
+  ].join("\n"),
   noActiveSession: [
     "No active Moodle session was found.",
     "",

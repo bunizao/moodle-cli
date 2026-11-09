@@ -6,7 +6,7 @@ import { describe, expect, it, vi } from "vitest";
 import { authFailureHint, getAuthenticatedSession, type AuthOptions } from "../src/auth.js";
 import { readConfigSetting, saveConfigSetting } from "../src/config.js";
 import { AuthError } from "../src/errors.js";
-import { parseOktaCookies, type OktaCli, type OktaCookie } from "../src/okta.js";
+import { exportOktaSecrets, parseOktaCookies, parseOktaExport, type OktaCli, type OktaCookie } from "../src/okta.js";
 
 const BASE_URL = "https://learning.example.edu";
 const LOGIN_URL = `${BASE_URL}/login/index.php`;
@@ -170,5 +170,50 @@ describe("okta-auth CLI session source", () => {
 
     expect(await readConfigSetting("okta", { env: {}, cwd, homeDir: home })).toBe(true);
     expect(await readFile(join(home, ".config/moodle-cli/config.yaml"), "utf8")).toContain("base_url: https://learning.example.edu");
+  });
+});
+
+describe("okta export for Worker secrets", () => {
+  async function fakeExport(script: string[]): Promise<{ bin: string; log: string }> {
+    const bin = await mkdtemp(join(tmpdir(), "moodle-okta-export-"));
+    const log = join(bin, "calls.log");
+    await writeFile(join(bin, "okta"), ["#!/bin/sh", `echo "$*" >> "${log}"`, ...script, ""].join("\n"));
+    await chmod(join(bin, "okta"), 0o755);
+    return { bin, log };
+  }
+
+  it("runs okta export with stdout piped and returns the three secrets", async () => {
+    const { bin, log } = await fakeExport([
+      // okta refuses to print secrets to a terminal.
+      "[ -t 1 ] && exit 2",
+      `echo '{"OKTA_USERNAME": "student@example.edu", "OKTA_PASSWORD": "hunter2", "OKTA_TOTP_SECRET": "JBSWY3DPEHPK3PXP"}'`,
+    ]);
+
+    await expect(exportOktaSecrets({ PATH: bin })).resolves.toEqual({
+      OKTA_USERNAME: "student@example.edu",
+      OKTA_PASSWORD: "hunter2",
+      OKTA_TOTP_SECRET: "JBSWY3DPEHPK3PXP",
+    });
+    expect((await readFile(log, "utf8")).trim()).toBe("export --dangerously-print-password-and-totp-secret");
+  });
+
+  it("refuses partial output without repeating any of it", async () => {
+    const { bin } = await fakeExport([`echo '{"OKTA_USERNAME": "student@example.edu", "OKTA_PASSWORD": "hunter2"}'`]);
+
+    const error = await exportOktaSecrets({ PATH: bin }).catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(Error);
+    expect(`${(error as Error).message} ${(error as { hint?: string }).hint}`).not.toMatch(/hunter2|student@/);
+    expect((error as { hint?: string }).hint).toContain("okta setup");
+  });
+
+  it("says how to install okta when it is missing", async () => {
+    await expect(exportOktaSecrets({ PATH: await mkdtemp(join(tmpdir(), "moodle-no-okta-")) })).rejects.toThrow("--okta needs the okta command");
+  });
+
+  it("parses only a complete export", () => {
+    expect(parseOktaExport("not json")).toBeNull();
+    expect(parseOktaExport(JSON.stringify({ OKTA_USERNAME: "u", OKTA_PASSWORD: "p", OKTA_TOTP_SECRET: " " }))).toBeNull();
+    expect(parseOktaExport(JSON.stringify({ OKTA_USERNAME: "u", OKTA_PASSWORD: "p", OKTA_TOTP_SECRET: "t", EXTRA: "x" }))).toEqual({ OKTA_USERNAME: "u", OKTA_PASSWORD: "p", OKTA_TOTP_SECRET: "t" });
   });
 });

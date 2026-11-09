@@ -5,7 +5,7 @@ import { dirname, join } from "node:path";
 
 import { readConfigSetting } from "./config.js";
 import { CACHE_DIR_NAME } from "./constants.js";
-import { AuthError } from "./errors.js";
+import { AuthError, UsageError } from "./errors.js";
 import { findExecutable } from "./mcp/self-command.js";
 
 // The okta-auth CLI (`okta`) as an opt-in session source. It only helps sites
@@ -115,6 +115,45 @@ export function defaultOktaCli(env: Record<string, string | undefined> = process
       return result.code === 0 ? "ok" : "failed";
     },
   };
+}
+
+// The Worker secrets `okta export` prints, by the names the Worker reads.
+export const OKTA_WORKER_SECRETS = ["OKTA_USERNAME", "OKTA_PASSWORD", "OKTA_TOTP_SECRET"] as const;
+export type OktaWorkerSecrets = Record<(typeof OKTA_WORKER_SECRETS)[number], string>;
+
+/**
+ * The credentials okta holds, for `moodle mcp deploy --okta` to store as Worker
+ * secrets. stdout is a pipe, never a terminal, so okta agrees to print them;
+ * nothing it prints ends up in an error.
+ */
+export async function exportOktaSecrets(env: Record<string, string | undefined> = process.env): Promise<OktaWorkerSecrets> {
+  const executable = findExecutable("okta", env as NodeJS.ProcessEnv);
+  if (!executable) {
+    throw new UsageError("--okta needs the okta command from okta-auth-cli.", "Install it (npm install -g okta-auth-cli), run: okta setup, then deploy again.");
+  }
+  const result = await run(executable, ["export", "--dangerously-print-password-and-totp-secret"], COOKIES_TIMEOUT_MS);
+  const secrets = result.code === 0 ? parseOktaExport(result.stdout) : null;
+  if (!secrets) {
+    throw new UsageError("okta export did not print a username, password and TOTP secret.", "Run: okta setup, then deploy again.");
+  }
+  return secrets;
+}
+
+export function parseOktaExport(stdout: string): OktaWorkerSecrets | null {
+  let payload: unknown;
+  try {
+    payload = JSON.parse(stdout);
+  } catch {
+    return null;
+  }
+  if (!isRecord(payload)) return null;
+  const secrets: Partial<OktaWorkerSecrets> = {};
+  for (const name of OKTA_WORKER_SECRETS) {
+    const value = payload[name];
+    if (typeof value !== "string" || !value.trim()) return null;
+    secrets[name] = value;
+  }
+  return secrets as OktaWorkerSecrets;
 }
 
 /** Both CLIs: the Python one prints {cookies: [...]}, the TypeScript one a bare list. */

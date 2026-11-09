@@ -74,6 +74,29 @@ describe("NodeReleaseMaterializer", () => {
     await expect(stat(release.artifactDirectory)).rejects.toMatchObject({ code: "ENOENT" });
   });
 
+  it("adds okta's credentials to the secrets file only for a deploy with --okta, reading them once", async () => {
+    const root = await mkdtemp(join(tmpdir(), "moodle-release-okta-test-"));
+    const bundle = join(root, "worker.js");
+    await writeFile(bundle, "export default {};\n");
+    await writeFile(join(root, "recovery.js"), "export default {};\n");
+    const oktaSecrets = vi.fn(async () => ({ OKTA_USERNAME: "student@example.edu", OKTA_PASSWORD: "hunter2", OKTA_TOTP_SECRET: "JBSWY3DPEHPK3PXP" }));
+    const materializer = new NodeReleaseMaterializer({ workerBundlePath: bundle, compatibilityDate: "2026-08-09", temporaryRoot: root, oktaSecrets });
+    const credentials = { mcpAccessToken: "mcp-raw-token", sessionSyncToken: "sync-raw-token", sessionEncryptionKey: "encryption-raw-key" };
+
+    const plain = await materializer.prepare(PLAN, credentials);
+    expect(oktaSecrets).not.toHaveBeenCalled();
+    expect(await readFile(plain.secretsFilePath, "utf8")).not.toContain("OKTA_");
+
+    const okta = { ...PLAN, intent: { ...PLAN.intent, okta: true } };
+    const first = await materializer.prepare(okta, credentials);
+    const second = await materializer.prepare(okta, credentials);
+    expect(JSON.parse(await readFile(first.secretsFilePath, "utf8"))).toMatchObject({ OKTA_USERNAME: "student@example.edu", OKTA_PASSWORD: "hunter2", OKTA_TOTP_SECRET: "JBSWY3DPEHPK3PXP" });
+    expect(await readFile(second.secretsFilePath, "utf8")).toContain("OKTA_PASSWORD");
+    expect((await stat(first.secretsFilePath)).mode & 0o777).toBe(0o600);
+    expect(await readFile(first.wranglerConfigPath, "utf8")).not.toContain("hunter2");
+    expect(oktaSecrets).toHaveBeenCalledTimes(1);
+  });
+
   it("pins an existing deployment to its production and candidate hosts", async () => {
     const root = await mkdtemp(join(tmpdir(), "moodle-release-host-test-"));
     const bundle = join(root, "worker.js");

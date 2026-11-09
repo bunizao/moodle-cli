@@ -122,6 +122,26 @@ The connector stays connected without a session. When Moodle is not signed in or
 
 Never print or request the raw Moodle cookie, MCP access token, session sync token, or sesskey. An advanced operator may pipe a cookie directly to `moodle mcp session push --stdin`; do not place it in arguments or shell history.
 
+### Let the Worker sign in through Okta
+
+For a Moodle behind Okta, the Worker can sign in by itself when it holds the user's Okta username, password and TOTP secret as Worker secrets. Do this only when the user asks for it, and tell them first, plainly: their university identity then becomes only as safe as their Cloudflare account. Anyone who controls that account can read or replace the Worker and sign in as them, MFA included.
+
+With the okta-auth CLI set up (`okta setup`), deploy with `--okta`; it runs `okta export` and adds the three secrets to the same private upload as the Worker's own credentials:
+
+```bash
+moodle mcp deploy --okta
+```
+
+To add them to an existing Worker by hand instead, pipe the export straight into Wrangler; never write it to a file or print it:
+
+```bash
+okta export --dangerously-print-password-and-totp-secret | npx wrangler secret bulk --name WORKER_NAME
+```
+
+Later deploys keep the secrets. Remove them with `npx wrangler secret delete OKTA_USERNAME --name WORKER_NAME`, and the same for `OKTA_PASSWORD` and `OKTA_TOTP_SECRET`.
+
+The Worker signs in when the session is missing or expired, after the mobile token if it has one, and keeps Okta's device token and session, encrypted, between runs. It never retries a rejected password or one-time code, an MFA factor other than TOTP, or a sign-in to a different Moodle account; it stops until any of the three secrets changes. Network and Okta outages back off and stop after five failures in a row, until a session arrives some other way or a secret changes. `/readyz` then shows `renewal: "okta"` and an `okta:sign-in` check: `OKTA_READY`, or `OKTA_CREDENTIALS_REJECTED`, `OKTA_PASSCODE_REJECTED`, `OKTA_MFA_UNSUPPORTED`, `OKTA_INVALID_SECRET`, `OKTA_ACCOUNT_MISMATCH` or `OKTA_RETRIES_EXHAUSTED`.
+
 ### Managing private MCP access
 
 After upgrading from the original OAuth release, run `moodle mcp pair` again because old grants are invalidated. Use `moodle mcp clients --json` to inspect OAuth clients, `moodle mcp revoke CLIENT_ID` to remove one client, or `moodle mcp revoke --all` to close all OAuth access, pending authorizations, and pairing windows. These use the owner's protected sync credential.

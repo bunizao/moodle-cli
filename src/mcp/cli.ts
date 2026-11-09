@@ -84,6 +84,7 @@ export interface McpDeployInput {
   rollback: boolean;
   yes: boolean;
   remoteLogin?: boolean;
+  okta?: boolean;
 }
 
 export interface McpCommandService {
@@ -208,6 +209,7 @@ class DefaultMcpCommandService implements McpCommandService {
         rotateKey: input.rotateKey,
         dryRun: input.dryRun,
         remoteLogin: input.remoteLogin,
+        okta: input.okta,
       });
       if (input.dryRun) {
         return {

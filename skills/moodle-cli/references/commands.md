@@ -65,7 +65,7 @@ Generated from `moodle commands --json` for version 0.12.0.
 | `moodle auth keepalive uninstall` | Remove the keepalive launch agent. |  | --pretty<br>--json<br>--yaml<br>--table<br>--fields <fields> | yes |
 | `moodle auth keepalive status` | Show whether the keepalive launch agent is installed. |  | --pretty<br>--json<br>--yaml<br>--table<br>--fields <fields> | no |
 | `moodle mcp` | Deploy a private MCP Worker on Cloudflare; encrypted session storage and local renewal. Free-tier limits apply. |  |  | no |
-| `moodle mcp deploy` | Deploy or update the managed Moodle MCP server. |  | --pretty<br>--json<br>--yaml<br>--table<br>--fields <fields><br>--dry-run<br>--repair<br>--rotate-key<br>--rotate-token<br>--rollback<br>--remote-login | yes |
+| `moodle mcp deploy` | Deploy or update the managed Moodle MCP server. |  | --pretty<br>--json<br>--yaml<br>--table<br>--fields <fields><br>--dry-run<br>--repair<br>--rotate-key<br>--rotate-token<br>--rollback<br>--remote-login<br>--okta | yes |
 | `moodle mcp status` | Show local and remote Moodle MCP readiness. |  | --pretty<br>--json<br>--yaml<br>--table<br>--fields <fields><br>--verbose<br>--logs | no |
 | `moodle mcp login` | Acquire and upload a fresh Moodle session. |  | --pretty<br>--json<br>--yaml<br>--table<br>--fields <fields> | yes |
 | `moodle mcp connect` | Connect a supported MCP client. | [client] | --pretty<br>--json<br>--yaml<br>--table<br>--fields <fields><br>--mode <mode><br>--show-token | yes |
