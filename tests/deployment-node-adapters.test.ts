@@ -511,6 +511,12 @@ describe("FetchManagedWorkerClient", () => {
       .resolves.toEqual({ status: "warn", reasonCode: "SESSION_EXPIRING", revision: 12, renewal: "mobile_token" });
     await expect(legacy.getReadiness({ endpoint: "https://worker.example", sessionSyncToken: "sync-token" }))
       .resolves.toEqual({ status: "pass", reasonCode: null, revision: null });
+    const okta = new FetchManagedWorkerClient(vi.fn(async () => Response.json({
+      status: "pass",
+      checks: { "moodle:session": [{ status: "pass", code: "SESSION_VALID", revision: 3, renewal: "okta" }] },
+    })) as unknown as typeof fetch);
+    await expect(okta.getReadiness({ endpoint: "https://worker.example", sessionSyncToken: "sync-token" }))
+      .resolves.toMatchObject({ renewal: "okta" });
   });
 
   it("retries transient route propagation during release smoke checks", async () => {

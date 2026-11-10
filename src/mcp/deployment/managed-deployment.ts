@@ -87,8 +87,9 @@ export interface WorkerReadiness {
   status: "pass" | "warn" | "fail";
   reasonCode: string | null;
   revision: number | null;
-  // How the Worker brings an expired session back: itself, or through a new sign-in.
-  renewal?: "mobile_token" | "sign_in";
+  // How the Worker brings an expired session back: itself (a Moodle mobile token,
+  // or Okta with its OKTA_* secrets), or through a new sign-in.
+  renewal?: "mobile_token" | "okta" | "sign_in";
   sessionSchemaVersion?: number;
   encryptionKeyId?: string;
   credentialId?: string;
@@ -248,7 +249,7 @@ export interface DeploymentStatus {
   readiness: "pass" | "warn" | "fail" | "unknown";
   readinessReasonCode: string | null;
   sessionRevision: number | null;
-  sessionRenewal?: "mobile_token" | "sign_in";
+  sessionRenewal?: WorkerReadiness["renewal"];
   // The recovery release serves the session bridge with OAuth switched off, so a deploy that
   // failed after promoting it leaves hosted clients unable to sign in. Say so.
   recoveryActive: boolean;
