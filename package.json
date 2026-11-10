@@ -41,7 +41,7 @@
   "devDependencies": {
     "@playwright/test": "^1.63.0",
     "@types/node": "^24.0.10",
-    "okta-auth-cli": "git+file:///Users/tutu/Dev/okta-auth#4a6f4a6",
+    "okta-auth-cli": "0.3.0-rc.0",
     "tsup": "^8.5.0",
     "typescript": "^7.0.2",
     "vitest": "^5.0.0",
