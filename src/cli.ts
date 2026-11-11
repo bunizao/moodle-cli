@@ -1069,7 +1069,7 @@ export function buildProgram(io: CliIO = {}): Command {
       .command("login")
       .description("Sign in through a browser the CLI controls, then capture the session.")
       .option("--paste", "Take the MoodleSession cookie from a prompt instead of the browser store.")
-      .option("--okta", "Sign in through the okta-auth CLI (okta) from now on, for sites behind Okta.")
+      .option("--okta", "Sign in through the okta-auth CLI (okta-auth or okta) from now on, for sites behind Okta.")
       .option("--no-okta", "Stop using the okta-auth CLI as a session source."),
   ).action(
     async (options: OutputCommandOptions & { paste?: boolean; okta?: boolean }) => {

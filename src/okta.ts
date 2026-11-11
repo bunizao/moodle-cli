@@ -8,9 +8,9 @@ import { CACHE_DIR_NAME } from "./constants.js";
 import { AuthError, UsageError } from "./errors.js";
 import { findExecutable } from "./mcp/self-command.js";
 
-// The okta-auth CLI (`okta`) as an opt-in session source. It only helps sites
-// behind Okta, so it never runs unless the user asked for it, or `okta` is
-// installed and already holds a session for this site.
+// The okta-auth CLI as an opt-in session source. It only helps sites behind
+// Okta, so it never runs unless the user asked for it, or it is installed and
+// already holds a session for this site.
 
 export interface OktaCookie {
   name: string;
@@ -88,7 +88,7 @@ export async function sessionFromOkta<T>(
 }
 
 const OKTA_REJECTED_HINT = [
-  "Update the credentials okta uses (run: okta config), then run: moodle auth login --okta",
+  "Update the saved Okta login (run: okta-auth setup, or okta config with the Python CLI), then run: moodle auth login --okta",
   "Not retried automatically: repeated attempts can lock the account.",
 ].join("\n");
 
@@ -123,8 +123,20 @@ export function oktaConsentSummary(url: string): string {
   ].join("\n");
 }
 
+/**
+ * The Python okta-auth-cli installs `okta`, the npm one `okta-auth`. Python 0.3
+ * also installs an `okta-auth` MCP server, so `okta` goes first: `okta-auth` is
+ * only reached without Python, and then it is the npm CLI. Both take the same
+ * login, cookies and export arguments.
+ */
+function findOktaCli(env: Record<string, string | undefined>): string | undefined {
+  return findExecutable("okta", env as NodeJS.ProcessEnv) ?? findExecutable("okta-auth", env as NodeJS.ProcessEnv);
+}
+
+const OKTA_SETUP = "okta-auth setup (okta setup with the Python CLI)";
+
 export function defaultOktaCli(env: Record<string, string | undefined> = process.env): OktaCli | null {
-  const executable = findExecutable("okta", env as NodeJS.ProcessEnv);
+  const executable = findOktaCli(env);
   if (!executable) return null;
   return {
     async cookies(url) {
@@ -149,14 +161,21 @@ export type OktaWorkerSecrets = Record<(typeof OKTA_WORKER_SECRETS)[number], str
  * nothing it prints ends up in an error.
  */
 export async function exportOktaSecrets(env: Record<string, string | undefined> = process.env): Promise<OktaWorkerSecrets> {
-  const executable = findExecutable("okta", env as NodeJS.ProcessEnv);
+  const executable = findOktaCli(env);
   if (!executable) {
-    throw new UsageError("--okta needs the okta command from okta-auth-cli.", "Install it (npm install -g okta-auth-cli), run: okta setup, then deploy again.");
+    throw new UsageError("--okta needs okta-auth-cli (the okta-auth or okta command).", `Install it (npm install -g okta-auth-cli), run: ${OKTA_SETUP}, then deploy again.`);
   }
   const result = await run(executable, ["export", "--dangerously-print-password-and-totp-secret"], COOKIES_TIMEOUT_MS);
-  const secrets = result.code === 0 ? parseOktaExport(result.stdout) : null;
+  // okta-auth-cli before 0.3.0 has no export and exits with a usage error.
+  if (result.code !== 0) {
+    throw new UsageError(
+      "okta export failed.",
+      `It needs okta-auth-cli 0.3.0 or later (uv tool upgrade okta-auth-cli, or npm install -g okta-auth-cli) and a saved login. Run: ${OKTA_SETUP}, then deploy again.`,
+    );
+  }
+  const secrets = parseOktaExport(result.stdout);
   if (!secrets) {
-    throw new UsageError("okta export did not print a username, password and TOTP secret.", "Run: okta setup, then deploy again.");
+    throw new UsageError("okta export did not print a username, password and TOTP secret.", `Run: ${OKTA_SETUP}, then deploy again.`);
   }
   return secrets;
 }

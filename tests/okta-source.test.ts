@@ -6,7 +6,7 @@ import { describe, expect, it, vi } from "vitest";
 import { authFailureHint, getAuthenticatedSession, type AuthOptions } from "../src/auth.js";
 import { runCli } from "../src/cli.js";
 import { AuthError } from "../src/errors.js";
-import { exportOktaSecrets, oktaConsent, parseOktaCookies, parseOktaExport, saveOktaConsent, type OktaCli, type OktaCookie } from "../src/okta.js";
+import { defaultOktaCli, exportOktaSecrets, oktaConsent, parseOktaCookies, parseOktaExport, saveOktaConsent, type OktaCli, type OktaCookie } from "../src/okta.js";
 
 const BASE_URL = "https://learning.example.edu";
 const LOGIN_URL = `${BASE_URL}/login/index.php`;
@@ -217,11 +217,10 @@ describe("okta-auth CLI session source", () => {
 });
 
 describe("okta export for Worker secrets", () => {
-  async function fakeExport(script: string[]): Promise<{ bin: string; log: string }> {
+  async function fakeExport(script: string[], name = "okta"): Promise<{ bin: string; log: string }> {
     const bin = await mkdtemp(join(tmpdir(), "moodle-okta-export-"));
     const log = join(bin, "calls.log");
-    await writeFile(join(bin, "okta"), ["#!/bin/sh", `echo "$*" >> "${log}"`, ...script, ""].join("\n"));
-    await chmod(join(bin, "okta"), 0o755);
+    await fakeCommand(bin, name, [`echo "$*" >> "${log}"`, ...script]);
     return { bin, log };
   }
 
@@ -247,11 +246,31 @@ describe("okta export for Worker secrets", () => {
 
     expect(error).toBeInstanceOf(Error);
     expect(`${(error as Error).message} ${(error as { hint?: string }).hint}`).not.toMatch(/hunter2|student@/);
-    expect((error as { hint?: string }).hint).toContain("okta setup");
+    expect((error as { hint?: string }).hint).toContain("okta-auth setup");
   });
 
-  it("says how to install okta when it is missing", async () => {
-    await expect(exportOktaSecrets({ PATH: await mkdtemp(join(tmpdir(), "moodle-no-okta-")) })).rejects.toThrow("--okta needs the okta command");
+  it("runs the npm CLI's okta-auth when there is no okta", async () => {
+    const { bin, log } = await fakeExport([
+      `echo '{"OKTA_USERNAME": "student@example.edu", "OKTA_PASSWORD": "hunter2", "OKTA_TOTP_SECRET": "JBSWY3DPEHPK3PXP"}'`,
+    ], "okta-auth");
+
+    await expect(exportOktaSecrets({ PATH: bin })).resolves.toMatchObject({ OKTA_USERNAME: "student@example.edu" });
+    expect((await readFile(log, "utf8")).trim()).toBe("export --dangerously-print-password-and-totp-secret");
+  });
+
+  it("asks for okta-auth-cli 0.3.0 when export is unknown", async () => {
+    // okta-auth-cli 0.2.x: argparse rejects the subcommand.
+    const { bin } = await fakeExport(["echo 'okta: error: invalid choice: export' >&2", "exit 2"]);
+
+    const error = await exportOktaSecrets({ PATH: bin }).catch((caught: unknown) => caught);
+
+    expect((error as Error).message).toBe("okta export failed.");
+    expect((error as { hint?: string }).hint).toContain("okta-auth-cli 0.3.0 or later");
+    expect((error as { hint?: string }).hint).toContain("uv tool upgrade okta-auth-cli");
+  });
+
+  it("says how to install okta-auth-cli when neither command is there", async () => {
+    await expect(exportOktaSecrets({ PATH: await mkdtemp(join(tmpdir(), "moodle-no-okta-")) })).rejects.toThrow("--okta needs okta-auth-cli");
   });
 
   it("parses only a complete export", () => {
@@ -260,3 +279,31 @@ describe("okta export for Worker secrets", () => {
     expect(parseOktaExport(JSON.stringify({ OKTA_USERNAME: "u", OKTA_PASSWORD: "p", OKTA_TOTP_SECRET: "t", EXTRA: "x" }))).toEqual({ OKTA_USERNAME: "u", OKTA_PASSWORD: "p", OKTA_TOTP_SECRET: "t" });
   });
 });
+
+describe("finding the okta-auth CLI", () => {
+  const cookies = (from: string) => `echo '[{"name": "MoodleSession", "value": "from-${from}"}]'`;
+
+  it("uses the npm CLI's okta-auth when there is no okta", async () => {
+    const bin = await mkdtemp(join(tmpdir(), "moodle-okta-auth-"));
+    await fakeCommand(bin, "okta-auth", [cookies("okta-auth")]);
+
+    expect(await defaultOktaCli({ PATH: bin })?.cookies(BASE_URL)).toEqual([{ name: "MoodleSession", value: "from-okta-auth" }]);
+  });
+
+  it("prefers okta, because Python's okta-auth is an MCP server", async () => {
+    const bin = await mkdtemp(join(tmpdir(), "moodle-okta-both-"));
+    await fakeCommand(bin, "okta", [cookies("okta")]);
+    await fakeCommand(bin, "okta-auth", ["exit 1"]);
+
+    expect(await defaultOktaCli({ PATH: bin })?.cookies(BASE_URL)).toEqual([{ name: "MoodleSession", value: "from-okta" }]);
+  });
+
+  it("is absent when neither command is installed", async () => {
+    expect(defaultOktaCli({ PATH: await mkdtemp(join(tmpdir(), "moodle-okta-none-")) })).toBeNull();
+  });
+});
+
+async function fakeCommand(bin: string, name: string, script: string[]): Promise<void> {
+  await writeFile(join(bin, name), ["#!/bin/sh", ...script, ""].join("\n"));
+  await chmod(join(bin, name), 0o755);
+}
