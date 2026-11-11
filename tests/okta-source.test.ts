@@ -3,21 +3,21 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 
-import { authFailureHint, getAuthenticatedSession, type AuthOptions } from "../src/auth.js";
+import { authFailureHint, getAuthenticatedSession, getAuthenticatedSessionWithBrowserFallback, type AuthOptions } from "../src/auth.js";
 import { runCli } from "../src/cli.js";
 import { AuthError } from "../src/errors.js";
-import { defaultOktaCli, exportOktaSecrets, oktaConsent, parseOktaCookies, parseOktaExport, saveOktaConsent, type OktaCli, type OktaCookie } from "../src/okta.js";
+import { defaultOktaCli, exportOktaSecrets, OktaSignInFailed, oktaConsent, parseOktaCookies, parseOktaExport, saveOktaConsent, type OktaCli, type OktaCookie } from "../src/okta.js";
 
 const BASE_URL = "https://learning.example.edu";
 const LOGIN_URL = `${BASE_URL}/login/index.php`;
 
-function fakeOkta(saved: OktaCookie[], afterLogin: OktaCookie[] = [], outcome: "ok" | "rejected" | "failed" = "ok") {
+function fakeOkta(saved: OktaCookie[], afterLogin: OktaCookie[] = [], outcome: "ok" | "rejected" | "failed" = "ok", message?: string) {
   let current = saved;
   const cli = {
     cookies: vi.fn(async () => current),
     login: vi.fn(async () => {
       if (outcome === "ok") current = afterLogin;
-      return outcome;
+      return message ? { outcome, message } : { outcome };
     }),
   } satisfies OktaCli;
   return cli;
@@ -106,6 +106,47 @@ describe("okta-auth CLI session source", () => {
     const later = fakeOkta([], [moodleCookie("fresh")]);
     await getAuthenticatedSession(BASE_URL, { ...auth, oktaCli: later, noCache: true });
     expect(later.login).toHaveBeenCalledTimes(1);
+  });
+
+  it("fails with okta's reason instead of opening a browser when --okta cannot sign in", async () => {
+    const okta = fakeOkta([], [], "failed", "no credentials. Run `okta-auth setup` to save them.");
+    const cdpLogin = vi.fn(async () => ({ cookies: [], browserName: "Google Chrome" }));
+
+    const error = await getAuthenticatedSessionWithBrowserFallback(BASE_URL, {
+      ...await options({ oktaCli: okta, okta: true }),
+      findBrowser: async () => ({ name: "Google Chrome", path: "/Applications/Google Chrome.app" }),
+      cdpLogin,
+    }).catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(OktaSignInFailed);
+    expect((error as AuthError).message).toBe("Okta sign-in failed: no credentials. Run `okta-auth setup` to save them.");
+    expect((error as AuthError).hint).toContain("okta-auth setup");
+    expect((error as AuthError).hint).toContain("0.3.0");
+    expect(cdpLogin).not.toHaveBeenCalled();
+    expect(okta.login).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not open a browser after Okta rejects the password on --okta", async () => {
+    const cdpLogin = vi.fn(async () => ({ cookies: [], browserName: "Google Chrome" }));
+
+    await expect(getAuthenticatedSessionWithBrowserFallback(BASE_URL, {
+      ...await options({ oktaCli: fakeOkta([], [], "rejected"), okta: true }),
+      findBrowser: async () => ({ name: "Google Chrome", path: "/Applications/Google Chrome.app" }),
+      cdpLogin,
+    })).rejects.toThrow("Okta rejected the username or password.");
+    expect(cdpLogin).not.toHaveBeenCalled();
+  });
+
+  it("falls through quietly when okta login fails without --okta", async () => {
+    const okta = fakeOkta([], [], "failed", "no credentials.");
+    const auth = await options({ oktaCli: okta });
+    await saveOktaConsent(BASE_URL, true, auth);
+
+    const error = await getAuthenticatedSession(BASE_URL, auth).catch((caught: unknown) => caught);
+
+    expect(okta.login).toHaveBeenCalledTimes(1);
+    expect(error).toBeInstanceOf(AuthError);
+    expect(error).not.toBeInstanceOf(OktaSignInFailed);
   });
 
   it("never consults okta once the user opts out", async () => {
@@ -296,6 +337,27 @@ describe("finding the okta-auth CLI", () => {
     await fakeCommand(bin, "okta-auth", ["exit 1"]);
 
     expect(await defaultOktaCli({ PATH: bin })?.cookies(BASE_URL)).toEqual([{ name: "MoodleSession", value: "from-okta" }]);
+  });
+
+  it("reports the last stderr line of a failed login, without its query string", async () => {
+    const bin = await mkdtemp(join(tmpdir(), "moodle-okta-fail-"));
+    await fakeCommand(bin, "okta-auth", [
+      "echo 'Signing in to example.okta.com' >&2",
+      "echo 'no credentials for https://example.okta.com/app/sso?stateToken=secret-state' >&2",
+      "exit 1",
+    ]);
+
+    expect(await defaultOktaCli({ PATH: bin })?.login(LOGIN_URL)).toEqual({
+      outcome: "failed",
+      message: "no credentials for https://example.okta.com/app/sso",
+    });
+  });
+
+  it("reads exit 77 as a rejected password", async () => {
+    const bin = await mkdtemp(join(tmpdir(), "moodle-okta-77-"));
+    await fakeCommand(bin, "okta", ["exit 77"]);
+
+    expect(await defaultOktaCli({ PATH: bin })?.login(LOGIN_URL)).toEqual({ outcome: "rejected" });
   });
 
   it("is absent when neither command is installed", async () => {

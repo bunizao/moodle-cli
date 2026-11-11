@@ -56,7 +56,9 @@ Without `--okta`, an installed okta-auth CLI is only read: its saved session for
 the site is reused, and `login` never runs. Background renewal never runs `login`.
 When Okta rejects the password, the CLI stops calling `login` until the user fixes
 the credentials (`okta-auth setup`, or `okta config` with the Python CLI) and runs
-`moodle auth login --okta` again; repeated attempts can lock the account.
+`moodle auth login --okta` again; repeated attempts can lock the account. When
+`--okta` cannot sign in, the command stops with okta's reason instead of opening
+the browser; `moodle auth login --no-okta` signs in through the browser.
 
 Validate setup with:
 

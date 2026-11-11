@@ -22,9 +22,18 @@ export interface OktaCookie {
 export interface OktaCli {
   /** The cookies `okta` saved for the site; empty when it has none. */
   cookies(url: string): Promise<OktaCookie[]>;
-  /** Run a fresh `okta login`. "rejected" means Okta refused the username or password. */
-  login(url: string): Promise<"ok" | "rejected" | "failed">;
+  /**
+   * Run a fresh `okta login`. "rejected" means Okta refused the username or
+   * password; `message` is the CLI's last stderr line when it failed.
+   */
+  login(url: string): Promise<{ outcome: "ok" | "rejected" | "failed"; message?: string }>;
 }
+
+/**
+ * An Okta sign-in the user asked for that did not work. The browser sign-in must
+ * not swallow it: the user asked for Okta, and the reason is in this message.
+ */
+export class OktaSignInFailed extends AuthError {}
 
 export interface OktaSourceOptions {
   /** True for `moodle auth login --okta`, false for --no-okta; otherwise the saved consent for the site decides. */
@@ -76,16 +85,24 @@ export async function sessionFromOkta<T>(
     );
   }
 
-  const outcome = await cli.login(url);
+  const { outcome, message } = await cli.login(url);
   if (outcome === "rejected") {
     await markRejected(options.homeDir);
-    throw new AuthError("Okta rejected the username or password.", OKTA_REJECTED_HINT);
+    throw new OktaSignInFailed("Okta rejected the username or password.", OKTA_REJECTED_HINT);
   }
-  if (outcome === "failed") return null;
+  if (outcome === "failed") {
+    if (!explicit) return null;
+    throw new OktaSignInFailed(message ? `Okta sign-in failed: ${message}` : "Okta sign-in failed.", OKTA_FAILED_HINT);
+  }
   await clearRejected(options.homeDir);
   const fresh = await cli.cookies(url);
   return fresh.length ? accept(fresh) : null;
 }
+
+const OKTA_FAILED_HINT = [
+  "Check the saved Okta login (run: okta-auth setup, or okta setup with the Python CLI; okta-auth-cli 0.3.0 or later), then run: moodle auth login --okta",
+  "To sign in through the browser instead, run: moodle auth login --no-okta",
+].join("\n");
 
 const OKTA_REJECTED_HINT = [
   "Update the saved Okta login (run: okta-auth setup, or okta config with the Python CLI), then run: moodle auth login --okta",
@@ -145,8 +162,10 @@ export function defaultOktaCli(env: Record<string, string | undefined> = process
     },
     async login(url) {
       const result = await run(executable, ["login", url, "--json"], LOGIN_TIMEOUT_MS);
-      if (result.code === EXIT_CREDENTIALS_REJECTED) return "rejected";
-      return result.code === 0 ? "ok" : "failed";
+      if (result.code === EXIT_CREDENTIALS_REJECTED) return { outcome: "rejected" };
+      if (result.code === 0) return { outcome: "ok" };
+      const message = lastLine(result.stderr);
+      return message ? { outcome: "failed", message } : { outcome: "failed" };
     },
   };
 }
@@ -217,17 +236,29 @@ export function parseOktaCookies(stdout: string): OktaCookie[] {
 }
 
 // stdin is closed so a missing credential makes `okta` fail instead of waiting
-// on a prompt nobody sees; its progress lines on stderr are dropped so they never
-// mix into this CLI's own output.
-function run(command: string, args: string[], timeoutMs: number): Promise<{ code: number | null; stdout: string }> {
+// on a prompt nobody sees. stderr is captured, never shown, so its progress lines
+// stay out of this CLI's output; only its last line may explain a failure.
+function run(command: string, args: string[], timeoutMs: number): Promise<{ code: number | null; stdout: string; stderr: string }> {
   return new Promise((resolve) => {
-    const child = spawn(command, args, { stdio: ["ignore", "pipe", "ignore"], timeout: timeoutMs });
+    const child = spawn(command, args, { stdio: ["ignore", "pipe", "pipe"], timeout: timeoutMs });
     let stdout = "";
+    let stderr = "";
     child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
     child.stdout.on("data", (chunk: string) => { stdout += chunk; });
-    child.on("error", () => resolve({ code: null, stdout: "" }));
-    child.on("close", (code) => resolve({ code, stdout }));
+    child.stderr.on("data", (chunk: string) => { stderr = (stderr + chunk).slice(-4096); });
+    child.on("error", () => resolve({ code: null, stdout: "", stderr: "" }));
+    child.on("close", (code) => resolve({ code, stdout, stderr }));
   });
+}
+
+/**
+ * okta-auth keeps passwords, codes, tokens and cookie values out of its messages.
+ * Query strings are dropped anyway, in case an older CLI prints a full URL.
+ */
+function lastLine(text: string): string | undefined {
+  const line = text.split(/\r?\n/).map((part) => part.trim()).filter(Boolean).at(-1);
+  return line?.replace(/\?[^\s]+/g, "").slice(0, 300) || undefined;
 }
 
 function rejectedMarker(homeDir = homedir()): string {

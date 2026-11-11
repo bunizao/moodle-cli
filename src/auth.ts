@@ -21,7 +21,7 @@ import {
   type CachedSession,
 } from "./session-cache.js";
 import { isSiteLoginUrl, siteRootPath, siteUrl } from "./site-root.js";
-import { sessionFromOkta, type OktaSourceOptions } from "./okta.js";
+import { OktaSignInFailed, sessionFromOkta, type OktaSourceOptions } from "./okta.js";
 
 export interface MoodleSessionCookie {
   name: string;
@@ -202,7 +202,8 @@ export async function getAuthenticatedSessionWithBrowserFallback(
   try {
     return await getAuthenticatedSession(baseUrl, authOptions);
   } catch (error) {
-    if (!(error instanceof AuthError)) {
+    // An Okta sign-in the user asked for fails loudly instead of opening a browser.
+    if (!(error instanceof AuthError) || error instanceof OktaSignInFailed) {
       throw error;
     }
   }
