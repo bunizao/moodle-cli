@@ -114,6 +114,9 @@ describe("Moodle file downloads", () => {
     ['attachment; filename="quoted slides.pdf"', "quoted slides.pdf"],
     // NTFS would store "Week 1: Intro.pdf" as an alternate stream of a file named "Week 1".
     ['attachment; filename="Week 1: Intro?.pdf"', "Week 1 Intro.pdf"],
+    // \w is ASCII-only; a localized extension must not shrink to "report.".
+    ["attachment; filename*=UTF-8''report.%E6%96%87%E6%A1%A3", "report.\u6587\u6863"],
+    ['attachment; filename="notes.?"', "notes"],
     [undefined, "fallback.pdf"],
   ])("selects a safe upstream filename from %s", async (disposition, expected) => {
     const directory = await mkdtemp(join(tmpdir(), "moodle-download-"));

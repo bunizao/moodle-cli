@@ -46,7 +46,9 @@ export function pathSegment(name: string): string {
 // name would not fail on Windows, it would write somewhere nobody looks.
 export function fileNameSegment(name: string): string {
   const dot = name.lastIndexOf(".");
-  const extension = dot > 0 ? name.slice(dot).replace(/[^\w.-]/gu, "") : "";
-  return `${pathSegment(dot > 0 ? name.slice(0, dot) : name)}${extension}`;
+  // Letters and digits in any script survive; an extension cleaned to nothing drops its dot,
+  // which Windows would strip anyway and Unix would keep as a bare trailing ".".
+  const extension = dot > 0 ? name.slice(dot + 1).replace(/[^\p{L}\p{N}_-]/gu, "") : "";
+  return `${pathSegment(dot > 0 ? name.slice(0, dot) : name)}${extension ? `.${extension}` : ""}`;
 }
 
