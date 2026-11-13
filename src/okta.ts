@@ -6,7 +6,7 @@ import { dirname, join } from "node:path";
 import { readUserConfigSetting, saveUserConfigSetting, type ConfigOptions } from "./config.js";
 import { CACHE_DIR_NAME } from "./constants.js";
 import { AuthError, UsageError } from "./errors.js";
-import { findExecutable } from "./mcp/self-command.js";
+import { findExecutable, spawnTarget } from "./mcp/self-command.js";
 
 // The okta-auth CLI as an opt-in session source. It only helps sites behind
 // Okta, so it never runs unless the user asked for it, or it is installed and
@@ -240,7 +240,16 @@ export function parseOktaCookies(stdout: string): OktaCookie[] {
 // stay out of this CLI's output; only its last line may explain a failure.
 function run(command: string, args: string[], timeoutMs: number): Promise<{ code: number | null; stdout: string; stderr: string }> {
   return new Promise((resolve) => {
-    const child = spawn(command, args, { stdio: ["ignore", "pipe", "pipe"], timeout: timeoutMs });
+    // npm installs okta-auth as a .cmd shim on Windows, which only starts through cmd.exe.
+    // A spawn that throws (EINVAL and the like) means okta is unusable, not that sign-in broke.
+    const target = spawnTarget(command, args);
+    let child;
+    try {
+      child = spawn(target.command, target.args, { stdio: ["ignore", "pipe", "pipe"], timeout: timeoutMs, shell: target.shell });
+    } catch {
+      resolve({ code: null, stdout: "", stderr: "" });
+      return;
+    }
     let stdout = "";
     let stderr = "";
     child.stdout.setEncoding("utf8");
