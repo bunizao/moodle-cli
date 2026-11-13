@@ -1328,8 +1328,8 @@ export function buildProgram(io: CliIO = {}): Command {
 
 // Grouped the way `gh` does: what a person reaches for daily, then the rest, then what only an agent runs.
 const HELP_SECTIONS: Readonly<Record<string, readonly string[]>> = {
-  "Core commands": ["due", "news", "find", "get", "open", "submit", "submission", "complete", "messages", "calendar", "quiz", "courses", "activities", "grades", "threads", "forums"],
-  "Additional commands": ["sync", "user", "todo", "alerts", "messages", "calendar", "overview", "download", "auth", "doctor", "coverage", "completion", "uninstall"],
+  "Core commands": ["due", "news", "find", "open", "submit", "submission", "attempt", "complete", "quiz", "messages", "calendar", "courses", "activities", "grades", "threads", "forums"],
+  "Additional commands": ["sync", "download", "user", "todo", "alerts", "overview", "auth", "doctor", "update", "coverage", "completion", "uninstall"],
   "Agent commands": ["mcp", "commands", "skills"],
 };
 
