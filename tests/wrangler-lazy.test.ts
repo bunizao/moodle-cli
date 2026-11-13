@@ -5,11 +5,14 @@ import { expect, it, vi } from "vitest";
 import { resolveWrangler } from "../src/mcp/wrangler.js";
 import { WRANGLER_VERSION } from "../src/constants.js";
 
+// Windows only runs files with an executable extension, so fakes there are .cmd shims.
+const onPath = (name: string) => process.platform === "win32" ? `${name}.cmd` : name;
+
 it("resolves PATH, cached and first-use Wrangler without installing for construction", async () => {
   const home = await realpath(await mkdtemp(join(tmpdir(), "moodle-wrangler-")));
   const bin = join(home, "bin");
   await mkdir(bin);
-  const executable = async (name: string) => { const file = join(bin, name); await writeFile(file, "#!/bin/sh\nexit 0\n"); await chmod(file, 0o755); return file; };
+  const executable = async (name: string) => { const file = join(bin, onPath(name)); await writeFile(file, "#!/bin/sh\nexit 0\n"); await chmod(file, 0o755); return file; };
   const node = await executable("node");
   const wrangler = await executable("wrangler");
   const run = vi.fn(async () => ({ stdout: "", stderr: "" }));
@@ -42,7 +45,7 @@ it("pins the tool directory with a package.json and reports the installer output
   const home = await realpath(await mkdtemp(join(tmpdir(), "moodle-wrangler-")));
   const bin = join(home, "bin");
   await mkdir(bin);
-  for (const name of ["node", "npm"]) { const file = join(bin, name); await writeFile(file, "#!/bin/sh\nexit 0\n"); await chmod(file, 0o755); }
+  for (const name of ["node", "npm"]) { const file = join(bin, onPath(name)); await writeFile(file, "#!/bin/sh\nexit 0\n"); await chmod(file, 0o755); }
   const root = join(home, ".config", "moodle-cli", "tools", `wrangler@${WRANGLER_VERSION}`);
   // An installer that walks up to a parent package.json exits 0 and leaves the tool directory empty.
   const run = vi.fn(async () => ({ stdout: "", stderr: "npm warn saveError ENOENT\n" }));

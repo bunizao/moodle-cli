@@ -370,7 +370,7 @@ describe("Moodle file downloads", () => {
 
     expect(result).toMatchObject({ dry_run: true, total: 2, files: [{ filename: local("1/slides.pdf"), bytes_written: 0 }, { filename: local("2/notes.pdf"), bytes_written: 0 }] });
     await expect(readdir(directory)).rejects.toThrow();
-    expect(formatDownloadResult(result, directory)).toBe("Would save 2 files → .\n  1/slides.pdf\n  2/notes.pdf");
+    expect(formatDownloadResult(result, directory)).toBe(local("Would save 2 files → .\n  1/slides.pdf\n  2/notes.pdf"));
   });
 
   it("saves one document linked twice under different URLs once, now and on a rerun", async () => {
