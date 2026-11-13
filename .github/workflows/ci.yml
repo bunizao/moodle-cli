@@ -132,8 +132,8 @@ jobs:
           bun run skill:generate
           git diff --exit-code -- skills .claude-plugin
 
-  windows-credentials:
-    name: Windows protected credentials
+  windows:
+    name: Windows
     runs-on: windows-latest
 
     steps:
@@ -149,5 +149,26 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Test Windows credential stores
-        run: npx vitest run tests/deployment-credentials.test.ts
+      - name: Typecheck
+        run: npm run check
+
+      - name: Test
+        run: npx vitest run --reporter=default --reporter=json --outputFile.json=vitest-windows.json
+
+      - name: Upload test report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vitest-windows
+          path: vitest-windows.json
+
+      - name: Build
+        if: always()
+        run: npm run build
+
+      - name: Smoke test packed CLI
+        if: always()
+        shell: bash
+        env:
+          npm_config_script_shell: bash
+        run: npm run pack:smoke
