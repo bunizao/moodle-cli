@@ -1,4 +1,4 @@
-import { storedPath, pathSegment } from "./file-paths.js";
+import { storedPath, pathSegment, fileNameSegment } from "./file-paths.js";
 import { createWriteStream } from "node:fs";
 import { link, lstat, mkdir, readFile, rename, unlink } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
@@ -465,7 +465,7 @@ function urlFilename(value: string): string | undefined {
 
 function sanitizeFilename(value: string | undefined): string | undefined {
   const basename = value?.split(/[\\/]/u).at(-1)?.replace(/[\u0000-\u001f\u007f]/gu, "").trim();
-  return basename && basename !== "." && basename !== ".." ? basename : undefined;
+  return basename && basename !== "." && basename !== ".." ? fileNameSegment(basename) : undefined;
 }
 
 async function sameBytes(left: string, right: string): Promise<boolean> {

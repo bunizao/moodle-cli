@@ -41,3 +41,12 @@ export function pathSegment(name: string): string {
   return short.replace(/^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?=\.|$)/iu, "$1_");
 }
 
+// A file name keeps its extension; the stem is cleaned like a folder name. NTFS reads
+// "Week 1: Intro.pdf" as a stream named " Intro.pdf" on a file "Week 1", so an unclean
+// name would not fail on Windows, it would write somewhere nobody looks.
+export function fileNameSegment(name: string): string {
+  const dot = name.lastIndexOf(".");
+  const extension = dot > 0 ? name.slice(dot).replace(/[^\w.-]/gu, "") : "";
+  return `${pathSegment(dot > 0 ? name.slice(0, dot) : name)}${extension}`;
+}
+

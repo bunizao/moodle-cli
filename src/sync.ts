@@ -1,4 +1,4 @@
-import { storedPath, pathSegment } from "./file-paths.js";
+import { storedPath, pathSegment, fileNameSegment } from "./file-paths.js";
 export { storedPath, pathSegment } from "./file-paths.js";
 import { createHash, randomUUID } from "node:crypto";
 import { createReadStream, createWriteStream } from "node:fs";
@@ -306,7 +306,7 @@ async function syncFile(run: UnitRun, item: SyncItem): Promise<void> {
     await response.body?.cancel().catch(() => undefined);
     throw new CliError(response.status === 404 ? "not_found" : "upstream", `Moodle answered HTTP ${response.status}.`);
   }
-  const relative = joinRelative(item.dir, safeFileName(chooseUpstreamFilename({ response, sourceUrl: url, requestUrl: url, targetName: item.name })));
+  const relative = joinRelative(item.dir, fileNameSegment(chooseUpstreamFilename({ response, sourceUrl: url, requestUrl: url, targetName: item.name })));
   if (run.dryRun) {
     await response.body?.cancel().catch(() => undefined);
     return reportDryRun(run, item.key, relative);
@@ -339,7 +339,7 @@ async function syncDocument(run: UnitRun, item: SyncItem): Promise<void> {
     run.result.unchanged++;
     return;
   }
-  const relative = joinRelative(item.dir, safeFileName(item.name!));
+  const relative = joinRelative(item.dir, fileNameSegment(item.name!));
   if (run.dryRun) return reportDryRun(run, item.key, relative);
   const target = await prepareTarget(run, relative);
   const temporary = await writeTemporary(standaloneHtml(item.label, item.url, content.toString()), target);
@@ -651,10 +651,6 @@ async function writeManifest(directory: string, manifest: Manifest): Promise<voi
 }
 
 
-function safeFileName(name: string): string {
-  const extension = path.extname(name);
-  return `${pathSegment(name.slice(0, name.length - extension.length))}${extension.replace(/[^\w.-]/gu, "")}`;
-}
 
 function joinRelative(...parts: string[]): string {
   return parts.filter(Boolean).join("/");
