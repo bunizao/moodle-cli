@@ -1,0 +1,2 @@
+# Generated files are compared byte for byte, so a CRLF checkout must not rewrite them.
+* text=auto eol=lf

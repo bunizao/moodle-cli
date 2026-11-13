@@ -1,7 +1,7 @@
 import { readdir, readFile, writeFile } from "node:fs/promises";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, sep } from "node:path";
 
 import { describe, expect, it, vi } from "vitest";
 
@@ -112,6 +112,8 @@ describe("Moodle file downloads", () => {
   it.each([
     ["attachment; filename*=UTF-8''lecture%20slides.pdf", "lecture slides.pdf"],
     ['attachment; filename="quoted slides.pdf"', "quoted slides.pdf"],
+    // NTFS would store "Week 1: Intro.pdf" as an alternate stream of a file named "Week 1".
+    ['attachment; filename="Week 1: Intro?.pdf"', "Week 1 Intro.pdf"],
     [undefined, "fallback.pdf"],
   ])("selects a safe upstream filename from %s", async (disposition, expected) => {
     const directory = await mkdtemp(join(tmpdir(), "moodle-download-"));
@@ -337,7 +339,7 @@ describe("Moodle file downloads", () => {
     }), { source: `${BASE_URL}/mod/folder/view.php?id=5`, directory });
 
     expect(result.total).toBe(2);
-    expect(result.files.map(f => f.filename)).toEqual(["1/slides.pdf", "2/slides.pdf"]);
+    expect(result.files.map(f => f.filename)).toEqual(["1/slides.pdf", "2/slides.pdf"].map(local));
     await expect(readdir(directory)).resolves.toEqual(["1", "2"]);
     await expect(readFile(join(directory, "1", "slides.pdf"), "utf8")).resolves.toBeTruthy();
     await expect(readFile(join(directory, "2", "slides.pdf"), "utf8")).resolves.toBeTruthy();
@@ -366,7 +368,7 @@ describe("Moodle file downloads", () => {
       requestAbsolute: async (url: string) => responseAt(url, "%PDF", { "content-type": "application/pdf" }),
     }), { source: `${BASE_URL}/mod/folder/view.php?id=5`, directory, dryRun: true });
 
-    expect(result).toMatchObject({ dry_run: true, total: 2, files: [{ filename: "1/slides.pdf", bytes_written: 0 }, { filename: "2/notes.pdf", bytes_written: 0 }] });
+    expect(result).toMatchObject({ dry_run: true, total: 2, files: [{ filename: local("1/slides.pdf"), bytes_written: 0 }, { filename: local("2/notes.pdf"), bytes_written: 0 }] });
     await expect(readdir(directory)).rejects.toThrow();
     expect(formatDownloadResult(result, directory)).toBe("Would save 2 files → .\n  1/slides.pdf\n  2/notes.pdf");
   });
@@ -414,7 +416,7 @@ describe("Moodle file downloads", () => {
     }), { source: sectionUrl, directory });
 
     expect(getActivity.mock.calls.map(([id]) => id)).toEqual([1, 2, 4]);
-    expect(result.files.map(f => f.filename)).toEqual(["a1/f1.pdf", "a4/f4.pdf"]);
+    expect(result.files.map(f => f.filename)).toEqual(["a1/f1.pdf", "a4/f4.pdf"].map(local));
   });
 
   it("skips a broken file, an unavailable activity and a repeat, and keeps the rest of the section", async () => {
@@ -441,7 +443,7 @@ describe("Moodle file downloads", () => {
 
     expect(getActivity.mock.calls.map(([id]) => id)).toEqual([1, 2, 5]);
     // The assignment links the folder's first file again, so it is saved once; case never collides.
-    expect(result.files.map(f => f.filename)).toEqual(["a1/Slides.pdf", "a1/slides (2).pdf"]);
+    expect(result.files.map(f => f.filename)).toEqual(["a1/Slides.pdf", "a1/slides (2).pdf"].map(local));
     expect(result.skipped.map(s => `${s.reason} ${s.name}`)).toEqual(["unavailable a5", "unavailable gone.pdf"]);
   });
 
@@ -473,7 +475,7 @@ describe("Moodle file downloads", () => {
         ? responseAt(url, sectionHtml(4, "Week 4", cm(1, "resource")), { "content-type": "text/html" })
         : responseAt(url, "x", { "content-disposition": "attachment" }),
     }), { source: sectionUrl, directory });
-    expect(result.files.map(f => f.filename)).toEqual(["a1/f.pdf"]);
+    expect(result.files.map(f => f.filename)).toEqual(["a1/f.pdf"].map(local));
   });
 
   it("refuses --dest with --to, and --dest naming a directory", async () => {
@@ -601,12 +603,15 @@ function buffer() {
   };
 }
 
+// Receipts and screens show paths with the host's separator.
+const local = (path: string) => path.replaceAll("/", sep);
+
 describe("download receipt screen", () => {
   const receipt = (file_path: string, bytes_written: number) => ({ file_path, filename: file_path.split("/").at(-1)!, bytes_written, content_type: "application/pdf", source_url: "", final_url: "" });
 
   it("prints one line for one file, relative to the working directory", () => {
     expect(formatDownloadResult({ files: [receipt("/work/Lecture 5.pdf", 8906445)], skipped: [], total: 1 }, "/work"))
-      .toBe("✓ Saved Lecture 5.pdf (8.5 MiB) → ./Lecture 5.pdf");
+      .toBe(local("✓ Saved Lecture 5.pdf (8.5 MiB) → ./Lecture 5.pdf"));
     expect(formatDownloadResult({ files: [receipt("/elsewhere/a.pdf", 10)], skipped: [], total: 1 }, "/work"))
       .toBe("✓ Saved a.pdf (10 B) → /elsewhere/a.pdf");
   });
@@ -614,9 +619,9 @@ describe("download receipt screen", () => {
   it("says what was already there and what Moodle would not provide", () => {
     const skip = (name: string, reason: "exists" | "unavailable", detail?: string) => ({ name, reason, source_url: "", file_path: `/work/w5/${name}`, ...(detail ? { detail } : {}) });
     expect(formatDownloadResult({ files: [], skipped: [skip("a.pdf", "exists")], total: 0 }, "/work"))
-      .toBe("✓ Already have a.pdf → ./w5/a.pdf; --force downloads it again.");
+      .toBe(local("✓ Already have a.pdf → ./w5/a.pdf; --force downloads it again."));
     expect(formatDownloadResult({ files: [receipt("/work/w5/c.pdf", 1)], skipped: [skip("a.pdf", "exists"), skip("b.pdf", "exists"), skip("Quiz notes", "unavailable", "Activity 5 is not available to you.")], total: 1 }, "/work"))
-      .toBe("✓ Saved c.pdf (1 B) → ./w5/c.pdf\n2 files were already in ./w5; --force downloads them again.\n! Skipped Quiz notes: Activity 5 is not available to you.");
+      .toBe(local("✓ Saved c.pdf (1 B) → ./w5/c.pdf\n2 files were already in ./w5; --force downloads them again.\n! Skipped Quiz notes: Activity 5 is not available to you."));
     expect(formatDownloadResult({ files: [], skipped: [skip("a.pdf", "exists"), skip("b.pdf", "exists")], total: 0 }, "/work/w5"))
       .toBe("✓ 2 files were already here; --force downloads them again.");
     expect(formatDownloadResult({ files: [], skipped: [skip("gone.pdf", "unavailable")], total: 0 }, "/work"))
@@ -625,7 +630,7 @@ describe("download receipt screen", () => {
 
   it("titles a batch with its count, size and folder", () => {
     const text = formatDownloadResult({ files: [receipt("/work/w5/a.pdf", 2048), receipt("/work/w5/b.csv", 1024)], skipped: [], total: 2 }, "/work");
-    expect(text).toContain("✓ Saved 2 files (3.0 KiB) → ./w5");
+    expect(text).toContain(local("✓ Saved 2 files (3.0 KiB) → ./w5"));
     expect(text).toContain("b.csv");
   });
 });

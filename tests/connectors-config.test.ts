@@ -15,16 +15,22 @@ import {
   type ConnectorFileSystem,
 } from "../src/mcp/connectors/index.js";
 
+// Windows has no POSIX permission bits; chmod there only toggles read-only.
+const posixModes = process.platform !== "win32";
+
+// Connectors join paths with the host's separator; the fake keys everything with "/".
+const key = (path: string) => path.replaceAll("\\", "/");
+
 class MemoryFiles implements ConnectorFileSystem {
   readonly files = new Map<string, string>();
   readonly writes: string[] = [];
 
   async exists(path: string): Promise<boolean> {
-    return this.files.has(path);
+    return this.files.has(key(path));
   }
 
   async readText(path: string): Promise<string> {
-    const value = this.files.get(path);
+    const value = this.files.get(key(path));
     if (value === undefined) {
       throw new Error(`missing ${path}`);
     }
@@ -32,12 +38,12 @@ class MemoryFiles implements ConnectorFileSystem {
   }
 
   async writePrivate(path: string, content: string): Promise<void> {
-    this.writes.push(path);
-    this.files.set(path, content);
+    this.writes.push(key(path));
+    this.files.set(key(path), content);
   }
 
   async remove(path: string): Promise<void> {
-    this.files.delete(path);
+    this.files.delete(key(path));
   }
 }
 
@@ -250,7 +256,7 @@ describe("DefaultClientIntegration", () => {
 });
 
 describe("writeFileAtomic", () => {
-  it("replaces the file without leaving a temporary behind, keeping its mode", async () => {
+  it.skipIf(!posixModes)("replaces the file without leaving a temporary behind, keeping its mode", async () => {
     const dir = await mkdtemp(join(tmpdir(), "moodle-atomic-"));
     try {
       const path = join(dir, "config.yaml");
@@ -264,7 +270,7 @@ describe("writeFileAtomic", () => {
     }
   });
 
-  it("writes through a symlink instead of replacing it", async () => {
+  it.skipIf(!posixModes)("writes through a symlink instead of replacing it", async () => {
     const dir = await mkdtemp(join(tmpdir(), "moodle-atomic-"));
     try {
       const real = join(dir, "dotfiles.json");

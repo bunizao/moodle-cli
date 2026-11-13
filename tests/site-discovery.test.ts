@@ -1,6 +1,9 @@
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { candidateRoots, discoverSite, parseSiteInput } from "../src/site-discovery.js";
 import { isSiteUrl, sameSiteRoot, sitePath, siteUrl } from "../src/site-root.js";
+
+const CONFIG_PATH = join("/home/student", ".config", "moodle-cli", "config.yaml");
 
 const HOST = "https://school.example.edu";
 const ROOT = `${HOST}/elearning/moodle`;
@@ -267,7 +270,7 @@ describe("interactive setup", () => {
     });
     expect(config.baseUrl).toBe(ROOT);
     expect(asked).toEqual(["Moodle address", "Moodle address", "Moodle address"]);
-    expect(written).toEqual([{ path: "/home/student/.config/moodle-cli/config.yaml", content: `base_url: ${ROOT}\n` }]);
+    expect(written).toEqual([{ path: CONFIG_PATH, content: `base_url: ${ROOT}\n` }]);
   });
 
   it("asks before using a root on another host", async () => {
@@ -286,7 +289,7 @@ describe("interactive setup", () => {
 describe("correctBaseUrl", () => {
   const quietFs = (initial: string, written: Array<{ path: string; content: string }>) => ({
     readFile: (async (path: string) => {
-      if (path === "/home/student/.config/moodle-cli/config.yaml") return initial;
+      if (path === CONFIG_PATH) return initial;
       throw Object.assign(new Error("missing"), { code: "ENOENT" });
     }) as never,
     write: async (path: string, content: string) => {
@@ -304,7 +307,7 @@ describe("correctBaseUrl", () => {
       homeDir: "/home/student",
       fetch,
       fs: quietFs(`base_url: ${ROOT}/my\nbrowser: chrome\n`, written),
-    })).resolves.toEqual({ kind: "moved", from: `${ROOT}/my`, to: ROOT, savedTo: "/home/student/.config/moodle-cli/config.yaml" });
+    })).resolves.toEqual({ kind: "moved", from: `${ROOT}/my`, to: ROOT, savedTo: CONFIG_PATH });
     expect(written[0].content).toBe(`base_url: ${ROOT}\nbrowser: chrome\n`);
   });
 

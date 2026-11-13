@@ -11,6 +11,9 @@ import { formatSyncResult } from "../src/formatters.js";
 import type { Activity, Course, Section } from "../src/models.js";
 import { MANIFEST_NAME, pathSegment, sectionDirectories, storedPath, syncUnits } from "../src/sync.js";
 
+// Change paths and screens use the host's separator.
+const posix = (path: string) => path.replaceAll(sep, "/");
+
 // exFAT/FAT drives and some network shares refuse hard links; a test can switch that on.
 const disk = vi.hoisted(() => ({ hardLinks: true }));
 vi.mock("node:fs/promises", async (importOriginal) => {
@@ -97,7 +100,7 @@ describe("moodle sync", () => {
 
     const first = await syncUnits(moodle.client, [COURSE], { root: base, now: NOW });
 
-    expect(first.units[0].changes.map((change) => [change.status, change.path.slice(unitDir(base).length + 1)])).toEqual([
+    expect(first.units[0].changes.map((change) => [change.status, posix(change.path.slice(unitDir(base).length + 1))])).toEqual([
       ["new", "Week 1/Real-time/Assignment 1 Regex/brief.pdf"],
       ["new", "Week 1/Real-time/Lab data/data/week1.csv"],
       ["new", "Week 1/Real-time/slides.pdf"],
@@ -274,7 +277,7 @@ describe("moodle sync", () => {
 
     const result = await syncUnits(moodle.client, [COURSE], { root: base, now: NOW });
 
-    expect(result.units[0].changes.map((change) => change.path.slice(unitDir(base).length + 1))).toEqual([
+    expect(result.units[0].changes.map((change) => posix(change.path.slice(unitDir(base).length + 1)))).toEqual([
       "Week 1/Real-time/Assignment 1 Regex/brief.pdf",
       "Week 1/Real-time/slides (2).pdf",
     ]);
@@ -429,7 +432,7 @@ describe("sync receipt", () => {
   const unit = { unit_id: 1, unit: "UNIT1001", directory: "/work/UNIT1001", unchanged: 4, problems: [] };
 
   it("says a unit is up to date in one line", () => {
-    expect(formatSyncResult({ dry_run: false, units: [{ ...unit, changes: [] }] }, "/work")).toBe("✓ UNIT1001 → ./UNIT1001 · up to date · 4 unchanged");
+    expect(formatSyncResult({ dry_run: false, units: [{ ...unit, changes: [] }] }, "/work")).toBe(`✓ UNIT1001 → .${sep}UNIT1001 · up to date · 4 unchanged`);
   });
 
   it("lists what changed and collapses a long run of new files", () => {
@@ -442,7 +445,7 @@ describe("sync receipt", () => {
       ],
       problems: [{ item: "Lab data", message: "HTTP 503" }],
     }] }, "/work");
-    expect(text).toContain("! UNIT1001 → ./UNIT1001 · 16 new, 1 kept your edits, 1 gone from Moodle, 1 failed · 4 unchanged");
+    expect(text).toContain(`! UNIT1001 → .${sep}UNIT1001 · 16 new, 1 kept your edits, 1 gone from Moodle, 1 failed · 4 unchanged`);
     expect(text).toContain("  + 16 files (16.0 KiB)");
     expect(text).toContain("  ! a.pdf changed on Moodle; yours is kept, the new one is a (updated 2026-09-27).pdf");
     expect(text).toContain("  − old.pdf is gone from Moodle; your copy stays");
