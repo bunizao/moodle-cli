@@ -95,7 +95,8 @@ describe("NodeReleaseMaterializer", () => {
     const second = await materializer.prepare(okta, credentials);
     expect(JSON.parse(await readFile(first.secretsFilePath, "utf8"))).toMatchObject({ OKTA_USERNAME: "student@example.edu", OKTA_PASSWORD: "hunter2", OKTA_TOTP_SECRET: "JBSWY3DPEHPK3PXP" });
     expect(await readFile(second.secretsFilePath, "utf8")).toContain("OKTA_PASSWORD");
-    expect((await stat(first.secretsFilePath)).mode & 0o777).toBe(0o600);
+    // Windows has no POSIX modes; the file is private through its ACL there.
+    if (process.platform !== "win32") expect((await stat(first.secretsFilePath)).mode & 0o777).toBe(0o600);
     expect(await readFile(first.wranglerConfigPath, "utf8")).not.toContain("hunter2");
     expect(oktaSecrets).toHaveBeenCalledTimes(1);
   });

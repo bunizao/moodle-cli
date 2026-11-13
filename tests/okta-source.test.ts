@@ -9,6 +9,9 @@ import { AuthError } from "../src/errors.js";
 import { defaultOktaCli, exportOktaSecrets, OktaSignInFailed, oktaConsent, parseOktaCookies, parseOktaExport, saveOktaConsent, type OktaCli, type OktaCookie } from "../src/okta.js";
 
 const BASE_URL = "https://learning.example.edu";
+// The fake okta CLIs are POSIX shell scripts. What they test is the same everywhere;
+// on Windows the one thing that differs, starting a .cmd shim, has its own test below.
+const shellFakes = process.platform !== "win32";
 const LOGIN_URL = `${BASE_URL}/login/index.php`;
 
 function fakeOkta(saved: OktaCookie[], afterLogin: OktaCookie[] = [], outcome: "ok" | "rejected" | "failed" = "ok", message?: string) {
@@ -166,7 +169,7 @@ describe("okta-auth CLI session source", () => {
     expect(authFailureHint(BASE_URL, [], "darwin")).not.toMatch(/okta/i);
   });
 
-  it("runs the okta executable on PATH with stdin closed and reads its JSON", async () => {
+  it.skipIf(!shellFakes)("runs the okta executable on PATH with stdin closed and reads its JSON", async () => {
     const bin = await mkdtemp(join(tmpdir(), "moodle-okta-bin-"));
     const log = join(bin, "calls.log");
     const state = join(bin, "signed-in");
@@ -265,7 +268,7 @@ describe("okta export for Worker secrets", () => {
     return { bin, log };
   }
 
-  it("runs okta export with stdout piped and returns the three secrets", async () => {
+  it.skipIf(!shellFakes)("runs okta export with stdout piped and returns the three secrets", async () => {
     const { bin, log } = await fakeExport([
       // okta refuses to print secrets to a terminal.
       "[ -t 1 ] && exit 2",
@@ -280,7 +283,7 @@ describe("okta export for Worker secrets", () => {
     expect((await readFile(log, "utf8")).trim()).toBe("export --dangerously-print-password-and-totp-secret");
   });
 
-  it("refuses partial output without repeating any of it", async () => {
+  it.skipIf(!shellFakes)("refuses partial output without repeating any of it", async () => {
     const { bin } = await fakeExport([`echo '{"OKTA_USERNAME": "student@example.edu", "OKTA_PASSWORD": "hunter2"}'`]);
 
     const error = await exportOktaSecrets({ PATH: bin }).catch((caught: unknown) => caught);
@@ -290,7 +293,7 @@ describe("okta export for Worker secrets", () => {
     expect((error as { hint?: string }).hint).toContain("okta-auth setup");
   });
 
-  it("runs the npm CLI's okta-auth when there is no okta", async () => {
+  it.skipIf(!shellFakes)("runs the npm CLI's okta-auth when there is no okta", async () => {
     const { bin, log } = await fakeExport([
       `echo '{"OKTA_USERNAME": "student@example.edu", "OKTA_PASSWORD": "hunter2", "OKTA_TOTP_SECRET": "JBSWY3DPEHPK3PXP"}'`,
     ], "okta-auth");
@@ -299,7 +302,7 @@ describe("okta export for Worker secrets", () => {
     expect((await readFile(log, "utf8")).trim()).toBe("export --dangerously-print-password-and-totp-secret");
   });
 
-  it("asks for okta-auth-cli 0.3.0 when export is unknown", async () => {
+  it.skipIf(!shellFakes)("asks for okta-auth-cli 0.3.0 when export is unknown", async () => {
     // okta-auth-cli 0.2.x: argparse rejects the subcommand.
     const { bin } = await fakeExport(["echo 'okta: error: invalid choice: export' >&2", "exit 2"]);
 
@@ -324,14 +327,14 @@ describe("okta export for Worker secrets", () => {
 describe("finding the okta-auth CLI", () => {
   const cookies = (from: string) => `echo '[{"name": "MoodleSession", "value": "from-${from}"}]'`;
 
-  it("uses the npm CLI's okta-auth when there is no okta", async () => {
+  it.skipIf(!shellFakes)("uses the npm CLI's okta-auth when there is no okta", async () => {
     const bin = await mkdtemp(join(tmpdir(), "moodle-okta-auth-"));
     await fakeCommand(bin, "okta-auth", [cookies("okta-auth")]);
 
     expect(await defaultOktaCli({ PATH: bin })?.cookies(BASE_URL)).toEqual([{ name: "MoodleSession", value: "from-okta-auth" }]);
   });
 
-  it("prefers okta, because Python's okta-auth is an MCP server", async () => {
+  it.skipIf(!shellFakes)("prefers okta, because Python's okta-auth is an MCP server", async () => {
     const bin = await mkdtemp(join(tmpdir(), "moodle-okta-both-"));
     await fakeCommand(bin, "okta", [cookies("okta")]);
     await fakeCommand(bin, "okta-auth", ["exit 1"]);
@@ -339,7 +342,7 @@ describe("finding the okta-auth CLI", () => {
     expect(await defaultOktaCli({ PATH: bin })?.cookies(BASE_URL)).toEqual([{ name: "MoodleSession", value: "from-okta" }]);
   });
 
-  it("reports the last stderr line of a failed login, without its query string", async () => {
+  it.skipIf(!shellFakes)("reports the last stderr line of a failed login, without its query string", async () => {
     const bin = await mkdtemp(join(tmpdir(), "moodle-okta-fail-"));
     await fakeCommand(bin, "okta-auth", [
       "echo 'Signing in to example.okta.com' >&2",
@@ -353,7 +356,15 @@ describe("finding the okta-auth CLI", () => {
     });
   });
 
-  it("reads exit 77 as a rejected password", async () => {
+  it.runIf(process.platform === "win32")("runs the npm CLI's okta-auth.cmd shim on Windows", async () => {
+    // Node refuses to start a .cmd without a shell (EINVAL), and npm installs okta-auth as one.
+    const bin = await mkdtemp(join(tmpdir(), "moodle-okta-cmd-"));
+    await writeFile(join(bin, "okta-auth.cmd"), '@echo [{"name": "MoodleSession", "value": "from-cmd"}]\r\n');
+
+    expect(await defaultOktaCli({ PATH: bin })?.cookies(BASE_URL)).toEqual([{ name: "MoodleSession", value: "from-cmd" }]);
+  });
+
+  it.skipIf(!shellFakes)("reads exit 77 as a rejected password", async () => {
     const bin = await mkdtemp(join(tmpdir(), "moodle-okta-77-"));
     await fakeCommand(bin, "okta", ["exit 77"]);
 
