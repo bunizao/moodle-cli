@@ -163,10 +163,13 @@ export const NOUNS: readonly NounSpec[] = [
 export function buildProgram(io: CliIO = {}): Command {
   const stdout = io.stdout ?? process.stdout;
   const stderr = io.stderr ?? process.stderr;
+  // Every result goes through here: stdout shares the screen with the loading spinner on
+  // stderr, so the spinner is erased first instead of clearing over the output later.
+  const write = (text: string) => { settle(); return stdout.write(text); };
   const program = createProgram({ name: "moodle", version: VERSION, description: MOODLE_TAGLINE });
   banner(program, MOODLE_WORDMARK);
   program.configureOutput({
-    writeOut: (text) => stdout.write(text),
+    writeOut: (text) => write(text),
     writeErr: (text) => stderr.write(text),
     outputError: () => undefined,
   });
@@ -300,7 +303,7 @@ export function buildProgram(io: CliIO = {}): Command {
           ? `${JSON.stringify(JSON.parse(render(data, { format, fields: parseFields(data, merged.fields) })), null, merged.pretty ? 2 : undefined)}\n`
           : render(data, { format, fields: parseFields(data, merged.fields) });
       if (io.stdout && !merged.output) {
-        stdout.write(text);
+        write(text);
       } else {
         await writeOutput(text, { output: merged.output });
       }
@@ -452,7 +455,7 @@ export function buildProgram(io: CliIO = {}): Command {
       const client = await runtime.getClient();
       if (!isSiteUrl(client.baseUrl, url)) throw new UsageError("The URL must belong to the configured Moodle site.");
       const html = await (await client.requestAbsolute(url)).text();
-      stdout.write(`${redactSesskey(html)}\n`);
+      write(`${redactSesskey(html)}\n`);
     });
   addOutputOptions(mutating(program.command("update").description("Update the package and redeploy the managed MCP Worker when either is behind.").summary("Update the CLI and its MCP Worker")))
     .option("--check", "Report versions without installing or deploying.")
@@ -762,7 +765,7 @@ export function buildProgram(io: CliIO = {}): Command {
       const client = await runtime.getClient();
       const events = await client.getCalendar(count("days", options.days), options.unit ? await client.resolveCourseReference(options.unit) : undefined);
       const content = calendarIcs(events, client.baseUrl);
-      if (io.stdout && !merged.output) stdout.write(content);
+      if (io.stdout && !merged.output) write(content);
       else await writeOutput(content, { output: merged.output });
     });
 
@@ -999,7 +1002,7 @@ export function buildProgram(io: CliIO = {}): Command {
     const paint = createTheme(live && colorEnabled(stdout as { isTTY?: boolean }, io.env) && program.opts().color !== false);
     const progress = createProgressReporter({ stream: stderr as NodeJS.WritableStream, interactive: live && Boolean("isTTY" in stderr && stderr.isTTY) });
     const lines: string[] = [];
-    const emit = (line: string) => { lines.push(line); if (live) { progress.clear(); stdout.write(`${line}\n`); } };
+    const emit = (line: string) => { lines.push(line); if (live) { progress.clear(); write(`${line}\n`); } };
     runtime.busy = true;
     try {
       emit(formatCoverageCli(cli, paint));
@@ -1019,9 +1022,9 @@ export function buildProgram(io: CliIO = {}): Command {
   });
   program.command("completion").description("Print shell completion for zsh, bash or fish.").addArgument(program.createArgument("<shell>", "Shell to target").choices(["zsh", "bash", "fish"])).action((shell: string) => {
     const names = program.commands.filter(c => c.name() !== "help").flatMap(c => [c.name(), ...c.aliases()]);
-    if (shell === "bash") stdout.write(`complete -W '${names.join(" ")}' moodle\n`);
-    else if (shell === "zsh") stdout.write(`#compdef moodle\n_arguments '1:command:(${names.join(" ")})' '*:reference:'\n`);
-    else if (shell === "fish") stdout.write(names.map(n => `complete -c moodle -f -a '${n}'`).join("\n") + "\n");
+    if (shell === "bash") write(`complete -W '${names.join(" ")}' moodle\n`);
+    else if (shell === "zsh") write(`#compdef moodle\n_arguments '1:command:(${names.join(" ")})' '*:reference:'\n`);
+    else if (shell === "fish") write(names.map(n => `complete -c moodle -f -a '${n}'`).join("\n") + "\n");
     else throw new UsageError("Choose zsh, bash or fish.");
   });
   addOutputOptions(mutating(program.command("uninstall").description("Remove local background jobs; optionally remove the selected Worker and configuration.").summary("Remove background jobs, Worker and config")))
@@ -1307,11 +1310,11 @@ export function buildProgram(io: CliIO = {}): Command {
 
   const skills = program.command("skills").description("Show skill metadata or delegate to the shared skills CLI.").summary("Install the Moodle skill for coding agents");
   skills.action(() => {
-    stdout.write(`${formatSkillSummary()}\n`);
+    write(`${formatSkillSummary()}\n`);
   });
   skills.command("generate").description("Regenerate the agent skill bundle from the CLI command tree.").action(() => {
     writeGeneratedSkill(program);
-    stdout.write("Generated Moodle skill bundle\n");
+    write("Generated Moodle skill bundle\n");
   });
   skills.command("add").description("Install the published skill through npx skills add.").allowUnknownOption(true).action((_options, command) => installSkill(command.args));
 
