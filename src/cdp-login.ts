@@ -153,7 +153,8 @@ const LINUX_BROWSERS: ChromiumBrowser[] = [
 ];
 
 function windowsBrowsers(env: NodeJS.ProcessEnv): ChromiumBrowser[] {
-  const roots = [env.PROGRAMFILES, env["PROGRAMFILES(X86)"], env.LOCALAPPDATA].filter(Boolean) as string[];
+  const windowsEnv = Object.fromEntries(Object.entries(env).map(([name, value]) => [name.toUpperCase(), value]));
+  const roots = [windowsEnv.PROGRAMFILES, windowsEnv["PROGRAMFILES(X86)"], windowsEnv.LOCALAPPDATA].filter(Boolean) as string[];
   const relative: Array<[string, string]> = [
     ["Google Chrome", "Google/Chrome/Application/chrome.exe"],
     ["Microsoft Edge", "Microsoft/Edge/Application/msedge.exe"],

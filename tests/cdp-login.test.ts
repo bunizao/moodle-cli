@@ -1,6 +1,6 @@
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
-import { mkdtemp } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
@@ -58,6 +58,23 @@ describe("findChromiumBrowser", () => {
       name: "Chromium",
       path: "/opt/chrome",
     });
+  });
+
+  it("finds Windows Chrome with a mixed-case ProgramFiles key", async () => {
+    const root = await mkdtemp(join(tmpdir(), "cdp-program-files-"));
+    try {
+      const application = join(root, "Google", "Chrome", "Application");
+      const path = join(application, "chrome.exe");
+      await mkdir(application, { recursive: true });
+      await writeFile(path, "", { mode: 0o755 });
+
+      await expect(findChromiumBrowser({
+        platform: "win32",
+        env: { ProgramFiles: root },
+      } as never)).resolves.toEqual({ name: "Google Chrome", path });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 
   it("returns null on Linux with an empty PATH", async () => {
