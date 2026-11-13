@@ -1,6 +1,6 @@
 import { resolveWrangler } from "../wrangler.js";
 import { isDeepStrictEqual } from "node:util";
-import { runtimeCommand } from "../self-command.js";
+import { runtimeCommand, spawnTarget } from "../self-command.js";
 import { spawn } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
@@ -61,9 +61,11 @@ export interface DeploymentCommandRunner {
 export class NodeDeploymentCommandRunner implements DeploymentCommandRunner {
   async run(command: string, args: string[], environment: NodeJS.ProcessEnv = {}, onOutput?: (chunk: string) => void): Promise<CommandResult> {
     return new Promise((resolve, reject) => {
-      const child = spawn(command, args, {
+      const target = spawnTarget(command, args);
+      const child = spawn(target.command, target.args, {
         env: { ...process.env, ...environment },
         stdio: ["ignore", "pipe", "pipe"],
+        shell: target.shell,
         windowsHide: true,
       });
       let stdout = "";
