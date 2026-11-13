@@ -77,6 +77,12 @@ describe("findChromiumBrowser", () => {
     }
   });
 
+  // Every Windows install ships Edge, and the CLI copies process.env before this lookup,
+  // which turns its case-insensitive keys into plain ones.
+  it.runIf(process.platform === "win32")("finds an installed browser through a copied Windows environment", async () => {
+    await expect(findChromiumBrowser({ env: { ...process.env } } as never)).resolves.not.toBeNull();
+  });
+
   it("returns null on Linux with an empty PATH", async () => {
     await expect(findChromiumBrowser({ platform: "linux", env: { PATH: "" } } as never)).resolves.toBeNull();
   });

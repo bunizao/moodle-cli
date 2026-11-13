@@ -24,6 +24,9 @@ import { render, resolveFormat } from "@bunizao/cli-kit";
 import { runCli } from "../src/cli.js";
 import { createMoodleClient } from "../src/client.js";
 
+// Windows has no POSIX permission bits; chmod there only toggles read-only.
+const posixModes = process.platform !== "win32";
+
 const BASE_URL = "https://school.example.edu";
 
 /**
@@ -249,7 +252,7 @@ describe("auth chain", () => {
     expect(cdpLogin).not.toHaveBeenCalled();
   });
 
-  it("fails fast when a store exists but cannot be opened and no browser is present", async () => {
+  it.skipIf(!posixModes)("fails fast when a store exists but cannot be opened and no browser is present", async () => {
     const homeDir = await mkdtemp(join(tmpdir(), "moodle-cli-auth-denied-"));
     const store = join(homeDir, "Library/Application Support/Google/Chrome/Default/Cookies");
     await mkdir(dirname(store), { recursive: true });
@@ -278,7 +281,7 @@ describe("auth chain", () => {
     expect(cdpLogin).not.toHaveBeenCalled();
   });
 
-  it("lists a readable store and an unreadable one apart", async () => {
+  it.skipIf(!posixModes)("lists a readable store and an unreadable one apart", async () => {
     const homeDir = await mkdtemp(join(tmpdir(), "moodle-cli-stores-"));
     const chrome = join(homeDir, "Library/Application Support/Google/Chrome/Default/Cookies");
     const edge = join(homeDir, "Library/Application Support/Microsoft Edge/Default/Cookies");
@@ -441,7 +444,7 @@ describe("config and session cache", () => {
     expect(await readCachedSession(BASE_URL, { homeDir, noCache: true })).toBeNull();
 
     const mode = (await stat(join(homeDir, ".cache/moodle-cli/session.json"))).mode & 0o777;
-    expect(mode).toBe(0o600);
+    if (posixModes) expect(mode).toBe(0o600);
 
     const raw = await readFile(join(homeDir, ".cache/moodle-cli/session.json"), "utf8");
     expect(JSON.parse(raw)).toMatchObject({ version: 2, encrypted_session: expect.any(String) });

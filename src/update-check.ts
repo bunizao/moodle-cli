@@ -7,7 +7,7 @@ import { realpathSync } from "node:fs";
 import { arch, homedir, platform } from "node:os";
 import { join } from "node:path";
 import { CONFIG_DIR_NAME } from "./constants.js";
-import { findExecutable, selfCommand, type SelfCommand } from "./mcp/self-command.js";
+import { findExecutable, selfCommand, spawnTarget, type SelfCommand } from "./mcp/self-command.js";
 import { fetchLatestVersion, GITHUB_RELEASES_URL, isNewerVersion, standaloneAssetUrl, standaloneUpdateHint, updateHint, UPDATE_CHECK_TTL_MS, UPDATE_RETRY_MS, type LatestVersionRecord } from "./update-core.js";
 import { VERSION } from "./version.js";
 
@@ -188,7 +188,10 @@ export interface UpdateReport {
 /** Upgrade the package with its own installer, then let the new binary redeploy the Worker. */
 export async function runUpdate(options: RunUpdateOptions): Promise<UpdateReport> {
   // Installer and deploy chatter goes to stderr, so `moodle update --json` keeps stdout for its report.
-  const run = options.runCommand ?? ((command: string, args: string[]) => spawnSync(command, args, { stdio: ["inherit", 2, "inherit"], env: options.env }));
+  const run = options.runCommand ?? ((command: string, args: string[]) => {
+    const target = spawnTarget(command, args);
+    return spawnSync(target.command, target.args, { stdio: ["inherit", 2, "inherit"], env: options.env, shell: target.shell });
+  });
   const install = detectInstallKind(options.argv, options.execPath);
   const latest = await refreshLatestVersion(options);
   const report: UpdateReport = { current: VERSION, latest, install, updated: false, deployed: false, ok: true, note: "" };

@@ -6,6 +6,9 @@ import { UPDATE_CHECK_TTL_MS, UPDATE_RETRY_MS } from "../src/update-core.js";
 import { detectInstallKind, installCommand, npmGlobalPrefix, readUpdateCache, refreshLatestVersion, replaceStandalone, startupCheckApplies, startupUpdateNotice, updateCachePath, writeUpdateCache } from "../src/update-check.js";
 import { VERSION } from "../src/version.js";
 
+// Windows has no POSIX permission bits; chmod there only toggles read-only.
+const posixModes = process.platform !== "win32";
+
 const NOW = 1_700_000_000_000;
 
 let homeDir: string;
@@ -60,7 +63,7 @@ describe("startupUpdateNotice", () => {
     expect(out.lines).toEqual([]);
   });
 
-  it("keeps the cache private to the user", async () => {
+  it.skipIf(!posixModes)("keeps the cache private to the user", async () => {
     await writeUpdateCache({ latest: "1.0.0", checked_at: NOW }, homeDir);
     const file = updateCachePath(homeDir);
     expect(JSON.parse(await readFile(file, "utf8"))).toEqual({ latest: "1.0.0", checked_at: NOW });
@@ -92,7 +95,7 @@ describe("replaceStandalone", () => {
     expect(await replaceStandalone(execPath, "2.0.0", fetchImpl, { platform: "darwin", arch: "arm64" }, file => { probed.push(file); return "2.0.0\n"; })).toBeNull();
     expect(probed).toEqual([expect.stringMatching(/moodle\.\d+\.download$/u)]);
     expect(await readFile(execPath, "utf8")).toBe("new binary");
-    expect((await stat(execPath)).mode & 0o111).toBe(0o111);
+    if (posixModes) expect((await stat(execPath)).mode & 0o111).toBe(0o111);
     expect(await readdir(homeDir)).toEqual(["moodle"]);
   });
 
@@ -139,6 +142,10 @@ describe("detectInstallKind", () => {
 
 describe("runUpdate", () => {
   it("installs with the detected package manager and deploys through the updated install itself", async () => {
+    // The global layout differs per host, and the prefix is read from the running script.
+    const [script, prefix] = process.platform === "win32"
+      ? ["C:\\Users\\u\\AppData\\Roaming\\npm\\node_modules\\moodle-cli\\dist\\moodle.js", "C:\\Users\\u\\AppData\\Roaming\\npm"]
+      : ["/usr/local/lib/node_modules/moodle-cli/dist/moodle.js", "/usr/local"];
     vi.resetModules();
     vi.doMock("../src/mcp/self-command.js", async (importOriginal) => ({
       ...(await importOriginal<typeof import("../src/mcp/self-command.js")>()),
@@ -151,7 +158,7 @@ describe("runUpdate", () => {
       env: {},
       now: () => NOW,
       fetchImpl: async () => Response.json({ latest: "99.0.0" }),
-      argv: ["/usr/bin/node", "/usr/local/lib/node_modules/moodle-cli/dist/moodle.js"],
+      argv: ["/usr/bin/node", script],
       execPath: "/usr/bin/node",
       workerBehind: false,
       runCommand: (command, args) => { calls.push([command, ...args]); return { status: 0 } as never; },
@@ -160,8 +167,7 @@ describe("runUpdate", () => {
     vi.doUnmock("../src/mcp/self-command.js");
 
     expect(report).toMatchObject({ current: VERSION, latest: "99.0.0", install: "npm", updated: true, deployed: true, ok: true });
-    const script = "/usr/local/lib/node_modules/moodle-cli/dist/moodle.js";
-    expect(calls).toEqual([["/bin/npm", "install", "-g", "--prefix", "/usr/local", "moodle-cli@99.0.0"], ["/usr/bin/node", script, "--version"], ["/usr/bin/node", script, "mcp", "deploy", "--yes"]]);
+    expect(calls).toEqual([["/bin/npm", "install", "-g", "--prefix", prefix, "moodle-cli@99.0.0"], ["/usr/bin/node", script, "--version"], ["/usr/bin/node", script, "mcp", "deploy", "--yes"]]);
     expect((await readUpdateCache(homeDir)).latest).toBe("99.0.0");
   });
 

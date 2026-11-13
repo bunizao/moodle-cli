@@ -53,8 +53,11 @@ describe("NodeReleaseMaterializer", () => {
       previousTokensExpireAt: 1_800_000_000_000,
     });
 
-    expect((await stat(release.artifactDirectory)).mode & 0o777).toBe(0o700);
-    expect((await stat(release.secretsFilePath)).mode & 0o777).toBe(0o600);
+    if (process.platform !== "win32") {
+      // Windows has no POSIX permission bits; chmod there only toggles read-only.
+      expect((await stat(release.artifactDirectory)).mode & 0o777).toBe(0o700);
+      expect((await stat(release.secretsFilePath)).mode & 0o777).toBe(0o600);
+    }
     const config = JSON.parse(await readFile(release.wranglerConfigPath, "utf8")) as Record<string, unknown>;
     expect(config).toMatchObject({
       name: PLAN.intent.workerName,
