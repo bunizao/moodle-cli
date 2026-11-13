@@ -162,7 +162,7 @@ export function formatDownloadResult(result: DownloadResult, cwd = process.cwd()
   const shown = (file: string) => {
     const relative = path.relative(cwd, file);
     if (!relative) return ".";
-    return relative && !relative.startsWith("..") && !path.isAbsolute(relative) ? `./${relative}` : file;
+    return relative && !relative.startsWith("..") && !path.isAbsolute(relative) ? `.${path.sep}${relative}` : file;
   };
   const lines: string[] = [];
   const saved = result.files;
@@ -532,7 +532,7 @@ export function formatSyncResult(result: SyncResult, cwd = process.cwd()): strin
   const shown = (file: string) => {
     const relative = path.relative(cwd, file);
     if (!relative) return ".";
-    return !relative.startsWith("..") && !path.isAbsolute(relative) ? `./${relative}` : file;
+    return !relative.startsWith("..") && !path.isAbsolute(relative) ? `.${path.sep}${relative}` : file;
   };
   const lines: string[] = [];
   for (const unit of result.units) {
