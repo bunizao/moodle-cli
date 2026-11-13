@@ -454,7 +454,7 @@ export function buildProgram(io: CliIO = {}): Command {
       const html = await (await client.requestAbsolute(url)).text();
       stdout.write(`${redactSesskey(html)}\n`);
     });
-  addOutputOptions(mutating(program.command("update").description("Update the package and redeploy the managed MCP Worker when either is behind.")))
+  addOutputOptions(mutating(program.command("update").description("Update the package and redeploy the managed MCP Worker when either is behind.").summary("Update the CLI and its MCP Worker")))
     .option("--check", "Report versions without installing or deploying.")
     .option("--quiet", "Print nothing; refresh the cached version only.")
     .action(async (options: OutputCommandOptions & { check?: boolean; quiet?: boolean }) => {
@@ -814,6 +814,7 @@ export function buildProgram(io: CliIO = {}): Command {
       .command("download")
       .aliases(["dl", "get"])
       .description("Download files: one activity, a whole section, or a file URL. With no argument, browse.")
+      .summary("Download an activity, a section or a file URL")
       .argument("[ref...]", "Activity id, same-site activity/section/file URL, or UNIT TASK phrase")
       .option("--to <directory>", "Destination directory; created when missing.")
       .option("--dest <path>", "Exact path for a single downloaded file.")
@@ -1304,7 +1305,7 @@ export function buildProgram(io: CliIO = {}): Command {
     },
   );
 
-  const skills = program.command("skills").description("Show skill metadata or delegate to the shared skills CLI.").summary("Agent skill metadata");
+  const skills = program.command("skills").description("Show skill metadata or delegate to the shared skills CLI.").summary("Install the Moodle skill for coding agents");
   skills.action(() => {
     stdout.write(`${formatSkillSummary()}\n`);
   });
@@ -1319,18 +1320,21 @@ export function buildProgram(io: CliIO = {}): Command {
     for (const name of names) for (const command of program.commands) if (command.name() === name) helpSection(command, title);
   }
   examples(program, [
-    "moodle  # today: due items, alerts and news",
-    "moodle UNIT grades",
+    "moodle sync  # every unit's files, kept current",
     "moodle submit UNIT \"Assignment 2\" report.pdf",
+    "moodle skills add  # let your coding agent read Moodle",
   ]);
   return program;
 }
 
-// Grouped the way `gh` does: what a person reaches for daily, then the rest, then what only an agent runs.
+// Ordered by what the CLI saves over the web UI: bulk files and submitting first, then
+// handing Moodle to an agent, then reading, which the browser already does well.
 const HELP_SECTIONS: Readonly<Record<string, readonly string[]>> = {
-  "Core commands": ["due", "news", "find", "open", "submit", "submission", "attempt", "complete", "quiz", "messages", "calendar", "courses", "activities", "grades", "threads", "forums"],
-  "Additional commands": ["sync", "download", "user", "todo", "alerts", "overview", "auth", "doctor", "update", "coverage", "completion", "uninstall"],
-  "Agent commands": ["mcp", "commands", "skills"],
+  "Get work done": ["sync", "download", "submit", "submission", "due", "grades", "complete", "quiz"],
+  "Use with an agent": ["skills", "mcp", "commands"],
+  "Browse and read": ["find", "open", "news", "messages", "calendar", "courses", "activities", "attempt", "threads", "forums"],
+  "Set up": ["auth", "doctor", "update", "coverage", "completion", "uninstall"],
+  "Older views": ["overview", "todo", "alerts", "user"],
 };
 
 export async function runCli(argv = process.argv, io: CliIO = {}): Promise<number> {
