@@ -2,13 +2,13 @@ import type { Ui } from "@bunizao/cli-kit";
 
 export const MOODLE_TAGLINE = "Read Moodle and submit work from the command line.";
 
-// An 8-pixel lowercase face drawn with half blocks, two pixel rows per terminal row,
-// so the bowls stay round at four lines tall. Kept as lines so the spacing survives as typed.
+// A light, rounded monoline face in box-drawing characters. Horizontal strokes sit at
+// mid-row, so the half stems (╵) end exactly on the baseline the bowls close on.
 export const MOODLE_WORDMARK = [
-  "                       █ █",
-  "▄▄▄ ▄▄  ▄▄▄   ▄▄▄   ▄▄▄█ █  ▄▄▄",
-  "█  █  █ █   █ █   █ █   █ █ █▄▄▄█",
-  "█  █  █ ▀▄▄▄▀ ▀▄▄▄▀ ▀▄▄▄█ █ ▀▄▄▄▄",
+  "                        │ │",
+  "╭──┬──╮ ╭───╮ ╭───╮ ╭───┤ │  ╭───╮",
+  "│  │  │ │   │ │   │ │   │ │  ├───╯",
+  "╵  ╵  ╵ ╰───╯ ╰───╯ ╰───┘ ╰─ ╰───╴",
 ].join("\n");
 
 let shown = false;
