@@ -14,8 +14,7 @@ Try  moodle due --days 30
 `;
 
 exports[`shared intent contract > pins the home, section, item and grades screens at 80 columns > home 1`] = `
-"Alex · Tue 15 Sep · Europe/Berlin
-https://moodle.example.edu
+"Alex  Tue 15 Sep · Europe/Berlin · moodle.example.edu
 
 Due soon
 ┌─────┬────────┬────────┬───────────┬───────────────────────────────┐
@@ -27,13 +26,12 @@ Due soon
 │ 401 │        │ assign │ Mini Test │ in 4 days · Sat 19 Sep, 15:55 │
 └─────┴────────┴────────┴───────────┴───────────────────────────────┘
 
-Unread  nothing
-
-Units  DB240 · algo-2 · STATS · Ethics in Computing
-  DB240 · Week 7
-  algo-2 · Week 7
-  STATS · Week 7
-  Ethics in Computing · Week 7
+Unread   nothing
+Units    DB240 · algo-2 · STATS · Ethics in Computing
+Current  DB240 · Week 7
+         algo-2 · Week 7
+         STATS · Week 7
+         Ethics in Computing · Week 7
 
 Try  moodle due --days 30
      moodle grades"

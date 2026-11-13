@@ -47,7 +47,7 @@ import { realpathSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createMoodleClient, type MoodleClient } from "./client.js";
-import { refreshLatestVersion, runUpdate, startupUpdateNotice } from "./update-check.js";
+import { refreshLatestVersion, runUpdate, updateNotice, updateOffer, type UpdateOffer } from "./update-check.js";
 import { isNewerVersion } from "./update-core.js";
 import { correctBaseUrl, loadConfig, saveBaseUrl } from "./config.js";
 import { discoverSite } from "./site-discovery.js";
@@ -118,6 +118,10 @@ interface CliIO {
   homeDir?: string;
   rootArgs?: string[];
   mcpService?: McpCommandService;
+  /** Set by runCli: the newer release a screen may show, and whether one did. */
+  update?: UpdateOffer;
+  /** Set by buildProgram: ends the loading spinner before anything else is written. */
+  indicator?: { settle: () => void };
 }
 
 interface Runtime {
@@ -182,6 +186,8 @@ export function buildProgram(io: CliIO = {}): Command {
   // every call site honest about it.
   const screen = (data: Record<string, unknown>, options: OutputCommandOptions = {}, intent?: ToolName) => renderScreen(data, {
     intent,
+    // The dashboard is where a person looks, so it carries the offer on every run.
+    update: data.home && io.update ? (io.update.shown = true, io.update) : undefined,
     // Terminals without a size report 0 columns; the default is better than 40.
     width: (stdout as Partial<NodeJS.WriteStream>).columns || undefined,
     color: !process.env.NO_COLOR && program.opts().color !== false && outputFormat({ ...program.opts(), ...options }, stdout) === "table",
@@ -194,31 +200,53 @@ export function buildProgram(io: CliIO = {}): Command {
   const count = (key: "limit" | "days", local?: number, fallback?: number) => (program.opts()[key] as number | undefined) ?? local ?? fallback;
 
   const configOptions = () => ({ env: io.env, cwd: io.cwd, homeDir: io.homeDir, stdin: io.stdin, stderr: stderr as NodeJS.WritableStream, fetch: io.fetchImpl });
+  // One animated spinner for the whole command, however many request batches run.
+  // Batches arrive a few milliseconds apart, so ending it between them reads as flicker;
+  // it waits a moment for the next batch and is settled before any output instead.
+  let inflight = 0;
+  let spinner: ReturnType<Ui["spinner"]> | undefined;
+  let showTimer: ReturnType<typeof setTimeout> | undefined;
+  let hideTimer: ReturnType<typeof setTimeout> | undefined;
+  const settle = () => {
+    clearTimeout(showTimer);
+    clearTimeout(hideTimer);
+    showTimer = hideTimer = undefined;
+    spinner?.clear();
+    spinner = undefined;
+  };
+  if (io.indicator) io.indicator.settle = settle;
+  let busy = false;
   const runtime: Runtime = {
     client: null,
-    busy: false,
+    get busy() { return busy; },
+    // A command's own spinner or prompt takes stderr over from the loading spinner.
+    set busy(value: boolean) { if (value) settle(); busy = value; },
     screen,
     count,
     baseUrl: async () => (await loadConfig(configOptions())).baseUrl,
     getClient: async () => {
       if (!runtime.client) {
         let baseUrl = await runtime.baseUrl();
-        // One indicator for the whole command, however many requests run at once.
-        let inflight = 0;
-        let displayed = false;
-        let timer: ReturnType<typeof setTimeout> | undefined;
         const connect = () => createMoodleClient(baseUrl, {
           env: io.env,
           fetchImpl: async (input, init) => {
             const started = Date.now();
-            const tty = Boolean("isTTY" in stderr && stderr.isTTY) && !program.opts().json && !io.rootArgs?.includes("--json") && !runtime.busy;
-            if (tty && inflight++ === 0) timer = setTimeout(() => { displayed = true; stderr.write("Loading Moodle…"); }, 300);
+            const tty = Boolean("isTTY" in stderr && stderr.isTTY) && !program.opts().json && !program.opts().verbose && !io.rootArgs?.includes("--json") && !runtime.busy;
+            if (tty && inflight++ === 0) {
+              clearTimeout(hideTimer);
+              hideTimer = undefined;
+              if (!spinner && !showTimer) {
+                showTimer = setTimeout(() => {
+                  showTimer = undefined;
+                  if (inflight === 0 || runtime.busy) return;
+                  spinner = createUi({ input: io.stdin ?? process.stdin, output: stderr as Writable, interactive: true }).spinner();
+                  spinner.start("Loading Moodle");
+                }, 300);
+              }
+            }
             try { return await (io.fetchImpl ?? fetch)(input, init); }
             finally {
-              if (tty && --inflight === 0) {
-                clearTimeout(timer);
-                if (displayed) { stderr.write("\r\x1b[2K"); displayed = false; }
-              }
+              if (tty && --inflight === 0 && spinner) hideTimer = setTimeout(settle, 250);
               if (program.opts().verbose) {
                 const url = new URL(input instanceof Request ? input.url : String(input));
                 const methods = url.pathname.endsWith("/lib/ajax/service.php") ? url.searchParams.get("info") ?? "" : "";
@@ -262,6 +290,7 @@ export function buildProgram(io: CliIO = {}): Command {
       return runtime.client;
     },
     output: async (data, formatter, options, hints = true) => {
+      settle();
       const merged = { ...program.opts(), ...options } as OutputCommandOptions;
       const format = outputFormat(merged, stdout);
       const human = format === "table" ? formatter() : "";
@@ -1318,12 +1347,18 @@ export async function runCli(argv = process.argv, io: CliIO = {}): Promise<numbe
       format: errorOutputFormat(args, stdout),
     }) === "human",
   });
+  const indicator = { settle: () => {} };
+  let update: UpdateOffer | undefined;
   try {
-    await startupUpdateNotice(args, stderr, { homeDir: io.homeDir, env: io.env });
-    await parseWithPrompts(() => buildProgram({ ...io, rootArgs: args }), args, { ui, fillers: { unit: pickUnit(io, ui) } });
+    update = await updateOffer(args, { homeDir: io.homeDir, env: io.env });
+    await parseWithPrompts(() => buildProgram({ ...io, rootArgs: args, update, indicator }), args, { ui, fillers: { unit: pickUnit(io, ui) } });
+    indicator.settle();
+    await updateNotice(update, stderr, { homeDir: io.homeDir });
     return 0;
   } catch (error) {
+    indicator.settle();
     if (isInformationalExit(error)) {
+      await updateNotice(update, stderr, { homeDir: io.homeDir });
       return 0;
     }
     const format = errorOutputFormat(args, stdout);

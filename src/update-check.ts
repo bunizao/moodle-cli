@@ -70,20 +70,40 @@ export function startupCheckApplies(args: readonly string[], env: NodeJS.Process
   return first === undefined || !QUIET_COMMANDS.has(first);
 }
 
+export interface UpdateOffer {
+  current: string;
+  latest: string;
+  hint: string;
+  /** Set when a screen already showed the offer, so the closing notice stays quiet. */
+  shown: boolean;
+}
+
 /**
- * Print a one-line notice when a newer release is cached, at most once a day,
- * and refresh a stale cache in a detached child so no command waits on npm.
+ * The newer release the cache already knows of. A stale cache is refreshed in a
+ * detached child, so no command waits on npm; the answer shows up on a later run.
  */
-export async function startupUpdateNotice(args: readonly string[], stderr: { write(chunk: string): unknown }, options: UpdateCheckOptions = {}): Promise<void> {
+export async function updateOffer(args: readonly string[], options: UpdateCheckOptions = {}): Promise<UpdateOffer | undefined> {
   const env = options.env ?? process.env;
-  if (!startupCheckApplies(args, env)) return;
+  if (!startupCheckApplies(args, env)) return undefined;
   const now = (options.now ?? Date.now)();
   const cache = await readUpdateCache(options.homeDir);
-  if (isNewerVersion(cache.latest, VERSION) && now - (cache.notified_at ?? 0) >= UPDATE_CHECK_TTL_MS) {
-    stderr.write(`${selfCommand().args.length ? updateHint(VERSION, cache.latest!) : standaloneUpdateHint(VERSION, cache.latest!)}\n`);
-    await writeUpdateCache({ ...cache, notified_at: now }, options.homeDir);
-  }
   if (refreshDue(cache, now)) spawnRefresh(env);
+  if (!isNewerVersion(cache.latest, VERSION)) return undefined;
+  const hint = selfCommand().args.length ? updateHint(VERSION, cache.latest!) : standaloneUpdateHint(VERSION, cache.latest!);
+  return { current: VERSION, latest: cache.latest!, hint, shown: false };
+}
+
+/**
+ * Print the offer after the command's own output, at most once a day. Printed first,
+ * it scrolled away above the screen or sat under a loading spinner and went unread.
+ */
+export async function updateNotice(offer: UpdateOffer | undefined, stderr: { write(chunk: string): unknown }, options: UpdateCheckOptions = {}): Promise<void> {
+  if (!offer || offer.shown) return;
+  const now = (options.now ?? Date.now)();
+  const cache = await readUpdateCache(options.homeDir);
+  if (now - (cache.notified_at ?? 0) < UPDATE_CHECK_TTL_MS) return;
+  stderr.write(`\n${offer.hint}\n`);
+  await writeUpdateCache({ ...cache, notified_at: now }, options.homeDir);
 }
 
 function spawnRefresh(env: NodeJS.ProcessEnv): void {
