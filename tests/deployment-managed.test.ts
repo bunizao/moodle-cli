@@ -167,6 +167,10 @@ describe("ManagedMcpDeployment planning", () => {
 
     const rotation = await new ManagedMcpDeployment(current).plan({ ...INTENT, rotateToken: true });
     expect(rotation).toMatchObject({ operation: "rotate", uploadCandidate: true });
+
+    // Okta secrets ride on a release, so adding them to an unchanged Worker uploads one.
+    const okta = await new ManagedMcpDeployment(current).plan({ ...INTENT, okta: true });
+    expect(okta).toMatchObject({ operation: "update", uploadCandidate: true });
   });
 
   it("rejects invalid roots and workers owned by another deployment", async () => {

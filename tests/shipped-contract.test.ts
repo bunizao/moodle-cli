@@ -17,6 +17,8 @@ describe("shipped vocabulary and guidance", () => {
     expect((await readdir(join(SKILL, "references"))).sort()).toEqual(["commands.md", "setup-and-auth.md", "usage.md"]);
   });
   it("checks every documented full command and flag in the remaining references", async () => {
+    // Flags of okta and wrangler, which the Okta Worker setup documents.
+    const OTHER_TOOLS_FLAGS = ["--dangerously-print-password-and-totp-secret", "--name"];
     const tree = describeProgram(buildProgram());
     const commands = flatten(tree.commands);
     const rootOptions = [...buildProgram().options.map(o => o.flags), "--help"];
@@ -24,7 +26,10 @@ describe("shipped vocabulary and guidance", () => {
     for (const file of await readdir(join(SKILL, "references"))) {
       const content = await readFile(join(SKILL, "references", file), "utf8");
       for (const match of content.matchAll(/\| (moodle [a-z][a-z -]+) \|/gu)) expect(commands.some(c => c.path === match[1])).toBe(true);
-      for (const match of content.matchAll(/(?<![\w/])--[a-z][a-z-]+/gu)) expect(allFlags, `${file}: ${match[0]}`).toContain(match[0]);
+      for (const match of content.matchAll(/(?<![\w/])--[a-z][a-z-]+/gu)) {
+        if (OTHER_TOOLS_FLAGS.includes(match[0])) continue;
+        expect(allFlags, `${file}: ${match[0]}`).toContain(match[0]);
+      }
     }
   });
   it("contains no institution literals in owned source, generated guidance or public docs", async () => {

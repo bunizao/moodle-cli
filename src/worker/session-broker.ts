@@ -9,9 +9,27 @@ import type { MobileToken } from "../mobile-login-core.js";
 import { FetchMoodleSessionUpstream } from "./moodle-upstream.js";
 import { problemResponse } from "./problems.js";
 import { WORKER_SERVICE_ID, WORKER_SERVICE_VERSION } from "./http.js";
-import { sameSiteRoot } from "../site-root.js";
+import { sameSiteRoot, siteUrl } from "../site-root.js";
+import { signIn, type SignInOptions, type SignInResult } from "okta-auth-cli";
+import {
+  afterFailure,
+  afterOtherSignIn,
+  afterSuccess,
+  MIN_ATTEMPT_INTERVAL_MS,
+  moodleCookie,
+  nextAttemptAt,
+  OktaAccountMismatch,
+  oktaSecrets,
+  readyToAttempt,
+  secretsDigest,
+  stateFor,
+  type OktaSecretsEnv,
+  type OktaState,
+} from "./okta-sign-in.js";
 
 const SESSION_STORAGE_KEY = "session";
+const OKTA_STORAGE_KEY = "okta";
+const LOGIN_PATH = "/login/index.php";
 const DEFAULT_TOUCH_DELAY_MS = 30 * 60 * 1000;
 const MIN_TOUCH_DELAY_MS = 60 * 1000;
 const MAX_BACKOFF_MS = 30 * 60 * 1000;
@@ -35,7 +53,7 @@ export interface DurableObjectStateLike {
   storage: DurableObjectStorageLike;
 }
 
-export interface SessionBrokerEnv {
+export interface SessionBrokerEnv extends OktaSecretsEnv {
   MOODLE_ORIGIN: string;
   SESSION_ENCRYPTION_KEY: string;
   SESSION_ENCRYPTION_KEY_PREVIOUS?: string;
@@ -87,7 +105,12 @@ export interface SessionBrokerDependencies {
   upstream: MoodleSessionUpstream;
   fetchImpl?: typeof fetch;
   now?: () => number;
+  // okta-auth's sign-in; injected in tests.
+  oktaSignIn?: (options: SignInOptions) => Promise<SignInResult>;
 }
+
+type Admission = "ok" | "revision_conflict" | "owner_claim_required";
+type AdmitFailure = Exclude<Admission, "ok"> | "unreachable" | "rejected" | "identity_unknown" | "identity_mismatch";
 
 interface StoredSession {
   cookie_value: string;
@@ -155,7 +178,7 @@ export class SessionBroker {
     // Without a usable session the connector still initializes and lists tools, so a
     // hosted client shows it as connected and every tool call says where to sign in.
     let live = session && isLive(session, this.now()) ? session : null;
-    if (session && !live) live = await this.renewOnce(session);
+    if (!live) live = await this.renewOnce(session);
     const signedIn = live !== null;
     const gateway = live
       ? this.gatewayFor(live)
@@ -220,7 +243,9 @@ export class SessionBroker {
 
   private async ready(): Promise<Response> {
     const session = await this.loadSession();
-    const health = readiness(session, this.now());
+    const secrets = oktaSecrets(this.env);
+    const okta = secrets ? stateFor(await this.readOkta(), await secretsDigest(secrets)) : null;
+    const health = readiness(session, this.now(), okta);
     const latest = await this.latestVersion(false);
     return Response.json({ ...health, version: VERSION, ...(latest ? { latest_version: latest } : {}), encryptionKeyId: (await this.keyring()).current.id, ...(this.env.SESSION_CREDENTIAL_ID ? { credentialId: this.env.SESSION_CREDENTIAL_ID } : {}) }, {
       status: health.status === "fail" ? 503 : 200,
@@ -257,23 +282,52 @@ export class SessionBroker {
 
   private async storeSession(
     input: SessionCandidate,
-    admit: (current: StoredSession | undefined) => "ok" | "revision_conflict" | "owner_claim_required",
+    admit: (current: StoredSession | undefined) => Admission,
   ): Promise<Response> {
+    const result = await this.admitSession(input, admit);
+    if (result === "unreachable") {
+      return problemResponse(503, "MOODLE_UNREACHABLE", "Service Unavailable", "Moodle could not be reached to validate the session candidate.");
+    }
+    if (result === "rejected") {
+      return problemResponse(422, "SESSION_CANDIDATE_INVALID", "Unprocessable Content", "Moodle rejected the session candidate.");
+    }
+    if (result === "identity_unknown") {
+      return problemResponse(422, "SESSION_IDENTITY_UNKNOWN", "Unprocessable Content", "Moodle did not provide a valid account identity.");
+    }
+    if (result === "identity_mismatch") {
+      return problemResponse(409, "SESSION_ACCOUNT_MISMATCH", "Conflict", "This Worker belongs to another Moodle account. Create a separate deployment for that account.");
+    }
+    if (result === "revision_conflict") {
+      return problemResponse(409, "SESSION_REVISION_CONFLICT", "Conflict", "The remote Moodle session has a newer revision.");
+    }
+    if (result === "owner_claim_required") {
+      return problemResponse(403, "OWNER_CLAIM_REQUIRED", "Forbidden", "This Worker has no owner yet. Sign in with the pairing code from the deployment.");
+    }
+    await this.liftOktaRetryCap();
+    const renewal = result.mobile_token || await this.captureMobileToken(result) ? "mobile_token" : "sign_in";
+    return Response.json(
+      { status: "accepted", revision: result.revision, lastVerifiedAt: new Date(result.last_verified_at).toISOString(), renewal },
+      { status: 201, headers: { "cache-control": "no-store" } },
+    );
+  }
+
+  // Validates a candidate with Moodle and stores it when `admit` and the account
+  // check allow. Every way a session arrives goes through here.
+  private async admitSession(
+    input: SessionCandidate,
+    admit: (current: StoredSession | undefined) => Admission,
+  ): Promise<StoredSession | AdmitFailure> {
     let validation: SessionValidationSuccess | SessionValidationFailure;
     try {
       validation = await this.dependencies.upstream.validate(input);
     } catch {
-      return problemResponse(503, "MOODLE_UNREACHABLE", "Service Unavailable", "Moodle could not be reached to validate the session candidate.");
+      return "unreachable";
     }
-    if (!validation.valid) {
-      return problemResponse(422, "SESSION_CANDIDATE_INVALID", "Unprocessable Content", "Moodle rejected the session candidate.");
-    }
+    if (!validation.valid) return "rejected";
 
     const now = this.now();
     const nextAlarmAt = nextTouchAt(now, validation.remainingSeconds);
-    if (!Number.isSafeInteger(validation.moodleUserId) || validation.moodleUserId <= 0) {
-      return problemResponse(422, "SESSION_IDENTITY_UNKNOWN", "Unprocessable Content", "Moodle did not provide a valid account identity.");
-    }
+    if (!Number.isSafeInteger(validation.moodleUserId) || validation.moodleUserId <= 0) return "identity_unknown";
     const result = await this.transaction(async (storage) => {
       const current = await this.readSession(storage);
       const admission = admit(current);
@@ -299,22 +353,9 @@ export class SessionBroker {
       await this.writeSession(storage, session);
       return session;
     });
-
-    if (result === "identity_mismatch") {
-      return problemResponse(409, "SESSION_ACCOUNT_MISMATCH", "Conflict", "This Worker belongs to another Moodle account. Create a separate deployment for that account.");
-    }
-    if (result === "revision_conflict") {
-      return problemResponse(409, "SESSION_REVISION_CONFLICT", "Conflict", "The remote Moodle session has a newer revision.");
-    }
-    if (result === "owner_claim_required") {
-      return problemResponse(403, "OWNER_CLAIM_REQUIRED", "Forbidden", "This Worker has no owner yet. Sign in with the pairing code from the deployment.");
-    }
+    if (typeof result === "string") return result;
     await this.state.storage.setAlarm(nextAlarmAt);
-    const renewal = result.mobile_token || await this.captureMobileToken(result) ? "mobile_token" : "sign_in";
-    return Response.json(
-      { status: "accepted", revision: result.revision, lastVerifiedAt: new Date(result.last_verified_at).toISOString(), renewal },
-      { status: 201, headers: { "cache-control": "no-store" } },
-    );
+    return result;
   }
 
   private async touchNow(): Promise<Response> {
@@ -365,7 +406,9 @@ export class SessionBroker {
       if (!sameSession(latest, current)) return latest;
       // A kept token retries on a slow schedule, in case Moodle was only briefly
       // unwell; without one, only a new sign-in brings the session back.
-      const retryAt = latest.mobile_token && latest.failure_count < MAX_MINT_RETRIES ? this.now() + MINT_RETRY_MS : null;
+      const mintRetryAt = latest.mobile_token && latest.failure_count < MAX_MINT_RETRIES ? this.now() + MINT_RETRY_MS : null;
+      const oktaRetryAt = await this.oktaRetryAt();
+      const retryAt = mintRetryAt !== null && oktaRetryAt !== null ? Math.min(mintRetryAt, oktaRetryAt) : mintRetryAt ?? oktaRetryAt;
       const expired = {
         ...latest,
         last_error_code: "SESSION_EXPIRED",
@@ -423,11 +466,86 @@ export class SessionBroker {
     });
   }
 
-  // Concurrent reads that all find the session dead share one mint, so a single
-  // outage never spends Moodle's one-key-per-six-minutes allowance twice.
-  private renewOnce(current: StoredSession): Promise<StoredSession | null> {
-    this.renewing ??= this.renewFromMobileToken(current).finally(() => { this.renewing = null; });
+  // Concurrent reads that all find the session dead share one renewal, so a
+  // single outage never spends Moodle's one-key-per-six-minutes allowance, or an
+  // Okta one-time code, twice.
+  private renewOnce(current: StoredSession | undefined): Promise<StoredSession | null> {
+    this.renewing ??= this.renew(current).finally(() => { this.renewing = null; });
     return this.renewing;
+  }
+
+  // The mobile token first: it costs one Moodle call and no Okta sign-in.
+  private async renew(current: StoredSession | undefined): Promise<StoredSession | null> {
+    return (current && await this.renewFromMobileToken(current)) || this.renewFromOkta();
+  }
+
+  // With OKTA_USERNAME, OKTA_PASSWORD and OKTA_TOTP_SECRET set, the Worker signs
+  // in to Moodle through Okta itself. Refusals that retrying cannot fix block
+  // until the secrets change; other failures back off and stop after a few.
+  private async renewFromOkta(): Promise<StoredSession | null> {
+    const secrets = oktaSecrets(this.env);
+    if (!secrets) return null;
+    const now = this.now();
+    const digest = await secretsDigest(secrets);
+    const state = stateFor(await this.readOkta(), digest);
+    if (!readyToAttempt(state, now)) return null;
+    // Record the attempt before making it, so a restarted object never sends a
+    // second one-time code inside the same window.
+    let attempted: OktaState = { ...state, next_attempt_at: now + MIN_ATTEMPT_INTERVAL_MS };
+    await this.writeOkta(attempted);
+
+    try {
+      const result = await (this.dependencies.oktaSignIn ?? signIn)({
+        url: siteUrl(this.env.MOODLE_ORIGIN, LOGIN_PATH),
+        ...secrets,
+        deviceToken: state.device_token,
+        oktaSession: state.okta_session,
+        fetch: this.dependencies.fetchImpl,
+        now: this.now,
+      });
+      attempted = { ...attempted, device_token: result.deviceToken ?? state.device_token, okta_session: result.oktaSession };
+      const cookie = moodleCookie(result.cookies, this.env.MOODLE_ORIGIN);
+      if (!cookie) throw new Error("Okta's sign-in left no Moodle session cookie.");
+      const stored = await this.admitSession(
+        { moodleOrigin: this.env.MOODLE_ORIGIN, cookieName: cookie.name, cookieValue: cookie.value, expectedRevision: null },
+        // The owner set these secrets, which is claim enough for a fresh Worker.
+        () => "ok",
+      );
+      if (stored === "identity_mismatch") throw new OktaAccountMismatch();
+      if (typeof stored === "string") throw new Error(`Moodle did not accept the session (${stored}).`);
+      await this.writeOkta(afterSuccess(attempted, now));
+      if (!stored.mobile_token) await this.captureMobileToken(stored);
+      return await this.loadSession() ?? stored;
+    } catch (error) {
+      await this.writeOkta(afterFailure(attempted, error, now));
+      return null;
+    }
+  }
+
+  /** When an Okta sign-in may next run, or null when none is set up or allowed. */
+  private async oktaRetryAt(): Promise<number | null> {
+    const secrets = oktaSecrets(this.env);
+    if (!secrets) return null;
+    const state = await this.readOkta();
+    return state && state.secrets === await secretsDigest(secrets) ? nextAttemptAt(state) : this.now();
+  }
+
+  private async liftOktaRetryCap(): Promise<void> {
+    const state = await this.readOkta();
+    if (!state) return;
+    const lifted = afterOtherSignIn(state);
+    if (lifted !== state) await this.writeOkta(lifted);
+  }
+
+  private async readOkta(): Promise<OktaState | undefined> {
+    const record = await this.state.storage.get<{ encrypted_state?: string }>(OKTA_STORAGE_KEY);
+    if (!record?.encrypted_state) return undefined;
+    return JSON.parse((await decryptValue(record.encrypted_state, await this.keyring())).value) as OktaState;
+  }
+
+  // Encrypted like the session: it holds Okta's session cookies and device token.
+  private async writeOkta(state: OktaState): Promise<void> {
+    await this.state.storage.put(OKTA_STORAGE_KEY, { encrypted_state: await encryptValue(JSON.stringify(state), await this.keyring()) });
   }
 
   // Moodle refused a cookie the record still calls live. Someone may already have
@@ -555,7 +673,8 @@ export class SessionBroker {
   }
 }
 
-function readiness(session: StoredSession | undefined, now: number) {
+// `okta` is null unless the OKTA_* secrets are set.
+function readiness(session: StoredSession | undefined, now: number, okta: OktaState | null) {
   let status: "pass" | "warn" | "fail" = "pass";
   let sessionStatus: "pass" | "warn" | "fail" = "pass";
   let sessionCode = "SESSION_VALID";
@@ -595,9 +714,17 @@ function readiness(session: StoredSession | undefined, now: number) {
         code: sessionCode,
         ...(session ? { time: new Date(session.last_verified_at).toISOString(), revision: session.revision } : {}),
         // How the session comes back after it expires: by itself, or by a new sign-in.
-        renewal: session?.mobile_token ? "mobile_token" : "sign_in",
+        renewal: session?.mobile_token ? "mobile_token" : okta && !okta.blocked ? "okta" : "sign_in",
       }],
       "moodle:upstream": [{ status: upstreamStatus, code: upstreamCode }],
+      // Codes only: never the secrets, Okta's messages or its cookies.
+      ...(okta ? {
+        "okta:sign-in": [{
+          status: okta.blocked ? "fail" : "pass",
+          code: okta.blocked ? `OKTA_${okta.blocked.toUpperCase()}` : "OKTA_READY",
+          ...(okta.blocked ? {} : { failures: okta.failures }),
+        }],
+      } : {}),
     },
   };
 }

@@ -50,6 +50,7 @@ import { createMoodleClient, type MoodleClient } from "./client.js";
 import { refreshLatestVersion, runUpdate, updateNotice, updateOffer, type UpdateOffer } from "./update-check.js";
 import { isNewerVersion } from "./update-core.js";
 import { correctBaseUrl, loadConfig, saveBaseUrl } from "./config.js";
+import { oktaConsent, oktaConsentSummary, saveOktaConsent } from "./okta.js";
 import { discoverSite } from "./site-discovery.js";
 import { AuthError, CliError, ConfigError, MoodleAPIError, UsageError, asNetworkError } from "./errors.js";
 import {
@@ -1100,17 +1101,26 @@ export function buildProgram(io: CliIO = {}): Command {
     auth
       .command("login")
       .description("Sign in through a browser the CLI controls, then capture the session.")
-      .option("--paste", "Take the MoodleSession cookie from a prompt instead of the browser store."),
+      .option("--paste", "Take the MoodleSession cookie from a prompt instead of the browser store.")
+      .option("--okta", "Sign in through the okta-auth CLI (okta-auth or okta) from now on, for sites behind Okta.")
+      .option("--no-okta", "Stop using the okta-auth CLI as a session source."),
   ).action(
-    async (options: OutputCommandOptions & { paste?: boolean }) => {
+    async (options: OutputCommandOptions & { paste?: boolean; okta?: boolean }) => {
       const baseUrl = await runtime.baseUrl();
       const humanOutput = outputFormat(options, stdout) === "table";
+      // A project's config can point base_url anywhere, so the first --okta for a
+      // site is confirmed. The choice is remembered per site, in the user's config.
+      if (options.okta === true && await oktaConsent(baseUrl, configOptions()) !== true) {
+        if (!await confirm({ summary: oktaConsentSummary(baseUrl) }, { yes: Boolean(program.opts().yes), dryRun: false, interactive: human() })) return;
+      }
+      if (options.okta !== undefined) await saveOktaConsent(baseUrl, options.okta, configOptions());
       const session = options.paste
         ? await pasteLogin(baseUrl, humanOutput)
         : await getAuthenticatedSessionWithBrowserFallback(baseUrl, {
           env: io.env,
           fetch: io.fetchImpl,
           homeDir: io.homeDir,
+          okta: options.okta,
           captureMobileToken: true,
           onBrowserOpened: humanOutput
             ? () => stderr.write("A browser window opened. Sign in there; I'll capture the session automatically.\n")
@@ -1188,11 +1198,12 @@ export function buildProgram(io: CliIO = {}): Command {
     .option("--rotate-token", "Rotate the MCP access token. The old token and every connected OAuth client stop working at once; reconnect them after.")
     .option("--rollback", "Restore the previous healthy Worker release.")
     .option("--remote-login", "Skip the local Moodle session and integrations; print a link to sign in through the Worker's remote browser. For cloud sessions without a desktop browser.")
-    .action(async (options: OutputCommandOptions & { dryRun?: boolean; repair?: boolean; rotateToken?: boolean; rotateKey?: boolean; rollback?: boolean; remoteLogin?: boolean }) => {
+    .option("--okta", "Store okta-auth's username, password and TOTP secret as Worker secrets so the Worker signs in through Okta by itself. Your university identity becomes only as safe as your Cloudflare account.")
+    .action(async (options: OutputCommandOptions & { dryRun?: boolean; repair?: boolean; rotateToken?: boolean; rotateKey?: boolean; rollback?: boolean; remoteLogin?: boolean; okta?: boolean }) => {
       const dryRun = Boolean(options.dryRun || program.opts().dryRun);
       const introduction = options.remoteLogin ? ONBOARDING_COPY.remoteIntroduction : ONBOARDING_COPY.introduction;
       if (!dryRun && !await confirm(
-        { summary: [introduction, "", ONBOARDING_COPY.credentials].join("\n") },
+        { summary: [introduction, "", ONBOARDING_COPY.credentials, ...(options.okta ? ["", ONBOARDING_COPY.oktaSecrets] : [])].join("\n") },
         {
           yes: Boolean(program.opts().yes),
           dryRun: false,
@@ -1207,6 +1218,7 @@ export function buildProgram(io: CliIO = {}): Command {
         rollback: Boolean(options.rollback),
         yes: Boolean(program.opts().yes),
         remoteLogin: Boolean(options.remoteLogin),
+        okta: Boolean(options.okta),
       });
       await outputMcpResult(runtime, result, options);
     });

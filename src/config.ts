@@ -159,9 +159,31 @@ function describeSite(site: DiscoveredSite): string {
 
 /** Save a site root to the config file in use (or the user config), keeping other settings. */
 export async function saveBaseUrl(baseUrl: string, options: ConfigOptions = {}): Promise<string> {
+  return saveConfigSetting("base_url", normalizeBaseUrl(baseUrl), options);
+}
+
+
+/** Save one top-level setting to the config file in use (or the user config), keeping the rest. */
+export async function saveConfigSetting(key: string, value: unknown, options: ConfigOptions = {}): Promise<string> {
   const loaded = await loadExistingConfig(options);
   const path = loaded.path ?? userConfigPath(options.homeDir);
-  await saveConfigFile(path, { ...loaded.config, base_url: normalizeBaseUrl(baseUrl) }, options);
+  await saveConfigFile(path, { ...loaded.config, [key]: value }, options);
+  return path;
+}
+
+/**
+ * One setting from the user's own config file, ignoring a project's config.yaml and
+ * MOODLE_CONFIG: for consent a repository someone cloned must not be able to grant.
+ */
+export async function readUserConfigSetting(key: string, options: ConfigOptions = {}): Promise<unknown> {
+  return (await readConfigFile(userConfigPath(options.homeDir), options))?.[key];
+}
+
+/** Save one setting to the user's own config file, keeping the rest of it. */
+export async function saveUserConfigSetting(key: string, value: unknown, options: ConfigOptions = {}): Promise<string> {
+  const path = userConfigPath(options.homeDir);
+  const config = await readConfigFile(path, options) ?? {};
+  await saveConfigFile(path, { ...config, [key]: value }, options);
   return path;
 }
 

@@ -28,6 +28,9 @@ export interface DeploymentIntent {
   // Worker's remote browser instead, which is how a cloud session without a desktop
   // browser sets this up.
   remoteLogin?: boolean;
+  // Store okta's username, password and TOTP secret as Worker secrets, so the
+  // Worker signs in to Moodle through Okta by itself.
+  okta?: boolean;
 }
 
 export interface RemoteWorker {
@@ -84,8 +87,9 @@ export interface WorkerReadiness {
   status: "pass" | "warn" | "fail";
   reasonCode: string | null;
   revision: number | null;
-  // How the Worker brings an expired session back: itself, or through a new sign-in.
-  renewal?: "mobile_token" | "sign_in";
+  // How the Worker brings an expired session back: itself (a Moodle mobile token,
+  // or Okta with its OKTA_* secrets), or through a new sign-in.
+  renewal?: "mobile_token" | "okta" | "sign_in";
   sessionSchemaVersion?: number;
   encryptionKeyId?: string;
   credentialId?: string;
@@ -245,7 +249,7 @@ export interface DeploymentStatus {
   readiness: "pass" | "warn" | "fail" | "unknown";
   readinessReasonCode: string | null;
   sessionRevision: number | null;
-  sessionRenewal?: "mobile_token" | "sign_in";
+  sessionRenewal?: WorkerReadiness["renewal"];
   // The recovery release serves the session bridge with OAuth switched off, so a deploy that
   // failed after promoting it leaves hosted clients unable to sign in. Say so.
   recoveryActive: boolean;
@@ -308,7 +312,9 @@ export class ManagedMcpDeployment {
 
     const rotate = (intent.rotateToken === true || intent.rotateKey === true) && credentials !== null;
     const releaseChanged = existing?.releaseDigest !== intent.releaseDigest || receipt?.restoredRelease === true;
-    const uploadCandidate = !existing || replacingExisting || releaseChanged || intent.repair === true || rotate;
+    // Secrets only reach Cloudflare with a release, so --okta needs one even when
+    // the code has not changed.
+    const uploadCandidate = !existing || replacingExisting || releaseChanged || intent.repair === true || rotate || intent.okta === true;
     return {
       intent: { ...intent },
       operation: !existing ? "create" : rotate ? "rotate" : uploadCandidate ? "update" : "reconcile",

@@ -37,6 +37,29 @@ The CLI tries these session sources:
 When no browser cookie is readable, `moodle auth login` opens the Moodle sign-in
 page and waits for the session to appear.
 
+Sites behind Okta can use the okta-auth CLI instead, only when the user asks for
+it. The npm package `okta-auth-cli` installs `okta-auth`, the Python one `okta`;
+moodle-cli runs `okta` when both are installed:
+
+```bash
+moodle auth login --okta     # sign in through okta now and on every later renewal
+moodle auth login --no-okta  # stop using okta
+```
+
+The first `--okta` for a site asks the user to confirm it, because okta sends the
+Okta password and one-time code to whichever identity provider that site redirects
+to. Never pass `--yes` for the user here; let them confirm in their own terminal.
+The choice is saved for that site's origin in the user's own config file only; a
+project's `config.yaml` or `MOODLE_CONFIG` cannot turn okta on.
+
+Without `--okta`, an installed okta-auth CLI is only read: its saved session for
+the site is reused, and `login` never runs. Background renewal never runs `login`.
+When Okta rejects the password, the CLI stops calling `login` until the user fixes
+the credentials (`okta-auth setup`, or `okta config` with the Python CLI) and runs
+`moodle auth login --okta` again; repeated attempts can lock the account. When
+`--okta` cannot sign in, the command stops with okta's reason instead of opening
+the browser; `moodle auth login --no-okta` signs in through the browser.
+
 Validate setup with:
 
 ```bash
@@ -107,6 +130,26 @@ The deploy skips the local session, renewal and client integrations.
 The connector stays connected without a session. When Moodle is not signed in or the session has expired, tool calls return `MOODLE_AUTH_REQUIRED` with `recovery.url`; pass that link to the user and retry after they sign in. Only the owner's Moodle account is accepted. Each sign-in uses about two minutes of Cloudflare Browser Run time, which the free plan limits to ten minutes a day.
 
 Never print or request the raw Moodle cookie, MCP access token, session sync token, or sesskey. An advanced operator may pipe a cookie directly to `moodle mcp session push --stdin`; do not place it in arguments or shell history.
+
+### Let the Worker sign in through Okta
+
+For a Moodle behind Okta, the Worker can sign in by itself when it holds the user's Okta username, password and TOTP secret as Worker secrets. Do this only when the user asks for it, and tell them first, plainly: their university identity then becomes only as safe as their Cloudflare account. Anyone who controls that account can read or replace the Worker and sign in as them, MFA included.
+
+With okta-auth-cli 0.3.0 or later set up (`okta-auth setup`, or `okta setup` with the Python CLI), deploy with `--okta`; it runs `export` and adds the three secrets to the same private upload as the Worker's own credentials:
+
+```bash
+moodle mcp deploy --okta
+```
+
+To add them to an existing Worker by hand instead, pipe the export straight into Wrangler; never write it to a file or print it:
+
+```bash
+okta-auth export --dangerously-print-password-and-totp-secret | npx wrangler secret bulk --name WORKER_NAME
+```
+
+Later deploys keep the secrets. Remove them with `npx wrangler secret delete OKTA_USERNAME --name WORKER_NAME`, and the same for `OKTA_PASSWORD` and `OKTA_TOTP_SECRET`.
+
+The Worker signs in when the session is missing or expired, after the mobile token if it has one, and keeps Okta's device token and session, encrypted, between runs. It never retries a rejected password or one-time code, an MFA factor other than TOTP, or a sign-in to a different Moodle account; it stops until any of the three secrets changes. Network and Okta outages back off and stop after five failures in a row, until a session arrives some other way or a secret changes. `/readyz` then shows `renewal: "okta"` and an `okta:sign-in` check: `OKTA_READY`, or `OKTA_CREDENTIALS_REJECTED`, `OKTA_PASSCODE_REJECTED`, `OKTA_MFA_UNSUPPORTED`, `OKTA_INVALID_SECRET`, `OKTA_ACCOUNT_MISMATCH` or `OKTA_RETRIES_EXHAUSTED`.
 
 ### Managing private MCP access
 
