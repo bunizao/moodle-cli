@@ -34,7 +34,7 @@ export function tryLines(commands: readonly string[]): string {
 
 // intent names the command, because an empty list is dropped from the result and would
 // otherwise leave nothing to say what came back empty.
-export function renderScreen(data: Record<string, unknown>, options: { width?: number; color?: boolean; now?: number; intent?: string } = {}): string {
+export function renderScreen(data: Record<string, unknown>, options: { width?: number; color?: boolean; now?: number; intent?: string; update?: { current: string; latest: string } } = {}): string {
   const lines: string[] = [];
   const now = options.now ?? Date.now();
   const timestamp = (value: unknown, timezone?: string) => moment(isoTime(Number(value), timezone ?? (typeof data.timezone === "string" ? data.timezone : timezoneFor().timezone)), now);
@@ -71,16 +71,44 @@ export function renderScreen(data: Record<string, unknown>, options: { width?: n
   let next = ["moodle due --days 30", "moodle grades"];
   if (data.home) {
     const h = record(data.home);
-    lines.push(`${text(h.name)} · ${moment(h.today, now)} · ${text(h.timezone)}${h.timezone_source === "site" ? "" : ` (${text(h.timezone_source)})`}`, text(h.siteurl), "");
-    rows(array(h.due), "Due soon");
-    if (array(h.calendar).length) {
-      lines.push("", theme.subject("Calendar"));
-      lines.push(table([[{ label: "When" }, e => timestamp(e.starts_at, String(h.timezone))], [{ label: "Event", flex: true }, e => text(e.name)], [{ label: "Unit" }, e => text(e.course_name)]], array(h.calendar)));
+    const width = Math.max(40, options.width || 80);
+    // One label column, so every value starts at the same place. A list wraps between
+    // its items and continues under the first value, never mid-name.
+    const LABEL = 9;
+    const field = (label: string, values: string[], tone?: Tone) => {
+      const rows: string[] = [];
+      for (const value of values) {
+        const joined = rows.length ? `${rows[rows.length - 1]} · ${value}` : value;
+        if (rows.length && LABEL + Array.from(joined).length <= width) rows[rows.length - 1] = joined;
+        else rows.push(value);
+      }
+      rows.forEach((row, index) => lines.push(`${index ? " ".repeat(LABEL) : theme.dim(label.padEnd(LABEL))}${tone ? theme.tone(tone, row) : row}`));
+    };
+    const site = text(h.siteurl).replace(/^https?:\/\//u, "").replace(/\/$/u, "");
+    const zone = `${text(h.timezone)}${h.timezone_source === "site" ? "" : ` (${text(h.timezone_source)})`}`;
+    lines.push(`${theme.subject(text(h.name))}  ${theme.dim(`${moment(h.today, now)} · ${zone} · ${site}`)}`, "");
+    const dueItems = array(h.due);
+    if (dueItems.length) {
+      rows(dueItems, "Due soon");
+      if (Number(h.total) > dueItems.length) lines.push(theme.dim(`${h.total} due items in this window; showing ${dueItems.length}.`));
+      lines.push("");
+    } else {
+      field("Due", ["nothing due soon"], "muted");
     }
-    lines.push("", `Unread  ${Object.entries(record(h.unread)).map(([k, v]) => `${v} ${k.replace(/_count$/u, "").replaceAll("_", " ")}${Number(v) === 1 ? "" : "s"}`).join(" · ") || "nothing"}`, "", `Units  ${array(h.units).map(u => text(u.code || u.name)).join(" · ")}`);
-    for (const u of array(h.units)) { const c = record(u.current_section); if (c.id) lines.push(`  ${text(u.code || u.name)} · ${text(c.name)}`); }
-    for (const e of Array.isArray(h.errors) ? h.errors : []) lines.push(`Unavailable: ${text(e)}`);
-    if (Number(h.total) > array(h.due).length) lines.push(`${h.total} due items in this window; showing ${array(h.due).length}.`);
+    if (array(h.calendar).length) {
+      lines.push(theme.subject("Calendar"));
+      lines.push(table([[{ label: "When" }, e => timestamp(e.starts_at, String(h.timezone))], [{ label: "Event", flex: true }, e => text(e.name)], [{ label: "Unit" }, e => text(e.course_name)]], array(h.calendar)), "");
+    }
+    const unread = Object.entries(record(h.unread)).filter(([, v]) => Number(v) > 0).map(([k, v]) => `${v} ${k.replace(/_count$/u, "").replaceAll("_", " ")}${Number(v) === 1 ? "" : "s"}`);
+    field("Unread", unread.length ? unread : ["nothing"], unread.length ? undefined : "muted");
+    field("Units", array(h.units).map(u => text(u.code || u.name)));
+    const current = array(h.units).filter(u => record(u.current_section).id).map(u => `${text(u.code || u.name)} · ${text(record(u.current_section).name)}`);
+    for (const [index, row] of current.entries()) field(index ? "" : "Current", [row]);
+    for (const e of Array.isArray(h.errors) ? h.errors : []) field("Missing", [text(e)], "warning");
+    if (options.update) {
+      lines.push("");
+      field("Update", [`${options.update.latest} is out, you have ${options.update.current}`, "moodle update"], "warning");
+    }
   } else if (data.conversations || options.intent === "messages") {
     lines.push(theme.subject("Messages"), table([[{ label: "ID" }, c => text(c.id)], [{ label: "Conversation", flex: true }, c => text(c.name)], [{ label: "Type" }, c => text(c.type)], [{ label: "Unread" }, c => text(c.unread_count)], [{ label: "Latest", flex: true }, c => text(array(c.messages).at(-1)?.text)]], array(data.conversations)));
     next = ["moodle messages show ID"];

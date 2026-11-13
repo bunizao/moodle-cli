@@ -47,7 +47,7 @@ import { realpathSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createMoodleClient, type MoodleClient } from "./client.js";
-import { refreshLatestVersion, runUpdate, startupUpdateNotice } from "./update-check.js";
+import { refreshLatestVersion, runUpdate, updateNotice, updateOffer, type UpdateOffer } from "./update-check.js";
 import { isNewerVersion } from "./update-core.js";
 import { correctBaseUrl, loadConfig, saveBaseUrl } from "./config.js";
 import { discoverSite } from "./site-discovery.js";
@@ -118,6 +118,10 @@ interface CliIO {
   homeDir?: string;
   rootArgs?: string[];
   mcpService?: McpCommandService;
+  /** Set by runCli: the newer release a screen may show, and whether one did. */
+  update?: UpdateOffer;
+  /** Set by buildProgram: ends the loading spinner before anything else is written. */
+  indicator?: { settle: () => void };
 }
 
 interface Runtime {
@@ -159,10 +163,13 @@ export const NOUNS: readonly NounSpec[] = [
 export function buildProgram(io: CliIO = {}): Command {
   const stdout = io.stdout ?? process.stdout;
   const stderr = io.stderr ?? process.stderr;
+  // Every result goes through here: stdout shares the screen with the loading spinner on
+  // stderr, so the spinner is erased first instead of clearing over the output later.
+  const write = (text: string) => { settle(); return stdout.write(text); };
   const program = createProgram({ name: "moodle", version: VERSION, description: MOODLE_TAGLINE });
   banner(program, MOODLE_WORDMARK);
   program.configureOutput({
-    writeOut: (text) => stdout.write(text),
+    writeOut: (text) => write(text),
     writeErr: (text) => stderr.write(text),
     outputError: () => undefined,
   });
@@ -182,6 +189,8 @@ export function buildProgram(io: CliIO = {}): Command {
   // every call site honest about it.
   const screen = (data: Record<string, unknown>, options: OutputCommandOptions = {}, intent?: ToolName) => renderScreen(data, {
     intent,
+    // The dashboard is where a person looks, so it carries the offer on every run.
+    update: data.home && io.update ? (io.update.shown = true, io.update) : undefined,
     // Terminals without a size report 0 columns; the default is better than 40.
     width: (stdout as Partial<NodeJS.WriteStream>).columns || undefined,
     color: !process.env.NO_COLOR && program.opts().color !== false && outputFormat({ ...program.opts(), ...options }, stdout) === "table",
@@ -194,31 +203,53 @@ export function buildProgram(io: CliIO = {}): Command {
   const count = (key: "limit" | "days", local?: number, fallback?: number) => (program.opts()[key] as number | undefined) ?? local ?? fallback;
 
   const configOptions = () => ({ env: io.env, cwd: io.cwd, homeDir: io.homeDir, stdin: io.stdin, stderr: stderr as NodeJS.WritableStream, fetch: io.fetchImpl });
+  // One animated spinner for the whole command, however many request batches run.
+  // Batches arrive a few milliseconds apart, so ending it between them reads as flicker;
+  // it waits a moment for the next batch and is settled before any output instead.
+  let inflight = 0;
+  let spinner: ReturnType<Ui["spinner"]> | undefined;
+  let showTimer: ReturnType<typeof setTimeout> | undefined;
+  let hideTimer: ReturnType<typeof setTimeout> | undefined;
+  const settle = () => {
+    clearTimeout(showTimer);
+    clearTimeout(hideTimer);
+    showTimer = hideTimer = undefined;
+    spinner?.clear();
+    spinner = undefined;
+  };
+  if (io.indicator) io.indicator.settle = settle;
+  let busy = false;
   const runtime: Runtime = {
     client: null,
-    busy: false,
+    get busy() { return busy; },
+    // A command's own spinner or prompt takes stderr over from the loading spinner.
+    set busy(value: boolean) { if (value) settle(); busy = value; },
     screen,
     count,
     baseUrl: async () => (await loadConfig(configOptions())).baseUrl,
     getClient: async () => {
       if (!runtime.client) {
         let baseUrl = await runtime.baseUrl();
-        // One indicator for the whole command, however many requests run at once.
-        let inflight = 0;
-        let displayed = false;
-        let timer: ReturnType<typeof setTimeout> | undefined;
         const connect = () => createMoodleClient(baseUrl, {
           env: io.env,
           fetchImpl: async (input, init) => {
             const started = Date.now();
-            const tty = Boolean("isTTY" in stderr && stderr.isTTY) && !program.opts().json && !io.rootArgs?.includes("--json") && !runtime.busy;
-            if (tty && inflight++ === 0) timer = setTimeout(() => { displayed = true; stderr.write("Loading Moodle…"); }, 300);
+            const tty = Boolean("isTTY" in stderr && stderr.isTTY) && !program.opts().json && !program.opts().verbose && !io.rootArgs?.includes("--json") && !runtime.busy;
+            if (tty && inflight++ === 0) {
+              clearTimeout(hideTimer);
+              hideTimer = undefined;
+              if (!spinner && !showTimer) {
+                showTimer = setTimeout(() => {
+                  showTimer = undefined;
+                  if (inflight === 0 || runtime.busy) return;
+                  spinner = createUi({ input: io.stdin ?? process.stdin, output: stderr as Writable, interactive: true }).spinner();
+                  spinner.start("Loading Moodle");
+                }, 300);
+              }
+            }
             try { return await (io.fetchImpl ?? fetch)(input, init); }
             finally {
-              if (tty && --inflight === 0) {
-                clearTimeout(timer);
-                if (displayed) { stderr.write("\r\x1b[2K"); displayed = false; }
-              }
+              if (tty && --inflight === 0 && spinner) hideTimer = setTimeout(settle, 250);
               if (program.opts().verbose) {
                 const url = new URL(input instanceof Request ? input.url : String(input));
                 const methods = url.pathname.endsWith("/lib/ajax/service.php") ? url.searchParams.get("info") ?? "" : "";
@@ -262,6 +293,7 @@ export function buildProgram(io: CliIO = {}): Command {
       return runtime.client;
     },
     output: async (data, formatter, options, hints = true) => {
+      settle();
       const merged = { ...program.opts(), ...options } as OutputCommandOptions;
       const format = outputFormat(merged, stdout);
       const human = format === "table" ? formatter() : "";
@@ -271,7 +303,7 @@ export function buildProgram(io: CliIO = {}): Command {
           ? `${JSON.stringify(JSON.parse(render(data, { format, fields: parseFields(data, merged.fields) })), null, merged.pretty ? 2 : undefined)}\n`
           : render(data, { format, fields: parseFields(data, merged.fields) });
       if (io.stdout && !merged.output) {
-        stdout.write(text);
+        write(text);
       } else {
         await writeOutput(text, { output: merged.output });
       }
@@ -423,9 +455,9 @@ export function buildProgram(io: CliIO = {}): Command {
       const client = await runtime.getClient();
       if (!isSiteUrl(client.baseUrl, url)) throw new UsageError("The URL must belong to the configured Moodle site.");
       const html = await (await client.requestAbsolute(url)).text();
-      stdout.write(`${redactSesskey(html)}\n`);
+      write(`${redactSesskey(html)}\n`);
     });
-  addOutputOptions(mutating(program.command("update").description("Update the package and redeploy the managed MCP Worker when either is behind.")))
+  addOutputOptions(mutating(program.command("update").description("Update the package and redeploy the managed MCP Worker when either is behind.").summary("Update the CLI and its MCP Worker")))
     .option("--check", "Report versions without installing or deploying.")
     .option("--quiet", "Print nothing; refresh the cached version only.")
     .action(async (options: OutputCommandOptions & { check?: boolean; quiet?: boolean }) => {
@@ -733,7 +765,7 @@ export function buildProgram(io: CliIO = {}): Command {
       const client = await runtime.getClient();
       const events = await client.getCalendar(count("days", options.days), options.unit ? await client.resolveCourseReference(options.unit) : undefined);
       const content = calendarIcs(events, client.baseUrl);
-      if (io.stdout && !merged.output) stdout.write(content);
+      if (io.stdout && !merged.output) write(content);
       else await writeOutput(content, { output: merged.output });
     });
 
@@ -785,6 +817,7 @@ export function buildProgram(io: CliIO = {}): Command {
       .command("download")
       .aliases(["dl", "get"])
       .description("Download files: one activity, a whole section, or a file URL. With no argument, browse.")
+      .summary("Download an activity, a section or a file URL")
       .argument("[ref...]", "Activity id, same-site activity/section/file URL, or UNIT TASK phrase")
       .option("--to <directory>", "Destination directory; created when missing.")
       .option("--dest <path>", "Exact path for a single downloaded file.")
@@ -969,7 +1002,7 @@ export function buildProgram(io: CliIO = {}): Command {
     const paint = createTheme(live && colorEnabled(stdout as { isTTY?: boolean }, io.env) && program.opts().color !== false);
     const progress = createProgressReporter({ stream: stderr as NodeJS.WritableStream, interactive: live && Boolean("isTTY" in stderr && stderr.isTTY) });
     const lines: string[] = [];
-    const emit = (line: string) => { lines.push(line); if (live) { progress.clear(); stdout.write(`${line}\n`); } };
+    const emit = (line: string) => { lines.push(line); if (live) { progress.clear(); write(`${line}\n`); } };
     runtime.busy = true;
     try {
       emit(formatCoverageCli(cli, paint));
@@ -989,9 +1022,9 @@ export function buildProgram(io: CliIO = {}): Command {
   });
   program.command("completion").description("Print shell completion for zsh, bash or fish.").addArgument(program.createArgument("<shell>", "Shell to target").choices(["zsh", "bash", "fish"])).action((shell: string) => {
     const names = program.commands.filter(c => c.name() !== "help").flatMap(c => [c.name(), ...c.aliases()]);
-    if (shell === "bash") stdout.write(`complete -W '${names.join(" ")}' moodle\n`);
-    else if (shell === "zsh") stdout.write(`#compdef moodle\n_arguments '1:command:(${names.join(" ")})' '*:reference:'\n`);
-    else if (shell === "fish") stdout.write(names.map(n => `complete -c moodle -f -a '${n}'`).join("\n") + "\n");
+    if (shell === "bash") write(`complete -W '${names.join(" ")}' moodle\n`);
+    else if (shell === "zsh") write(`#compdef moodle\n_arguments '1:command:(${names.join(" ")})' '*:reference:'\n`);
+    else if (shell === "fish") write(names.map(n => `complete -c moodle -f -a '${n}'`).join("\n") + "\n");
     else throw new UsageError("Choose zsh, bash or fish.");
   });
   addOutputOptions(mutating(program.command("uninstall").description("Remove local background jobs; optionally remove the selected Worker and configuration.").summary("Remove background jobs, Worker and config")))
@@ -1275,13 +1308,13 @@ export function buildProgram(io: CliIO = {}): Command {
     },
   );
 
-  const skills = program.command("skills").description("Show skill metadata or delegate to the shared skills CLI.").summary("Agent skill metadata");
+  const skills = program.command("skills").description("Show skill metadata or delegate to the shared skills CLI.").summary("Install the Moodle skill for coding agents");
   skills.action(() => {
-    stdout.write(`${formatSkillSummary()}\n`);
+    write(`${formatSkillSummary()}\n`);
   });
   skills.command("generate").description("Regenerate the agent skill bundle from the CLI command tree.").action(() => {
     writeGeneratedSkill(program);
-    stdout.write("Generated Moodle skill bundle\n");
+    write("Generated Moodle skill bundle\n");
   });
   skills.command("add").description("Install the published skill through npx skills add.").allowUnknownOption(true).action((_options, command) => installSkill(command.args));
 
@@ -1290,18 +1323,21 @@ export function buildProgram(io: CliIO = {}): Command {
     for (const name of names) for (const command of program.commands) if (command.name() === name) helpSection(command, title);
   }
   examples(program, [
-    "moodle  # today: due items, alerts and news",
-    "moodle UNIT grades",
+    "moodle sync  # every unit's files, kept current",
     "moodle submit UNIT \"Assignment 2\" report.pdf",
+    "moodle skills add  # let your coding agent read Moodle",
   ]);
   return program;
 }
 
-// Grouped the way `gh` does: what a person reaches for daily, then the rest, then what only an agent runs.
+// Ordered by what the CLI saves over the web UI: bulk files and submitting first, then
+// handing Moodle to an agent, then reading, which the browser already does well.
 const HELP_SECTIONS: Readonly<Record<string, readonly string[]>> = {
-  "Core commands": ["due", "news", "find", "get", "open", "submit", "submission", "complete", "messages", "calendar", "quiz", "courses", "activities", "grades", "threads", "forums"],
-  "Additional commands": ["sync", "user", "todo", "alerts", "messages", "calendar", "overview", "download", "auth", "doctor", "coverage", "completion", "uninstall"],
-  "Agent commands": ["mcp", "commands", "skills"],
+  "Get work done": ["sync", "download", "submit", "submission", "due", "grades", "complete", "quiz"],
+  "Use with an agent": ["skills", "mcp", "commands"],
+  "Browse and read": ["find", "open", "news", "messages", "calendar", "courses", "activities", "attempt", "threads", "forums"],
+  "Set up": ["auth", "doctor", "update", "coverage", "completion", "uninstall"],
+  "Older views": ["overview", "todo", "alerts", "user"],
 };
 
 export async function runCli(argv = process.argv, io: CliIO = {}): Promise<number> {
@@ -1318,12 +1354,18 @@ export async function runCli(argv = process.argv, io: CliIO = {}): Promise<numbe
       format: errorOutputFormat(args, stdout),
     }) === "human",
   });
+  const indicator = { settle: () => {} };
+  let update: UpdateOffer | undefined;
   try {
-    await startupUpdateNotice(args, stderr, { homeDir: io.homeDir, env: io.env });
-    await parseWithPrompts(() => buildProgram({ ...io, rootArgs: args }), args, { ui, fillers: { unit: pickUnit(io, ui) } });
+    update = await updateOffer(args, { homeDir: io.homeDir, env: io.env });
+    await parseWithPrompts(() => buildProgram({ ...io, rootArgs: args, update, indicator }), args, { ui, fillers: { unit: pickUnit(io, ui) } });
+    indicator.settle();
+    await updateNotice(update, stderr, { homeDir: io.homeDir });
     return 0;
   } catch (error) {
+    indicator.settle();
     if (isInformationalExit(error)) {
+      await updateNotice(update, stderr, { homeDir: io.homeDir });
       return 0;
     }
     const format = errorOutputFormat(args, stdout);

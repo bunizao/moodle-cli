@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { UPDATE_CHECK_TTL_MS, UPDATE_RETRY_MS } from "../src/update-core.js";
-import { detectInstallKind, installCommand, npmGlobalPrefix, readUpdateCache, refreshLatestVersion, replaceStandalone, startupCheckApplies, startupUpdateNotice, updateCachePath, writeUpdateCache } from "../src/update-check.js";
+import { detectInstallKind, installCommand, npmGlobalPrefix, readUpdateCache, refreshLatestVersion, replaceStandalone, startupCheckApplies, updateCachePath, updateNotice, updateOffer, writeUpdateCache } from "../src/update-check.js";
 import { VERSION } from "../src/version.js";
 
 // Windows has no POSIX permission bits; chmod there only toggles read-only.
@@ -38,29 +38,39 @@ describe("startupCheckApplies", () => {
   });
 });
 
-describe("startupUpdateNotice", () => {
-  it("prints a cached newer version once a day and stamps the cache", async () => {
+describe("update offer and notice", () => {
+  it("offers a cached newer version and prints it after the command once a day", async () => {
     await writeUpdateCache({ latest: "99.0.0", checked_at: NOW }, homeDir);
     const out = stderr();
+    const notice = async (now: number) => updateNotice(await updateOffer(["todo"], { homeDir, env: {}, now: () => now }), out, { homeDir, now: () => now });
 
-    await startupUpdateNotice(["todo"], out, { homeDir, env: {}, now: () => NOW });
-    await startupUpdateNotice(["todo"], out, { homeDir, env: {}, now: () => NOW + 1000 });
+    await notice(NOW);
+    await notice(NOW + 1000);
 
     expect(out.lines).toHaveLength(1);
     expect(out.lines[0]).toContain("99.0.0");
     expect(out.lines[0]).toContain(`running ${VERSION}`);
     expect((await readUpdateCache(homeDir)).notified_at).toBe(NOW);
 
-    await startupUpdateNotice(["todo"], out, { homeDir, env: {}, now: () => NOW + UPDATE_CHECK_TTL_MS });
+    await notice(NOW + UPDATE_CHECK_TTL_MS);
     expect(out.lines).toHaveLength(2);
   });
 
-  it("stays silent when the cache is current or absent", async () => {
+  it("stays quiet after a screen showed the offer", async () => {
+    await writeUpdateCache({ latest: "99.0.0", checked_at: NOW }, homeDir);
+    const offer = await updateOffer([], { homeDir, env: {}, now: () => NOW });
+    expect(offer).toMatchObject({ current: VERSION, latest: "99.0.0", shown: false });
+    offer!.shown = true;
     const out = stderr();
-    await startupUpdateNotice(["todo"], out, { homeDir, env: { MOODLE_NO_UPDATE_CHECK: "1" }, now: () => NOW });
-    await writeUpdateCache({ latest: VERSION, checked_at: NOW }, homeDir);
-    await startupUpdateNotice(["todo"], out, { homeDir, env: {}, now: () => NOW });
+    await updateNotice(offer, out, { homeDir, now: () => NOW });
     expect(out.lines).toEqual([]);
+    expect((await readUpdateCache(homeDir)).notified_at).toBeUndefined();
+  });
+
+  it("offers nothing when the cache is current, absent or switched off", async () => {
+    await expect(updateOffer(["todo"], { homeDir, env: { MOODLE_NO_UPDATE_CHECK: "1" }, now: () => NOW })).resolves.toBeUndefined();
+    await writeUpdateCache({ latest: VERSION, checked_at: NOW }, homeDir);
+    await expect(updateOffer(["todo"], { homeDir, env: {}, now: () => NOW })).resolves.toBeUndefined();
   });
 
   it.skipIf(!posixModes)("keeps the cache private to the user", async () => {
