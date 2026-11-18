@@ -8,4 +8,5 @@ export {
   type MoodleClientCoreOptions,
   type MoodleSessionCookie,
 } from "./moodle-client-core.js";
+export { hasGrade } from "./grades.js";
 export type { Assignment, Course, CourseGrades, GradeItem, TodoItem, UserInfo } from "./models.js";
