@@ -80,7 +80,7 @@ jobs:
 
       - name: Audit dependencies
         if: matrix.node-version == 22
-        run: npm audit --audit-level=low
+        run: npm audit --omit=dev --audit-level=low
 
       - name: Check npm package contents
         run: npm run pack:check

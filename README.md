@@ -45,6 +45,7 @@ Elsewhere, use `npm install -g moodle-cli` or `bun add --global moodle-cli`.
 | Claude, ChatGPT or any web AI | `moodle mcp deploy`, then add your Worker as a custom connector. [Remote MCP](https://unicorn.tuuhub.com/docs/moodle/mcp-server) |
 | Claude Code, Codex, Cursor | `moodle mcp serve`, or install the agent skill with `moodle skills add`. |
 | Your terminal and scripts | `moodle` prints tables in a terminal and JSON in a pipe. [Scripting](https://unicorn.tuuhub.com/docs/developers/moodle) |
+| Your own Worker or Node code | `import { createMoodleClientCore } from "moodle-cli/core"`, pass the MoodleSession cookie, then `getTodo()`, `getCourseGrades(id)`, `getAssignment(id)` and the rest. |
 
 ## Study Boooooooooost
 
