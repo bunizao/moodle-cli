@@ -57,7 +57,7 @@ async function harness() {
   };
   const adopt = vi.fn<(cookie: MoodleCookie, allowNewOwner: boolean) => Promise<AdoptResult>>(async () => "adopted");
   const storage = new MemoryStorage();
-  const broker = new AuthBroker({ storage }, { EXPECTED_HOST: HOST, MOODLE_ORIGIN }, { now: () => clock, browser, adopt });
+  const broker = new AuthBroker({ storage }, { EXPECTED_HOST: HOST, MOODLE_ORIGIN }, { now: () => clock, browser, adopt, icon: async () => undefined });
   const env: WorkerEnv = {
     EXPECTED_HOST: HOST,
     MCP_ACCESS_TOKEN_DIGEST: await digestBearerToken("access-token"),
