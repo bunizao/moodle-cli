@@ -1,6 +1,6 @@
 {
   "name": "moodle-cli",
-  "version": "0.13.1",
+  "version": "0.13.2",
   "description": "Reads Moodle units, deadlines, grades and files; submits coursework, manages messages and forums, and runs a private MCP server.",
   "author": {
     "name": "bunizao",

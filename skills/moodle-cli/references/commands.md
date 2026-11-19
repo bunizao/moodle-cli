@@ -1,6 +1,6 @@
 # moodle commands
 
-Generated from `moodle commands --json` for version 0.13.1.
+Generated from `moodle commands --json` for version 0.13.2.
 
 | Command | Description | Arguments | Options | Mutating |
 | --- | --- | --- | --- | --- |
