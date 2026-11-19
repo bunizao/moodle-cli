@@ -1,5 +1,13 @@
 // Server-rendered pages for the authorization and sign-in flows. The CSP allows no
-// scripts or external assets, so every page is plain HTML with inline styles.
+// scripts or external assets, so every page is plain HTML with inline styles, and
+// the Moodle icon is inlined as a data: URI.
+
+let siteIcon: string | undefined;
+
+/** The data:image/ URI every page shows above its heading; the Worker sets it once it has fetched it. */
+export function setSiteIcon(icon: string | undefined): void {
+  siteIcon = icon?.startsWith("data:image/") ? icon : undefined;
+}
 
 export function htmlResponse(body: string, status = 200, redirectUri?: string): Response {
   const callback = redirectUri ? ` ${new URL(redirectUri).origin}` : "";
@@ -8,7 +16,7 @@ export function htmlResponse(body: string, status = 200, redirectUri?: string): 
     headers: {
       "content-type": "text/html; charset=utf-8",
       "cache-control": "no-store",
-      "content-security-policy": `default-src 'none'; style-src 'unsafe-inline'; form-action 'self'${callback}; frame-ancestors 'none'`,
+      "content-security-policy": `default-src 'none'; style-src 'unsafe-inline'; img-src data:; form-action 'self'${callback}; frame-ancestors 'none'`,
       "referrer-policy": "strict-origin-when-cross-origin",
       "x-frame-options": "DENY",
       "x-content-type-options": "nosniff",
@@ -34,12 +42,13 @@ ol{padding-left:1.25rem;margin:.5rem 0 1rem;font-size:.95rem}li{margin:.25rem 0}
 .note{font-size:.85rem;color:var(--muted);margin-top:1rem}.error{color:var(--danger);font-size:.9rem;margin:0 0 1rem}
 .open{color:var(--ok);font-size:.9rem;margin:0 0 .75rem}
 a.button{display:block;box-sizing:border-box;width:100%;margin-top:1rem;padding:.7rem;font-size:1rem;border-radius:8px;background:var(--accent);color:var(--accent-text);text-align:center;text-decoration:none}
-hr{border:0;border-top:1px solid var(--line);margin:1.5rem 0 1rem}`;
+hr{border:0;border-top:1px solid var(--line);margin:1.5rem 0 1rem}
+.site{display:block;width:40px;height:40px;object-fit:contain;margin:0 0 1rem}`;
 
 export function page(title: string, body: string): string {
   return `<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex"><title>${escapeHtml(title)}</title>
-<style>${PAGE_STYLE}</style></head><body><main>${body}</main></body></html>`;
+<style>${PAGE_STYLE}</style></head><body><main>${siteIcon ? `<img class="site" alt="" src="${escapeHtml(siteIcon)}">` : ""}${body}</main></body></html>`;
 }
 
 export function escapeHtml(value: string): string {

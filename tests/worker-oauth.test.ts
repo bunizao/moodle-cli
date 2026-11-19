@@ -8,6 +8,8 @@ import {
   type WorkerEnv,
 } from "../src/worker/index.js";
 
+const ICON = "data:image/png;base64,iVBORw0K";
+
 const SYNC_TOKEN = "sync-token";
 const ACCESS_TOKEN = "access-token";
 const HOST = "moodle-mcp.example.workers.dev";
@@ -53,7 +55,7 @@ async function harness(options: { now?: () => number } = {}) {
     SESSION_SYNC_TOKEN_DIGEST: await digestBearerToken(SYNC_TOKEN),
   };
   const storage = new MemoryStorage();
-  const broker = new AuthBroker({ storage }, { EXPECTED_HOST: HOST }, options);
+  const broker = new AuthBroker({ storage }, { EXPECTED_HOST: HOST }, { icon: async () => ICON, ...options });
   const mcpServer = { handle: vi.fn(async () => ({ jsonrpc: "2.0", id: 1, result: { ok: true } })) };
   const worker = createWorkerHandler({
     mcpServer,
@@ -251,6 +253,8 @@ describe("Worker OAuth authorization server", () => {
 
     expect(response.status).toBe(200);
     expect(response.headers.get("content-security-policy")).toContain("form-action 'self' https://claude.ai");
+    expect(response.headers.get("content-security-policy")).toContain("img-src data:;");
+    expect(await response.text()).toContain(`<main><img class="site" alt="" src="${ICON}">`);
   });
 
   it("completes the pairing, code, and token exchange that claude.ai performs", async () => {

@@ -1,7 +1,9 @@
 import { createBrowserRunLogin, type BrowserRunBinding, type LoginBrowser } from "./browser-login.js";
 import type { DurableObjectNamespaceLike } from "./http.js";
-import { createOAuthRouter, LOGIN_PATH, randomSecret, type AccessGrant, type OAuthRouter, type OAuthStorage, type PairingIssue } from "./oauth.js";
+import { AUTHORIZE_PATH, createOAuthRouter, LOGIN_PATH, randomSecret, type AccessGrant, type OAuthRouter, type OAuthStorage, type PairingIssue } from "./oauth.js";
 import { createOwnerLogin, createSessionAdopter, type OwnerLogin, type OwnerLoginOptions } from "./owner-login.js";
+import { setSiteIcon } from "./pages.js";
+import { siteIcon } from "./site-icon.js";
 
 export const OAUTH_ROUTE_PREFIXES = ["/oauth/", "/.well-known/oauth-"] as const;
 export const INTERNAL_VERIFY_PATH = "/internal/verify";
@@ -24,6 +26,8 @@ export interface AuthBrokerDependencies {
   now?: () => number;
   browser?: LoginBrowser;
   adopt?: OwnerLoginOptions["adopt"];
+  /** The data:image/ URI shown on sign-in and approval pages. */
+  icon?: () => Promise<string | undefined>;
 }
 
 export function isOAuthRoute(pathname: string): boolean {
@@ -38,10 +42,16 @@ export function parseAllowedRedirectHosts(value: string | undefined): string[] |
   return hosts.length ? hosts : undefined;
 }
 
+/** The university's own Moodle icon, else Moodle's: many sites hide even their favicon behind single sign-on. */
+async function moodleIcon(origin: string | undefined): Promise<string | undefined> {
+  return (origin ? await siteIcon(origin) : undefined) ?? (await siteIcon("https://moodle.org"));
+}
+
 export class AuthBroker {
   private readonly now: () => number;
   private readonly browser?: LoginBrowser;
   private readonly adopt?: OwnerLoginOptions["adopt"];
+  private readonly icon: () => Promise<string | undefined>;
   private pending: Promise<unknown> = Promise.resolve();
 
   constructor(
@@ -52,9 +62,13 @@ export class AuthBroker {
     this.now = dependencies.now ?? Date.now;
     this.browser = dependencies.browser ?? (env.BROWSER ? createBrowserRunLogin(env.BROWSER) : undefined);
     this.adopt = dependencies.adopt ?? (env.SESSION_BROKER ? createSessionAdopter(env.SESSION_BROKER) : undefined);
+    this.icon = dependencies.icon ?? (() => moodleIcon(env.MOODLE_ORIGIN));
   }
 
   async fetch(request: Request): Promise<Response> {
+    // Fetched outside the queue, so a slow Moodle site never holds up token checks.
+    const { pathname } = new URL(request.url);
+    if (pathname === LOGIN_PATH || pathname === AUTHORIZE_PATH) setSiteIcon(await this.icon());
     const response = this.pending.then(() => this.route(request));
     this.pending = response.catch(() => undefined);
     return response;
