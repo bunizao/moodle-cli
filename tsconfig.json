@@ -11,5 +11,6 @@
     "skipLibCheck": true,
     "outDir": "dist"
   },
-  "include": ["src/**/*.ts", "tests/**/*.ts", "tsup.config.ts", "tsup.worker.config.ts", "tsup.core.config.ts", "vitest.config.ts"]
+  "include": ["src/**/*.ts", "tests/**/*.ts", "tsup.config.ts", "tsup.worker.config.ts", "tsup.core.config.ts", "vitest.config.ts"],
+  "exclude": ["src/mcp/widget"]
 }
