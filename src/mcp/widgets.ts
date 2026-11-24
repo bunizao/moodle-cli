@@ -107,7 +107,10 @@ export async function buildWidget(service: IntentService, name: WidgetTool, args
       const count = sections.reduce((sum, s) => sum + s.activities.length, 0);
       const lines = [
         `${[code, name].filter(Boolean).join(" ")} (unit ${id}): ${sections.length} sections, ${count} activities${current_section?.name ? `; current section ${current_section.name}` : ""}.`,
-        ...sections.map(s => `- ${s.name ?? `Section ${s.id}`} (${s.activities.length})`),
+        ...sections.flatMap(s => [
+          `- ${s.name ?? `Section ${s.id}`} (${s.activities.length})`,
+          ...s.activities.map(a => `  - ${a.name ?? "Activity"} (${[a.type, `id ${a.id}`].filter(Boolean).join(", ")})`),
+        ]),
       ];
       return { view, text: lines.join("\n") };
     }

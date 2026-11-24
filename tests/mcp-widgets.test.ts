@@ -94,6 +94,9 @@ describe("MCP Apps widgets", () => {
     expect(view.sections.map((s: { name: string }) => s.name)).toEqual(["Week 7", "Week 17"]);
     expect(view.sections[0].activities.map((a: { type: string }) => a.type)).toEqual(["resource", "assign"]);
     expect(text).toContain("2 sections, 4 activities");
+    for (const section of view.sections) {
+      for (const activity of section.activities) expect(text).toContain(`id ${activity.id}`);
+    }
   });
 
   it("reports a bad reference as a tool error, not a view", async () => {
