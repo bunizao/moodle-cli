@@ -84,16 +84,16 @@ describe("MCP Apps widgets", () => {
     expect(view).toMatchObject({ kind: "quiz", attempt: { id: 777, marks: "2.00/3.00" } });
     expect(view.attempt.questions[0]).toMatchObject({ number: 1, response: "False", correct: "False" });
     expect(text).toContain("Q1: Correct");
-    expect(text).toContain("Response: False");
-    expect(text).toContain("Correct answer: False");
+    expect(text).not.toContain("Response: False");
+    expect(text).not.toContain("Correct answer: False");
   });
 
-  it("builds the unit outline without labels and with the current section", async () => {
+  it("builds the unit outline including labels and the current section", async () => {
     const { view, text } = await show("show_unit", { unit: "algo-2" });
     expect(view).toMatchObject({ kind: "unit", unit: { id: 2, code: "algo-2" }, current: 2000 });
     expect(view.sections.map((s: { name: string }) => s.name)).toEqual(["Week 7", "Week 17"]);
-    expect(view.sections[0].activities.map((a: { type: string }) => a.type)).toEqual(["resource", "assign"]);
-    expect(text).toContain("2 sections, 4 activities");
+    expect(view.sections[0].activities.map((a: { type: string }) => a.type)).toEqual(["resource", "assign", "label"]);
+    expect(text).toContain("2 sections, 6 activities");
     for (const section of view.sections) {
       for (const activity of section.activities) expect(text).toContain(`id ${activity.id}`);
     }

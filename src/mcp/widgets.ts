@@ -81,13 +81,7 @@ export async function buildWidget(service: IntentService, name: WidgetTool, args
       const view: QuizView = { kind: "quiz", attempt: { id: attempt.id, status: attempt.status, grade: attempt.grade, marks: attempt.marks, duration: attempt.duration, completed: attempt.completed, url: attempt.url, questions } };
       const lines = [
         `Quiz attempt ${attempt.id}: ${[attempt.status, attempt.grade && `grade ${attempt.grade}`, attempt.marks && `marks ${attempt.marks}`].filter(Boolean).join(", ") || "no summary"}; ${questions.length} questions.`,
-        ...questions.flatMap(q => [
-          `- Q${q.number}: ${[q.state, q.mark].filter(Boolean).join(", ") || "not marked"}`,
-          ...(q.text ? [`  Question: ${q.text}`] : []),
-          ...(q.response ? [`  Response: ${q.response}`] : []),
-          ...(q.correct ? [`  Correct answer: ${q.correct}`] : []),
-          ...(q.feedback ? [`  Feedback: ${q.feedback}`] : []),
-        ]),
+        ...questions.map(q => `- Q${q.number}: ${[q.state, q.mark].filter(Boolean).join(", ") || "not marked"}`),
       ];
       return { view, text: lines.join("\n") };
     }
@@ -99,7 +93,7 @@ export async function buildWidget(service: IntentService, name: WidgetTool, args
       const tree = new Map(sectionTree(await service.sections(index.unit.id)).map(({ section, children }) => [section.id, [section, ...children]]));
       const sections = (index.sections ?? []).map(({ id, name, hidden }) => ({
         id, name, hidden,
-        activities: (tree.get(id) ?? []).flatMap(s => s.activities).filter(a => a.modname !== "label")
+        activities: (tree.get(id) ?? []).flatMap(s => s.activities)
           .map(a => ({ id: a.id, name: a.name, type: a.modname, hidden: a.visible === false ? true : undefined })),
       }));
       const { id, code, name, current_section } = index.unit;

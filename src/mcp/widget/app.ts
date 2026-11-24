@@ -1,3 +1,4 @@
+import { nextCalendarDay } from "./calendar-date.js";
 import { quizOutcome, quizResultSummary, type Outcome } from "./quiz-outcome.js";
 import type { DeadlineRow, DeadlinesView, GradeItem, GradesView, OutlineActivity, QuizView, UnitView, WidgetView } from "./views.js";
 
@@ -342,7 +343,7 @@ function dayKey(epochSeconds: number): string {
 function dayHeading(key: string): string {
   const today = dayKey(Date.now() / 1000);
   if (key === today) return "Today";
-  if (key === dayKey(Date.now() / 1000 + 86_400)) return "Tomorrow";
+  if (key === nextCalendarDay(today)) return "Tomorrow";
   return new Date(`${key}T12:00:00Z`).toLocaleDateString(locale, { weekday: "short", day: "numeric", month: "short", timeZone: "UTC" });
 }
 
