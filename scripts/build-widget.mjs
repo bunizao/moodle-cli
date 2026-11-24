@@ -3,6 +3,7 @@
 // inlined into a generated module that both server entry points import.
 import { readFile, writeFile } from "node:fs/promises";
 import { build } from "esbuild";
+import { fileURLToPath } from "node:url";
 
 const widgetDir = new URL("../src/mcp/widget/", import.meta.url);
 const outFile = new URL("../src/mcp/widget-html.generated.ts", import.meta.url);
@@ -11,7 +12,7 @@ export async function renderWidgetModule() {
   const [script, css] = await Promise.all([
     build({
       bundle: true,
-      entryPoints: [new URL("app.ts", widgetDir).pathname],
+      entryPoints: [fileURLToPath(new URL("app.ts", widgetDir))],
       format: "iife",
       legalComments: "none",
       minify: true,
@@ -38,6 +39,6 @@ export async function renderWidgetModule() {
   ].join("\n");
 }
 
-if (process.argv[1] === new URL(import.meta.url).pathname) {
+if (process.argv[1] === fileURLToPath(import.meta.url)) {
   await writeFile(outFile, await renderWidgetModule());
 }
