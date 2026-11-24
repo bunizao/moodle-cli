@@ -84,6 +84,8 @@ describe("MCP Apps widgets", () => {
     expect(view).toMatchObject({ kind: "quiz", attempt: { id: 777, marks: "2.00/3.00" } });
     expect(view.attempt.questions[0]).toMatchObject({ number: 1, response: "False", correct: "False" });
     expect(text).toContain("Q1: Correct");
+    expect(text).toContain("Response: False");
+    expect(text).toContain("Correct answer: False");
   });
 
   it("builds the unit outline without labels and with the current section", async () => {

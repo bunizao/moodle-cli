@@ -1,4 +1,5 @@
-import type { DeadlineRow, DeadlinesView, GradeItem, GradesView, OutlineActivity, QuizQuestion, QuizView, UnitView, WidgetView } from "./views.js";
+import { quizOutcome, quizResultSummary, type Outcome } from "./quiz-outcome.js";
+import type { DeadlineRow, DeadlinesView, GradeItem, GradesView, OutlineActivity, QuizView, UnitView, WidgetView } from "./views.js";
 
 /*
  * One widget renders every show_* tool; the payload's kind picks the view. Each view
@@ -459,27 +460,13 @@ function gradeDrill(code: string | undefined, item: GradeItem, key: string): HTM
 
 // ---------- show_quiz_review ----------
 
-type Outcome = "right" | "partial" | "wrong" | "open";
-
-// The mark ("0.50 out of 1.00") is the reliable signal; the state is translated, so
-// its English words only break the tie when a site shows no marks.
-function outcome(question: QuizQuestion): Outcome {
-  const [got, max] = (question.mark?.match(/\d+(?:[.,]\d+)?/gu) ?? []).map((value) => Number.parseFloat(value.replace(",", ".")));
-  if (got !== undefined && max !== undefined && max > 0) return got >= max ? "right" : got <= 0 ? "wrong" : "partial";
-  const state = (question.state ?? "").toLowerCase();
-  if (state.includes("partial")) return "partial";
-  if (state.includes("incorrect") || state.includes("wrong")) return "wrong";
-  if (state.includes("correct")) return "right";
-  return "open";
-}
-
 const OUTCOME_LABELS: Record<Outcome, string> = { right: "Full marks", partial: "Part marks", wrong: "No marks", open: "Not marked" };
 
 function renderQuiz(view: QuizView): void {
   const { attempt } = view;
   const all = attempt.questions;
-  const questions = ui.mistakesOnly ? all.filter((question) => ["wrong", "partial"].includes(outcome(question))) : all;
-  const missed = all.filter((question) => ["wrong", "partial"].includes(outcome(question)));
+  const questions = ui.mistakesOnly ? all.filter((question) => ["wrong", "partial"].includes(quizOutcome(question))) : all;
+  const missed = all.filter((question) => ["wrong", "partial"].includes(quizOutcome(question)));
   ui.q = Math.min(ui.q, Math.max(questions.length - 1, 0));
   root.append(header("Quiz review", [attempt.grade && `Grade ${attempt.grade}`, attempt.marks && `${attempt.marks} marks`, attempt.duration].filter(Boolean).join(" · ") || `Attempt ${attempt.id}`,
     missed.length ? el("button", { class: "w-toggle", onclick: () => { ui.mistakesOnly = !ui.mistakesOnly; ui.q = 0; render(); }, type: "button" }, ui.mistakesOnly ? "All questions" : "Only mistakes") : null));
@@ -488,16 +475,16 @@ function renderQuiz(view: QuizView): void {
     return;
   }
   root.append(el("div", { class: "dots", role: "tablist" }, questions.map((question, index) => el("button", {
-    "aria-label": `Question ${question.number}: ${OUTCOME_LABELS[outcome(question)]}`,
+    "aria-label": `Question ${question.number}: ${OUTCOME_LABELS[quizOutcome(question)]}`,
     "aria-selected": String(index === ui.q),
-    class: `dot ${outcome(question)}${index === ui.q ? " on" : ""}`,
+    class: `dot ${quizOutcome(question)}${index === ui.q ? " on" : ""}`,
     onclick: () => { ui.q = index; render(); },
     role: "tab",
     type: "button",
   }, String(question.number)))));
   const question = questions[ui.q];
   if (question) {
-    const result = outcome(question);
+    const result = quizOutcome(question);
     root.append(el("div", { class: "card" },
       el("div", { class: "card-head" },
         el("span", {}, `Question ${question.number}`),
@@ -514,7 +501,7 @@ function renderQuiz(view: QuizView): void {
       : missed.length
         ? button("Go over my mistakes", () => askModel(`Go over the questions I lost marks on in quiz attempt ${attempt.id}:\n${missed.map((item) =>
           `- Q${item.number} (${item.mark ?? item.state ?? "no mark"}): ${clip(item.text, 200)}`).join("\n")}`), true)
-        : el("span", { class: "meta" }, "Full marks on every question.")));
+        : el("span", { class: "meta" }, quizResultSummary(all))));
 }
 
 function answer(label: string, text: string, tone: string): HTMLElement {

@@ -11,7 +11,7 @@ export const WIDGET_MIME_TYPE = "text/html;profile=mcp-app";
 // model reads the short text content instead of the whole payload.
 export const WIDGET_VIEW_KEY = "moodle/view";
 
-export const WIDGET_INSTRUCTIONS = "Prefer the show_* tools when the answer would otherwise be a long list or table: show_deadlines to see or plan deadlines, show_grades for an overview of marks, show_quiz_review to go over a quiz attempt, show_unit to browse a unit. They render an interactive view in hosts that support MCP Apps and return a short text summary elsewhere. After one, add a sentence or two of interpretation instead of repeating what the view shows. Use the other tools when the user asks for plain text or you need specific fields.";
+export const WIDGET_INSTRUCTIONS = "Use show_* tools for interactive views only when the host supports MCP Apps. Otherwise use due, grades, attempt or unit for plain-text answers and complete fields.";
 
 const ref = z.union([z.string().trim().min(1).max(2048), z.number().int().positive()]);
 
@@ -81,7 +81,13 @@ export async function buildWidget(service: IntentService, name: WidgetTool, args
       const view: QuizView = { kind: "quiz", attempt: { id: attempt.id, status: attempt.status, grade: attempt.grade, marks: attempt.marks, duration: attempt.duration, completed: attempt.completed, url: attempt.url, questions } };
       const lines = [
         `Quiz attempt ${attempt.id}: ${[attempt.status, attempt.grade && `grade ${attempt.grade}`, attempt.marks && `marks ${attempt.marks}`].filter(Boolean).join(", ") || "no summary"}; ${questions.length} questions.`,
-        ...questions.map(q => `- Q${q.number}: ${[q.state, q.mark].filter(Boolean).join(", ") || "not marked"}`),
+        ...questions.flatMap(q => [
+          `- Q${q.number}: ${[q.state, q.mark].filter(Boolean).join(", ") || "not marked"}`,
+          ...(q.text ? [`  Question: ${q.text}`] : []),
+          ...(q.response ? [`  Response: ${q.response}`] : []),
+          ...(q.correct ? [`  Correct answer: ${q.correct}`] : []),
+          ...(q.feedback ? [`  Feedback: ${q.feedback}`] : []),
+        ]),
       ];
       return { view, text: lines.join("\n") };
     }
