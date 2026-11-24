@@ -16,7 +16,7 @@ export function htmlResponse(body: string, status = 200, redirectUri?: string): 
     headers: {
       "content-type": "text/html; charset=utf-8",
       "cache-control": "no-store",
-      "content-security-policy": `default-src 'none'; style-src 'unsafe-inline'; img-src data:; form-action 'self'${callback}; frame-ancestors 'none'`,
+      "content-security-policy": `default-src 'none'; style-src 'unsafe-inline'; img-src 'self' data:; form-action 'self'${callback}; frame-ancestors 'none'`,
       "referrer-policy": "strict-origin-when-cross-origin",
       "x-frame-options": "DENY",
       "x-content-type-options": "nosniff",
@@ -47,7 +47,7 @@ hr{border:0;border-top:1px solid var(--line);margin:1.5rem 0 1rem}
 
 export function page(title: string, body: string): string {
   return `<!doctype html><html lang="en"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex"><title>${escapeHtml(title)}</title>
+<meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex"><link rel="icon" href="/favicon.svg" type="image/svg+xml"><title>${escapeHtml(title)}</title>
 <style>${PAGE_STYLE}</style></head><body><main>${siteIcon ? `<img class="site" alt="" src="${escapeHtml(siteIcon)}">` : ""}${body}</main></body></html>`;
 }
 

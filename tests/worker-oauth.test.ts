@@ -253,8 +253,10 @@ describe("Worker OAuth authorization server", () => {
 
     expect(response.status).toBe(200);
     expect(response.headers.get("content-security-policy")).toContain("form-action 'self' https://claude.ai");
-    expect(response.headers.get("content-security-policy")).toContain("img-src data:;");
-    expect(await response.text()).toContain(`<main><img class="site" alt="" src="${ICON}">`);
+    expect(response.headers.get("content-security-policy")).toContain("img-src 'self' data:;");
+    const html = await response.text();
+    expect(html).toContain('<link rel="icon" href="/favicon.svg" type="image/svg+xml">');
+    expect(html).toContain(`<main><img class="site" alt="" src="${ICON}">`);
   });
 
   it("completes the pairing, code, and token exchange that claude.ai performs", async () => {
