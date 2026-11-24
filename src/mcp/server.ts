@@ -45,8 +45,7 @@ export const TOOL_CATALOG = Object.entries(intentContracts).map(([name, contract
   inputSchema: compactSchema(z.toJSONSchema(contract.input, { io: "input" })), annotations: WRITE_TOOLS.has(name) ? WRITE_ANNOTATIONS : READ_ONLY_ANNOTATIONS,
 }));
 
-// Hosts draw icons in their own UI and never pass them to the model, so they stay
-// out of TOOL_CATALOG and its byte budget.
+// Hosts draw icons in their own UI, so keep them out of the base tool catalog.
 const LISTED_TOOLS = TOOL_CATALOG.map(tool => ({ ...tool, icons: TOOL_ICONS[tool.name as ToolName] }));
 
 // The remote Worker has no filesystem, so it never lists the upload tool.

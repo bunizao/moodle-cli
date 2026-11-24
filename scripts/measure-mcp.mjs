@@ -6,10 +6,12 @@ import { pathToFileURL } from "node:url";
 const directory = await mkdtemp(join(tmpdir(), "moodle-measure-"));
 try {
   const output = join(directory, "measure.mjs");
-  await build({ stdin: { contents: `export { createMoodleMcpServer, TOOL_CATALOG } from './src/mcp/server.ts'; export { fixtureGateway, intentCalls } from './tests/fixtures/intent-site.ts';`, resolveDir: resolve(".") }, outfile: output, platform: "node", format: "esm", bundle: true });
-  const { createMoodleMcpServer, TOOL_CATALOG, fixtureGateway, intentCalls } = await import(pathToFileURL(output).href);
+  await build({ stdin: { contents: `export { createMoodleMcpServer } from './src/mcp/server.ts'; export { fixtureGateway, intentCalls } from './tests/fixtures/intent-site.ts';`, resolveDir: resolve(".") }, outfile: output, platform: "node", format: "esm", bundle: true });
+  const { createMoodleMcpServer, fixtureGateway, intentCalls } = await import(pathToFileURL(output).href);
   const server = createMoodleMcpServer(fixtureGateway());
-  const rows = [{ tool: "tools/list", chars: JSON.stringify(TOOL_CATALOG).length }];
+  const list = await server.handle({ jsonrpc: "2.0", id: "list", method: "tools/list", params: {} }, { protocolVersion: "2025-06-18" });
+  if (list?.error || !list?.result?.tools) throw new Error("Fixture failed: tools/list");
+  const rows = [{ tool: "tools/list", chars: JSON.stringify(list.result.tools).length }];
   for (const [name, args] of intentCalls) {
     const response = await server.handle({ jsonrpc: "2.0", id: name, method: "tools/call", params: { name, arguments: args } }, { protocolVersion: "2025-06-18" });
     if (response.result?.isError || response.error) throw new Error(`Fixture failed: ${name}`);

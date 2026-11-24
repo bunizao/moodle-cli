@@ -56,7 +56,7 @@ describe("MCP icons", () => {
       expect([...decode(tool.icons[1]!).subarray(0, 8)]).toEqual(PNG_MAGIC);
     }
     expect(new Set(tools.map((tool) => tool.icons[0]!.src)).size).toBe(tools.length);
-    // Icons never reach the model, but every tools/list still carries them.
+    // Every tools/list carries both icon formats.
     expect(JSON.stringify(tools.map((tool) => tool.icons)).length).toBeLessThan(20000);
   });
 
